@@ -1,0 +1,33 @@
+{
+  "name": "vatix-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/env": "^5.0.3",
+    "fastify": "^5.7.1",
+    "ioredis": "^5.9.2",
+    "pg": "^8.17.2",
+    "redis": "^5.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.9",
+    "@types/pg": "^8.16.0",
+    "nodemon": "^3.1.11",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
