@@ -33,7 +33,40 @@ This repository contains the core backend infrastructure for Vatix, including:
 
 ## Getting Started
 
-Coming soon
+### Prerequisites
+- Node.js 18+ (20+ recommended)
+- pnpm 8+ (`npm install -g pnpm`)
+- Docker & Docker Compose
+
+### Installation
+
+1. Clone the repository
+```bash
+git clone https://github.com/vatix-protocol/vatix-backend.git
+cd vatix-backend
+```
+
+2. Install dependencies
+```bash
+pnpm install
+```
+
+3. Set up environment variables
+```bash
+cp .env.example .env
+```
+
+4. Start local services (PostgreSQL + Redis)
+```bash
+docker compose up -d
+```
+
+5. Run development server
+```bash
+pnpm dev
+```
+
+The API will be available at `http://localhost:3000`
 
 ## Architecture
 ```
