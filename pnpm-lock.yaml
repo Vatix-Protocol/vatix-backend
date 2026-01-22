@@ -14,6 +14,9 @@ importers:
       '@fastify/env':
         specifier: ^5.0.3
         version: 5.0.3
+      '@fastify/request-context':
+        specifier: ^6.2.1
+        version: 6.2.1
       '@prisma/client':
         specifier: ^7.2.0
         version: 7.2.0(prisma@7.2.0(@types/react@19.2.9)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3))(typescript@5.9.3)
@@ -262,6 +265,9 @@ packages:
 
   '@fastify/proxy-addr@5.1.0':
     resolution: {integrity: sha512-INS+6gh91cLUjB+PVHfu1UqcB76Sqtpyp7bnL+FYojhjygvOPA9ctiD/JDKsyD9Xgu4hUhCSJBPig/w7duNajw==}
+
+  '@fastify/request-context@6.2.1':
+    resolution: {integrity: sha512-WJTWXI59ViguS/JFgVck6mnwpv+5UrvMLb711pOGIlyN6ghV4Pb/eEbJG01XvQsTAr/AbjMETjk7Jq9ARIxKnQ==}
 
   '@hono/node-server@1.19.6':
     resolution: {integrity: sha512-Shz/KjlIeAhfiuE93NDKVdZ7HdBVLQAfdbaXEaoAVO3ic9ibRSLGIQGkcBbFyuLr+7/1D5ZCINM8B+6IvXeMtw==}
@@ -1497,6 +1503,10 @@ snapshots:
     dependencies:
       '@fastify/forwarded': 3.0.1
       ipaddr.js: 2.3.0
+
+  '@fastify/request-context@6.2.1':
+    dependencies:
+      fastify-plugin: 5.1.0
 
   '@hono/node-server@1.19.6(hono@4.10.6)':
     dependencies:

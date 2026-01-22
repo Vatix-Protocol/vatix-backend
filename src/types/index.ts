@@ -1,5 +1,6 @@
 // Core types for Vatix Protocol
 
+
 export type Order = {
   id: string;
   market_id: string;

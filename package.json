@@ -25,6 +25,7 @@
   "dependencies": {
     "@fastify/cors": "^11.2.0",
     "@fastify/env": "^5.0.3",
+    "@fastify/request-context": "^6.2.1",
     "@prisma/client": "^7.2.0",
     "fastify": "^5.7.1",
     "ioredis": "^5.9.2",
