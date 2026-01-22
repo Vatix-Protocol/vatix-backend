@@ -15,7 +15,12 @@
     "prisma:studio": "prisma studio",
     "prisma:seed": "tsx prisma/seed.ts",
     "test:run": "vitest run",
-    "prepare": "husky install"
+    "prepare": "husky install",
+    "setup:check": "powershell -ExecutionPolicy Bypass -File ./setup-windows-services.ps1",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "docker:ps": "docker ps"
   },
   "engines": {
     "node": ">=18.0.0",
@@ -41,6 +46,7 @@
     "@types/pg": "^8.16.0",
     "@vitest/coverage-v8": "4.0.17",
     "@vitest/ui": "^4.0.17",
+    "dotenv": "^16.4.5",
     "nodemon": "^3.1.11",
     "prisma": "^7.2.0",
     "tsx": "^4.21.0",
@@ -57,5 +63,8 @@
       "prisma format",
       "prisma validate"
     ]
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   }
 }
