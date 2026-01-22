@@ -62,7 +62,7 @@ docker compose up -d
 pnpm prisma:generate
 
 # Run migrations 
-pnpm prisma:migrate
+pnpm prisma:migrate dev
 ```
 
 6. **Run development server**
