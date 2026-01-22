@@ -10,7 +10,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
 }
 
 enum MarketStatus {
@@ -41,7 +42,7 @@ model Market {
   question        String
   endTime         DateTime      @map("end_time")
   resolutionTime  DateTime?     @map("resolution_time")
-  oracleAddress   String        @map("oracle_address") @db.VarChar(56)
+  oracleAddress   String        @map("oracle_address")
   status          MarketStatus  @default(ACTIVE)
   outcome         Boolean?
   createdAt       DateTime      @default(now()) @map("created_at")
@@ -59,10 +60,10 @@ model Market {
 model Order {
   id              String       @id @default(uuid())
   marketId        String       @map("market_id")
-  userAddress     String       @map("user_address") @db.VarChar(56)
+  userAddress     String       @map("user_address")
   side            OrderSide
   outcome         Outcome
-  price           Decimal      @db.Decimal(10, 8)
+  price           Decimal
   quantity        Int
   filledQuantity  Int          @default(0) @map("filled_quantity")
   status          OrderStatus  @default(OPEN)
@@ -80,10 +81,10 @@ model Order {
 model UserPosition {
   id               String   @id @default(uuid())
   marketId         String   @map("market_id")
-  userAddress      String   @map("user_address") @db.VarChar(56)
+  userAddress      String   @map("user_address")
   yesShares        Int      @default(0) @map("yes_shares")
   noShares         Int      @default(0) @map("no_shares")
-  lockedCollateral Decimal  @default(0) @map("locked_collateral") @db.Decimal(20, 8)
+  lockedCollateral Decimal  @default(0) @map("locked_collateral")
   isSettled        Boolean  @default(false) @map("is_settled")
   updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
 
