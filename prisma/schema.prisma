@@ -5,10 +5,92 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma/client"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+enum MarketStatus {
+  ACTIVE
+  RESOLVED
+  CANCELLED
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderStatus {
+  OPEN
+  FILLED
+  CANCELLED
+  PARTIALLY_FILLED
+}
+
+enum Outcome {
+  YES
+  NO
+}
+
+model Market {
+  id              String        @id @default(uuid())
+  question        String
+  endTime         DateTime      @map("end_time")
+  resolutionTime  DateTime?     @map("resolution_time")
+  oracleAddress   String        @map("oracle_address") @db.VarChar(56)
+  status          MarketStatus  @default(ACTIVE)
+  outcome         Boolean?
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @default(now()) @updatedAt @map("updated_at")
+
+  orders          Order[]
+  positions       UserPosition[]
+
+  @@index([status])
+  @@index([endTime])
+  @@index([status, endTime])
+  @@map("markets")
+}
+
+model Order {
+  id              String       @id @default(uuid())
+  marketId        String       @map("market_id")
+  userAddress     String       @map("user_address") @db.VarChar(56)
+  side            OrderSide
+  outcome         Outcome
+  price           Decimal      @db.Decimal(10, 8)
+  quantity        Int
+  filledQuantity  Int          @default(0) @map("filled_quantity")
+  status          OrderStatus  @default(OPEN)
+  createdAt       DateTime     @default(now()) @map("created_at")
+
+  market          Market       @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@index([marketId])
+  @@index([userAddress])
+  @@index([status])
+  @@index([marketId, outcome, price, createdAt])
+  @@map("orders")
+}
+
+model UserPosition {
+  id               String   @id @default(uuid())
+  marketId         String   @map("market_id")
+  userAddress      String   @map("user_address") @db.VarChar(56)
+  yesShares        Int      @default(0) @map("yes_shares")
+  noShares         Int      @default(0) @map("no_shares")
+  lockedCollateral Decimal  @default(0) @map("locked_collateral") @db.Decimal(20, 8)
+  isSettled        Boolean  @default(false) @map("is_settled")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
+
+  market           Market   @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@unique([marketId, userAddress])
+  @@index([marketId])
+  @@index([userAddress])
+  @@map("user_positions")
 }

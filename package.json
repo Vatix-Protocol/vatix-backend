@@ -13,11 +13,15 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "test:run": "vitest run",
+    "prepare": "husky install"
   },
   "engines": {
     "node": ">=18.0.0",
-    "pnpm": ">=8.0.0"
+    "pnpm": ">=8.0.0",
+    "npm": "please-use-pnpm",
+    "yarn": "please-use-pnpm"
   },
   "keywords": [],
   "author": "",
@@ -26,6 +30,7 @@
     "@fastify/cors": "^11.2.0",
     "@fastify/env": "^5.0.3",
     "@fastify/request-context": "^6.2.1",
+    "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.2.0",
     "fastify": "^5.7.1",
     "ioredis": "^5.9.2",
@@ -35,11 +40,23 @@
   "devDependencies": {
     "@types/node": "^25.0.9",
     "@types/pg": "^8.16.0",
+    "@vitest/coverage-v8": "4.0.17",
     "@vitest/ui": "^4.0.17",
     "nodemon": "^3.1.11",
     "prisma": "^7.2.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.17"
+    "vitest": "^4.0.17",
+    "husky": "^9.0.11",
+    "lint-staged": "^15.2.0"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "tsc --noEmit"
+    ],
+    "prisma/schema.prisma": [
+      "prisma format",
+      "prisma validate"
+    ]
   }
 }
