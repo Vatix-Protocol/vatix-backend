@@ -1,55 +1,7 @@
 // Core types for Vatix Protocol
 
-// ============================================================================
-// Re-export Prisma Types
-// ============================================================================
 
-/**
- * Re-exported types from Prisma Client.
- * These are generated from the database schema and provide type-safe access
- * to database models and enums.
- */
-export {
-  Market,
-  Order,
-  UserPosition,
-  MarketStatus,
-  OrderSide,
-  OrderStatus,
-  Outcome,
-  Prisma,
-} from "../generated/prisma/client";
-
-import type {
-  Market,
-  Order,
-  UserPosition,
-  Outcome,
-} from "../generated/prisma/client";
-
-// ============================================================================
-// Additional Types
-// ============================================================================
-
-/**
- * Order with backend signature.
- * Used for signed order receipts as part of the trust mechanism.
- * Extends the Prisma Order type with cryptographic signature and timestamp.
- */
-export interface OrderReceipt extends Order {
-  /** Cryptographic signature from the backend */
-  signature: string;
-  /** Timestamp when the receipt was generated */
-  timestamp: number;
-}
-
-/**
- * Trade execution record.
- * Represents a matched trade between a buyer and seller.
- * Note: This type is used for recording match executions (not stored in DB for MVP).
- */
-export interface Trade {
-  /** Unique trade identifier */
+export type Order = {
   id: string;
   /** Market ID where the trade occurred */
   marketId: string;
