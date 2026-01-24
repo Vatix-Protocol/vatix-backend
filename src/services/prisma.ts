@@ -40,9 +40,18 @@ export function getPrismaClient(): PrismaClient {
 }
 
 /**
+ * get the pg Pool instance for metrics
+ *
+ * @returns {Pool | null}
+ */
+export function getPool(): Pool | null {
+  return pgPool;
+}
+
+/**
  * disconnect the Prisma Client instance
  * used for graceful shutdown and testing cleanup
- * 
+ *
  * @returns {Promise<void>}
  */
 export async function disconnectPrisma(): Promise<void> {
