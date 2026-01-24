@@ -48,7 +48,8 @@ describe("Database Schema Tests", () => {
       expect(tableNames).toContain("markets");
       expect(tableNames).toContain("orders");
       expect(tableNames).toContain("user_positions");
-      expect(tableNames.length).toBeGreaterThanOrEqual(3);
+      expect(tableNames).toContain("_prisma_migrations");
+      expect(tableNames.length).toBeGreaterThanOrEqual(4);
     });
 
     it("should verify all enums exist", async () => {
