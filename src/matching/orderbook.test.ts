@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { OrderBook, Order } from "../matching/orderbook";
+import { OrderBook, Order } from "./orderbook";
 
 describe("OrderBook", () => {
   let orderBook: OrderBook;
