@@ -11,7 +11,6 @@ import {
   Prisma,
   // Additional types
   OrderReceipt,
-  Trade,
   OrderBookLevel,
   OrderBook,
   PositionWithPayout,
@@ -38,14 +37,14 @@ describe("Type Definitions", () => {
     it("should export Order type with expected properties", () => {
       expectTypeOf<Order>().toHaveProperty("id");
       expectTypeOf<Order>().toHaveProperty("marketId");
-      expectTypeOf<Order>().toHaveProperty("userAddress");
-      expectTypeOf<Order>().toHaveProperty("side");
       expectTypeOf<Order>().toHaveProperty("outcome");
       expectTypeOf<Order>().toHaveProperty("price");
       expectTypeOf<Order>().toHaveProperty("quantity");
-      expectTypeOf<Order>().toHaveProperty("filledQuantity");
-      expectTypeOf<Order>().toHaveProperty("status");
-      expectTypeOf<Order>().toHaveProperty("createdAt");
+      expectTypeOf<Order>().toHaveProperty("buyerAddress");
+      expectTypeOf<Order>().toHaveProperty("sellerAddress");
+      expectTypeOf<Order>().toHaveProperty("buyOrderId");
+      expectTypeOf<Order>().toHaveProperty("sellOrderId");
+      expectTypeOf<Order>().toHaveProperty("timestamp");
     });
 
     it("should export UserPosition type with expected properties", () => {
@@ -95,8 +94,8 @@ describe("Type Definitions", () => {
     it("should have all Order properties plus signature and timestamp", () => {
       expectTypeOf<OrderReceipt>().toHaveProperty("id");
       expectTypeOf<OrderReceipt>().toHaveProperty("marketId");
-      expectTypeOf<OrderReceipt>().toHaveProperty("userAddress");
-      expectTypeOf<OrderReceipt>().toHaveProperty("side");
+      expectTypeOf<OrderReceipt>().toHaveProperty("buyerAddress");
+      expectTypeOf<OrderReceipt>().toHaveProperty("sellerAddress");
       expectTypeOf<OrderReceipt>().toHaveProperty("outcome");
       expectTypeOf<OrderReceipt>().toHaveProperty("price");
       expectTypeOf<OrderReceipt>().toHaveProperty("quantity");
@@ -107,34 +106,6 @@ describe("Type Definitions", () => {
     it("should have correct types for additional fields", () => {
       expectTypeOf<OrderReceipt["signature"]>().toBeString();
       expectTypeOf<OrderReceipt["timestamp"]>().toBeNumber();
-    });
-  });
-
-  describe("Trade Type", () => {
-    it("should have all expected properties", () => {
-      expectTypeOf<Trade>().toHaveProperty("id");
-      expectTypeOf<Trade>().toHaveProperty("marketId");
-      expectTypeOf<Trade>().toHaveProperty("outcome");
-      expectTypeOf<Trade>().toHaveProperty("buyerAddress");
-      expectTypeOf<Trade>().toHaveProperty("sellerAddress");
-      expectTypeOf<Trade>().toHaveProperty("price");
-      expectTypeOf<Trade>().toHaveProperty("quantity");
-      expectTypeOf<Trade>().toHaveProperty("buyOrderId");
-      expectTypeOf<Trade>().toHaveProperty("sellOrderId");
-      expectTypeOf<Trade>().toHaveProperty("timestamp");
-    });
-
-    it("should have correct types", () => {
-      expectTypeOf<Trade["id"]>().toBeString();
-      expectTypeOf<Trade["marketId"]>().toBeString();
-      expectTypeOf<Trade["outcome"]>().toMatchTypeOf<Outcome>();
-      expectTypeOf<Trade["buyerAddress"]>().toBeString();
-      expectTypeOf<Trade["sellerAddress"]>().toBeString();
-      expectTypeOf<Trade["price"]>().toBeNumber();
-      expectTypeOf<Trade["quantity"]>().toBeNumber();
-      expectTypeOf<Trade["buyOrderId"]>().toBeString();
-      expectTypeOf<Trade["sellOrderId"]>().toBeString();
-      expectTypeOf<Trade["timestamp"]>().toBeNumber();
     });
   });
 

@@ -1,5 +1,22 @@
-// Core types for Vatix Protocol
+import type {
+  Market,
+  UserPosition,
+  MarketStatus,
+  OrderSide,
+  OrderStatus,
+  Outcome,
+  Prisma,
+} from '../generated/prisma/client';
 
+export type {
+  Market,
+  UserPosition,
+  MarketStatus,
+  OrderSide,
+  OrderStatus,
+  Outcome,
+  Prisma,
+};
 
 export type Order = {
   id: string;
@@ -20,6 +37,11 @@ export type Order = {
   /** ID of the sell order */
   sellOrderId: string;
   /** Timestamp of the trade execution */
+  timestamp: number;
+}
+
+export interface OrderReceipt extends Order {
+  signature: string;
   timestamp: number;
 }
 
