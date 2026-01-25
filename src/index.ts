@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { errorHandler } from "./api/middleware/errorHandler.js";
 import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
+import { marketsRoutes } from "./api/routes/markets.js";
 
 const server = Fastify({
   logger: true,
@@ -9,6 +10,9 @@ const server = Fastify({
 
 // Register error handler (must be before routes)
 server.setErrorHandler(errorHandler);
+
+// Register API routes
+server.register(marketsRoutes);
 
 server.get("/health", async () => {
   return { status: "ok", service: "vatix-backend" };
