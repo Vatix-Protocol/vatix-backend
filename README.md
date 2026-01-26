@@ -17,6 +17,7 @@ Node.js • TypeScript • Fastify • PostgreSQL • Prisma • Redis • Stell
 ```bash
 # Clone and install
 git clone https://github.com/vatix-protocol/vatix-backend.git
+
 cd vatix-backend
 pnpm install
 
