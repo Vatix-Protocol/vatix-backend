@@ -62,5 +62,6 @@
       "prisma format",
       "prisma validate"
     ]
-  }
+  },
+  "type": "module"
 }
