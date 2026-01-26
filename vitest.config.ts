@@ -8,6 +8,8 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["**/*.test.ts", "**/*.spec.ts"],
+    // Run test files sequentially to avoid database race conditions
+    fileParallelism: false,
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"],
