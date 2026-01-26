@@ -1,35 +1,29 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { PrismaClient } from '../src/generated/prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool } from 'pg';
 import { seed } from './seed';
-import 'dotenv/config';
+import {
+  getTestPrismaClient,
+  cleanDatabase,
+  disconnectTestPrisma,
+  acquireDatabaseLock,
+  releaseDatabaseLock,
+} from '../tests/helpers/test-database';
 
 describe('Database Seed', () => {
   let prisma: PrismaClient;
-  let pool: Pool;
 
-  beforeAll(() => {
-    const databaseUrl = process.env.DATABASE_URL;
-    if (!databaseUrl) {
-      throw new Error('DATABASE_URL environment variable is not set');
-    }
-
-    pool = new Pool({ connectionString: databaseUrl });
-    const adapter = new PrismaPg(pool);
-    prisma = new PrismaClient({ adapter });
+  beforeAll(async () => {
+    await acquireDatabaseLock();
+    prisma = getTestPrismaClient();
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
-    await pool.end();
+    await releaseDatabaseLock();
+    await disconnectTestPrisma();
   });
 
   beforeEach(async () => {
-    // Clear database before each test
-    await prisma.order.deleteMany();
-    await prisma.userPosition.deleteMany();
-    await prisma.market.deleteMany();
+    await cleanDatabase(prisma);
   });
 
   describe('Seed Execution', () => {

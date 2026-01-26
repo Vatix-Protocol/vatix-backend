@@ -1,7 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { Pool } from "pg";
-import { PrismaPg } from "@prisma/adapter-pg";
+import {
+  getTestPrismaClient,
+  getTestPool,
+  cleanDatabase,
+  disconnectTestPrisma,
+  acquireDatabaseLock,
+  releaseDatabaseLock,
+} from "../tests/helpers/test-database";
 
 describe("Database Schema Tests", () => {
   let prisma: PrismaClient;
@@ -11,34 +18,26 @@ describe("Database Schema Tests", () => {
   const testOracleAddress = "GZYXWVUTSRQPONMLKJIHGFEDCBA0987654321ZYXWVUTSRQP";
 
   beforeAll(async () => {
-    pool = new Pool({
-      connectionString:
-        process.env.DATABASE_URL || "postgresql://postgres:postgres@localhost:5433/vatix",
-    });
-
-    const adapter = new PrismaPg(pool);
-    prisma = new PrismaClient({ adapter });
-    await prisma.$connect();
+    await acquireDatabaseLock();
+    prisma = getTestPrismaClient();
+    pool = getTestPool();
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
-    await pool.end();
+    await releaseDatabaseLock();
+    await disconnectTestPrisma();
   });
 
   beforeEach(async () => {
-    // Clean up test data before each test
-    await prisma.order.deleteMany();
-    await prisma.userPosition.deleteMany();
-    await prisma.market.deleteMany();
+    await cleanDatabase(prisma);
   });
 
   describe("Table Existence Verification", () => {
     it("should verify all required tables exist", async () => {
       const result = await pool.query(`
-        SELECT table_name 
-        FROM information_schema.tables 
-        WHERE table_schema = 'public' 
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
         AND table_type = 'BASE TABLE'
         ORDER BY table_name;
       `);
@@ -54,9 +53,9 @@ describe("Database Schema Tests", () => {
 
     it("should verify all enums exist", async () => {
       const result = await pool.query(`
-        SELECT typname 
-        FROM pg_type 
-        WHERE typtype = 'e' 
+        SELECT typname
+        FROM pg_type
+        WHERE typtype = 'e'
         ORDER BY typname;
       `);
 
