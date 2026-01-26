@@ -15,7 +15,8 @@
     "prisma:studio": "prisma studio",
     "prisma:seed": "tsx prisma/seed.ts",
     "test:run": "vitest run",
-    "prepare": "husky install"
+    "prepare": "husky install",
+    "generate:keypair": "tsx scripts/generate-keypair.ts"
   },
   "engines": {
     "node": ">=18.0.0",

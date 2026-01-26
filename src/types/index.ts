@@ -150,8 +150,6 @@ export interface PaginatedResponse<T> {
 	totalPages: number;
 }
 
-// Add these to the END of your existing src/types/index.ts file
-
 /**
  * Order data structure for cryptographic signing.
  * Used to create signed receipts for order submissions.
