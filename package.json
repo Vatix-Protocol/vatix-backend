@@ -15,7 +15,8 @@
     "prisma:studio": "prisma studio",
     "prisma:seed": "tsx prisma/seed.ts",
     "test:run": "vitest run",
-    "prepare": "husky install"
+    "prepare": "husky install",
+    "generate:keypair": "tsx scripts/generate-keypair.ts"
   },
   "engines": {
     "node": ">=18.0.0",
@@ -32,6 +33,7 @@
     "@fastify/request-context": "^6.2.1",
     "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.2.0",
+    "@stellar/stellar-sdk": "^14.4.3",
     "fastify": "^5.7.1",
     "ioredis": "^5.9.2",
     "pg": "^8.17.2",
@@ -60,5 +62,6 @@
       "prisma format",
       "prisma validate"
     ]
-  }
+  },
+  "type": "module"
 }

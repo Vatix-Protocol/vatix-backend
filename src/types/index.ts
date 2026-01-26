@@ -1,48 +1,48 @@
 import type {
-  Market,
-  UserPosition,
-  MarketStatus,
-  OrderSide,
-  OrderStatus,
-  Outcome,
-  Prisma,
-} from '../generated/prisma/client';
+	Market,
+	UserPosition,
+	MarketStatus,
+	OrderSide,
+	OrderStatus,
+	Outcome,
+	Prisma,
+} from "../generated/prisma/client";
 
 export type {
-  Market,
-  UserPosition,
-  MarketStatus,
-  OrderSide,
-  OrderStatus,
-  Outcome,
-  Prisma,
+	Market,
+	UserPosition,
+	MarketStatus,
+	OrderSide,
+	OrderStatus,
+	Outcome,
+	Prisma,
 };
 
 export type Order = {
-  id: string;
-  /** Market ID where the trade occurred */
-  marketId: string;
-  /** Outcome that was traded (YES or NO) */
-  outcome: Outcome;
-  /** Stellar address of the buyer */
-  buyerAddress: string;
-  /** Stellar address of the seller */
-  sellerAddress: string;
-  /** Price at which the trade executed (0-1) */
-  price: number;
-  /** Quantity of shares traded */
-  quantity: number;
-  /** ID of the buy order */
-  buyOrderId: string;
-  /** ID of the sell order */
-  sellOrderId: string;
-  /** Timestamp of the trade execution */
-  timestamp: number;
-}
+	id: string;
+	/** Market ID where the trade occurred */
+	marketId: string;
+	/** Outcome that was traded (YES or NO) */
+	outcome: Outcome;
+	/** Stellar address of the buyer */
+	buyerAddress: string;
+	/** Stellar address of the seller */
+	sellerAddress: string;
+	/** Price at which the trade executed (0-1) */
+	price: number;
+	/** Quantity of shares traded */
+	quantity: number;
+	/** ID of the buy order */
+	buyOrderId: string;
+	/** ID of the sell order */
+	sellOrderId: string;
+	/** Timestamp of the trade execution */
+	timestamp: number;
+};
 
 export interface OrderReceipt extends Order {
-  signature: string;
-  timestamp: number;
+	signature: string;
+	timestamp: number;
 }
 
 /**
@@ -50,12 +50,12 @@ export interface OrderReceipt extends Order {
  * Aggregates all orders at a specific price point.
  */
 export interface OrderBookLevel {
-  /** Price level (0-1) */
-  price: number;
-  /** Total quantity of shares at this price level */
-  totalQuantity: number;
-  /** Number of orders at this price level */
-  orderCount: number;
+	/** Price level (0-1) */
+	price: number;
+	/** Total quantity of shares at this price level */
+	totalQuantity: number;
+	/** Number of orders at this price level */
+	orderCount: number;
 }
 
 /**
@@ -63,16 +63,16 @@ export interface OrderBookLevel {
  * Contains all bid and ask levels for a specific outcome.
  */
 export interface OrderBook {
-  /** Market ID */
-  marketId: string;
-  /** Outcome this order book represents (YES or NO) */
-  outcome: Outcome;
-  /** Array of bid levels (buy orders), sorted by price descending */
-  bids: OrderBookLevel[];
-  /** Array of ask levels (sell orders), sorted by price ascending */
-  asks: OrderBookLevel[];
-  /** Timestamp when the order book was last updated */
-  lastUpdated: number;
+	/** Market ID */
+	marketId: string;
+	/** Outcome this order book represents (YES or NO) */
+	outcome: Outcome;
+	/** Array of bid levels (buy orders), sorted by price descending */
+	bids: OrderBookLevel[];
+	/** Array of ask levels (sell orders), sorted by price ascending */
+	asks: OrderBookLevel[];
+	/** Timestamp when the order book was last updated */
+	lastUpdated: number;
 }
 
 /**
@@ -80,12 +80,12 @@ export interface OrderBook {
  * Extends the Prisma UserPosition type with potential payout calculations.
  */
 export interface PositionWithPayout extends UserPosition {
-  /** Potential payout if the market resolves to YES (calculated) */
-  potentialPayoutIfYes: number;
-  /** Potential payout if the market resolves to NO (calculated) */
-  potentialPayoutIfNo: number;
-  /** Net position value (calculated: yesShares - noShares) */
-  netPosition: number;
+	/** Potential payout if the market resolves to YES (calculated) */
+	potentialPayoutIfYes: number;
+	/** Potential payout if the market resolves to NO (calculated) */
+	potentialPayoutIfNo: number;
+	/** Net position value (calculated: yesShares - noShares) */
+	netPosition: number;
 }
 
 /**
@@ -93,12 +93,12 @@ export interface PositionWithPayout extends UserPosition {
  * Extends the Prisma Market type with calculated statistics.
  */
 export interface MarketWithStats extends Market {
-  /** Total trading volume in the market (calculated) */
-  totalVolume: number;
-  /** Number of currently open orders (calculated) */
-  openOrders: number;
-  /** Number of unique traders who have participated (calculated) */
-  uniqueTraders: number;
+	/** Total trading volume in the market (calculated) */
+	totalVolume: number;
+	/** Number of currently open orders (calculated) */
+	openOrders: number;
+	/** Number of unique traders who have participated (calculated) */
+	uniqueTraders: number;
 }
 
 /**
@@ -107,14 +107,14 @@ export interface MarketWithStats extends Market {
  * @template T - The type of data contained in the response
  */
 export interface ApiResponse<T> {
-  /** Whether the request was successful */
-  success: boolean;
-  /** Response data (present on success) */
-  data?: T;
-  /** Error message (present on failure) */
-  error?: string;
-  /** ISO timestamp of the response */
-  timestamp: string;
+	/** Whether the request was successful */
+	success: boolean;
+	/** Response data (present on success) */
+	data?: T;
+	/** Error message (present on failure) */
+	error?: string;
+	/** ISO timestamp of the response */
+	timestamp: string;
 }
 
 /**
@@ -122,14 +122,14 @@ export interface ApiResponse<T> {
  * Used to request paginated data from API endpoints.
  */
 export interface PaginationParams {
-  /** Page number (1-indexed) */
-  page: number;
-  /** Number of items per page */
-  limit: number;
-  /** Optional field to sort by */
-  sortBy?: string;
-  /** Optional sort direction */
-  sortOrder?: "asc" | "desc";
+	/** Page number (1-indexed) */
+	page: number;
+	/** Number of items per page */
+	limit: number;
+	/** Optional field to sort by */
+	sortBy?: string;
+	/** Optional sort direction */
+	sortOrder?: "asc" | "desc";
 }
 
 /**
@@ -138,14 +138,58 @@ export interface PaginationParams {
  * @template T - The type of items in the response
  */
 export interface PaginatedResponse<T> {
-  /** Array of items for the current page */
-  items: T[];
-  /** Total number of items across all pages */
-  total: number;
-  /** Current page number */
-  page: number;
-  /** Number of items per page */
-  limit: number;
-  /** Total number of pages */
-  totalPages: number;
+	/** Array of items for the current page */
+	items: T[];
+	/** Total number of items across all pages */
+	total: number;
+	/** Current page number */
+	page: number;
+	/** Number of items per page */
+	limit: number;
+	/** Total number of pages */
+	totalPages: number;
+}
+
+/**
+ * Order data structure for cryptographic signing.
+ * Used to create signed receipts for order submissions.
+ */
+export interface OrderData {
+	/** Unique order identifier */
+	orderId: string;
+	/** Stellar address of the user submitting the order */
+	userAddress: string;
+	/** Order side (BUY or SELL) */
+	side: OrderSide;
+	/** Predicted outcome (YES or NO) */
+	outcome: Outcome;
+	/** Order price (0-1) */
+	price: number;
+	/** Number of shares */
+	quantity: number;
+	/** Unix timestamp when order was submitted */
+	timestamp: number;
+}
+
+/**
+ * Signed order receipt with cryptographic signature.
+ * Proves that an order was received and hasn't been tampered with.
+ */
+export interface SignedOrderReceipt {
+	/** Original order data that was signed */
+	orderData: OrderData;
+	/** Cryptographic signature (base64 encoded) */
+	signature: string;
+	/** Public key used to create the signature */
+	publicKey: string;
+}
+
+/**
+ * Result of signature verification
+ */
+export interface VerificationResult {
+	/** Whether the signature is valid */
+	isValid: boolean;
+	/** Error message if verification failed */
+	error?: string;
 }
