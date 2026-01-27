@@ -120,4 +120,28 @@ describe("GET /orders/user/:address", () => {
 
     expect(response.statusCode).toBe(400);
   });
+
+  it("should reject invalid status value", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/orders/user/${validAddress}?status=INVALID`,
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("should return 500 when database error occurs", async () => {
+    (mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("Database connection failed"),
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/orders/user/${validAddress}`,
+    });
+
+    expect(response.statusCode).toBe(500);
+    const body = JSON.parse(response.body);
+    expect(body).toHaveProperty("error");
+  });
 });
