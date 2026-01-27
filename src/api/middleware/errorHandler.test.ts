@@ -5,7 +5,7 @@ import {
   ValidationError,
   NotFoundError,
   UnauthorizedError,
-  ForbiddenError
+  ForbiddenError,
 } from "./errors.js";
 
 describe("Error Handler Middleware", () => {
@@ -133,48 +133,48 @@ describe("Error Handler Middleware", () => {
   });
 
   describe("ForbiddenError", () => {
-  it("should return 403 status code", async () => {
-    server.get("/test", async () => {
-      throw new ForbiddenError("Access forbidden");
+    it("should return 403 status code", async () => {
+      server.get("/test", async () => {
+        throw new ForbiddenError("Access forbidden");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      expect(response.statusCode).toBe(403);
     });
 
-    const response = await server.inject({
-      method: "GET",
-      url: "/test",
+    it("should include error message in response", async () => {
+      server.get("/test", async () => {
+        throw new ForbiddenError("Insufficient permissions");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.error).toBe("Insufficient permissions");
     });
 
-    expect(response.statusCode).toBe(403);
+    it("should use default message when none provided", async () => {
+      server.get("/test", async () => {
+        throw new ForbiddenError();
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(response.statusCode).toBe(403);
+      expect(body.error).toBe("Forbidden");
+    });
   });
-
-  it("should include error message in response", async () => {
-    server.get("/test", async () => {
-      throw new ForbiddenError("Insufficient permissions");
-    });
-
-    const response = await server.inject({
-      method: "GET",
-      url: "/test",
-    });
-
-    const body = JSON.parse(response.body);
-    expect(body.error).toBe("Insufficient permissions");
-  });
-
-  it("should use default message when none provided", async () => {
-    server.get("/test", async () => {
-      throw new ForbiddenError();
-    });
-
-    const response = await server.inject({
-      method: "GET",
-      url: "/test",
-    });
-
-    const body = JSON.parse(response.body);
-    expect(response.statusCode).toBe(403);
-    expect(body.error).toBe("Forbidden");
-  });
-});
 
   describe("Unknown Errors", () => {
     it("should return 500 status code for generic errors", async () => {

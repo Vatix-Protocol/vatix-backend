@@ -9,11 +9,13 @@ Node.js • TypeScript • Fastify • PostgreSQL • Prisma • Redis • Stell
 ## Quick Start
 
 ### Prerequisites
+
 - Node.js 20+
 - pnpm 8+
 - Docker & Docker Compose
 
 ### Setup
+
 ```bash
 # Clone and install
 git clone https://github.com/vatix-protocol/vatix-backend.git
@@ -38,6 +40,7 @@ pnpm dev
 Visit `http://localhost:3000/health` to verify.
 
 ## Development
+
 ```bash
 # Development
 pnpm dev              # Start with hot reload
@@ -54,6 +57,7 @@ docker compose down        # Stop containers
 ```
 
 ## Project Structure
+
 ```
 src/
 ├── api/          # REST endpoints & middleware

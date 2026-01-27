@@ -70,7 +70,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       request: FastifyRequest<{
         Params: GetUserOrdersParams;
         Querystring: GetUserOrdersQuery;
-      }>,
+      }>
     ) => {
       const { address } = request.params;
       const { status } = request.query;
@@ -97,6 +97,6 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         orders,
         count: orders.length,
       };
-    },
+    }
   );
 }

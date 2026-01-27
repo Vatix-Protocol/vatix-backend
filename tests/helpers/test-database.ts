@@ -1,7 +1,7 @@
-import { PrismaClient } from '../../src/generated/prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool, Client } from 'pg';
-import 'dotenv/config';
+import { PrismaClient } from "../../src/generated/prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool, Client } from "pg";
+import "dotenv/config";
 
 /**
  * Shared test database client for parallel test execution.
@@ -45,7 +45,7 @@ const DATABASE_TEST_LOCK_KEY = 1234567890;
 function getDatabaseUrl(): string {
   return (
     process.env.DATABASE_URL ||
-    'postgresql://postgres:postgres@localhost:5433/vatix'
+    "postgresql://postgres:postgres@localhost:5433/vatix"
   );
 }
 

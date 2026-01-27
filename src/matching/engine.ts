@@ -74,7 +74,7 @@ class UpdateQuantityCommand implements MatchCommand {
     orderBook: OrderBook,
     orderId: string,
     newQuantity: number,
-    previousQuantity: number,
+    previousQuantity: number
   ) {
     this.orderBook = orderBook;
     this.orderId = orderId;
@@ -106,7 +106,7 @@ function outcomeToNumber(outcome: Outcome): number {
 function canMatch(
   takerPrice: number,
   makerPrice: number,
-  takerSide: OrderSide,
+  takerSide: OrderSide
 ): boolean {
   if (takerSide === "BUY") {
     return makerPrice <= takerPrice;
@@ -119,7 +119,7 @@ function generateTradeId(
   buyOrderId: string,
   sellOrderId: string,
   quantity: number,
-  timestamp: number,
+  timestamp: number
 ): string {
   return `trade_${buyOrderId}_${sellOrderId}_${quantity}_${timestamp}`;
 }
@@ -129,7 +129,7 @@ function createTrade(
   bookOrder: BookOrder,
   quantity: number,
   price: number,
-  timestamp: number,
+  timestamp: number
 ): Trade {
   const isBuyer = newOrder.side === "BUY";
 
@@ -138,7 +138,7 @@ function createTrade(
       isBuyer ? newOrder.id : bookOrder.id,
       isBuyer ? bookOrder.id : newOrder.id,
       quantity,
-      timestamp,
+      timestamp
     ),
     marketId: newOrder.marketId,
     outcome: newOrder.outcome,
@@ -212,7 +212,7 @@ function calculatePositionDeltas(trades: Trade[]): PositionDelta[] {
  */
 export function matchOrder(
   newOrder: MatchingOrder,
-  orderBook: OrderBook,
+  orderBook: OrderBook
 ): MatchResult {
   const trades: Trade[] = [];
   const executedCommands: MatchCommand[] = [];
@@ -241,7 +241,7 @@ export function matchOrder(
         bookOrder,
         fillQty,
         executionPrice,
-        timestamp,
+        timestamp
       );
       trades.push(trade);
 
@@ -255,7 +255,7 @@ export function matchOrder(
           orderBook,
           bookOrder.id,
           newBookOrderQty,
-          bookOrder.quantity,
+          bookOrder.quantity
         );
       }
 

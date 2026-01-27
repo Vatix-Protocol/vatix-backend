@@ -72,6 +72,6 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       };
 
       return response;
-    },
+    }
   );
 }

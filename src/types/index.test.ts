@@ -194,10 +194,14 @@ describe("Type Definitions", () => {
 
     it("should work with generic types correctly", () => {
       type StringResponse = ApiResponse<string>;
-      expectTypeOf<StringResponse["data"]>().toMatchTypeOf<string | undefined>();
+      expectTypeOf<StringResponse["data"]>().toMatchTypeOf<
+        string | undefined
+      >();
 
       type MarketResponse = ApiResponse<Market>;
-      expectTypeOf<MarketResponse["data"]>().toMatchTypeOf<Market | undefined>();
+      expectTypeOf<MarketResponse["data"]>().toMatchTypeOf<
+        Market | undefined
+      >();
     });
   });
 
@@ -212,8 +216,12 @@ describe("Type Definitions", () => {
     it("should have correct types", () => {
       expectTypeOf<PaginationParams["page"]>().toBeNumber();
       expectTypeOf<PaginationParams["limit"]>().toBeNumber();
-      expectTypeOf<PaginationParams["sortBy"]>().toMatchTypeOf<string | undefined>();
-      expectTypeOf<PaginationParams["sortOrder"]>().toMatchTypeOf<"asc" | "desc" | undefined>();
+      expectTypeOf<PaginationParams["sortBy"]>().toMatchTypeOf<
+        string | undefined
+      >();
+      expectTypeOf<PaginationParams["sortOrder"]>().toMatchTypeOf<
+        "asc" | "desc" | undefined
+      >();
     });
   });
 

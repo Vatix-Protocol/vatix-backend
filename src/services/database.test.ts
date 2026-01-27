@@ -1,45 +1,45 @@
-import { describe, it, expect, afterEach, vi, beforeEach } from 'vitest';
-import { db, DatabaseService, DatabaseMetrics } from './database';
-import { disconnectPrisma, getPrismaClient } from './prisma';
+import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
+import { db, DatabaseService, DatabaseMetrics } from "./database";
+import { disconnectPrisma, getPrismaClient } from "./prisma";
 
-describe('DatabaseService', () => {
+describe("DatabaseService", () => {
   afterEach(async () => {
     await disconnectPrisma();
     vi.restoreAllMocks();
   });
 
-  describe('singleton instance', () => {
-    it('should export a singleton db instance', () => {
+  describe("singleton instance", () => {
+    it("should export a singleton db instance", () => {
       expect(db).toBeDefined();
       expect(db).toBeInstanceOf(DatabaseService);
     });
 
-    it('should provide access to underlying Prisma client', () => {
+    it("should provide access to underlying Prisma client", () => {
       const client = db.getClient();
       expect(client).toBeDefined();
       expect(client).toBe(getPrismaClient());
     });
   });
 
-  describe('healthCheck', () => {
-    it('should return true for working database', async () => {
+  describe("healthCheck", () => {
+    it("should return true for working database", async () => {
       const isHealthy = await db.healthCheck();
       expect(isHealthy).toBe(true);
     });
 
-    it('should return false when database is unreachable', async () => {
+    it("should return false when database is unreachable", async () => {
       // mock getPrismaClient to return a client that fails
       const mockPrisma = {
-        $queryRaw: vi.fn().mockRejectedValue(new Error('Connection refused')),
+        $queryRaw: vi.fn().mockRejectedValue(new Error("Connection refused")),
       };
 
-      const prismaModule = await import('./prisma');
-      vi.spyOn(prismaModule, 'getPrismaClient').mockReturnValue(
+      const prismaModule = await import("./prisma");
+      vi.spyOn(prismaModule, "getPrismaClient").mockReturnValue(
         mockPrisma as unknown as ReturnType<typeof prismaModule.getPrismaClient>
       );
 
       const consoleErrorSpy = vi
-        .spyOn(console, 'error')
+        .spyOn(console, "error")
         .mockImplementation(() => {});
 
       const service = new DatabaseService();
@@ -47,17 +47,16 @@ describe('DatabaseService', () => {
 
       expect(isHealthy).toBe(false);
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        'Database health check failed:',
+        "Database health check failed:",
         expect.any(Error)
       );
     });
   });
 
-  describe('executeRaw', () => {
-    it('should execute raw SQL queries successfully', async () => {
-      const result = await db.executeRaw<Array<{ result: number }>>(
-        'SELECT 1 as result'
-      );
+  describe("executeRaw", () => {
+    it("should execute raw SQL queries successfully", async () => {
+      const result =
+        await db.executeRaw<Array<{ result: number }>>("SELECT 1 as result");
 
       expect(result).toBeDefined();
       expect(Array.isArray(result)).toBe(true);
@@ -65,9 +64,9 @@ describe('DatabaseService', () => {
       expect(result[0].result).toBe(1);
     });
 
-    it('should execute raw SQL queries with parameters', async () => {
+    it("should execute raw SQL queries with parameters", async () => {
       const result = await db.executeRaw<Array<{ sum: number }>>(
-        'SELECT $1::int + $2::int as sum',
+        "SELECT $1::int + $2::int as sum",
         [5, 3]
       );
 
@@ -75,24 +74,24 @@ describe('DatabaseService', () => {
       expect(result[0].sum).toBe(8);
     });
 
-    it('should throw error for invalid queries', async () => {
+    it("should throw error for invalid queries", async () => {
       const consoleErrorSpy = vi
-        .spyOn(console, 'error')
+        .spyOn(console, "error")
         .mockImplementation(() => {});
 
       await expect(
-        db.executeRaw('SELECT * FROM non_existent_table_xyz')
+        db.executeRaw("SELECT * FROM non_existent_table_xyz")
       ).rejects.toThrow();
 
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        'Raw query execution failed:',
+        "Raw query execution failed:",
         expect.any(Error)
       );
     });
   });
 
-  describe('transaction', () => {
-    it('should execute operations in a transaction', async () => {
+  describe("transaction", () => {
+    it("should execute operations in a transaction", async () => {
       const result = await db.transaction(async (tx) => {
         // execute a simple query inside transaction
         const queryResult = await tx.$queryRaw<Array<{ value: number }>>`
@@ -104,7 +103,7 @@ describe('DatabaseService', () => {
       expect(result).toBe(42);
     });
 
-    it('should execute multiple operations atomically', async () => {
+    it("should execute multiple operations atomically", async () => {
       const result = await db.transaction(async (tx) => {
         const first = await tx.$queryRaw<Array<{ a: number }>>`SELECT 1 as a`;
         const second = await tx.$queryRaw<Array<{ b: number }>>`SELECT 2 as b`;
@@ -119,9 +118,9 @@ describe('DatabaseService', () => {
       expect(result.second).toBe(2);
     });
 
-    it('should rollback on error', async () => {
+    it("should rollback on error", async () => {
       const consoleErrorSpy = vi
-        .spyOn(console, 'error')
+        .spyOn(console, "error")
         .mockImplementation(() => {});
 
       await expect(
@@ -130,19 +129,19 @@ describe('DatabaseService', () => {
           await tx.$queryRaw`SELECT 1`;
 
           // second operation fails - throws error
-          throw new Error('Intentional error for rollback test');
+          throw new Error("Intentional error for rollback test");
         })
-      ).rejects.toThrow('Intentional error for rollback test');
+      ).rejects.toThrow("Intentional error for rollback test");
 
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        'Transaction failed, rolling back:',
+        "Transaction failed, rolling back:",
         expect.any(Error)
       );
     });
 
-    it('should rollback when database operation fails', async () => {
+    it("should rollback when database operation fails", async () => {
       const consoleErrorSpy = vi
-        .spyOn(console, 'error')
+        .spyOn(console, "error")
         .mockImplementation(() => {});
 
       await expect(
@@ -153,26 +152,26 @@ describe('DatabaseService', () => {
       ).rejects.toThrow();
 
       expect(consoleErrorSpy).toHaveBeenCalledWith(
-        'Transaction failed, rolling back:',
+        "Transaction failed, rolling back:",
         expect.any(Error)
       );
     });
   });
 
-  describe('getMetrics', () => {
-    it('should return database metrics', () => {
+  describe("getMetrics", () => {
+    it("should return database metrics", () => {
       // ensure client is initialized
       getPrismaClient();
 
       const metrics: DatabaseMetrics = db.getMetrics();
 
       expect(metrics).toBeDefined();
-      expect(typeof metrics.totalConnections).toBe('number');
-      expect(typeof metrics.idleConnections).toBe('number');
-      expect(typeof metrics.waitingRequests).toBe('number');
+      expect(typeof metrics.totalConnections).toBe("number");
+      expect(typeof metrics.idleConnections).toBe("number");
+      expect(typeof metrics.waitingRequests).toBe("number");
     });
 
-    it('should return valid connection pool statistics', async () => {
+    it("should return valid connection pool statistics", async () => {
       // make a query to ensure pool is active
       await db.healthCheck();
 
@@ -187,10 +186,10 @@ describe('DatabaseService', () => {
       );
     });
 
-    it('should return zero metrics when pool is not initialized', async () => {
+    it("should return zero metrics when pool is not initialized", async () => {
       // mock getPool to return null
-      const prismaModule = await import('./prisma');
-      vi.spyOn(prismaModule, 'getPool').mockReturnValue(null);
+      const prismaModule = await import("./prisma");
+      vi.spyOn(prismaModule, "getPool").mockReturnValue(null);
 
       const service = new DatabaseService();
       const metrics = service.getMetrics();
@@ -203,8 +202,8 @@ describe('DatabaseService', () => {
     });
   });
 
-  describe('integration', () => {
-    it('should work with actual database tables', async () => {
+  describe("integration", () => {
+    it("should work with actual database tables", async () => {
       const markets = await db.transaction(async (tx) => {
         return await tx.market.findMany({ take: 5 });
       });
@@ -212,11 +211,11 @@ describe('DatabaseService', () => {
       expect(Array.isArray(markets)).toBe(true);
     });
 
-    it('should handle concurrent operations', async () => {
+    it("should handle concurrent operations", async () => {
       const operations = [
-        db.executeRaw<Array<{ n: number }>>('SELECT 1 as n'),
-        db.executeRaw<Array<{ n: number }>>('SELECT 2 as n'),
-        db.executeRaw<Array<{ n: number }>>('SELECT 3 as n'),
+        db.executeRaw<Array<{ n: number }>>("SELECT 1 as n"),
+        db.executeRaw<Array<{ n: number }>>("SELECT 2 as n"),
+        db.executeRaw<Array<{ n: number }>>("SELECT 3 as n"),
       ];
 
       const results = await Promise.all(operations);

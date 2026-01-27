@@ -131,9 +131,9 @@ describe("GET /orders/user/:address", () => {
   });
 
   it("should return 500 when database error occurs", async () => {
-    (mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error("Database connection failed"),
-    );
+    (
+      mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
+    ).mockRejectedValue(new Error("Database connection failed"));
 
     const response = await app.inject({
       method: "GET",

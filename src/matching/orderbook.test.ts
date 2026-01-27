@@ -16,7 +16,7 @@ describe("OrderBook", () => {
     price: number,
     quantity: number,
     timestamp: number = Date.now(),
-    userAddress: string = "user1",
+    userAddress: string = "user1"
   ): Order => ({
     id,
     userAddress,
@@ -305,8 +305,8 @@ describe("OrderBook", () => {
             i % 2 === 0 ? "bid" : "ask",
             50 + (i % 100),
             100,
-            Date.now() + i,
-          ),
+            Date.now() + i
+          )
         );
       }
 

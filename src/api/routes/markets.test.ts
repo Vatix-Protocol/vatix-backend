@@ -326,7 +326,7 @@ describe("GET /markets", () => {
       const body = JSON.parse(response.body);
       expect(body.markets[0].outcome).toBe(true);
       expect(body.markets[0].resolutionTime).toBe(
-        mockResolvedMarket.resolutionTime.toISOString(),
+        mockResolvedMarket.resolutionTime.toISOString()
       );
     });
   });

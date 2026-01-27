@@ -278,7 +278,7 @@ export class OrderBook {
   private insertPrice(
     prices: number[],
     price: number,
-    descending: boolean,
+    descending: boolean
   ): void {
     let left = 0;
     let right = prices.length;
