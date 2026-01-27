@@ -66,6 +66,9 @@ importers:
       nodemon:
         specifier: ^3.1.11
         version: 3.1.11
+      prettier:
+        specifier: ^3.8.1
+        version: 3.8.1
       prisma:
         specifier: ^7.2.0
         version: 7.2.0(@types/react@19.2.9)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3)
@@ -1434,6 +1437,11 @@ packages:
   postgres@3.4.7:
     resolution: {integrity: sha512-Jtc2612XINuBjIl/QTWsV5UvE8UHuNblcO3vVADSrKsrc6RqGX6lOW1cEo3CM2v0XG4Nat8nI+YM7/f26VxXLw==}
     engines: {node: '>=12'}
+
+  prettier@3.8.1:
+    resolution: {integrity: sha512-UOnG6LftzbdaHZcKoPFtOcCKztrQ57WkHDeRD9t/PTQtmT0NHSeWWepj6pS0z/N7+08BHFDQVUrfmfMRcZwbMg==}
+    engines: {node: '>=14'}
+    hasBin: true
 
   prisma@7.2.0:
     resolution: {integrity: sha512-jSdHWgWOgFF24+nRyyNRVBIgGDQEsMEF8KPHvhBBg3jWyR9fUAK0Nq9ThUmiGlNgq2FA7vSk/ZoCvefod+a8qg==}
@@ -3151,6 +3159,8 @@ snapshots:
       xtend: 4.0.2
 
   postgres@3.4.7: {}
+
+  prettier@3.8.1: {}
 
   prisma@7.2.0(@types/react@19.2.9)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(typescript@5.9.3):
     dependencies:

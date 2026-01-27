@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import Redis from "ioredis";
 
 const ORDER_BOOK_TTL = 60; // seconds
 const MAX_RETRIES = 3;
@@ -41,7 +41,7 @@ class RedisService {
 
     const redisUrl = process.env.REDIS_URL;
     if (!redisUrl) {
-      throw new Error('REDIS_URL environment variable is not set');
+      throw new Error("REDIS_URL environment variable is not set");
     }
 
     this.client = new Redis(redisUrl, {
@@ -58,22 +58,22 @@ class RedisService {
       lazyConnect: false,
     });
 
-    this.client.on('connect', () => {
-      console.log('Redis: Connected');
+    this.client.on("connect", () => {
+      console.log("Redis: Connected");
       this.retryCount = 0;
     });
 
-    this.client.on('error', (err: Error) => {
-      console.error('Redis: Connection error:', err.message);
+    this.client.on("error", (err: Error) => {
+      console.error("Redis: Connection error:", err.message);
     });
 
-    this.client.on('reconnecting', () => {
+    this.client.on("reconnecting", () => {
       this.retryCount++;
       console.log(`Redis: Reconnecting (attempt ${this.retryCount})`);
     });
 
-    this.client.on('close', () => {
-      console.log('Redis: Connection closed');
+    this.client.on("close", () => {
+      console.log("Redis: Connection closed");
     });
 
     this.isConnecting = false;
@@ -88,7 +88,7 @@ class RedisService {
     try {
       return await this.getClient().get(key);
     } catch (error) {
-      console.error('Redis get error:', error);
+      console.error("Redis get error:", error);
       throw error;
     }
   }
@@ -102,12 +102,12 @@ class RedisService {
   async set(key: string, value: string, ttl?: number): Promise<void> {
     try {
       if (ttl) {
-        await this.getClient().set(key, value, 'EX', ttl);
+        await this.getClient().set(key, value, "EX", ttl);
       } else {
         await this.getClient().set(key, value);
       }
     } catch (error) {
-      console.error('Redis set error:', error);
+      console.error("Redis set error:", error);
       throw error;
     }
   }
@@ -119,7 +119,7 @@ class RedisService {
     try {
       await this.getClient().del(key);
     } catch (error) {
-      console.error('Redis del error:', error);
+      console.error("Redis del error:", error);
       throw error;
     }
   }
@@ -132,7 +132,7 @@ class RedisService {
       const result = await this.getClient().exists(key);
       return result === 1;
     } catch (error) {
-      console.error('Redis exists error:', error);
+      console.error("Redis exists error:", error);
       throw error;
     }
   }
@@ -158,7 +158,7 @@ class RedisService {
     try {
       await this.set(key, JSON.stringify(data), ORDER_BOOK_TTL);
     } catch (error) {
-      console.error('Redis setOrderBook error:', error);
+      console.error("Redis setOrderBook error:", error);
       throw error;
     }
   }
@@ -176,7 +176,7 @@ class RedisService {
       if (!data) return null;
       return JSON.parse(data) as OrderBookData;
     } catch (error) {
-      console.error('Redis getOrderBook error:', error);
+      console.error("Redis getOrderBook error:", error);
       throw error;
     }
   }
@@ -192,7 +192,7 @@ class RedisService {
         await this.getClient().del(...keys);
       }
     } catch (error) {
-      console.error('Redis clearOrderBook error:', error);
+      console.error("Redis clearOrderBook error:", error);
       throw error;
     }
   }
@@ -205,9 +205,9 @@ class RedisService {
   async healthCheck(): Promise<boolean> {
     try {
       const result = await this.getClient().ping();
-      return result === 'PONG';
+      return result === "PONG";
     } catch (error) {
-      console.error('Redis health check failed:', error);
+      console.error("Redis health check failed:", error);
       return false;
     }
   }
@@ -219,7 +219,7 @@ class RedisService {
     if (this.client) {
       await this.client.quit();
       this.client = null;
-      console.log('Redis: Disconnected gracefully');
+      console.log("Redis: Disconnected gracefully");
     }
   }
 }

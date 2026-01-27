@@ -162,7 +162,9 @@ describe("Database Schema Tests", () => {
       expect(indexes).toContain("orders_market_id_idx");
       expect(indexes).toContain("orders_user_address_idx");
       expect(indexes).toContain("orders_status_idx");
-      expect(indexes).toContain("orders_market_id_outcome_price_created_at_idx");
+      expect(indexes).toContain(
+        "orders_market_id_outcome_price_created_at_idx"
+      );
     });
 
     it("should verify user_positions table indexes", async () => {
@@ -449,7 +451,7 @@ describe("Database Schema Tests", () => {
             noShares: 50,
             lockedCollateral: 50.0,
           },
-        }),
+        })
       ).rejects.toThrow();
     });
 
@@ -514,7 +516,7 @@ describe("Database Schema Tests", () => {
             quantity: 10,
             status: "OPEN",
           },
-        }),
+        })
       ).rejects.toThrow();
     });
 
@@ -528,7 +530,7 @@ describe("Database Schema Tests", () => {
             noShares: 0,
             lockedCollateral: 60.0,
           },
-        }),
+        })
       ).rejects.toThrow();
     });
 
@@ -656,9 +658,11 @@ describe("Database Schema Tests", () => {
       });
 
       // Verify they exist before deletion
-      expect(await prisma.order.findUnique({ where: { id: order.id } })).not.toBeNull();
       expect(
-        await prisma.userPosition.findUnique({ where: { id: position.id } }),
+        await prisma.order.findUnique({ where: { id: order.id } })
+      ).not.toBeNull();
+      expect(
+        await prisma.userPosition.findUnique({ where: { id: position.id } })
       ).not.toBeNull();
 
       // Delete market
@@ -667,9 +671,11 @@ describe("Database Schema Tests", () => {
       });
 
       // Verify cascade deletion
-      expect(await prisma.order.findUnique({ where: { id: order.id } })).toBeNull();
       expect(
-        await prisma.userPosition.findUnique({ where: { id: position.id } }),
+        await prisma.order.findUnique({ where: { id: order.id } })
+      ).toBeNull();
+      expect(
+        await prisma.userPosition.findUnique({ where: { id: position.id } })
       ).toBeNull();
     });
   });

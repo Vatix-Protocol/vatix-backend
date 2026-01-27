@@ -1,6 +1,6 @@
-import { ValidationError } from '../api/middleware/errors.js';
-import { getPrismaClient } from '../services/prisma.js';
-import type { OrderSide, Outcome } from '../types/index.js';
+import { ValidationError } from "../api/middleware/errors.js";
+import { getPrismaClient } from "../services/prisma.js";
+import type { OrderSide, Outcome } from "../types/index.js";
 
 // Input type for order validation (what the API receives)
 export interface OrderInput {
@@ -21,9 +21,9 @@ export interface ValidationResult {
 // Custom error type for order validation
 export class OrderValidationError extends ValidationError {
   constructor(errors: Record<string, string>) {
-    const message = Object.values(errors).join('; ');
+    const message = Object.values(errors).join("; ");
     super(message, errors);
-    this.name = 'OrderValidationError';
+    this.name = "OrderValidationError";
   }
 }
 
@@ -33,20 +33,20 @@ export class OrderValidationError extends ValidationError {
  * - Must start with 'G' (Stellar public key prefix)
  */
 export function validateUserAddress(address: string): string | null {
-  if (typeof address !== 'string') {
-    return 'User address must be a string';
+  if (typeof address !== "string") {
+    return "User address must be a string";
   }
 
   if (address.length === 0) {
-    return 'User address is required';
+    return "User address is required";
   }
 
   if (address.length !== 56) {
-    return 'User address must be exactly 56 characters';
+    return "User address must be exactly 56 characters";
   }
 
-  if (!address.startsWith('G')) {
-    return 'User address must start with G';
+  if (!address.startsWith("G")) {
+    return "User address must start with G";
   }
 
   return null;
@@ -58,10 +58,10 @@ export function validateUserAddress(address: string): string | null {
  */
 export function validateOrderSide(side: unknown): string | null {
   if (side === null || side === undefined) {
-    return 'Order side is required';
+    return "Order side is required";
   }
 
-  if (side !== 'BUY' && side !== 'SELL') {
+  if (side !== "BUY" && side !== "SELL") {
     return "Order side must be 'BUY' or 'SELL'";
   }
 
@@ -74,10 +74,10 @@ export function validateOrderSide(side: unknown): string | null {
  */
 export function validateOutcome(outcome: unknown): string | null {
   if (outcome === null || outcome === undefined) {
-    return 'Outcome is required';
+    return "Outcome is required";
   }
 
-  if (outcome !== 'YES' && outcome !== 'NO') {
+  if (outcome !== "YES" && outcome !== "NO") {
     return "Outcome must be 'YES' or 'NO'";
   }
 
@@ -91,15 +91,15 @@ export function validateOutcome(outcome: unknown): string | null {
  */
 export function validatePrice(price: unknown): string | null {
   if (price === null || price === undefined) {
-    return 'Price is required';
+    return "Price is required";
   }
 
-  if (typeof price !== 'number' || Number.isNaN(price)) {
-    return 'Price must be a number';
+  if (typeof price !== "number" || Number.isNaN(price)) {
+    return "Price must be a number";
   }
 
   if (price <= 0 || price >= 1) {
-    return 'Price must be between 0 and 1 (exclusive)';
+    return "Price must be between 0 and 1 (exclusive)";
   }
 
   return null;
@@ -111,19 +111,19 @@ export function validatePrice(price: unknown): string | null {
  */
 export function validateQuantity(quantity: unknown): string | null {
   if (quantity === null || quantity === undefined) {
-    return 'Quantity is required';
+    return "Quantity is required";
   }
 
-  if (typeof quantity !== 'number' || Number.isNaN(quantity)) {
-    return 'Quantity must be a number';
+  if (typeof quantity !== "number" || Number.isNaN(quantity)) {
+    return "Quantity must be a number";
   }
 
   if (!Number.isInteger(quantity)) {
-    return 'Quantity must be an integer';
+    return "Quantity must be an integer";
   }
 
   if (quantity <= 0) {
-    return 'Quantity must be positive';
+    return "Quantity must be positive";
   }
 
   return null;
@@ -173,7 +173,9 @@ export function validateOrderFields(order: OrderInput): ValidationResult {
  * - Market status must be 'ACTIVE'
  * - Market endTime must be in the future
  */
-export async function validateMarketState(marketId: string): Promise<ValidationResult> {
+export async function validateMarketState(
+  marketId: string
+): Promise<ValidationResult> {
   const errors: Record<string, string> = {};
   const prisma = getPrismaClient();
 
@@ -182,18 +184,18 @@ export async function validateMarketState(marketId: string): Promise<ValidationR
   });
 
   if (!market) {
-    errors.marketId = 'Market not found';
+    errors.marketId = "Market not found";
     return { valid: false, errors };
   }
 
-  if (market.status !== 'ACTIVE') {
+  if (market.status !== "ACTIVE") {
     errors.marketId = `Market is ${market.status.toLowerCase()}, orders cannot be placed`;
   }
 
   if (market.endTime <= new Date()) {
     errors.marketId = errors.marketId
       ? `${errors.marketId}; market has ended`
-      : 'Market has ended';
+      : "Market has ended";
   }
 
   return {
@@ -208,7 +210,9 @@ export async function validateMarketState(marketId: string): Promise<ValidationR
  * - If field validations pass, runs market state validation
  * - Returns combined validation result
  */
-export async function validateOrder(order: OrderInput): Promise<ValidationResult> {
+export async function validateOrder(
+  order: OrderInput
+): Promise<ValidationResult> {
   // Run synchronous validations first (fast path)
   const fieldResult = validateOrderFields(order);
 

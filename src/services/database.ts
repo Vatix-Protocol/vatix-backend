@@ -1,5 +1,5 @@
-import { Prisma, PrismaClient } from '../generated/prisma/client';
-import { getPrismaClient, getPool } from './prisma';
+import { Prisma, PrismaClient } from "../generated/prisma/client";
+import { getPrismaClient, getPool } from "./prisma";
 
 /**
  * Database metrics interface
@@ -39,7 +39,7 @@ class DatabaseService {
       const result = await this.prisma.$queryRawUnsafe<T>(query, ...params);
       return result;
     } catch (error) {
-      console.error('Raw query execution failed:', error);
+      console.error("Raw query execution failed:", error);
       throw error;
     }
   }
@@ -60,7 +60,7 @@ class DatabaseService {
       });
       return result;
     } catch (error) {
-      console.error('Transaction failed, rolling back:', error);
+      console.error("Transaction failed, rolling back:", error);
       throw error;
     }
   }
@@ -76,7 +76,7 @@ class DatabaseService {
       await this.prisma.$queryRaw`SELECT 1`;
       return true;
     } catch (error) {
-      console.error('Database health check failed:', error);
+      console.error("Database health check failed:", error);
       return false;
     }
   }

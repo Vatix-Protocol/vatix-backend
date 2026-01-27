@@ -1,10 +1,8 @@
-
 // Custom error classes for Vatix Backend
 // used throughout the application for consistent error handling
 
-
 // Base class for application errors
- 
+
 export class AppError extends Error {
   statusCode: number;
 
@@ -46,7 +44,7 @@ export class UnauthorizedError extends AppError {
 // ForbiddenError is used when a user is not authorized to access a resource
 // Returns 403 Forbidden
 export class ForbiddenError extends AppError {
-     constructor(message = "Forbidden") {
-       super(message, 403);
-     }
-   }
+  constructor(message = "Forbidden") {
+    super(message, 403);
+  }
+}

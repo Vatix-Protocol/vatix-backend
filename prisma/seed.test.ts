@@ -1,15 +1,15 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { PrismaClient } from '../src/generated/prisma/client';
-import { seed } from './seed';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { PrismaClient } from "../src/generated/prisma/client";
+import { seed } from "./seed";
 import {
   getTestPrismaClient,
   cleanDatabase,
   disconnectTestPrisma,
   acquireDatabaseLock,
   releaseDatabaseLock,
-} from '../tests/helpers/test-database';
+} from "../tests/helpers/test-database";
 
-describe('Database Seed', () => {
+describe("Database Seed", () => {
   let prisma: PrismaClient;
 
   beforeAll(async () => {
@@ -26,8 +26,8 @@ describe('Database Seed', () => {
     await cleanDatabase(prisma);
   });
 
-  describe('Seed Execution', () => {
-    it('should run seed without errors', async () => {
+  describe("Seed Execution", () => {
+    it("should run seed without errors", async () => {
       const result = await seed(prisma);
 
       expect(result).toBeDefined();
@@ -36,24 +36,24 @@ describe('Database Seed', () => {
       expect(result.positions).toBeGreaterThan(0);
     });
 
-    it('should create expected number of markets', async () => {
+    it("should create expected number of markets", async () => {
       await seed(prisma);
 
       const markets = await prisma.market.findMany();
       expect(markets.length).toBe(5);
     });
 
-    it('should create markets with different statuses', async () => {
+    it("should create markets with different statuses", async () => {
       await seed(prisma);
 
       const activeMarkets = await prisma.market.findMany({
-        where: { status: 'ACTIVE' },
+        where: { status: "ACTIVE" },
       });
       const resolvedMarkets = await prisma.market.findMany({
-        where: { status: 'RESOLVED' },
+        where: { status: "RESOLVED" },
       });
       const cancelledMarkets = await prisma.market.findMany({
-        where: { status: 'CANCELLED' },
+        where: { status: "CANCELLED" },
       });
 
       expect(activeMarkets.length).toBeGreaterThan(0);
@@ -62,8 +62,8 @@ describe('Database Seed', () => {
     });
   });
 
-  describe('Data Validity', () => {
-    it('should create markets with valid data', async () => {
+  describe("Data Validity", () => {
+    it("should create markets with valid data", async () => {
       await seed(prisma);
 
       const markets = await prisma.market.findMany();
@@ -72,16 +72,16 @@ describe('Database Seed', () => {
         expect(market.question).toBeTruthy();
         expect(market.endTime).toBeInstanceOf(Date);
         expect(market.oracleAddress).toHaveLength(56);
-        expect(market.oracleAddress.startsWith('G')).toBe(true);
-        expect(['ACTIVE', 'RESOLVED', 'CANCELLED']).toContain(market.status);
+        expect(market.oracleAddress.startsWith("G")).toBe(true);
+        expect(["ACTIVE", "RESOLVED", "CANCELLED"]).toContain(market.status);
       }
     });
 
-    it('should create resolved markets with outcome and resolution time', async () => {
+    it("should create resolved markets with outcome and resolution time", async () => {
       await seed(prisma);
 
       const resolvedMarkets = await prisma.market.findMany({
-        where: { status: 'RESOLVED' },
+        where: { status: "RESOLVED" },
       });
 
       for (const market of resolvedMarkets) {
@@ -90,35 +90,35 @@ describe('Database Seed', () => {
       }
     });
 
-    it('should create orders with valid constraints', async () => {
+    it("should create orders with valid constraints", async () => {
       await seed(prisma);
 
       const orders = await prisma.order.findMany();
 
       for (const order of orders) {
         expect(order.userAddress).toHaveLength(56);
-        expect(order.userAddress.startsWith('G')).toBe(true);
-        expect(['BUY', 'SELL']).toContain(order.side);
-        expect(['YES', 'NO']).toContain(order.outcome);
+        expect(order.userAddress.startsWith("G")).toBe(true);
+        expect(["BUY", "SELL"]).toContain(order.side);
+        expect(["YES", "NO"]).toContain(order.outcome);
         expect(Number(order.price)).toBeGreaterThan(0);
         expect(Number(order.price)).toBeLessThan(1);
         expect(order.quantity).toBeGreaterThan(0);
         expect(order.filledQuantity).toBeGreaterThanOrEqual(0);
         expect(order.filledQuantity).toBeLessThanOrEqual(order.quantity);
-        expect(['OPEN', 'FILLED', 'CANCELLED', 'PARTIALLY_FILLED']).toContain(
+        expect(["OPEN", "FILLED", "CANCELLED", "PARTIALLY_FILLED"]).toContain(
           order.status
         );
       }
     });
 
-    it('should create positions with valid data', async () => {
+    it("should create positions with valid data", async () => {
       await seed(prisma);
 
       const positions = await prisma.userPosition.findMany();
 
       for (const position of positions) {
         expect(position.userAddress).toHaveLength(56);
-        expect(position.userAddress.startsWith('G')).toBe(true);
+        expect(position.userAddress.startsWith("G")).toBe(true);
         expect(position.yesShares).toBeGreaterThanOrEqual(0);
         expect(position.noShares).toBeGreaterThanOrEqual(0);
         expect(Number(position.lockedCollateral)).toBeGreaterThanOrEqual(0);
@@ -126,8 +126,8 @@ describe('Database Seed', () => {
     });
   });
 
-  describe('Idempotency', () => {
-    it('should be idempotent - running twice produces same result', async () => {
+  describe("Idempotency", () => {
+    it("should be idempotent - running twice produces same result", async () => {
       // Run seed first time
       const firstResult = await seed(prisma);
 
@@ -149,15 +149,15 @@ describe('Database Seed', () => {
       expect(positionCount).toBe(firstResult.positions);
     });
 
-    it('should clear existing data before seeding', async () => {
+    it("should clear existing data before seeding", async () => {
       // Create some initial data
       const market = await prisma.market.create({
         data: {
-          question: 'Test question to be deleted',
-          endTime: new Date('2030-01-01'),
+          question: "Test question to be deleted",
+          endTime: new Date("2030-01-01"),
           oracleAddress:
-            'GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGSNFHEYVXM3XOJMDS674JZ',
-          status: 'ACTIVE',
+            "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGSNFHEYVXM3XOJMDS674JZ",
+          status: "ACTIVE",
         },
       });
 
@@ -172,12 +172,14 @@ describe('Database Seed', () => {
 
       // Only seeded data should exist
       const allMarkets = await prisma.market.findMany();
-      expect(allMarkets.every((m) => m.question !== 'Test question to be deleted')).toBe(true);
+      expect(
+        allMarkets.every((m) => m.question !== "Test question to be deleted")
+      ).toBe(true);
     });
   });
 
-  describe('Relationships', () => {
-    it('should create orders linked to valid markets', async () => {
+  describe("Relationships", () => {
+    it("should create orders linked to valid markets", async () => {
       await seed(prisma);
 
       const orders = await prisma.order.findMany({
@@ -190,7 +192,7 @@ describe('Database Seed', () => {
       }
     });
 
-    it('should create positions linked to valid markets', async () => {
+    it("should create positions linked to valid markets", async () => {
       await seed(prisma);
 
       const positions = await prisma.userPosition.findMany({
@@ -203,11 +205,11 @@ describe('Database Seed', () => {
       }
     });
 
-    it('should not create orders for cancelled markets', async () => {
+    it("should not create orders for cancelled markets", async () => {
       await seed(prisma);
 
       const cancelledMarkets = await prisma.market.findMany({
-        where: { status: 'CANCELLED' },
+        where: { status: "CANCELLED" },
         include: { orders: true },
       });
 
@@ -216,7 +218,7 @@ describe('Database Seed', () => {
       }
     });
 
-    it('should create positions for all markets', async () => {
+    it("should create positions for all markets", async () => {
       await seed(prisma);
 
       const markets = await prisma.market.findMany({
@@ -229,8 +231,8 @@ describe('Database Seed', () => {
     });
   });
 
-  describe('Constraints', () => {
-    it('should respect unique constraint on user positions', async () => {
+  describe("Constraints", () => {
+    it("should respect unique constraint on user positions", async () => {
       await seed(prisma);
 
       // Check that there are no duplicate (marketId, userAddress) pairs
@@ -242,45 +244,45 @@ describe('Database Seed', () => {
       expect(uniquePairs.size).toBe(positions.length);
     });
 
-    it('should create orders with mix of BUY and SELL sides', async () => {
+    it("should create orders with mix of BUY and SELL sides", async () => {
       await seed(prisma);
 
       const buyOrders = await prisma.order.findMany({
-        where: { side: 'BUY' },
+        where: { side: "BUY" },
       });
       const sellOrders = await prisma.order.findMany({
-        where: { side: 'SELL' },
+        where: { side: "SELL" },
       });
 
       expect(buyOrders.length).toBeGreaterThan(0);
       expect(sellOrders.length).toBeGreaterThan(0);
     });
 
-    it('should create orders with mix of YES and NO outcomes', async () => {
+    it("should create orders with mix of YES and NO outcomes", async () => {
       await seed(prisma);
 
       const yesOrders = await prisma.order.findMany({
-        where: { outcome: 'YES' },
+        where: { outcome: "YES" },
       });
       const noOrders = await prisma.order.findMany({
-        where: { outcome: 'NO' },
+        where: { outcome: "NO" },
       });
 
       expect(yesOrders.length).toBeGreaterThan(0);
       expect(noOrders.length).toBeGreaterThan(0);
     });
 
-    it('should create orders with different statuses', async () => {
+    it("should create orders with different statuses", async () => {
       await seed(prisma);
 
       const openOrders = await prisma.order.findMany({
-        where: { status: 'OPEN' },
+        where: { status: "OPEN" },
       });
       const filledOrders = await prisma.order.findMany({
-        where: { status: 'FILLED' },
+        where: { status: "FILLED" },
       });
       const partiallyFilledOrders = await prisma.order.findMany({
-        where: { status: 'PARTIALLY_FILLED' },
+        where: { status: "PARTIALLY_FILLED" },
       });
 
       expect(openOrders.length).toBeGreaterThan(0);
@@ -288,11 +290,11 @@ describe('Database Seed', () => {
       expect(partiallyFilledOrders.length).toBeGreaterThan(0);
     });
 
-    it('should mark positions as settled for resolved markets', async () => {
+    it("should mark positions as settled for resolved markets", async () => {
       await seed(prisma);
 
       const resolvedMarkets = await prisma.market.findMany({
-        where: { status: 'RESOLVED' },
+        where: { status: "RESOLVED" },
         include: { positions: true },
       });
 
@@ -303,11 +305,11 @@ describe('Database Seed', () => {
       }
     });
 
-    it('should mark positions as unsettled for active markets', async () => {
+    it("should mark positions as unsettled for active markets", async () => {
       await seed(prisma);
 
       const activeMarkets = await prisma.market.findMany({
-        where: { status: 'ACTIVE' },
+        where: { status: "ACTIVE" },
         include: { positions: true },
       });
 
@@ -319,38 +321,38 @@ describe('Database Seed', () => {
     });
   });
 
-  describe('Sample Markets Content', () => {
-    it('should create BTC market as specified', async () => {
+  describe("Sample Markets Content", () => {
+    it("should create BTC market as specified", async () => {
       await seed(prisma);
 
       const btcMarket = await prisma.market.findFirst({
-        where: { question: { contains: 'BTC reach $100k' } },
+        where: { question: { contains: "BTC reach $100k" } },
       });
 
       expect(btcMarket).toBeDefined();
-      expect(btcMarket?.status).toBe('ACTIVE');
+      expect(btcMarket?.status).toBe("ACTIVE");
     });
 
-    it('should create ETH market as specified', async () => {
+    it("should create ETH market as specified", async () => {
       await seed(prisma);
 
       const ethMarket = await prisma.market.findFirst({
-        where: { question: { contains: 'ETH flip BTC' } },
+        where: { question: { contains: "ETH flip BTC" } },
       });
 
       expect(ethMarket).toBeDefined();
-      expect(ethMarket?.status).toBe('ACTIVE');
+      expect(ethMarket?.status).toBe("ACTIVE");
     });
 
-    it('should create SOL market as resolved with outcome false', async () => {
+    it("should create SOL market as resolved with outcome false", async () => {
       await seed(prisma);
 
       const solMarket = await prisma.market.findFirst({
-        where: { question: { contains: 'SOL reach $200' } },
+        where: { question: { contains: "SOL reach $200" } },
       });
 
       expect(solMarket).toBeDefined();
-      expect(solMarket?.status).toBe('RESOLVED');
+      expect(solMarket?.status).toBe("RESOLVED");
       expect(solMarket?.outcome).toBe(false);
     });
   });

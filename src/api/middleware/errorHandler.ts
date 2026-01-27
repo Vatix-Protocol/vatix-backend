@@ -4,7 +4,6 @@ import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import { ValidationError } from "./errors.js";
 import { ErrorResponse } from "../../types/errors.js";
 
-
 // Centralized error handler for Fastify
 // Catches all unhandled errors and returns consistent error responses
 export function errorHandler(

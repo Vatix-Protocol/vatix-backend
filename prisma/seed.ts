@@ -1,16 +1,17 @@
-import { PrismaClient } from '../src/generated/prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool } from 'pg';
-import 'dotenv/config';
+import { PrismaClient } from "../src/generated/prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
+import "dotenv/config";
 
 // Sample Stellar addresses (56 characters, starting with 'G')
-const ORACLE_ADDRESS = 'GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGSNFHEYVXM3XOJMDS674JZ';
+const ORACLE_ADDRESS =
+  "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGSNFHEYVXM3XOJMDS674JZ";
 const USER_ADDRESSES = [
-  'GBDEVU63Y6NTHJQQZIKVTC23NWLQVP3WJ2RI2OTSJTNYOIGICST6DUXR',
-  'GCFXHS4GXL6BVUCXBWXGTITROWLVYXQKQLF4YH5O5JT3YZXCYPAFBJZB',
-  'GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOBD3SDPKFKDCWDI',
-  'GBCR5OVQ54S2EKHLBZMK6S5VMWJX4SC5CJWNTB4CGUQQVNTS5MZWFLJW',
-  'GAHK7EEG2WWHVKDNT4CEQFZGKF2LGDSW2IVM4S5DP42RBW3K6BTODB4A',
+  "GBDEVU63Y6NTHJQQZIKVTC23NWLQVP3WJ2RI2OTSJTNYOIGICST6DUXR",
+  "GCFXHS4GXL6BVUCXBWXGTITROWLVYXQKQLF4YH5O5JT3YZXCYPAFBJZB",
+  "GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOBD3SDPKFKDCWDI",
+  "GBCR5OVQ54S2EKHLBZMK6S5VMWJX4SC5CJWNTB4CGUQQVNTS5MZWFLJW",
+  "GAHK7EEG2WWHVKDNT4CEQFZGKF2LGDSW2IVM4S5DP42RBW3K6BTODB4A",
 ];
 
 interface SeedResult {
@@ -26,7 +27,7 @@ function createPrismaClient(): PrismaClient {
   const databaseUrl = process.env.DATABASE_URL;
 
   if (!databaseUrl) {
-    throw new Error('DATABASE_URL environment variable is not set');
+    throw new Error("DATABASE_URL environment variable is not set");
   }
 
   const pool = new Pool({ connectionString: databaseUrl });
@@ -40,62 +41,62 @@ function createPrismaClient(): PrismaClient {
  * Only runs in development environment
  */
 async function clearDatabase(prisma: PrismaClient): Promise<void> {
-  const isProduction = process.env.NODE_ENV === 'production';
+  const isProduction = process.env.NODE_ENV === "production";
 
   if (isProduction) {
-    console.log('Skipping database clear in production environment');
+    console.log("Skipping database clear in production environment");
     return;
   }
 
-  console.log('Clearing existing data...');
+  console.log("Clearing existing data...");
 
   // Delete in order respecting foreign key constraints
   await prisma.order.deleteMany();
   await prisma.userPosition.deleteMany();
   await prisma.market.deleteMany();
 
-  console.log('Database cleared successfully');
+  console.log("Database cleared successfully");
 }
 
 /**
  * Creates sample markets with different statuses
  */
 async function createMarkets(prisma: PrismaClient) {
-  console.log('Creating sample markets...');
+  console.log("Creating sample markets...");
 
   const markets = await prisma.market.createManyAndReturn({
     data: [
       {
-        question: 'Will BTC reach $100k by March 1, 2026?',
-        endTime: new Date('2026-03-01T00:00:00Z'),
+        question: "Will BTC reach $100k by March 1, 2026?",
+        endTime: new Date("2026-03-01T00:00:00Z"),
         oracleAddress: ORACLE_ADDRESS,
-        status: 'ACTIVE',
+        status: "ACTIVE",
       },
       {
-        question: 'Will ETH flip BTC by end of 2026?',
-        endTime: new Date('2026-12-31T23:59:59Z'),
+        question: "Will ETH flip BTC by end of 2026?",
+        endTime: new Date("2026-12-31T23:59:59Z"),
         oracleAddress: ORACLE_ADDRESS,
-        status: 'ACTIVE',
+        status: "ACTIVE",
       },
       {
-        question: 'Did SOL reach $200 in January 2026?',
-        endTime: new Date('2026-01-31T23:59:59Z'),
-        resolutionTime: new Date('2026-02-01T12:00:00Z'),
+        question: "Did SOL reach $200 in January 2026?",
+        endTime: new Date("2026-01-31T23:59:59Z"),
+        resolutionTime: new Date("2026-02-01T12:00:00Z"),
         oracleAddress: ORACLE_ADDRESS,
-        status: 'RESOLVED',
+        status: "RESOLVED",
         outcome: false,
       },
       {
-        question: 'Will the Fed cut rates in Q1 2026?',
-        endTime: new Date('2026-03-31T23:59:59Z'),
+        question: "Will the Fed cut rates in Q1 2026?",
+        endTime: new Date("2026-03-31T23:59:59Z"),
         oracleAddress: ORACLE_ADDRESS,
-        status: 'ACTIVE',
+        status: "ACTIVE",
       },
       {
-        question: 'Will there be a major exchange hack in 2026?',
-        endTime: new Date('2025-06-30T23:59:59Z'),
+        question: "Will there be a major exchange hack in 2026?",
+        endTime: new Date("2025-06-30T23:59:59Z"),
         oracleAddress: ORACLE_ADDRESS,
-        status: 'CANCELLED',
+        status: "CANCELLED",
       },
     ],
   });
@@ -111,22 +112,22 @@ async function createOrders(
   prisma: PrismaClient,
   markets: { id: string; status: string }[]
 ) {
-  console.log('Creating sample orders...');
+  console.log("Creating sample orders...");
 
   const ordersData: Array<{
     marketId: string;
     userAddress: string;
-    side: 'BUY' | 'SELL';
-    outcome: 'YES' | 'NO';
+    side: "BUY" | "SELL";
+    outcome: "YES" | "NO";
     price: number;
     quantity: number;
     filledQuantity: number;
-    status: 'OPEN' | 'FILLED' | 'CANCELLED' | 'PARTIALLY_FILLED';
+    status: "OPEN" | "FILLED" | "CANCELLED" | "PARTIALLY_FILLED";
   }> = [];
 
   for (const market of markets) {
     // Skip cancelled markets - they shouldn't have active orders
-    if (market.status === 'CANCELLED') {
+    if (market.status === "CANCELLED") {
       continue;
     }
 
@@ -136,32 +137,32 @@ async function createOrders(
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[0],
-        side: 'BUY',
-        outcome: 'YES',
+        side: "BUY",
+        outcome: "YES",
         price: 0.55,
         quantity: 100,
         filledQuantity: 0,
-        status: 'OPEN',
+        status: "OPEN",
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[1],
-        side: 'BUY',
-        outcome: 'YES',
+        side: "BUY",
+        outcome: "YES",
         price: 0.52,
         quantity: 250,
         filledQuantity: 0,
-        status: 'OPEN',
+        status: "OPEN",
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[2],
-        side: 'BUY',
-        outcome: 'YES',
-        price: 0.50,
+        side: "BUY",
+        outcome: "YES",
+        price: 0.5,
         quantity: 500,
         filledQuantity: 0,
-        status: 'OPEN',
+        status: "OPEN",
       }
     );
 
@@ -170,22 +171,22 @@ async function createOrders(
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[3],
-        side: 'SELL',
-        outcome: 'YES',
+        side: "SELL",
+        outcome: "YES",
         price: 0.58,
         quantity: 150,
         filledQuantity: 0,
-        status: 'OPEN',
+        status: "OPEN",
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[4],
-        side: 'SELL',
-        outcome: 'YES',
-        price: 0.60,
+        side: "SELL",
+        outcome: "YES",
+        price: 0.6,
         quantity: 200,
         filledQuantity: 0,
-        status: 'OPEN',
+        status: "OPEN",
       }
     );
 
@@ -194,22 +195,22 @@ async function createOrders(
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[2],
-        side: 'BUY',
-        outcome: 'NO',
+        side: "BUY",
+        outcome: "NO",
         price: 0.42,
         quantity: 300,
         filledQuantity: 0,
-        status: 'OPEN',
+        status: "OPEN",
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[3],
-        side: 'BUY',
-        outcome: 'NO',
-        price: 0.40,
+        side: "BUY",
+        outcome: "NO",
+        price: 0.4,
         quantity: 400,
         filledQuantity: 0,
-        status: 'OPEN',
+        status: "OPEN",
       }
     );
 
@@ -218,22 +219,22 @@ async function createOrders(
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[0],
-        side: 'SELL',
-        outcome: 'NO',
+        side: "SELL",
+        outcome: "NO",
         price: 0.45,
         quantity: 200,
         filledQuantity: 0,
-        status: 'OPEN',
+        status: "OPEN",
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[1],
-        side: 'SELL',
-        outcome: 'NO',
+        side: "SELL",
+        outcome: "NO",
         price: 0.48,
         quantity: 150,
         filledQuantity: 0,
-        status: 'OPEN',
+        status: "OPEN",
       }
     );
 
@@ -242,32 +243,32 @@ async function createOrders(
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[4],
-        side: 'BUY',
-        outcome: 'YES',
+        side: "BUY",
+        outcome: "YES",
         price: 0.53,
         quantity: 100,
         filledQuantity: 100,
-        status: 'FILLED',
+        status: "FILLED",
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[0],
-        side: 'SELL',
-        outcome: 'YES',
+        side: "SELL",
+        outcome: "YES",
         price: 0.53,
         quantity: 100,
         filledQuantity: 100,
-        status: 'FILLED',
+        status: "FILLED",
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[1],
-        side: 'BUY',
-        outcome: 'NO',
+        side: "BUY",
+        outcome: "NO",
         price: 0.44,
         quantity: 200,
         filledQuantity: 75,
-        status: 'PARTIALLY_FILLED',
+        status: "PARTIALLY_FILLED",
       }
     );
   }
@@ -287,7 +288,7 @@ async function createPositions(
   prisma: PrismaClient,
   markets: { id: string; status: string }[]
 ) {
-  console.log('Creating sample user positions...');
+  console.log("Creating sample user positions...");
 
   const positionsData: Array<{
     marketId: string;
@@ -307,7 +308,7 @@ async function createPositions(
         yesShares: 100,
         noShares: 0,
         lockedCollateral: 55.0,
-        isSettled: market.status === 'RESOLVED',
+        isSettled: market.status === "RESOLVED",
       },
       {
         marketId: market.id,
@@ -315,7 +316,7 @@ async function createPositions(
         yesShares: 50,
         noShares: 75,
         lockedCollateral: 60.0,
-        isSettled: market.status === 'RESOLVED',
+        isSettled: market.status === "RESOLVED",
       },
       {
         marketId: market.id,
@@ -323,7 +324,7 @@ async function createPositions(
         yesShares: 0,
         noShares: 200,
         lockedCollateral: 80.0,
-        isSettled: market.status === 'RESOLVED',
+        isSettled: market.status === "RESOLVED",
       },
       {
         marketId: market.id,
@@ -331,7 +332,7 @@ async function createPositions(
         yesShares: 150,
         noShares: 50,
         lockedCollateral: 100.0,
-        isSettled: market.status === 'RESOLVED',
+        isSettled: market.status === "RESOLVED",
       },
       {
         marketId: market.id,
@@ -339,7 +340,7 @@ async function createPositions(
         yesShares: 100,
         noShares: 0,
         lockedCollateral: 53.0,
-        isSettled: market.status === 'RESOLVED',
+        isSettled: market.status === "RESOLVED",
       }
     );
   }
@@ -361,7 +362,7 @@ export async function seed(prisma?: PrismaClient): Promise<SeedResult> {
   const shouldDisconnect = !prisma;
 
   try {
-    console.log('Starting database seed...\n');
+    console.log("Starting database seed...\n");
 
     // Clear existing data (development only)
     await clearDatabase(client);
@@ -371,8 +372,8 @@ export async function seed(prisma?: PrismaClient): Promise<SeedResult> {
     const orders = await createOrders(client, markets);
     const positions = await createPositions(client, markets);
 
-    console.log('\nSeed completed successfully!');
-    console.log('Summary:');
+    console.log("\nSeed completed successfully!");
+    console.log("Summary:");
     console.log(`  - Markets: ${markets.length}`);
     console.log(`  - Orders: ${orders.length}`);
     console.log(`  - Positions: ${positions.length}`);
@@ -397,7 +398,7 @@ if (isMainModule) {
       process.exit(0);
     })
     .catch((error) => {
-      console.error('Seed failed:', error);
+      console.error("Seed failed:", error);
       process.exit(1);
     });
 }

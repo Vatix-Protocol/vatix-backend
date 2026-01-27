@@ -16,7 +16,9 @@
     "prisma:seed": "tsx prisma/seed.ts",
     "test:run": "vitest run",
     "prepare": "husky install",
-    "generate:keypair": "tsx scripts/generate-keypair.ts"
+    "generate:keypair": "tsx scripts/generate-keypair.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "engines": {
     "node": ">=18.0.0",
@@ -49,6 +51,7 @@
     "husky": "^9.0.11",
     "lint-staged": "^15.2.0",
     "nodemon": "^3.1.11",
+    "prettier": "^3.8.1",
     "prisma": "^7.2.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
@@ -56,7 +59,11 @@
   },
   "lint-staged": {
     "*.ts": [
+      "prettier --write",
       "tsc-files --noEmit"
+    ],
+    "*.{js,json,md,yml,yaml}": [
+      "prettier --write"
     ],
     "prisma/schema.prisma": [
       "prisma format",
