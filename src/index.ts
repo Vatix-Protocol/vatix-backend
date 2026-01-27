@@ -4,6 +4,7 @@ import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
 import { signingService } from "./services/signing.js";
 import "dotenv/config";
 import { marketsRoutes } from "./api/routes/markets.js";
+import { ordersRoutes } from "./api/routes/orders.js";
 
 const server = Fastify({
 	logger: true,
@@ -15,6 +16,7 @@ server.setErrorHandler(errorHandler);
 
 // Register API routes
 server.register(marketsRoutes);
+server.register(ordersRoutes);
 
 server.get("/health", async () => {
 	return { status: "ok", service: "vatix-backend" };
