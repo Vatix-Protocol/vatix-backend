@@ -81,30 +81,22 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         throw new ValidationError(addressError);
       }
 
-      try {
-        const whereClause = {
-          userAddress: address,
-          ...(status ? { status } : {}),
-        };
+      const whereClause = {
+        userAddress: address,
+        ...(status ? { status } : {}),
+      };
 
-        const orders = await prisma.order.findMany({
-          where: whereClause,
-          orderBy: {
-            createdAt: "desc",
-          },
-        });
+      const orders = await prisma.order.findMany({
+        where: whereClause,
+        orderBy: {
+          createdAt: "desc",
+        },
+      });
 
-        return {
-          orders,
-          count: orders.length,
-        };
-      } catch (error) {
-        request.log.error(
-          { error, address, status },
-          "Failed to fetch user orders",
-        );
-        throw new Error("Failed to fetch user orders");
-      }
+      return {
+        orders,
+        count: orders.length,
+      };
     },
   );
 }

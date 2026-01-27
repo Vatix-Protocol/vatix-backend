@@ -55,32 +55,23 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest<{ Querystring: GetMarketsQueryParams }>) => {
-      try {
-        const { status } = request.query;
+      const { status } = request.query;
 
-        const whereClause = status ? { status } : {};
+      const whereClause = status ? { status } : {};
 
-        const markets = await prisma.market.findMany({
-          where: whereClause,
-          orderBy: {
-            createdAt: "desc",
-          },
-        });
+      const markets = await prisma.market.findMany({
+        where: whereClause,
+        orderBy: {
+          createdAt: "desc",
+        },
+      });
 
-        const response: GetMarketsResponse = {
-          markets,
-          count: markets.length,
-        };
+      const response: GetMarketsResponse = {
+        markets,
+        count: markets.length,
+      };
 
-        return response;
-      } catch (error) {
-        request.log.error(
-          { error, query: request.query },
-          "Failed to fetch markets",
-        );
-
-        throw new Error("Failed to fetch markets from database");
-      }
+      return response;
     },
   );
 }
