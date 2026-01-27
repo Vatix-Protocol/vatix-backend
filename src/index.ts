@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { errorHandler } from "./api/middleware/errorHandler.js";
+import positionsRouter from './api/routes/positions';
 import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
 import { signingService } from "./services/signing.js";
 import "dotenv/config";
@@ -51,5 +52,7 @@ const start = async () => {
     process.exit(1);
   }
 };
+
+app.use('/positions', positionsRouter);
 
 start();
