@@ -1,16 +1,22 @@
 import { FastifyInstance } from "fastify";
-import { getPrismaClient } from "../../services/prisma";
+import { getPrismaClient } from "../../services/prisma.js";
+import { validateUserAddress } from "../../matching/validation.js";
+import { ValidationError } from "../middleware/errors.js";
+
+interface PositionResult {
+  yesShares: number;
+  noShares: number;
+  [key: string]: any; 
+}
 
 export default async function positionsRouter(server: FastifyInstance) {
-  server.get("/user/:address", async (request, reply) => {
+  server.get("/positions/user/:address", async (request, reply) => {
     const { address } = request.params as { address: string };
     const prisma = getPrismaClient();
 
-    if (!/^G[A-Z0-9]{55}$/.test(address)) {
-      return reply.code(400).send({
-        error: "Bad Request",
-        message: "Invalid Stellar address format",
-      });
+    const addressError = validateUserAddress(address);
+    if (addressError) {
+      throw new ValidationError(addressError);
     }
 
     const positions = await prisma.userPosition.findMany({
@@ -18,9 +24,11 @@ export default async function positionsRouter(server: FastifyInstance) {
       include: { market: true },
     });
 
-    const results = positions.map((p) => ({
+    const results = positions.map((p: PositionResult) => ({
       ...p,
-      potentialPayout: Math.max(p.yesShares, p.noShares),
+      potentialPayoutIfYes: p.yesShares,
+      potentialPayoutIfNo: p.noShares,
+      netPosition: p.yesShares - p.noShares,
     }));
 
     return results;

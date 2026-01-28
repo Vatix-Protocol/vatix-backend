@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { errorHandler } from "./api/middleware/errorHandler.js";
-import positionsRouter from "./api/routes/positions";
+import positionsRouter from "./api/routes/positions.js";
 import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
 import { signingService } from "./services/signing.js";
 import "dotenv/config";
@@ -19,7 +19,7 @@ server.setErrorHandler(errorHandler);
 server.register(marketsRoutes);
 server.register(ordersRoutes);
 
-server.register(positionsRouter, { prefix: "/positions" });
+server.register(positionsRouter);
 
 server.get("/health", async () => {
   return { status: "ok", service: "vatix-backend" };
@@ -41,7 +41,6 @@ server.get("/test/server-error", async () => {
   throw new Error("Something went wrong internally");
 });
 
-export { server };
 
 const start = async () => {
   try {
@@ -57,6 +56,4 @@ const start = async () => {
   }
 };
 
-if (process.env.NODE_ENV !== "test") {
-  start();
-}
+start();

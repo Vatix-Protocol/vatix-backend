@@ -1,5 +1,7 @@
-import { describe, it, expect, vi, afterAll } from "vitest";
-import { server } from "../../index";
+import { describe, it, expect, vi } from "vitest";
+import fastify from "fastify";
+import positionsRouter from "./positions";
+import { errorHandler } from "../middleware/errorHandler"; 
 
 vi.mock("../../services/prisma", () => ({
   getPrismaClient: () => ({
@@ -7,8 +9,7 @@ vi.mock("../../services/prisma", () => ({
       findMany: vi.fn().mockResolvedValue([
         {
           id: "test-pos-1",
-          userAddress:
-            "GBAHUIO7S6NXF2654321098765432109876543210987654321098765",
+          userAddress: "GBAHUIO7S6NXF2654321098765432109876543210987654321098765",
           yesShares: 50,
           noShares: 10,
           market: {
@@ -23,21 +24,37 @@ vi.mock("../../services/prisma", () => ({
   disconnectPrisma: vi.fn(),
 }));
 
+vi.mock("../../matching/validation", () => ({
+  validateUserAddress: (addr: string) =>
+    /^G[A-Z0-9]{55}$/.test(addr) ? null : "Invalid Stellar address",
+}));
+
 describe("Positions Route", () => {
+  const createTestServer = async () => {
+    const app = fastify();
+    app.setErrorHandler(errorHandler);
+    await app.register(positionsRouter);
+    return app;
+  };
+
   it("should return 400 for invalid address", async () => {
-    const response = await server.inject({
+    const app = await createTestServer();
+    
+    const response = await app.inject({
       method: "GET",
       url: "/positions/user/0xInvalidAddress",
     });
 
     expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.error).toBe("Invalid Stellar address");
   });
 
-  it("should return 200 and calculate payout for valid address", async () => {
-    const validAddress =
-      "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+  it("should return 200 and calculate correct payout structure", async () => {
+    const app = await createTestServer();
+    const validAddress = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
 
-    const response = await server.inject({
+    const response = await app.inject({
       method: "GET",
       url: `/positions/user/${validAddress}`,
     });
@@ -46,7 +63,11 @@ describe("Positions Route", () => {
 
     const body = JSON.parse(response.body);
     expect(Array.isArray(body)).toBe(true);
-    expect(body[0].potentialPayout).toBe(50); // Should be max(50, 10)
+    
+
+    expect(body[0].potentialPayoutIfYes).toBe(50);
+    expect(body[0].potentialPayoutIfNo).toBe(10);
+    expect(body[0].netPosition).toBe(40); // 50 - 10
     expect(body[0].market.question).toBe("Will it rain?");
   });
 });
