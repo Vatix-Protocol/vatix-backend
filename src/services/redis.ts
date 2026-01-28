@@ -39,44 +39,49 @@ class RedisService {
     if (this.isConnecting) return;
     this.isConnecting = true;
 
-    const redisUrl = process.env.REDIS_URL;
-    if (!redisUrl) {
-      throw new Error("REDIS_URL environment variable is not set");
+    try {
+      const redisUrl = process.env.REDIS_URL;
+      if (!redisUrl) {
+        throw new Error("REDIS_URL environment variable is not set");
+      }
+
+      this.client = new Redis(redisUrl, {
+        maxRetriesPerRequest: MAX_RETRIES,
+        retryStrategy: (times: number) => {
+          if (times > MAX_RETRIES) {
+            console.error(`Redis: Max retries (${MAX_RETRIES}) exceeded`);
+            return null; // stop retrying
+          }
+          const delay = Math.min(
+            BASE_RETRY_DELAY * Math.pow(2, times - 1),
+            2000
+          );
+          console.log(`Redis: Retry attempt ${times}, waiting ${delay}ms`);
+          return delay;
+        },
+        lazyConnect: false,
+      });
+
+      this.client.on("connect", () => {
+        console.log("Redis: Connected");
+        this.retryCount = 0;
+      });
+
+      this.client.on("error", (err: Error) => {
+        console.error("Redis: Connection error:", err.message);
+      });
+
+      this.client.on("reconnecting", () => {
+        this.retryCount++;
+        console.log(`Redis: Reconnecting (attempt ${this.retryCount})`);
+      });
+
+      this.client.on("close", () => {
+        console.log("Redis: Connection closed");
+      });
+    } finally {
+      this.isConnecting = false;
     }
-
-    this.client = new Redis(redisUrl, {
-      maxRetriesPerRequest: MAX_RETRIES,
-      retryStrategy: (times: number) => {
-        if (times > MAX_RETRIES) {
-          console.error(`Redis: Max retries (${MAX_RETRIES}) exceeded`);
-          return null; // stop retrying
-        }
-        const delay = Math.min(BASE_RETRY_DELAY * Math.pow(2, times - 1), 2000);
-        console.log(`Redis: Retry attempt ${times}, waiting ${delay}ms`);
-        return delay;
-      },
-      lazyConnect: false,
-    });
-
-    this.client.on("connect", () => {
-      console.log("Redis: Connected");
-      this.retryCount = 0;
-    });
-
-    this.client.on("error", (err: Error) => {
-      console.error("Redis: Connection error:", err.message);
-    });
-
-    this.client.on("reconnecting", () => {
-      this.retryCount++;
-      console.log(`Redis: Reconnecting (attempt ${this.retryCount})`);
-    });
-
-    this.client.on("close", () => {
-      console.log("Redis: Connection closed");
-    });
-
-    this.isConnecting = false;
   }
 
   // ==================== Basic Methods ====================
