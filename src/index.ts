@@ -41,7 +41,6 @@ server.get("/test/server-error", async () => {
   throw new Error("Something went wrong internally");
 });
 
-
 const start = async () => {
   try {
     // Initialize signing service BEFORE starting server

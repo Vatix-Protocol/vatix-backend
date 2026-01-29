@@ -6,7 +6,7 @@ import { ValidationError } from "../middleware/errors.js";
 interface PositionResult {
   yesShares: number;
   noShares: number;
-  [key: string]: any; 
+  [key: string]: any;
 }
 
 export default async function positionsRouter(server: FastifyInstance) {
