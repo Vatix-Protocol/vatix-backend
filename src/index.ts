@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { errorHandler } from "./api/middleware/errorHandler.js";
+import positionsRouter from "./api/routes/positions.js";
 import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
 import { signingService } from "./services/signing.js";
 import "dotenv/config";
@@ -17,6 +18,8 @@ server.setErrorHandler(errorHandler);
 // Register API routes
 server.register(marketsRoutes);
 server.register(ordersRoutes);
+
+server.register(positionsRouter);
 
 server.get("/health", async () => {
   return { status: "ok", service: "vatix-backend" };
