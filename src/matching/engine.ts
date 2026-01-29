@@ -1,6 +1,7 @@
 import type { Outcome, OrderSide } from "../types/index.js";
 import type { Order as BookOrder } from "./orderbook.js";
 import { OrderBook } from "./orderbook.js";
+import { auditService } from "../services/audit.js";
 
 export interface MatchingOrder {
   id: string;
@@ -244,6 +245,12 @@ export function matchOrder(
         timestamp
       );
       trades.push(trade);
+
+      // Log trade to audit stream
+      auditService.logOrderMatch(trade).catch((error) => {
+        // Don't fail matching if audit log fails
+        console.error("Failed to log trade to audit:", error);
+      });
 
       const newBookOrderQty = bookOrder.quantity - fillQty;
       let cmd: MatchCommand;
