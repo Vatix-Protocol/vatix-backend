@@ -222,6 +222,81 @@ class RedisService {
       console.log("Redis: Disconnected gracefully");
     }
   }
+
+  /**
+   * Add entry to Redis Stream
+   */
+  async xadd(...args: (string | number)[]): Promise<string | null> {
+    try {
+      const client = this.getClient();
+      return await (client.xadd as any)(...args);
+    } catch (error) {
+      console.error("Redis XADD error:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Read range from Redis Stream (oldest to newest)
+   */
+  async xrange(
+    key: string,
+    start: string,
+    end: string,
+    countArg?: "COUNT",
+    limit?: string
+  ): Promise<Array<[string, string[]]>> {
+    try {
+      if (countArg && limit) {
+        return await this.getClient().xrange(key, start, end, countArg, limit);
+      } else {
+        return await this.getClient().xrange(key, start, end);
+      }
+    } catch (error) {
+      console.error("Redis XRANGE error:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Read range from Redis Stream (newest to oldest)
+   */
+  async xrevrange(
+    key: string,
+    start: string,
+    end: string,
+    countArg?: "COUNT",
+    limit?: string
+  ): Promise<Array<[string, string[]]>> {
+    try {
+      if (countArg && limit) {
+        return await this.getClient().xrevrange(
+          key,
+          start,
+          end,
+          countArg,
+          limit
+        );
+      } else {
+        return await this.getClient().xrevrange(key, start, end);
+      }
+    } catch (error) {
+      console.error("Redis XREVRANGE error:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get stream info
+   */
+  async xinfo(subcommand: "STREAM", key: string): Promise<any> {
+    try {
+      return await this.getClient().xinfo(subcommand, key);
+    } catch (error) {
+      console.error("Redis XINFO error:", error);
+      throw error;
+    }
+  }
 }
 
 /**
