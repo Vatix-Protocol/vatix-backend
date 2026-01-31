@@ -1,8 +1,12 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import { ValidationError } from "../middleware/errors.js";
-import type { OrderStatus } from "../../types/index.js";
-import { validateUserAddress } from "../../matching/validation.js";
+import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
+import {
+  validateUserAddress,
+  assertValidOrder,
+  type OrderInput,
+} from "../../matching/validation.js";
 
 interface GetUserOrdersParams {
   address: string;
@@ -10,6 +14,15 @@ interface GetUserOrdersParams {
 
 interface GetUserOrdersQuery {
   status?: OrderStatus;
+}
+
+interface CreateOrderBody {
+  marketId: string;
+  userAddress: string;
+  side: OrderSide;
+  outcome: Outcome;
+  price: number;
+  quantity: number;
 }
 
 export async function ordersRoutes(fastify: FastifyInstance) {
@@ -97,6 +110,107 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         orders,
         count: orders.length,
       };
+    }
+  );
+
+  // POST /orders
+  fastify.post<{ Body: CreateOrderBody }>(
+    "/orders",
+    {
+      schema: {
+        body: {
+          type: "object",
+          required: [
+            "marketId",
+            "userAddress",
+            "side",
+            "outcome",
+            "price",
+            "quantity",
+          ],
+          properties: {
+            marketId: { type: "string" },
+            userAddress: { type: "string" },
+            side: {
+              type: "string",
+              enum: ["BUY", "SELL"],
+            },
+            outcome: {
+              type: "string",
+              enum: ["YES", "NO"],
+            },
+            price: {
+              type: "number",
+              exclusiveMinimum: 0,
+              exclusiveMaximum: 1,
+            },
+            quantity: {
+              type: "integer",
+              minimum: 1,
+            },
+          },
+        },
+        response: {
+          201: {
+            type: "object",
+            properties: {
+              order: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  marketId: { type: "string" },
+                  userAddress: { type: "string" },
+                  side: { type: "string" },
+                  outcome: { type: "string" },
+                  price: { type: "string" },
+                  quantity: { type: "number" },
+                  filledQuantity: { type: "number" },
+                  status: { type: "string" },
+                  createdAt: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Body: CreateOrderBody }>, reply) => {
+      const { marketId, userAddress, side, outcome, price, quantity } =
+        request.body;
+
+      // Validate order using existing validation
+      const orderInput: OrderInput = {
+        marketId,
+        userAddress,
+        side,
+        outcome,
+        price,
+        quantity,
+      };
+
+      // This throws OrderValidationError if invalid
+      // Validates: address format, market exists/active, price range, quantity > 0
+      await assertValidOrder(orderInput);
+
+      // Create order in database
+      const order = await prisma.order.create({
+        data: {
+          marketId,
+          userAddress,
+          side,
+          outcome,
+          price: price.toString(),
+          quantity,
+          filledQuantity: 0,
+          status: "OPEN",
+        },
+      });
+
+      // TODO: Add to matching engine
+      // await matchingEngine.addOrder(order);
+
+      reply.code(201);
+      return { order };
     }
   );
 }
