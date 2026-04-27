@@ -13,11 +13,22 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "prisma:validate": "tsx scripts/validate-migrations.ts",
+    "prisma:reset": "prisma migrate reset",
+    "prisma:deploy": "prisma migrate deploy",
+    "test:run": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "prepare": "husky install",
+    "generate:keypair": "tsx scripts/generate-keypair.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "engines": {
     "node": ">=18.0.0",
-    "pnpm": ">=8.0.0"
+    "pnpm": ">=8.0.0",
+    "npm": "please-use-pnpm",
+    "yarn": "please-use-pnpm"
   },
   "keywords": [],
   "author": "",
@@ -25,20 +36,44 @@
   "dependencies": {
     "@fastify/cors": "^11.2.0",
     "@fastify/env": "^5.0.3",
+    "@fastify/request-context": "^6.2.1",
+    "@prisma/adapter-pg": "^7.3.0",
     "@prisma/client": "^7.2.0",
+    "@stellar/stellar-sdk": "^14.4.3",
     "fastify": "^5.7.1",
+    "fastify-plugin": "^5.1.0",
     "ioredis": "^5.9.2",
     "pg": "^8.17.2",
-    "redis": "^5.10.0"
+    "redis": "^5.10.0",
+    "tsc-files": "^1.1.4"
   },
   "devDependencies": {
     "@types/node": "^25.0.9",
     "@types/pg": "^8.16.0",
+    "@vitest/coverage-v8": "4.0.17",
     "@vitest/ui": "^4.0.17",
+    "dotenv": "^16.6.1",
+    "husky": "^9.0.11",
+    "lint-staged": "^15.2.0",
     "nodemon": "^3.1.11",
+    "prettier": "^3.8.1",
     "prisma": "^7.2.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.17"
-  }
+  },
+  "lint-staged": {
+    "*.ts": [
+      "prettier --write",
+      "tsc-files --noEmit"
+    ],
+    "*.{js,json,md,yml,yaml}": [
+      "prettier --write"
+    ],
+    "prisma/schema.prisma": [
+      "prisma format",
+      "prisma validate"
+    ]
+  },
+  "type": "module"
 }

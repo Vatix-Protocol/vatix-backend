@@ -2,263 +2,143 @@
 
 Backend services for the Vatix prediction market protocol on Stellar.
 
-## Overview
-
-This repository contains the core backend infrastructure for Vatix, including:
-
-- **REST API**: Market data, user positions, and trade history
-- **CLOB Engine**: Central Limit Order Book for order matching
-- **Event Indexer**: Blockchain event monitoring and database indexing
-- **Oracle Service**: Real-world outcome resolution
-- **WebSocket Server**: Real-time market updates
-
 ## Tech Stack
 
-- **Runtime**: Node.js 18+ with TypeScript
-- **API Framework**: Fastify
-- **Database**: PostgreSQL with Prisma ORM
-- **Cache**: Redis (ioredis)
-- **Blockchain**: Stellar SDK
-- **Testing**: Vitest
+Node.js • TypeScript • Fastify • PostgreSQL • Prisma • Redis • Stellar SDK
 
-## Project Status
-
-🚧 **Early Stage** - Core infrastructure in progress. We're actively looking for contributors!
-
-## Getting Started
+## Quick Start
 
 ### Prerequisites
-- Node.js 18+ (20+ recommended)
-- pnpm 8+ (`npm install -g pnpm`)
+
+- Node.js 20+
+- pnpm 8+
 - Docker & Docker Compose
 
-### Installation
+### Setup
 
-1. **Clone the repository**
 ```bash
+# Clone and install
 git clone https://github.com/vatix-protocol/vatix-backend.git
+
 cd vatix-backend
-```
-
-2. **Install dependencies**
-```bash
 pnpm install
-```
 
-3. **Set up environment variables**
-```bash
+# Environment
 cp .env.example .env
-# The defaults should work for local development
-```
 
-4. **Start local services (PostgreSQL + Redis)**
-```bash
+# Start services
 docker compose up -d
-```
 
-5. **Set up the database**
-```bash
-# Generate Prisma Client
+# Database setup
 pnpm prisma:generate
+pnpm prisma:migrate dev
 
-# Run migrations 
-pnpm prisma:migrate
-```
-
-6. **Run development server**
-```bash
+# Run
 pnpm dev
 ```
 
-The API will be available at `http://localhost:3000`
-
-### Verify Setup
-
-Visit `http://localhost:3000/health` - you should see:
-```json
-{"status":"ok","service":"vatix-backend"}
-```
-
-## Project Structure
-```
-src/
-├── api/              # Fastify REST endpoints and routes
-│   ├── routes/       # API route handlers
-│   └── middleware/   # Request/response middleware
-├── matching/         # CLOB engine - order matching logic
-├── indexer/          # Stellar blockchain event listener
-├── oracle/           # Market resolution service
-├── services/         # Shared utilities (database, cache, signing)
-└── types/            # TypeScript type definitions
-
-prisma/
-├── schema.prisma     # Database schema definition
-├── migrations/       # Database migrations
-└── seed.ts          # Sample data for testing
-
-tests/               # Test files
-```
+Visit `http://localhost:3000/health` to verify.
 
 ## Development
 
-### Available Scripts
 ```bash
 # Development
-pnpm dev              # Start dev server with hot reload
+pnpm dev              # Start with hot reload
 pnpm build            # Build for production
-pnpm start            # Run production build
-
-# Database
-pnpm prisma:generate  # Generate Prisma Client
-pnpm prisma:migrate   # Run database migrations
-pnpm prisma:studio    # Open Prisma Studio (database GUI)
-pnpm prisma:seed      # Seed database with sample data
+pnpm start            # Start production build
 
 # Testing
-pnpm test             # Run tests
-pnpm test:ui          # Run tests with UI
-pnpm test:coverage    # Run tests with coverage report
+pnpm test             # Run all tests
+pnpm test:ui          # Tests with UI
+pnpm test:coverage    # Run tests with coverage
+pnpm test:run         # Run tests once (no watch)
+
+# Database
+pnpm prisma:studio    # Database GUI
+pnpm prisma:seed      # Load sample data
+pnpm prisma:generate  # Generate Prisma client
+pnpm prisma:migrate   # Create and apply migrations
+pnpm prisma:deploy    # Deploy migrations (production)
+pnpm prisma:validate  # Validate migrations
+pnpm prisma:reset     # Reset database (destructive)
 
 # Docker
 docker compose up -d       # Start PostgreSQL + Redis
-docker compose down        # Stop and remove containers
-docker compose logs -f     # View container logs
+docker compose down        # Stop containers
 ```
 
-### Making Changes
+## Project Structure
 
-1. **Database changes**: Edit `prisma/schema.prisma` and run migrations
-2. **API changes**: Add/modify routes in `src/api/routes/`
-3. **Business logic**: Add services in `src/services/` or matching logic in `src/matching/`
-4. **Always add tests**: Every feature should have corresponding tests
-
-## Architecture Overview
-
-### Data Flow
 ```
-User Request
-    ↓
-Fastify API (validation, auth)
-    ↓
-Business Logic (matching engine, services)
-    ↓
-Prisma Client ←→ PostgreSQL
-    ↓
-Response
+src/
+├── api/          # REST endpoints & middleware
+├── matching/     # CLOB order matching engine
+├── services/     # Database, Redis, signing
+└── types/        # TypeScript definitions
+
+tests/
+├── setup.ts              # Global test setup and utilities
+├── helpers/
+│   └── test-database.ts  # Database testing utilities
+├── integration/
+│   ├── markets.test.ts   # Markets endpoint tests
+│   └── positions.test.ts # Positions endpoint tests
+└── sample.test.ts        # Sample test demonstrating setup
+
+prisma/
+├── schema.prisma # Database schema
+├── migrations/   # Database migrations
+└── seed.ts       # Database seeding script
+
+scripts/
+├── validate-migrations.ts  # Migration validation script
+└── generate-keypair.ts     # Stellar keypair generator
+
+docs/
+├── testing.md    # Comprehensive testing guide
+└── migrations.md # Database migration guide
 ```
-
-### Key Components
-
-**CLOB Engine** (`src/matching/`)
-- Order book data structure
-- Price-time priority matching
-- Partial fill logic
-- Position-based accounting
-
-**API Layer** (`src/api/`)
-- RESTful endpoints
-- WebSocket connections
-- Authentication/authorization
-- Request validation
-
-**Services** (`src/services/`)
-- Database queries (Prisma)
-- Redis caching
-- Stellar blockchain interaction
-- Oracle data fetching
-- Cryptographic signing
-
-**Indexer** (`src/indexer/`)
-- Listen for Stellar contract events
-- Index on-chain data
-- Update database state
-
-## Database Schema
-
-The database uses Prisma ORM with PostgreSQL. Key tables:
-
-- **markets**: Prediction market metadata
-- **orders**: User orders in the CLOB
-- **user_positions**: User positions with position-based accounting
-
-See `prisma/schema.prisma` for the complete schema definition.
-
-## Testing
-
-We use Vitest for testing. Tests should cover:
-
-- Unit tests for business logic
-- Integration tests for API endpoints
-- Database tests for Prisma models
-- E2E tests for critical flows
-
-Run tests before submitting PRs:
-```bash
-pnpm test
-```
-
-## Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- How to pick an issue
-- Code style guidelines
-- PR submission process
-- Testing requirements
-
-## API Documentation
-
-API documentation will be available at `/docs` once implemented. For now, see the route files in `src/api/routes/` for endpoint definitions.
 
 ## Environment Variables
 
-Key environment variables (see `.env.example`):
-```env
-# Server
-PORT=3000
-NODE_ENV=development
+See `.env.example` for all options. Key variables:
 
-# Database
-DATABASE_URL=postgresql://postgres:postgres@localhost:5433/vatix
+- `DATABASE_URL` - PostgreSQL connection
+- `REDIS_URL` - Redis connection
+- `ORACLE_SECRET_KEY` - Oracle signing key (generate with `pnpm generate:keypair`)
 
-# Redis
-REDIS_URL=redis://localhost:6379
+## Testing
 
-# Stellar
-STELLAR_NETWORK=testnet
-STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
+The project includes comprehensive testing setup with Vitest:
 
-# Oracle
-ORACLE_SECRET_KEY=your_secret_key_here
-```
+- **Unit Tests**: Fast isolated testing with mocks
+- **Integration Tests**: API endpoint testing with real database
+- **Coverage**: 80% threshold coverage reporting
+- **CI Integration**: Automated testing in GitHub Actions
 
-## Troubleshooting
+See [docs/testing.md](docs/testing.md) for detailed testing guide.
 
-**"Port 5433 already in use"**
-- Another PostgreSQL instance is running
-- Change the port in `docker-compose.yml` and update `DATABASE_URL`
+## Database Migrations
 
-**"Cannot connect to database"**
-- Ensure Docker containers are running: `docker compose ps`
-- Check DATABASE_URL matches your Docker setup
+Database schema is managed through Prisma migrations:
 
-**"Prisma Client not generated"**
-- Run `pnpm prisma:generate`
-- Ensure `prisma/schema.prisma` exists
+- **Migration Tool**: Prisma (already aligned with project stack)
+- **Commands**: Create, apply, rollback migrations documented
+- **CI Integration**: Migration validation and deployment in CI
+- **Validation**: Automated migration checks and SQL validation
 
-**"Module not found"**
-- Delete `node_modules` and `pnpm-lock.yaml`
-- Run `pnpm install` again
+See [docs/migrations.md](docs/migrations.md) for detailed migration guide.
 
-## Resources
+## API Endpoints
 
-- [Vatix Protocol Specification](https://github.com/vatix-protocol/vatix-docs)
-- [Stellar Documentation](https://developers.stellar.org)
-- [Prisma Documentation](https://www.prisma.io/docs)
-- [Fastify Documentation](https://www.fastify.io/docs)
+Key endpoints with comprehensive test coverage:
+
+- `GET /v1/markets` - Market listing with pagination and filtering
+- `GET /v1/positions/:wallet` - Wallet position data with PnL calculations
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details
+MIT License
 
 ---
 

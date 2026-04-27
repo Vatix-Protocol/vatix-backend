@@ -15,3 +15,9 @@ logs/
 # OS
 .DS_Store
 /src/generated/prisma
+
+package-lock.json
+yarn.lock
+
+# Test coverage
+coverage/
