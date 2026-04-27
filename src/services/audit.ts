@@ -189,6 +189,58 @@ export class AuditService {
   }
 
   /**
+   * Get paginated trade history for a wallet address across all markets.
+   * Ordering is deterministic and latest-first based on Redis stream IDs.
+   */
+  async getWalletTradeHistory(
+    wallet: string,
+    page: number = 1,
+    limit: number = 20,
+    fromMs?: number,
+    toMs?: number
+  ): Promise<{
+    trades: AuditLogEntry[];
+    total: number;
+    hasNext: boolean;
+    page: number;
+    limit: number;
+  }> {
+    const startId =
+      toMs !== undefined ? `${toMs}-${Number.MAX_SAFE_INTEGER}` : "+";
+    const endId = fromMs !== undefined ? `${fromMs}-0` : "-";
+
+    // Redis stream range query (xrevrange) uses stream IDs efficiently for time windows.
+    const entries = await redis.xrevrange(this.globalStream, startId, endId);
+    if (entries.length === 0) {
+      return {
+        trades: [],
+        total: 0,
+        hasNext: false,
+        page,
+        limit,
+      };
+    }
+
+    const walletTrades = entries
+      .map(([id, fields]) => this.parseStreamEntry(id, fields))
+      .filter(
+        (entry) =>
+          entry.trade.buyerAddress === wallet || entry.trade.sellerAddress === wallet
+      );
+
+    const skip = (page - 1) * limit;
+    const trades = walletTrades.slice(skip, skip + limit);
+
+    return {
+      trades,
+      total: walletTrades.length,
+      hasNext: skip + trades.length < walletTrades.length,
+      page,
+      limit,
+    };
+  }
+
+  /**
    * Get audit log entries within a time range
    *
    * @param marketId - Market ID to query
