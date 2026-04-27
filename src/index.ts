@@ -6,6 +6,8 @@ import { signingService } from "./services/signing.js";
 import "dotenv/config";
 import { marketsRoutes } from "./api/routes/markets.js";
 import { ordersRoutes } from "./api/routes/orders.js";
+import { adminRoutes } from "./api/routes/admin.js";
+import { rateLimiter } from "./api/middleware/rateLimiter.js";
 
 const server = Fastify({
   logger: true,
@@ -15,11 +17,15 @@ const server = Fastify({
 // Register error handler (must be before routes)
 server.setErrorHandler(errorHandler);
 
+// Apply rate limiting globally
+server.addHook("onRequest", rateLimiter);
+
 // Register API routes
 server.register(marketsRoutes);
 server.register(ordersRoutes);
 
 server.register(positionsRouter);
+server.register(adminRoutes);
 
 server.get("/health", async () => {
   return { status: "ok", service: "vatix-backend" };
