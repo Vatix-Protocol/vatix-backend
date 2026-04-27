@@ -6,6 +6,19 @@ export interface AuthErrorResponse {
   statusCode: number;
 }
 
+export interface SuccessResponse<T> {
+  success: true;
+  data: T;
+}
+
+export function success<T>(reply: FastifyReply, data: T, statusCode = 200): void {
+  const body: SuccessResponse<T> = {
+    success: true,
+    data,
+  };
+  reply.status(statusCode).send(body);
+}
+
 export function unauthorized(reply: FastifyReply, message = "Unauthorized"): void {
   const body: AuthErrorResponse = {
     error: message,
