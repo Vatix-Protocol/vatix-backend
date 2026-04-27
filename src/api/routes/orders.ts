@@ -14,6 +14,8 @@ interface GetUserOrdersParams {
 
 interface GetUserOrdersQuery {
   status?: OrderStatus;
+  page?: number;
+  limit?: number;
 }
 
 interface CreateOrderBody {
@@ -49,6 +51,15 @@ export async function ordersRoutes(fastify: FastifyInstance) {
               type: "string",
               enum: ["OPEN", "FILLED", "CANCELLED", "PARTIALLY_FILLED"],
             },
+            page: {
+              type: "integer",
+              minimum: 1,
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+            },
           },
         },
         response: {
@@ -73,7 +84,10 @@ export async function ordersRoutes(fastify: FastifyInstance) {
                   },
                 },
               },
-              count: { type: "number" },
+              total: { type: "number" },
+              hasNext: { type: "boolean" },
+              page: { type: "number" },
+              limit: { type: "number" },
             },
           },
         },
@@ -86,7 +100,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       }>
     ) => {
       const { address } = request.params;
-      const { status } = request.query;
+      const { status, page = 1, limit = 20 } = request.query;
 
       // Validate Stellar address
       const addressError = validateUserAddress(address);
@@ -99,16 +113,26 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         ...(status ? { status } : {}),
       };
 
-      const orders = await prisma.order.findMany({
-        where: whereClause,
-        orderBy: {
-          createdAt: "desc",
-        },
-      });
+      const skip = (page - 1) * limit;
+
+      const [orders, total] = await Promise.all([
+        prisma.order.findMany({
+          where: whereClause,
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          skip,
+          take: limit,
+        }),
+        prisma.order.count({
+          where: whereClause,
+        }),
+      ]);
 
       return {
         orders,
-        count: orders.length,
+        total,
+        hasNext: skip + orders.length < total,
+        page,
+        limit,
       };
     }
   );
