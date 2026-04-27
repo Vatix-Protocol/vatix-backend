@@ -43,17 +43,6 @@ enum ResolutionCandidateStatus {
   REJECTED
 }
 
-/// Standardized identifiers for oracle data providers.
-/// Add new providers here; use OracleSourceAlias for raw/legacy name mapping.
-enum OracleSource {
-  CHAINLINK
-  PYTH
-  UMA
-  API3
-  INTERNAL
-  MANUAL
-}
-
 model Market {
   id             String       @id @default(uuid())
   question       String
@@ -65,9 +54,9 @@ model Market {
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
 
-  orders    Order[]
-  positions UserPosition[]
-  resolutionCandidates ResolutionCandidate[]
+  orders        Order[]
+  positions     UserPosition[]
+  oracleReports OracleReport[]
 
   @@index([status])
   @@index([endTime])
@@ -92,9 +81,27 @@ model Order {
 
   @@index([marketId])
   @@index([userAddress])
+  @@index([userAddress, marketId])
   @@index([status])
   @@index([marketId, outcome, price, createdAt])
   @@map("orders")
+}
+
+model OracleReport {
+  id                   String    @id @default(uuid())
+  source               String    @db.VarChar(256)
+  payloadHash          String    @map("payload_hash") @db.VarChar(64)
+  confidence           Decimal   @db.Decimal(5, 4)
+  marketId             String?   @map("market_id")
+  candidateResolution  Boolean?  @map("candidate_resolution")
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  market Market? @relation(fields: [marketId], references: [id], onDelete: SetNull)
+
+  @@index([marketId])
+  @@index([source])
+  @@index([createdAt])
+  @@map("oracle_reports")
 }
 
 model UserPosition {
@@ -112,6 +119,7 @@ model UserPosition {
   @@unique([marketId, userAddress])
   @@index([marketId])
   @@index([userAddress])
+  @@index([userAddress, marketId])
   @@map("user_positions")
 }
 
@@ -119,11 +127,10 @@ model ResolutionCandidate {
   id              String                    @id @default(uuid())
   marketId        String                    @map("market_id")
   proposedOutcome Boolean                   @map("proposed_outcome")
-  /// Standardized oracle provider identifier. See OracleSource enum.
-  source          OracleSource
+  source          String
   status          ResolutionCandidateStatus @default(PROPOSED)
-  /// Confidence score in the range 0.0 (no confidence) to 1.0 (full confidence).
-  /// Null if the source did not report a confidence value.
+  /// Confidence score for this resolution candidate, expressed as a decimal in the range 0.0–1.0
+  /// where 0.0 = no confidence and 1.0 = full confidence. Null if not reported by the source.
   confidenceScore Decimal?                  @map("confidence_score") @db.Decimal(5, 4)
   operatorAddress String                    @map("operator_address") @db.VarChar(56)
   createdAt       DateTime                  @default(now()) @map("created_at")
@@ -133,19 +140,6 @@ model ResolutionCandidate {
 
   @@index([marketId])
   @@index([status])
-  @@index([source])
   @@index([marketId, status])
   @@map("resolution_candidates")
-}
-
-/// Maps raw/legacy provider names or aliases to their canonical OracleSource value.
-/// Used for normalising source attribution from external feeds.
-model OracleSourceAlias {
-  id           Int          @id @default(autoincrement())
-  alias        String       @unique
-  canonicalSource OracleSource @map("canonical_source")
-  createdAt    DateTime     @default(now()) @map("created_at")
-
-  @@index([canonicalSource])
-  @@map("oracle_source_aliases")
 }
