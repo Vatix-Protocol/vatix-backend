@@ -7,6 +7,10 @@ import {
   assertValidOrder,
   type OrderInput,
 } from "../../matching/validation.js";
+import {
+  heavyReadLimiter,
+  writeLimiter,
+} from "../middleware/rateLimiter.js";
 
 interface GetUserOrdersParams {
   address: string;
@@ -30,12 +34,14 @@ interface CreateOrderBody {
 export async function ordersRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
 
+  // Heavy read: two DB queries (findMany + count) per request — apply stricter limit.
   fastify.get<{
     Params: GetUserOrdersParams;
     Querystring: GetUserOrdersQuery;
   }>(
     "/orders/user/:address",
     {
+      onRequest: [heavyReadLimiter],
       schema: {
         params: {
           type: "object",
@@ -137,10 +143,11 @@ export async function ordersRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // POST /orders
+  // Write endpoint: validation + DB write + future matching-engine work — apply strictest limit.
   fastify.post<{ Body: CreateOrderBody }>(
     "/orders",
     {
+      onRequest: [writeLimiter],
       schema: {
         body: {
           type: "object",

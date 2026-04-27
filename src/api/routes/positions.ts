@@ -2,6 +2,7 @@ import { FastifyInstance } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import { validateUserAddress } from "../../matching/validation.js";
 import { ValidationError } from "../middleware/errors.js";
+import { heavyReadLimiter } from "../middleware/rateLimiter.js";
 
 interface PositionResult {
   yesShares: number;
@@ -10,7 +11,8 @@ interface PositionResult {
 }
 
 export default async function positionsRouter(server: FastifyInstance) {
-  server.get("/positions/user/:address", async (request, reply) => {
+  // Heavy read: findMany with market JOIN — apply stricter limit.
+  server.get("/positions/user/:address", { onRequest: [heavyReadLimiter] }, async (request, reply) => {
     const { address } = request.params as { address: string };
     const prisma = getPrismaClient();
 
