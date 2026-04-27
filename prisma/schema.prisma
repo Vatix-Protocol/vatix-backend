@@ -47,8 +47,9 @@ model Market {
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
 
-  orders    Order[]
-  positions UserPosition[]
+  orders        Order[]
+  positions     UserPosition[]
+  oracleReports OracleReport[]
 
   @@index([status])
   @@index([endTime])
@@ -76,6 +77,23 @@ model Order {
   @@index([status])
   @@index([marketId, outcome, price, createdAt])
   @@map("orders")
+}
+
+model OracleReport {
+  id                   String    @id @default(uuid())
+  source               String    @db.VarChar(256)
+  payloadHash          String    @map("payload_hash") @db.VarChar(64)
+  confidence           Decimal   @db.Decimal(5, 4)
+  marketId             String?   @map("market_id")
+  candidateResolution  Boolean?  @map("candidate_resolution")
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  market Market? @relation(fields: [marketId], references: [id], onDelete: SetNull)
+
+  @@index([marketId])
+  @@index([source])
+  @@index([createdAt])
+  @@map("oracle_reports")
 }
 
 model UserPosition {
