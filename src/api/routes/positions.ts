@@ -5,7 +5,11 @@ import {
   validateUserAddress,
 } from "../../matching/validation.js";
 import { ValidationError } from "../middleware/errors.js";
+<<<<<<< heavylimits
+import { heavyReadLimiter } from "../middleware/rateLimiter.js";
+=======
 import { success } from "../middleware/responses.js";
+>>>>>>> dev
 
 interface PositionResult {
   yesShares: number;
@@ -25,6 +29,10 @@ interface WalletExposureRow {
 }
 
 export default async function positionsRouter(server: FastifyInstance) {
+<<<<<<< heavylimits
+  // Heavy read: findMany with market JOIN — apply stricter limit.
+  server.get("/positions/user/:address", { onRequest: [heavyReadLimiter] }, async (request, reply) => {
+=======
   server.get(
     "/wallets/:wallet/positions",
     {
@@ -87,6 +95,7 @@ export default async function positionsRouter(server: FastifyInstance) {
   );
 
   server.get("/positions/user/:address", async (request, reply) => {
+>>>>>>> dev
     const { address } = request.params as { address: string };
     const prisma = getPrismaClient();
 

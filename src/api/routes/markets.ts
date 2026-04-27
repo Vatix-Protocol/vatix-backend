@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import type { Market, MarketStatus } from "../../types/index.js";
+import { heavyReadLimiter } from "../middleware/rateLimiter.js";
 
 interface GetMarketsQueryParams {
   status?: MarketStatus;
@@ -14,9 +15,11 @@ interface GetMarketsResponse {
 export async function marketsRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
 
+  // Heavy read: full-table scan with optional status filter — apply stricter limit.
   fastify.get<{ Querystring: GetMarketsQueryParams }>(
     "/markets",
     {
+      onRequest: [heavyReadLimiter],
       schema: {
         querystring: {
           type: "object",
