@@ -74,6 +74,7 @@ model Order {
 
   @@index([marketId])
   @@index([userAddress])
+  @@index([userAddress, marketId])
   @@index([status])
   @@index([marketId, outcome, price, createdAt])
   @@map("orders")
@@ -111,5 +112,6 @@ model UserPosition {
   @@unique([marketId, userAddress])
   @@index([marketId])
   @@index([userAddress])
+  @@index([userAddress, marketId])
   @@map("user_positions")
 }
