@@ -71,6 +71,14 @@ describe("Order Validation", () => {
       expect(validateUserAddress("")).toBe("User address is required");
     });
 
+    it("should reject non-base32 characters in Stellar address", () => {
+      const invalidCharsetAddress =
+        "G1BCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+      expect(validateUserAddress(invalidCharsetAddress)).toBe(
+        "User address must be a valid Stellar public key (G + 55 base32 chars)"
+      );
+    });
+
     it("should reject null/undefined", () => {
       expect(validateUserAddress(null as unknown as string)).toBe(
         "User address must be a string"

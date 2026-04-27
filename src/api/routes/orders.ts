@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import { ValidationError } from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
+import { auditService } from "../../services/audit.js";
 import {
   validateUserAddress,
   assertValidOrder,
@@ -22,6 +23,13 @@ interface GetUserOrdersQuery {
   limit?: number;
 }
 
+interface GetWalletTradesQuery {
+  page?: number;
+  limit?: number;
+  from?: string;
+  to?: string;
+}
+
 interface CreateOrderBody {
   marketId: string;
   userAddress: string;
@@ -35,6 +43,115 @@ export async function ordersRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
 
   // Heavy read: two DB queries (findMany + count) per request — apply stricter limit.
+  fastify.get<{
+    Params: GetUserOrdersParams;
+    Querystring: GetWalletTradesQuery;
+  }>(
+    "/trades/user/:address",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["address"],
+          properties: {
+            address: { type: "string" },
+          },
+        },
+        querystring: {
+          type: "object",
+          properties: {
+            page: {
+              type: "integer",
+              minimum: 1,
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+            },
+            from: {
+              type: "string",
+              format: "date-time",
+              description:
+                "Inclusive UTC start timestamp (ISO-8601), e.g. 2026-04-27T00:00:00.000Z",
+            },
+            to: {
+              type: "string",
+              format: "date-time",
+              description:
+                "Inclusive UTC end timestamp (ISO-8601), e.g. 2026-04-27T23:59:59.999Z",
+            },
+          },
+        },
+      },
+    },
+    async (
+      request: FastifyRequest<{
+        Params: GetUserOrdersParams;
+        Querystring: GetWalletTradesQuery;
+      }>
+    ) => {
+      const { address } = request.params;
+      const { page = 1, limit = 20, from, to } = request.query;
+
+      const addressError = validateUserAddress(address);
+      if (addressError) {
+        throw new ValidationError(addressError);
+      }
+
+      let fromMs: number | undefined;
+      let toMs: number | undefined;
+
+      if (from !== undefined) {
+        fromMs = Date.parse(from);
+        if (Number.isNaN(fromMs)) {
+          throw new ValidationError("from must be a valid UTC ISO-8601 timestamp");
+        }
+      }
+
+      if (to !== undefined) {
+        toMs = Date.parse(to);
+        if (Number.isNaN(toMs)) {
+          throw new ValidationError("to must be a valid UTC ISO-8601 timestamp");
+        }
+      }
+
+      if (fromMs !== undefined && toMs !== undefined && fromMs > toMs) {
+        throw new ValidationError(
+          "Invalid date range: from must be earlier than or equal to to"
+        );
+      }
+
+      const { trades, total, hasNext } = await auditService.getWalletTradeHistory(
+        address,
+        page,
+        limit,
+        fromMs,
+        toMs
+      );
+
+      return {
+        trades: trades.map((entry) => ({
+          id: entry.trade.id,
+          marketId: entry.trade.marketId,
+          outcome: entry.trade.outcome,
+          buyerAddress: entry.trade.buyerAddress,
+          sellerAddress: entry.trade.sellerAddress,
+          buyOrderId: entry.trade.buyOrderId,
+          sellOrderId: entry.trade.sellOrderId,
+          price: entry.trade.price,
+          quantity: entry.trade.quantity,
+          timestamp: entry.trade.timestamp,
+          loggedAt: entry.loggedAt,
+        })),
+        total,
+        hasNext,
+        page,
+        limit,
+      };
+    }
+  );
+
   fastify.get<{
     Params: GetUserOrdersParams;
     Querystring: GetUserOrdersQuery;

@@ -31,7 +31,10 @@ export class OrderValidationError extends ValidationError {
  * Validates a Stellar user address format
  * - Must be exactly 56 characters
  * - Must start with 'G' (Stellar public key prefix)
+ * - Remaining characters must be Stellar StrKey base32 charset [A-Z2-7]
  */
+export const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
+
 export function validateUserAddress(address: string): string | null {
   if (typeof address !== "string") {
     return "User address must be a string";
@@ -47,6 +50,10 @@ export function validateUserAddress(address: string): string | null {
 
   if (!address.startsWith("G")) {
     return "User address must start with G";
+  }
+
+  if (!STELLAR_PUBLIC_KEY_REGEX.test(address)) {
+    return "User address must be a valid Stellar public key (G + 55 base32 chars)";
   }
 
   return null;
