@@ -36,6 +36,13 @@ enum Outcome {
   NO
 }
 
+enum ResolutionCandidateStatus {
+  PROPOSED
+  CHALLENGED
+  ACCEPTED
+  REJECTED
+}
+
 model Market {
   id             String       @id @default(uuid())
   question       String
@@ -47,9 +54,15 @@ model Market {
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
 
+<<<<<<< feat/122-resolution-candidate-table
+  orders               Order[]
+  positions            UserPosition[]
+  resolutionCandidates ResolutionCandidate[]
+=======
   orders        Order[]
   positions     UserPosition[]
   oracleReports OracleReport[]
+>>>>>>> dev
 
   @@index([status])
   @@index([endTime])
@@ -114,4 +127,22 @@ model UserPosition {
   @@index([userAddress])
   @@index([userAddress, marketId])
   @@map("user_positions")
+}
+
+model ResolutionCandidate {
+  id              String                    @id @default(uuid())
+  marketId        String                    @map("market_id")
+  proposedOutcome Boolean                   @map("proposed_outcome")
+  source          String
+  status          ResolutionCandidateStatus @default(PROPOSED)
+  operatorAddress String                    @map("operator_address") @db.VarChar(56)
+  createdAt       DateTime                  @default(now()) @map("created_at")
+  updatedAt       DateTime                  @default(now()) @updatedAt @map("updated_at")
+
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@index([marketId])
+  @@index([status])
+  @@index([marketId, status])
+  @@map("resolution_candidates")
 }
