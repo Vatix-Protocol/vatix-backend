@@ -95,3 +95,15 @@ model UserPosition {
   @@index([userAddress])
   @@map("user_positions")
 }
+
+model IndexerCursor {
+  networkId String   @map("network_id")
+  cursorKey String   @map("cursor_key")
+  cursor    String?  @map("cursor_value")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@id([networkId, cursorKey])
+  @@index([networkId])
+  @@map("indexer_cursors")
+}
