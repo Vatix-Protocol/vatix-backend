@@ -72,6 +72,11 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
 
+      - name: Validate migrations
+        run: pnpm prisma:validate
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+
       - name: Run migrations
         run: pnpm prisma:migrate deploy
         env:
