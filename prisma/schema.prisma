@@ -54,15 +54,9 @@ model Market {
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
 
-<<<<<<< feat/122-resolution-candidate-table
-  orders               Order[]
-  positions            UserPosition[]
-  resolutionCandidates ResolutionCandidate[]
-=======
   orders        Order[]
   positions     UserPosition[]
   oracleReports OracleReport[]
->>>>>>> dev
 
   @@index([status])
   @@index([endTime])

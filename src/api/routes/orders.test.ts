@@ -7,6 +7,7 @@ import type { PrismaClient } from "../../generated/prisma/client";
 const mockPrismaClient = {
   order: {
     findMany: vi.fn(),
+    count: vi.fn(),
     create: vi.fn(),
   },
   market: {
@@ -66,6 +67,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue(mockOrders);
+    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
+      2
+    );
 
     const response = await app.inject({
       method: "GET",
@@ -76,7 +80,8 @@ describe("GET /orders/user/:address", () => {
 
     const body = JSON.parse(response.body);
     expect(body.orders).toHaveLength(2);
-    expect(body.count).toBe(2);
+    expect(body.total).toBe(2);
+    expect(body.hasNext).toBe(false);
     expect(body.orders[0].id).toBe("order-2");
   });
 
@@ -84,6 +89,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue([]);
+    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
+      0
+    );
 
     const response = await app.inject({
       method: "GET",
@@ -97,7 +105,9 @@ describe("GET /orders/user/:address", () => {
         userAddress: validAddress,
         status: "OPEN",
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: 0,
+      take: 20,
     });
   });
 
@@ -105,6 +115,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue([]);
+    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
+      0
+    );
 
     const response = await app.inject({
       method: "GET",
@@ -113,7 +126,51 @@ describe("GET /orders/user/:address", () => {
 
     const body = JSON.parse(response.body);
     expect(body.orders).toEqual([]);
-    expect(body.count).toBe(0);
+    expect(body.total).toBe(0);
+    expect(body.hasNext).toBe(false);
+  });
+
+  it("should support page and limit pagination with hasNext metadata", async () => {
+    (
+      mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
+    ).mockResolvedValue([
+      {
+        id: "order-3",
+        marketId: "market-1",
+        userAddress: validAddress,
+        side: "BUY",
+        outcome: "YES",
+        price: "0.55",
+        quantity: 10,
+        filledQuantity: 0,
+        status: "OPEN",
+        createdAt: new Date("2026-01-15T00:00:00Z"),
+      },
+    ]);
+    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
+      5
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/orders/user/${validAddress}?page=2&limit=2`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockPrismaClient.order.findMany).toHaveBeenCalledWith({
+      where: {
+        userAddress: validAddress,
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: 2,
+      take: 2,
+    });
+
+    const body = JSON.parse(response.body);
+    expect(body.page).toBe(2);
+    expect(body.limit).toBe(2);
+    expect(body.total).toBe(5);
+    expect(body.hasNext).toBe(true);
   });
 
   it("should reject invalid Stellar address", async () => {
@@ -138,6 +195,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockRejectedValue(new Error("Database connection failed"));
+    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
+      0
+    );
 
     const response = await app.inject({
       method: "GET",
