@@ -21,3 +21,6 @@ yarn.lock
 
 # Test coverage
 coverage/
+
+#Issues descriptions
+vrickish_issues.md
