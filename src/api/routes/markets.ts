@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import type { Market, MarketStatus } from "../../types/index.js";
 import { heavyReadLimiter } from "../middleware/rateLimiter.js";
+import { success } from "../middleware/responses.js";
 
 interface GetMarketsQueryParams {
   status?: MarketStatus;
@@ -57,7 +58,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         },
       },
     },
-    async (request: FastifyRequest<{ Querystring: GetMarketsQueryParams }>) => {
+    async (request: FastifyRequest<{ Querystring: GetMarketsQueryParams }>, reply) => {
       const { status } = request.query;
 
       const whereClause = status ? { status } : {};
@@ -74,7 +75,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         count: markets.length,
       };
 
-      return response;
+      success(reply, response);
     }
   );
 }

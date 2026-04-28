@@ -112,7 +112,7 @@ export default async function positionsRouter(server: FastifyInstance) {
         netPosition: p.yesShares - p.noShares,
       }));
 
-      return results;
+      success(reply, { positions: results, count: results.length });
     }
   );
 }
