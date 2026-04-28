@@ -2,8 +2,8 @@
 // Single source of truth for all error normalization and logging
 
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
-import { ValidationError } from "./errors.js";
-import { ErrorResponse } from "../../types/errors.js";
+import { ValidationError, AppError } from "./errors.js";
+import type { ErrorEnvelope } from "../../types/errors.js";
 
 const isProduction = () => process.env.NODE_ENV === "production";
 
@@ -14,22 +14,16 @@ export function errorHandler(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
-  // Determine status code
-  let statusCode = 500;
-  if ("statusCode" in error && typeof error.statusCode === "number") {
-    statusCode = error.statusCode;
-  }
+  const statusCode =
+    "statusCode" in error && typeof error.statusCode === "number"
+      ? error.statusCode
+      : 500;
 
-  // Determine if it's a client error (4xx) or server error (5xx)
   const isClientError = statusCode >= 400 && statusCode < 500;
   const isServerError = statusCode >= 500;
 
-  // Get request ID for tracking
-  const requestId = request.id;
-
-  // Log error with appropriate level
   const logContext = {
-    requestId,
+    requestId: request.id,
     method: request.method,
     url: request.url,
     statusCode,
@@ -50,17 +44,17 @@ export function errorHandler(
     errorMessage = "Internal server error";
   }
 
-  const response: ErrorResponse = {
-    error: errorMessage,
-    requestId,
+  const envelope: ErrorEnvelope = {
+    code,
+    message,
     statusCode,
     // Include stack trace in response body only outside production
     ...(!isProduction() && isServerError && { stack: error.stack }),
   };
 
-  // Add field details for ValidationError
+  // Attach field-level details as metadata for ValidationError
   if (error instanceof ValidationError && error.fields) {
-    response.fields = error.fields;
+    envelope.metadata = { fields: error.fields };
   }
 
   reply.status(statusCode).send(response);

@@ -1,50 +1,42 @@
 // Custom error classes for Vatix Backend
-// used throughout the application for consistent error handling
-
-// Base class for application errors
+// Each class carries a stable `code` used in the API error envelope.
 
 export class AppError extends Error {
   statusCode: number;
+  code: string;
 
-  constructor(message: string, statusCode: number) {
+  constructor(message: string, statusCode: number, code: string) {
     super(message);
     this.name = this.constructor.name;
     this.statusCode = statusCode;
+    this.code = code;
     Error.captureStackTrace(this, this.constructor);
   }
 }
 
-// ValidationError is used when request validation fails
-// Returns 400 Bad Request with field-specific error details
 export class ValidationError extends AppError {
   fields?: Record<string, string>;
 
   constructor(message: string, fields?: Record<string, string>) {
-    super(message, 400);
+    super(message, 400, "validation_error");
     this.fields = fields;
   }
 }
 
-// NotFoundError is used when a requested resource doesn't exist
-// Returns 404 Not Found
 export class NotFoundError extends AppError {
   constructor(message: string = "Resource not found") {
-    super(message, 404);
+    super(message, 404, "not_found");
   }
 }
 
-// UnauthorizedError is used when authentication or authorization fails
-// Returns 401 Unauthorized
 export class UnauthorizedError extends AppError {
   constructor(message: string = "Unauthorized") {
-    super(message, 401);
+    super(message, 401, "unauthorized");
   }
 }
 
-// ForbiddenError is used when a user is not authorized to access a resource
-// Returns 403 Forbidden
 export class ForbiddenError extends AppError {
   constructor(message = "Forbidden") {
-    super(message, 403);
+    super(message, 403, "forbidden");
   }
 }
