@@ -12,6 +12,7 @@ import {
   heavyReadLimiter,
   writeLimiter,
 } from "../middleware/rateLimiter.js";
+import { success } from "../middleware/responses.js";
 
 interface GetUserOrdersParams {
   address: string;
@@ -220,7 +221,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       request: FastifyRequest<{
         Params: GetUserOrdersParams;
         Querystring: GetUserOrdersQuery;
-      }>
+      }>,
+      reply
     ) => {
       const { address } = request.params;
       const { status, page = 1, limit = 20 } = request.query;
@@ -250,13 +252,13 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         }),
       ]);
 
-      return {
+      success(reply, {
         orders,
         total,
         hasNext: skip + orders.length < total,
         page,
         limit,
-      };
+      });
     }
   );
 
@@ -357,8 +359,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       // TODO: Add to matching engine
       // await matchingEngine.addOrder(order);
 
-      reply.code(201);
-      return { order };
+      success(reply, { order }, 201);
     }
   );
 }
