@@ -1,5 +1,6 @@
 export interface IndexerConfig {
   nodeEnv: "development" | "test" | "production";
+  stellarRpcUrl: string;
   ingestionIntervalMs: number;
   networkId: string;
   cursorKey: string;
@@ -59,8 +60,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IndexerConfig 
     throw new Error("INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES must be an integer >= 1");
   }
 
+  const rawRpcUrl = env.STELLAR_RPC_URL;
+  if (!rawRpcUrl || rawRpcUrl.trim() === "") {
+    throw new Error("Missing required environment variable: STELLAR_RPC_URL");
+  }
+  let parsedRpcUrl: URL;
+  try {
+    parsedRpcUrl = new URL(rawRpcUrl);
+  } catch {
+    throw new Error(
+      "STELLAR_RPC_URL is not a valid URL (expected format: https://soroban-testnet.stellar.org)"
+    );
+  }
+  if (parsedRpcUrl.protocol !== "https:" && parsedRpcUrl.protocol !== "http:") {
+    throw new Error(
+      `STELLAR_RPC_URL must use http:// or https://, got: ${JSON.stringify(parsedRpcUrl.protocol)}`
+    );
+  }
+  const stellarRpcUrl = rawRpcUrl.trim();
+
   return {
     nodeEnv,
+    stellarRpcUrl,
     ingestionIntervalMs,
     networkId,
     cursorKey,
