@@ -9,6 +9,7 @@ import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
+import { requestIdMiddleware } from "./api/middleware/requestId.js";
 
 const server = Fastify({
   logger: true,
@@ -17,6 +18,9 @@ const server = Fastify({
 
 // Register error handler (must be before routes)
 server.setErrorHandler(errorHandler);
+
+// Resolve/generate request ID before anything else touches request.id
+server.register(requestIdMiddleware);
 
 // Register request logger (before routes so every request is captured)
 server.register(requestLogger);
@@ -52,6 +56,7 @@ server.get("/test/server-error", async () => {
 });
 
 // Global 404 handler — must be registered after all routes
+// Throws through the error handler for consistent response format
 server.setNotFoundHandler((request, reply) => {
   const requestId = request.id;
   reply.status(404).send({

@@ -22,11 +22,6 @@ const SENSITIVE_HEADERS = new Set([
  * All log objects are machine-parseable JSON (no free-form strings as values).
  */
 async function logger(fastify: FastifyInstance) {
-  // Propagate the generated request ID back to the caller.
-  fastify.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
-    reply.header("X-Request-ID", request.id);
-  });
-
   // Lightweight "incoming" entry — no body, no sensitive headers.
   fastify.addHook("onRequest", async (request: FastifyRequest) => {
     const userAddress =
