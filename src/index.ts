@@ -9,9 +9,14 @@ import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 
+// Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
+// Oversized requests are rejected with 413 Request Entity Too Large.
+const bodyLimit = Number(process.env.BODY_LIMIT_BYTES) || 65_536;
+
 const server = Fastify({
   logger: true,
   genReqId: () => crypto.randomUUID(), // Generate unique request IDs
+  bodyLimit,
 });
 
 // Register error handler (must be before routes)
