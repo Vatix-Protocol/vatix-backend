@@ -10,6 +10,7 @@ import { adminRoutes } from "./api/routes/admin.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
 import { requestIdMiddleware } from "./api/middleware/requestId.js";
+import { corsPlugin } from "./api/middleware/cors.js";
 
 // Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
 // Oversized requests are rejected with 413 Request Entity Too Large.
@@ -23,6 +24,9 @@ const server = Fastify({
 
 // Register error handler (must be before routes)
 server.setErrorHandler(errorHandler);
+
+// CORS — must be registered before routes so preflight OPTIONS requests are handled
+server.register(corsPlugin);
 
 // Resolve/generate request ID before anything else touches request.id
 server.register(requestIdMiddleware);
