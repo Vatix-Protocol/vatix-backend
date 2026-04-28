@@ -7,6 +7,7 @@ import "dotenv/config";
 import { marketsRoutes } from "./api/routes/markets.js";
 import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
+import { healthRoutes } from "./api/routes/health.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
 
@@ -30,10 +31,7 @@ server.register(ordersRoutes);
 
 server.register(positionsRouter);
 server.register(adminRoutes);
-
-server.get("/health", async () => {
-  return { status: "ok", service: "vatix-backend" };
-});
+server.register(healthRoutes);
 
 // Test routes for error handling
 server.get("/test/validation-error", async () => {
