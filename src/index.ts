@@ -8,6 +8,7 @@ import { marketsRoutes } from "./api/routes/markets.js";
 import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
+import { requestLogger } from "./api/middleware/logger.js";
 
 const server = Fastify({
   logger: true,
@@ -16,6 +17,9 @@ const server = Fastify({
 
 // Register error handler (must be before routes)
 server.setErrorHandler(errorHandler);
+
+// Register request logger (before routes so every request is captured)
+server.register(requestLogger);
 
 // Apply rate limiting globally
 server.addHook("onRequest", rateLimiter);
