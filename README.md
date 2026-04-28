@@ -112,9 +112,10 @@ apps/
 └── workers/      # Queue consumers and scheduled jobs
 
 docs/
-├── architecture.md # Service boundaries and data flow
-├── testing.md      # Comprehensive testing guide
-└── migrations.md   # Database migration guide
+├── testing.md    # Comprehensive testing guide
+├── migrations.md # Database migration guide
+└── runbooks/
+    └── incident-runbook.md  # Incident response procedures
 ```
 
 ## Environment Variables
@@ -146,6 +147,18 @@ Database schema is managed through Prisma migrations:
 - **Validation**: Automated migration checks and SQL validation
 
 See [docs/migrations.md](docs/migrations.md) for detailed migration guide.
+
+## Operations & Incident Response
+
+Comprehensive incident response procedures are documented for common backend issues:
+
+- **Indexer Lag or Stall:** Detection, diagnosis, and recovery steps
+- **RPC/Horizon Outage:** Failover procedures and impact mitigation
+- **Database Incidents:** Connection issues, query performance, and recovery
+- **Redis Failures:** Cache management and service restoration
+- **Oracle Resolution Failures:** Manual resolution procedures
+
+See [docs/runbooks/incident-runbook.md](docs/runbooks/incident-runbook.md) for the complete incident response runbook.
 
 ## API Endpoints
 
