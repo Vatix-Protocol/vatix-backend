@@ -1,32 +1,22 @@
-// Error handler middleware for Fastify
-
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
-import { ValidationError } from "./errors.js";
-import { ErrorResponse } from "../../types/errors.js";
+import { ValidationError, AppError } from "./errors.js";
+import type { ErrorEnvelope } from "../../types/errors.js";
 
-// Centralized error handler for Fastify
-// Catches all unhandled errors and returns consistent error responses
 export function errorHandler(
   error: FastifyError | Error,
   request: FastifyRequest,
   reply: FastifyReply
 ) {
-  // Determine status code
-  let statusCode = 500;
-  if ("statusCode" in error && typeof error.statusCode === "number") {
-    statusCode = error.statusCode;
-  }
+  const statusCode =
+    "statusCode" in error && typeof error.statusCode === "number"
+      ? error.statusCode
+      : 500;
 
-  // Determine if it's a client error (4xx) or server error (5xx)
   const isClientError = statusCode >= 400 && statusCode < 500;
   const isServerError = statusCode >= 500;
 
-  // Get request ID for tracking
-  const requestId = request.id;
-
-  // Log error with appropriate level
   const logContext = {
-    requestId,
+    requestId: request.id,
     method: request.method,
     url: request.url,
     statusCode,
@@ -34,38 +24,37 @@ export function errorHandler(
   };
 
   if (isClientError) {
-    // Client errors are expected (bad input, not found, etc.)
     request.log.warn(logContext, "Client error");
   } else if (isServerError) {
-    // Server errors are unexpected and need investigation
-    request.log.error(
-      {
-        ...logContext,
-        stack: error.stack,
-      },
-      "Server error"
-    );
+    request.log.error({ ...logContext, stack: error.stack }, "Server error");
   }
 
-  // Build error response
-  let errorMessage = error.message;
+  // Derive stable code: prefer AppError.code, fall back to Fastify's error code,
+  // then a generic sentinel.
+  let code =
+    error instanceof AppError
+      ? error.code
+      : ("code" in error && typeof error.code === "string" && error.code) ||
+        "internal_error";
 
-  // hide internal error details in prod
-  if (process.env.NODE_ENV === "production" && isServerError) {
-    errorMessage = "Internal server error";
+  // Human-readable message — scrub internals in production
+  let message = error.message;
+  if (isServerError && process.env.NODE_ENV === "production") {
+    message = "An unexpected error occurred. Please try again later.";
+    code = "internal_error";
   }
 
-  const response: ErrorResponse = {
-    error: errorMessage,
-    requestId,
+  const envelope: ErrorEnvelope = {
+    code,
+    message,
     statusCode,
+    requestId: request.id,
   };
 
-  // Add field details for ValidationError
+  // Attach field-level details as metadata for ValidationError
   if (error instanceof ValidationError && error.fields) {
-    response.fields = error.fields;
+    envelope.metadata = { fields: error.fields };
   }
 
-  // Send error response
-  reply.status(statusCode).send(response);
+  reply.status(statusCode).send(envelope);
 }
