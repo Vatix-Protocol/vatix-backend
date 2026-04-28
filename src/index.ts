@@ -9,6 +9,7 @@ import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
+import { config } from "./config.js";
 
 const server = Fastify({
   logger: true,
@@ -58,7 +59,10 @@ const start = async () => {
 
     const port = Number(process.env.PORT) || 3000;
     await server.listen({ port, host: "0.0.0.0" });
-    console.log(`Server running at http://localhost:${port}`);
+    server.log.info(
+      { nodeEnv: config.nodeEnv, port },
+      `Server running at http://localhost:${port}`
+    );
   } catch (err) {
     server.log.error(err);
     process.exit(1);

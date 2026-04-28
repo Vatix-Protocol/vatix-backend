@@ -1,10 +1,14 @@
 export interface IndexerConfig {
+  nodeEnv: "development" | "test" | "production";
   ingestionIntervalMs: number;
   networkId: string;
   cursorKey: string;
   checkpointFlushEveryBatches: number;
   logLevel: "debug" | "info" | "warn" | "error";
 }
+
+const ACCEPTED_NODE_ENVS = ["development", "test", "production"] as const;
+type NodeEnv = (typeof ACCEPTED_NODE_ENVS)[number];
 
 const DEFAULT_INGESTION_INTERVAL_MS = 5_000;
 const DEFAULT_NETWORK_ID = "mainnet";
@@ -13,6 +17,14 @@ const DEFAULT_CHECKPOINT_FLUSH_EVERY_BATCHES = 10;
 const DEFAULT_LOG_LEVEL: IndexerConfig["logLevel"] = "info";
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): IndexerConfig {
+  const rawNodeEnv = env.NODE_ENV ?? "development";
+  if (!ACCEPTED_NODE_ENVS.includes(rawNodeEnv as NodeEnv)) {
+    throw new Error(
+      `NODE_ENV must be one of ${ACCEPTED_NODE_ENVS.join(" | ")}, got: ${JSON.stringify(rawNodeEnv)}`
+    );
+  }
+  const nodeEnv = rawNodeEnv as NodeEnv;
+
   const ingestionIntervalMs = Number(
     env.INDEXER_INGESTION_INTERVAL_MS ?? DEFAULT_INGESTION_INTERVAL_MS
   );
@@ -48,6 +60,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): IndexerConfig 
   }
 
   return {
+    nodeEnv,
     ingestionIntervalMs,
     networkId,
     cursorKey,
