@@ -51,6 +51,16 @@ server.get("/test/server-error", async () => {
   throw new Error("Something went wrong internally");
 });
 
+// Global 404 handler — must be registered after all routes
+server.setNotFoundHandler((request, reply) => {
+  const requestId = request.id;
+  reply.status(404).send({
+    error: `Route ${request.method} ${request.url} not found`,
+    requestId,
+    statusCode: 404,
+  });
+});
+
 const start = async () => {
   try {
     // Initialize signing service BEFORE starting server
