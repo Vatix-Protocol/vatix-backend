@@ -117,7 +117,14 @@ export class PrimaryAdapter implements ProviderAdapter {
     return {
       outcome: true,
       confidence: 0.95,
+      confidenceMetadata: {
+        score: 0.95,
+        method: "primary-provider",
+      },
       source: this.source,
+      sourceMetadata: {
+        provider: this.source,
+      },
       timestamp: new Date().toISOString(),
       metadata: {
         provider: "primary",
