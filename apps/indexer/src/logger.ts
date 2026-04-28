@@ -1,3 +1,5 @@
+import { redactMeta } from "../../packages/shared/src/logRedactor.js";
+
 export interface Logger {
   debug(message: string, meta?: Record<string, unknown>): void;
   info(message: string, meta?: Record<string, unknown>): void;
@@ -31,7 +33,8 @@ export function createLogger(level: LogLevel): Logger {
       level: logLevel,
       message,
     };
-    const payload = meta ? { ...base, ...meta } : base;
+    const safeMeta = redactMeta(meta);
+    const payload = safeMeta ? { ...base, ...safeMeta } : base;
     const line = JSON.stringify(payload);
 
     if (logLevel === "error") {

@@ -1,14 +1,27 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import fp from "fastify-plugin";
+import { isSensitiveKey } from "../../packages/shared/src/logRedactor.js";
 
-// Headers that must never appear in logs (auth tokens, cookies, secrets).
-const SENSITIVE_HEADERS = new Set([
-  "authorization",
-  "cookie",
-  "set-cookie",
-  "x-api-key",
-  "x-auth-token",
-]);
+/**
+ * Returns true when a header name is considered sensitive and must be
+ * excluded from log output. Combines a hard-coded set of well-known HTTP
+ * auth/cookie headers with the shared isSensitiveKey registry so that any
+ * newly registered sensitive key is automatically covered here too.
+ */
+function isSensitiveHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower === "authorization" ||
+    lower === "cookie" ||
+    lower === "set-cookie" ||
+    lower === "x-api-key" ||
+    lower === "x-auth-token" ||
+    isSensitiveKey(lower)
+  );
+}
+
+// Re-export for use in tests
+export { isSensitiveHeader };
 
 /**
  * Request logging middleware for Fastify.
