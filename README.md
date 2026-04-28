@@ -67,6 +67,18 @@ docker compose up -d       # Start PostgreSQL + Redis
 docker compose down        # Stop containers
 ```
 
+## Project Map
+
+| Module | Directory | Purpose |
+|---|---|---|
+| **API** | [`src/`](src/) | Fastify HTTP server, CLOB matching engine, middleware |
+| **Indexer** | [`apps/indexer/`](apps/indexer/) | Polls Stellar for on-chain events and writes to PostgreSQL |
+| **Oracle** | [`apps/oracle/`](apps/oracle/) | Fetches external data, signs and submits resolution reports |
+| **Workers** | [`apps/workers/`](apps/workers/) | Queue consumers and scheduled jobs (settlement, expiry) |
+| **Shared DB** | [`packages/db/`](packages/db/) | Shared Prisma client and migration utilities |
+
+See [docs/architecture.md](docs/architecture.md) for service boundaries and data flow.
+
 ## Project Structure
 
 ```
@@ -94,9 +106,15 @@ scripts/
 ├── validate-migrations.ts  # Migration validation script
 └── generate-keypair.ts     # Stellar keypair generator
 
+apps/
+├── indexer/      # Stellar event indexer
+├── oracle/       # External data oracle
+└── workers/      # Queue consumers and scheduled jobs
+
 docs/
-├── testing.md    # Comprehensive testing guide
-└── migrations.md # Database migration guide
+├── architecture.md # Service boundaries and data flow
+├── testing.md      # Comprehensive testing guide
+└── migrations.md   # Database migration guide
 ```
 
 ## Environment Variables
