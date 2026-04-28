@@ -12,11 +12,16 @@ interface IngestionBatchResult {
   lastIndexedLedgerSequence: number;
 }
 
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
 export class PollingIngestionLoop implements IngestionLoop {
   private timer: NodeJS.Timeout | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
   private isTickInProgress = false;
   private cursor: string | null = null;
   private successfulBatchesSinceLastCheckpoint = 0;
+  private batchesSinceLastHeartbeat = 0;
+  private lastHeartbeatLedgerSequence: number | null = null;
 
   constructor(
     private readonly logger: Logger,
@@ -41,12 +46,20 @@ export class PollingIngestionLoop implements IngestionLoop {
 
     await this.tick();
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
+    this.heartbeatTimer = setInterval(
+      () => this.emitHeartbeat(),
+      HEARTBEAT_INTERVAL_MS
+    );
   }
 
   async stop(): Promise<void> {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
     }
 
     await this.flushCheckpoint(true);
@@ -73,6 +86,7 @@ export class PollingIngestionLoop implements IngestionLoop {
           batchResult.lastIndexedLedgerSequence
         );
         this.successfulBatchesSinceLastCheckpoint += 1;
+        this.batchesSinceLastHeartbeat += 1;
         await this.flushCheckpoint(false);
       }
     } catch (error) {
@@ -103,6 +117,27 @@ export class PollingIngestionLoop implements IngestionLoop {
       latestIndexedLedgerSequence: this.metrics.getLatestIndexedLedgerSequence(),
       forced: force,
     });
+  }
+
+  private emitHeartbeat(): void {
+    const latestIndexedLedgerSequence =
+      this.metrics.getLatestIndexedLedgerSequence();
+    const ledgerDelta =
+      latestIndexedLedgerSequence !== null &&
+      this.lastHeartbeatLedgerSequence !== null
+        ? latestIndexedLedgerSequence - this.lastHeartbeatLedgerSequence
+        : null;
+
+    this.logger.info("Indexer heartbeat", {
+      cursor: this.cursor,
+      latestIndexedLedgerSequence,
+      batchesProcessed: this.batchesSinceLastHeartbeat,
+      ledgerDelta,
+      heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+    });
+
+    this.batchesSinceLastHeartbeat = 0;
+    this.lastHeartbeatLedgerSequence = latestIndexedLedgerSequence;
   }
 
   private async ingestFromCursor(
