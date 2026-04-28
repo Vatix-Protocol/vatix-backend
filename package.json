@@ -27,7 +27,7 @@
     "format:check": "prettier --check ."
   },
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=22.0.0",
     "pnpm": ">=8.0.0",
     "npm": "please-use-pnpm",
     "yarn": "please-use-pnpm"

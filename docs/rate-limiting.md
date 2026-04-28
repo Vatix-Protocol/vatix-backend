@@ -49,7 +49,26 @@ Limit: **100 req / 60 s** per IP.
 
 ## Response format
 
-When a limit is exceeded the server responds with HTTP **429 Too Many Requests**:
+Every response — including successful ones — carries quota-visibility headers
+so clients can self-throttle before hitting a limit:
+
+```
+RateLimit-Limit: 20
+RateLimit-Remaining: 17
+RateLimit-Reset: 1745798460
+```
+
+| Header | Value |
+|--------|-------|
+| `RateLimit-Limit` | Maximum requests allowed in the current window |
+| `RateLimit-Remaining` | Requests still available; `0` when the limit is reached |
+| `RateLimit-Reset` | Unix timestamp (seconds UTC) when the window resets and the counter clears |
+
+Header names follow the [IETF RateLimit header fields draft](https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-ratelimit-headers).
+
+When a limit is exceeded the server responds with HTTP **429 Too Many Requests**.
+The `Retry-After` header (seconds until reset) and all three quota headers are
+present on the 429 response as well:
 
 ```json
 {
@@ -60,9 +79,6 @@ When a limit is exceeded the server responds with HTTP **429 Too Many Requests**
 }
 ```
 
-The `Retry-After` response header is also set to the same value (seconds until
-the window resets).
-
 ## Configuration
 
 All limits are configurable via environment variables (see `.env.example`).
@@ -72,7 +88,10 @@ Redis backend.
 
 ## Integrator notes
 
-- Clients should respect the `Retry-After` header and back off accordingly.
+- Read `RateLimit-Remaining` on every response to track your remaining quota
+  before a 429 occurs. Back off proactively when it approaches zero.
+- When you do receive a 429, respect the `Retry-After` header (or equivalently
+  wait until the `RateLimit-Reset` Unix timestamp) before retrying.
 - The `X-Forwarded-For` header is used for IP detection when the server sits
   behind a proxy. Ensure your proxy sets this header correctly.
 - Heavy and write limits are intentionally lower than the global limit. If your
