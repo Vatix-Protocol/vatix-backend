@@ -14,6 +14,39 @@ export type NodeEnv = "development" | "test" | "production";
 
 const ACCEPTED_NODE_ENVS: NodeEnv[] = ["development", "test", "production"];
 
+/**
+ * Validates DATABASE_URL is present and matches a postgresql:// or postgres:// URL.
+ * Throws at startup if missing or malformed — never logs the full connection string.
+ */
+function loadDatabaseUrl(): string {
+  const raw = process.env.DATABASE_URL;
+
+  if (!raw || raw.trim() === "") {
+    throw new Error("Missing required environment variable: DATABASE_URL");
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error(
+      "DATABASE_URL is not a valid URL (expected format: postgresql://user:pass@host:port/db)"
+    );
+  }
+
+  if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
+    throw new Error(
+      `DATABASE_URL must use the postgresql:// or postgres:// scheme, got: ${JSON.stringify(parsed.protocol)}`
+    );
+  }
+
+  if (!parsed.hostname) {
+    throw new Error("DATABASE_URL must include a hostname");
+  }
+
+  return raw;
+}
+
 function loadNodeEnv(): NodeEnv {
   const raw = process.env.NODE_ENV ?? "development";
   if (!ACCEPTED_NODE_ENVS.includes(raw as NodeEnv)) {
@@ -65,6 +98,13 @@ export const config = {
    * Configured via PORT (default: 3000).
    */
   port: requirePositiveInt("PORT", 3000, 65535),
+  /**
+   * PostgreSQL connection string for the primary database.
+   * Must be a valid postgresql:// or postgres:// URL.
+   * Configured via DATABASE_URL — startup fails if missing or malformed.
+   * Never logged in full to avoid leaking credentials.
+   */
+  databaseUrl: loadDatabaseUrl(),
   /**
    * Duration of the oracle resolution challenge window in seconds.
    * Must be a positive integer. All window boundary calculations use UTC.
