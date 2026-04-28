@@ -29,6 +29,7 @@ interface GetWalletTradesQuery {
   limit?: number;
   from?: string;
   to?: string;
+  marketId?: string;
 }
 
 interface CreateOrderBody {
@@ -82,6 +83,10 @@ export async function ordersRoutes(fastify: FastifyInstance) {
               description:
                 "Inclusive UTC end timestamp (ISO-8601), e.g. 2026-04-27T23:59:59.999Z",
             },
+            marketId: {
+              type: "string",
+              description: "Filter trades by market identifier",
+            },
           },
         },
       },
@@ -93,7 +98,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       }>
     ) => {
       const { address } = request.params;
-      const { page = 1, limit = 20, from, to } = request.query;
+      const { page = 1, limit = 20, from, to, marketId } = request.query;
 
       const addressError = validateUserAddress(address);
       if (addressError) {
@@ -123,12 +128,20 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         );
       }
 
+      if (marketId !== undefined) {
+        const market = await prisma.market.findUnique({ where: { id: marketId }, select: { id: true } });
+        if (!market) {
+          throw new ValidationError(`Market not found: ${marketId}`);
+        }
+      }
+
       const { trades, total, hasNext } = await auditService.getWalletTradeHistory(
         address,
         page,
         limit,
         fromMs,
-        toMs
+        toMs,
+        marketId
       );
 
       return {
