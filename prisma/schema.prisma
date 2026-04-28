@@ -89,13 +89,13 @@ model Order {
 }
 
 model OracleReport {
-  id                   String    @id @default(uuid())
-  source               String    @db.VarChar(256)
-  payloadHash          String    @map("payload_hash") @db.VarChar(64)
-  confidence           Decimal   @db.Decimal(5, 4)
-  marketId             String?   @map("market_id")
-  candidateResolution  Boolean?  @map("candidate_resolution")
-  createdAt            DateTime  @default(now()) @map("created_at")
+  id                  String   @id @default(uuid())
+  source              String   @db.VarChar(256)
+  payloadHash         String   @map("payload_hash") @db.VarChar(64)
+  confidence          Decimal  @db.Decimal(5, 4)
+  marketId            String?  @map("market_id")
+  candidateResolution Boolean? @map("candidate_resolution")
+  createdAt           DateTime @default(now()) @map("created_at")
 
   market Market? @relation(fields: [marketId], references: [id], onDelete: SetNull)
 
