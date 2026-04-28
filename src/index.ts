@@ -9,15 +9,27 @@ import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
-import { config } from "./config.js";
+import { requestIdMiddleware } from "./api/middleware/requestId.js";
+import { corsPlugin } from "./api/middleware/cors.js";
+
+// Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
+// Oversized requests are rejected with 413 Request Entity Too Large.
+const bodyLimit = Number(process.env.BODY_LIMIT_BYTES) || 65_536;
 
 const server = Fastify({
   logger: true,
   genReqId: () => crypto.randomUUID(), // Generate unique request IDs
+  bodyLimit,
 });
 
 // Register error handler (must be before routes)
 server.setErrorHandler(errorHandler);
+
+// CORS — must be registered before routes so preflight OPTIONS requests are handled
+server.register(corsPlugin);
+
+// Resolve/generate request ID before anything else touches request.id
+server.register(requestIdMiddleware);
 
 // Register request logger (before routes so every request is captured)
 server.register(requestLogger);
@@ -50,6 +62,17 @@ server.get("/test/not-found", async () => {
 
 server.get("/test/server-error", async () => {
   throw new Error("Something went wrong internally");
+});
+
+// Global 404 handler — must be registered after all routes
+// Throws through the error handler for consistent response format
+server.setNotFoundHandler((request, reply) => {
+  const requestId = request.id;
+  reply.status(404).send({
+    error: `Route ${request.method} ${request.url} not found`,
+    requestId,
+    statusCode: 404,
+  });
 });
 
 const start = async () => {
