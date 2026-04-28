@@ -1,5 +1,4 @@
 import Fastify from "fastify";
-import { getConfig } from "./config.js";
 
 const server = Fastify({
   logger: true,
@@ -11,7 +10,7 @@ server.get("/health", async () => {
 
 const start = async () => {
   try {
-    const port = getConfig().server.port;
+    const port = Number(process.env.PORT) || 3000;
     await server.listen({ port, host: "0.0.0.0" });
     console.log(`Server running at http://localhost:${port}`);
   } catch (err) {
