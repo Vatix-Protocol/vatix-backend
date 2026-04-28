@@ -197,7 +197,8 @@ export class AuditService {
     page: number = 1,
     limit: number = 20,
     fromMs?: number,
-    toMs?: number
+    toMs?: number,
+    marketId?: string
   ): Promise<{
     trades: AuditLogEntry[];
     total: number;
@@ -225,7 +226,8 @@ export class AuditService {
       .map(([id, fields]) => this.parseStreamEntry(id, fields))
       .filter(
         (entry) =>
-          entry.trade.buyerAddress === wallet || entry.trade.sellerAddress === wallet
+          (entry.trade.buyerAddress === wallet || entry.trade.sellerAddress === wallet) &&
+          (marketId === undefined || entry.trade.marketId === marketId)
       );
 
     const skip = (page - 1) * limit;
