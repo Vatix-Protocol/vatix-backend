@@ -57,7 +57,7 @@ const start = async () => {
     // Initialize signing service BEFORE starting server
     signingService.initialize();
 
-    const port = Number(process.env.PORT) || 3000;
+    const port = config.port;
     await server.listen({ port, host: "0.0.0.0" });
     server.log.info(
       { nodeEnv: config.nodeEnv, port },

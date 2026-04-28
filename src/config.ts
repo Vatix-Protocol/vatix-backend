@@ -24,7 +24,11 @@ function loadNodeEnv(): NodeEnv {
   return raw as NodeEnv;
 }
 
-function requirePositiveInt(name: string, fallback?: number): number {
+function requirePositiveInt(
+  name: string,
+  fallback?: number,
+  max?: number
+): number {
   const raw = process.env[name];
 
   if (raw === undefined || raw === "") {
@@ -40,6 +44,12 @@ function requirePositiveInt(name: string, fallback?: number): number {
     );
   }
 
+  if (max !== undefined && value > max) {
+    throw new Error(
+      `Environment variable ${name} must be <= ${max}, got: ${JSON.stringify(raw)}`
+    );
+  }
+
   return value;
 }
 
@@ -49,6 +59,12 @@ export const config = {
    * Configured via NODE_ENV (default: development).
    */
   nodeEnv: loadNodeEnv(),
+  /**
+   * TCP port the API server binds to.
+   * Must be a positive integer in the range 1–65535.
+   * Configured via PORT (default: 3000).
+   */
+  port: requirePositiveInt("PORT", 3000, 65535),
   /**
    * Duration of the oracle resolution challenge window in seconds.
    * Must be a positive integer. All window boundary calculations use UTC.
