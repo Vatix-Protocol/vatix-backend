@@ -1,8 +1,11 @@
-// Error handler middleware for Fastify
+// Global error handler middleware for Fastify
+// Single source of truth for all error normalization and logging
 
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import { ValidationError } from "./errors.js";
 import { ErrorResponse } from "../../types/errors.js";
+
+const isProduction = () => process.env.NODE_ENV === "production";
 
 // Centralized error handler for Fastify
 // Catches all unhandled errors and returns consistent error responses
@@ -31,27 +34,19 @@ export function errorHandler(
     url: request.url,
     statusCode,
     error: error.message,
+    // Always include stack in logs for server errors regardless of environment
+    ...(isServerError && { stack: error.stack }),
   };
 
   if (isClientError) {
-    // Client errors are expected (bad input, not found, etc.)
     request.log.warn(logContext, "Client error");
   } else if (isServerError) {
-    // Server errors are unexpected and need investigation
-    request.log.error(
-      {
-        ...logContext,
-        stack: error.stack,
-      },
-      "Server error"
-    );
+    request.log.error(logContext, "Server error");
   }
 
-  // Build error response
+  // Build error response — hide internals in production
   let errorMessage = error.message;
-
-  // hide internal error details in prod
-  if (process.env.NODE_ENV === "production" && isServerError) {
+  if (isProduction() && isServerError) {
     errorMessage = "Internal server error";
   }
 
@@ -59,6 +54,8 @@ export function errorHandler(
     error: errorMessage,
     requestId,
     statusCode,
+    // Include stack trace in response body only outside production
+    ...(!isProduction() && isServerError && { stack: error.stack }),
   };
 
   // Add field details for ValidationError
@@ -66,6 +63,5 @@ export function errorHandler(
     response.fields = error.fields;
   }
 
-  // Send error response
   reply.status(statusCode).send(response);
 }
