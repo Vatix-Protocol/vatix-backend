@@ -16,6 +16,37 @@ import { corsPlugin } from "./api/middleware/cors.js";
 // Oversized requests are rejected with 413 Request Entity Too Large.
 const bodyLimit = Number(process.env.BODY_LIMIT_BYTES) || 65_536;
 
+interface RpcReachabilityResult {
+  url: string | null;
+  reachable: boolean;
+  error?: string;
+}
+
+async function checkRpcReachability(
+  rpcUrl: string | undefined
+): Promise<RpcReachabilityResult> {
+  if (!rpcUrl) {
+    return { url: null, reachable: false, error: "STELLAR_RPC_URL not configured" };
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth", params: [] }),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+    return { url: rpcUrl, reachable: res.ok || res.status < 500 };
+  } catch (err) {
+    return {
+      url: rpcUrl,
+      reachable: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 const server = Fastify({
   logger: true,
   genReqId: () => crypto.randomUUID(), // Generate unique request IDs
@@ -46,6 +77,19 @@ server.register(adminRoutes);
 
 server.get("/health", async () => {
   return { status: "ok", service: "vatix-backend" };
+});
+
+server.get("/readiness", async (_req, reply) => {
+  const rpcUrl = process.env.STELLAR_RPC_URL;
+  const rpcStatus = await checkRpcReachability(rpcUrl);
+  const allHealthy = rpcStatus.reachable;
+  reply.status(allHealthy ? 200 : 503);
+  return {
+    status: allHealthy ? "ready" : "not_ready",
+    checks: {
+      stellarRpc: rpcStatus,
+    },
+  };
 });
 
 // Test routes for error handling
