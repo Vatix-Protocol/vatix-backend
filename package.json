@@ -7,6 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "indexer:dev": "tsx watch apps/indexer/src/main.ts",
     "indexer:start": "tsx apps/indexer/src/main.ts",
+    "workers:finalization:dev": "tsx watch apps/workers/src/finalization/main.ts",
+    "workers:finalization:start": "tsx apps/workers/src/finalization/main.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest",
@@ -27,7 +29,7 @@
     "format:check": "prettier --check ."
   },
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=22.0.0",
     "pnpm": ">=8.0.0",
     "npm": "please-use-pnpm",
     "yarn": "please-use-pnpm"

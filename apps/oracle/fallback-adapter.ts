@@ -121,7 +121,14 @@ export class FallbackAdapter implements ProviderAdapter {
     return {
       outcome: true,
       confidence: 0.85,
+      confidenceMetadata: {
+        score: 0.85,
+        method: "fallback-provider",
+      },
       source: this.source,
+      sourceMetadata: {
+        provider: this.source,
+      },
       timestamp: new Date().toISOString(),
       metadata: {
         provider: "fallback",

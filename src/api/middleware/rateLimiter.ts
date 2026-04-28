@@ -64,6 +64,28 @@ function extractIp(request: FastifyRequest): string {
   );
 }
 
+/**
+ * Attach quota-visibility headers to every response (2xx and 429).
+ *
+ * Header names follow the IETF RateLimit header fields draft
+ * (draft-ietf-httpapi-ratelimit-headers):
+ *
+ *   RateLimit-Limit     — the maximum number of requests allowed in the window
+ *   RateLimit-Remaining — requests still available in the current window
+ *   RateLimit-Reset     — Unix timestamp (seconds) when the window resets
+ */
+function setQuotaHeaders(
+  reply: FastifyReply,
+  limit: number,
+  remaining: number,
+  resetAt: number
+): void {
+  reply
+    .header("RateLimit-Limit", String(limit))
+    .header("RateLimit-Remaining", String(Math.max(0, remaining)))
+    .header("RateLimit-Reset", String(Math.ceil(resetAt / 1000)));
+}
+
 function applyLimit(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -78,15 +100,19 @@ function applyLimit(
   const entry = store.get(key);
 
   if (!entry || now >= entry.resetAt) {
-    store.set(key, { count: 1, resetAt: now + windowMs });
+    const newEntry: WindowEntry = { count: 1, resetAt: now + windowMs };
+    store.set(key, newEntry);
+    setQuotaHeaders(reply, maxRequests, maxRequests - 1, newEntry.resetAt);
     done();
     return;
   }
 
   entry.count += 1;
+  const remaining = maxRequests - entry.count;
 
   if (entry.count > maxRequests) {
     const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
+    setQuotaHeaders(reply, maxRequests, 0, entry.resetAt);
     reply
       .status(429)
       .header("Retry-After", String(retryAfter))
@@ -99,6 +125,7 @@ function applyLimit(
     return;
   }
 
+  setQuotaHeaders(reply, maxRequests, remaining, entry.resetAt);
   done();
 }
 

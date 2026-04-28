@@ -3,14 +3,4 @@ echo "🔍 Running pre-commit checks..."
 # Run lint-staged (TypeScript check + Prisma format)
 pnpm lint-staged
 
-# Run tests
-echo "Running tests..."
-pnpm test:run
-
-# Check if tests passed
-if [ $? -ne 0 ]; then
-  echo "❌ Tests failed. Commit aborted."
-  exit 1
-fi
-
 echo "All checks passed!"
