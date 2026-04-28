@@ -1,6 +1,7 @@
 import { PrismaClient } from "../generated/prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
+import { config } from "../config.js";
 
 /**
  * Singleton Prisma Client instance
@@ -17,15 +18,10 @@ let pgPool: Pool | null = null;
  */
 export function getPrismaClient(): PrismaClient {
   if (!prismaInstance) {
-    const isProduction = process.env.NODE_ENV === "production";
-    const databaseUrl = process.env.DATABASE_URL;
+    const isProduction = config.nodeEnv === "production";
 
-    if (!databaseUrl) {
-      throw new Error("DATABASE_URL environment variable is not set");
-    }
-
-    // create postgres connection pool
-    pgPool = new Pool({ connectionString: databaseUrl });
+    // create postgres connection pool — URL already validated at startup via config
+    pgPool = new Pool({ connectionString: config.databaseUrl });
     const adapter = new PrismaPg(pgPool);
 
     prismaInstance = new PrismaClient({

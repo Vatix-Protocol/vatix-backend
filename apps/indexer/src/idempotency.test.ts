@@ -4,6 +4,7 @@ import {
   generateIdempotencyKey,
   withIdempotencyKey,
   insertIfNew,
+  insertAllIfNew,
 } from "./idempotency.js";
 import type { NormalizedTrade, NormalizedResolution } from "./types.js";
 
@@ -216,5 +217,30 @@ describe("insertIfNew", () => {
     await expect(insertIfNew(persisted, upsert)).rejects.toThrow(
       "db connection lost"
     );
+  });
+
+  it("logs duplicates as structured no-ops", async () => {
+    const logger = { info: vi.fn() };
+    const upsert = vi.fn().mockResolvedValue(null);
+
+    await insertIfNew(persisted, upsert, { logger });
+
+    expect(logger.info).toHaveBeenCalledWith("Skipping duplicate indexer event", {
+      idempotencyKey: persisted.idempotencyKey,
+      duplicateCount: 1,
+    });
+  });
+
+  it("continues inserting later events after duplicate no-ops", async () => {
+    const later = { ...persisted, idempotencyKey: "later-key" };
+    const upsert = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(later);
+
+    const result = await insertAllIfNew([persisted, later], upsert);
+
+    expect(result).toEqual({ inserted: [later], duplicateCount: 1 });
+    expect(upsert).toHaveBeenCalledTimes(2);
   });
 });

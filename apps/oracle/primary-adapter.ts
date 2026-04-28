@@ -24,6 +24,34 @@ export interface PrimaryAdapterConfig {
   apiKey?: string;
   /** Request timeout in milliseconds */
   timeoutMs?: number;
+  /** Optional fetch implementation for tests */
+  fetchFn?: typeof fetch;
+}
+
+export type PrimaryProviderErrorType =
+  | "AUTHENTICATION"
+  | "INVALID_RESPONSE"
+  | "NOT_FOUND"
+  | "RATE_LIMIT"
+  | "TIMEOUT"
+  | "UPSTREAM";
+
+export class PrimaryProviderError extends Error {
+  constructor(
+    public readonly type: PrimaryProviderErrorType,
+    message: string,
+    public readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = "PrimaryProviderError";
+  }
+}
+
+interface PrimaryProviderResponse {
+  outcome: boolean;
+  confidence: number;
+  timestamp?: string;
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -33,12 +61,14 @@ export interface PrimaryAdapterConfig {
 export class PrimaryAdapter implements ProviderAdapter {
   private readonly source = "primary";
   private config: PrimaryAdapterConfig;
+  private readonly fetchFn: typeof fetch;
 
   constructor(config: PrimaryAdapterConfig) {
     this.config = {
       timeoutMs: DEFAULT_TIMEOUT_MS,
       ...config,
     };
+    this.fetchFn = config.fetchFn ?? fetch;
   }
 
   /**
@@ -64,8 +94,16 @@ export class PrimaryAdapter implements ProviderAdapter {
       }
     );
 
-    if (timedResult.timedOut || timedResult.error) {
-      throw timedResult.error ?? new Error("Primary provider request failed");
+    if (timedResult.timedOut) {
+      throw new PrimaryProviderError(
+        "TIMEOUT",
+        timedResult.error?.message ?? "Primary provider request timed out",
+        timedResult.error
+      );
+    }
+
+    if (timedResult.error) {
+      throw this.mapProviderError(timedResult.error);
     }
 
     return timedResult.value!;
@@ -79,9 +117,15 @@ export class PrimaryAdapter implements ProviderAdapter {
   async healthCheck(): Promise<boolean> {
     try {
       const timedResult = await withTimeout<boolean>(
-        async () => {
-          // In production, this would ping the provider health endpoint
-          return true;
+        async (signal) => {
+          const response = await this.fetchFn(
+            new URL("/health", this.config.baseUrl),
+            {
+              headers: this.getHeaders(),
+              signal,
+            }
+          );
+          return response.ok;
         },
         {
           timeoutMs: 5_000,
@@ -109,20 +153,83 @@ export class PrimaryAdapter implements ProviderAdapter {
    * Placeholder for actual HTTP request logic.
    */
   private async fetchFromProvider(
-    _request: ResolutionRequest,
-    _signal: AbortSignal
+    request: ResolutionRequest,
+    signal: AbortSignal
   ): Promise<ProviderResult> {
-    // In production, this would make an HTTP request to the provider API
-    // For now, return a placeholder result
+    const url = new URL("/resolve", this.config.baseUrl);
+    url.searchParams.set("marketId", request.marketId);
+    url.searchParams.set("oracleAddress", request.oracleAddress);
+
+    const response = await this.fetchFn(url, {
+      headers: this.getHeaders(),
+      signal,
+    });
+
+    if (!response.ok) {
+      throw new PrimaryProviderError(
+        this.mapStatus(response.status),
+        `Primary provider returned HTTP ${response.status}`
+      );
+    }
+
+    const payload = (await response.json()) as Partial<PrimaryProviderResponse>;
+    if (
+      typeof payload.outcome !== "boolean" ||
+      typeof payload.confidence !== "number" ||
+      payload.confidence < 0 ||
+      payload.confidence > 1
+    ) {
+      throw new PrimaryProviderError(
+        "INVALID_RESPONSE",
+        "Primary provider response is missing a valid outcome or confidence"
+      );
+    }
+
     return {
       outcome: true,
       confidence: 0.95,
+      confidenceMetadata: {
+        score: 0.95,
+        method: "primary-provider",
+      },
       source: this.source,
+      sourceMetadata: {
+        provider: this.source,
+      },
       timestamp: new Date().toISOString(),
       metadata: {
         provider: "primary",
-        marketId: _request.marketId,
+        marketId: request.marketId,
+        ...payload.metadata,
       },
     };
+  }
+
+  private getHeaders(): HeadersInit {
+    return {
+      Accept: "application/json",
+      ...(this.config.apiKey
+        ? { Authorization: `Bearer ${this.config.apiKey}` }
+        : {}),
+    };
+  }
+
+  private mapStatus(status: number): PrimaryProviderErrorType {
+    if (status === 401 || status === 403) return "AUTHENTICATION";
+    if (status === 404) return "NOT_FOUND";
+    if (status === 429) return "RATE_LIMIT";
+    return "UPSTREAM";
+  }
+
+  private mapProviderError(error: Error): PrimaryProviderError {
+    if (error instanceof PrimaryProviderError) {
+      return error;
+    }
+
+    if (error.name === "AbortError" || error.message.includes("timed out")) {
+      return new PrimaryProviderError("TIMEOUT", error.message, error);
+    }
+
+    return new PrimaryProviderError("UPSTREAM", error.message, error);
   }
 }

@@ -10,13 +10,35 @@
 /**
  * Provider resolution result with source attribution.
  */
+export interface ConfidenceMetadata {
+  /** Confidence score (0-1) indicating reliability */
+  score: number;
+  /** Provider-specific confidence model or method */
+  method?: string;
+  /** Optional human-readable explanation for confidence */
+  explanation?: string;
+}
+
+export interface SourceMetadata {
+  /** Provider source identifier */
+  provider: string;
+  /** Optional request or trace id from the provider */
+  requestId?: string;
+  /** Optional provider response timestamp */
+  observedAt?: string;
+}
+
 export interface ProviderResult {
   /** Resolved outcome value (true = YES, false = NO) */
   outcome: boolean;
   /** Confidence score (0-1) indicating reliability */
   confidence: number;
+  /** Structured confidence metadata for fallback decisions and migrations */
+  confidenceMetadata: ConfidenceMetadata;
   /** Source identifier for attribution (e.g., "primary", "fallback-1") */
   source: string;
+  /** Structured source attribution metadata */
+  sourceMetadata: SourceMetadata;
   /** ISO timestamp of when the data was fetched */
   timestamp: string;
   /** Optional metadata from the provider */

@@ -23,6 +23,7 @@ async function bootstrap(): Promise<void> {
   );
 
   logger.info("Indexer bootstrap started", {
+    nodeEnv: config.nodeEnv,
     ingestionIntervalMs: config.ingestionIntervalMs,
     networkId: config.networkId,
     cursorKey: config.cursorKey,

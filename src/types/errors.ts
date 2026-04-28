@@ -13,8 +13,7 @@ export interface ErrorEnvelope {
   message: string;
   /** HTTP status code mirrored in the body for clients that parse JSON only. */
   statusCode: number;
-  /** Request correlation ID for log tracing. */
-  requestId: string;
-  /** Optional structured metadata (field errors, resource IDs, etc.). */
-  metadata?: Record<string, unknown>;
+  fields?: Record<string, string>;
+  // Stack trace included in non-production environments only
+  stack?: string;
 }

@@ -1,7 +1,14 @@
+// Global error handler middleware for Fastify
+// Single source of truth for all error normalization and logging
+
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import { ValidationError, AppError } from "./errors.js";
 import type { ErrorEnvelope } from "../../types/errors.js";
 
+const isProduction = () => process.env.NODE_ENV === "production";
+
+// Centralized error handler for Fastify
+// Catches all unhandled errors and returns consistent error responses
 export function errorHandler(
   error: FastifyError | Error,
   request: FastifyRequest,
@@ -21,34 +28,28 @@ export function errorHandler(
     url: request.url,
     statusCode,
     error: error.message,
+    // Always include stack in logs for server errors regardless of environment
+    ...(isServerError && { stack: error.stack }),
   };
 
   if (isClientError) {
     request.log.warn(logContext, "Client error");
   } else if (isServerError) {
-    request.log.error({ ...logContext, stack: error.stack }, "Server error");
+    request.log.error(logContext, "Server error");
   }
 
-  // Derive stable code: prefer AppError.code, fall back to Fastify's error code,
-  // then a generic sentinel.
-  let code =
-    error instanceof AppError
-      ? error.code
-      : ("code" in error && typeof error.code === "string" && error.code) ||
-        "internal_error";
-
-  // Human-readable message — scrub internals in production
-  let message = error.message;
-  if (isServerError && process.env.NODE_ENV === "production") {
-    message = "An unexpected error occurred. Please try again later.";
-    code = "internal_error";
+  // Build error response — hide internals in production
+  let errorMessage = error.message;
+  if (isProduction() && isServerError) {
+    errorMessage = "Internal server error";
   }
 
   const envelope: ErrorEnvelope = {
     code,
     message,
     statusCode,
-    requestId: request.id,
+    // Include stack trace in response body only outside production
+    ...(!isProduction() && isServerError && { stack: error.stack }),
   };
 
   // Attach field-level details as metadata for ValidationError
@@ -56,5 +57,5 @@ export function errorHandler(
     envelope.metadata = { fields: error.fields };
   }
 
-  reply.status(statusCode).send(envelope);
+  reply.status(statusCode).send(response);
 }
