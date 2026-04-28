@@ -54,9 +54,10 @@ model Market {
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
 
-  orders        Order[]
-  positions     UserPosition[]
-  oracleReports OracleReport[]
+  orders               Order[]
+  positions            UserPosition[]
+  oracleReports        OracleReport[]
+  resolutionCandidates ResolutionCandidate[]
 
   @@index([status])
   @@index([endTime])

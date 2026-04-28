@@ -5,11 +5,8 @@ import {
   validateUserAddress,
 } from "../../matching/validation.js";
 import { ValidationError } from "../middleware/errors.js";
-<<<<<<< heavylimits
 import { heavyReadLimiter } from "../middleware/rateLimiter.js";
-=======
 import { success } from "../middleware/responses.js";
->>>>>>> dev
 
 interface PositionResult {
   yesShares: number;
@@ -29,10 +26,6 @@ interface WalletExposureRow {
 }
 
 export default async function positionsRouter(server: FastifyInstance) {
-<<<<<<< heavylimits
-  // Heavy read: findMany with market JOIN — apply stricter limit.
-  server.get("/positions/user/:address", { onRequest: [heavyReadLimiter] }, async (request, reply) => {
-=======
   server.get(
     "/wallets/:wallet/positions",
     {
@@ -52,70 +45,74 @@ export default async function positionsRouter(server: FastifyInstance) {
       },
     },
     async (request, reply) => {
-    const { wallet } = request.params as { wallet: string };
-    const prisma = getPrismaClient();
+      const { wallet } = request.params as { wallet: string };
+      const prisma = getPrismaClient();
 
-    const addressError = validateUserAddress(wallet);
-    if (addressError) {
-      throw new ValidationError(addressError);
-    }
+      const addressError = validateUserAddress(wallet);
+      if (addressError) {
+        throw new ValidationError(addressError);
+      }
 
-    const positions = await prisma.userPosition.findMany({
-      where: { userAddress: wallet },
-      include: {
-        market: {
-          select: {
-            id: true,
-            question: true,
+      const positions = await prisma.userPosition.findMany({
+        where: { userAddress: wallet },
+        include: {
+          market: {
+            select: {
+              id: true,
+              question: true,
+            },
           },
         },
-      },
-      orderBy: {
-        updatedAt: "desc",
-      },
-    });
+        orderBy: {
+          updatedAt: "desc",
+        },
+      });
 
-    const exposures: WalletExposureRow[] = positions.map((position) => ({
-      marketId: position.market.id,
-      marketQuestion: position.market.question,
-      yesShares: position.yesShares,
-      noShares: position.noShares,
-      netExposure: position.yesShares - position.noShares,
-      lockedCollateral: position.lockedCollateral.toString(),
-      isSettled: position.isSettled,
-      updatedAt: position.updatedAt,
-    }));
+      const exposures: WalletExposureRow[] = positions.map((position) => ({
+        marketId: position.market.id,
+        marketQuestion: position.market.question,
+        yesShares: position.yesShares,
+        noShares: position.noShares,
+        netExposure: position.yesShares - position.noShares,
+        lockedCollateral: position.lockedCollateral.toString(),
+        isSettled: position.isSettled,
+        updatedAt: position.updatedAt,
+      }));
 
-    success(reply, {
-      wallet,
-      exposures,
-      count: exposures.length,
-    });
+      success(reply, {
+        wallet,
+        exposures,
+        count: exposures.length,
+      });
     }
   );
 
-  server.get("/positions/user/:address", async (request, reply) => {
->>>>>>> dev
-    const { address } = request.params as { address: string };
-    const prisma = getPrismaClient();
+  // Heavy read: findMany with market JOIN — apply stricter limit.
+  server.get(
+    "/positions/user/:address",
+    { onRequest: [heavyReadLimiter] },
+    async (request, reply) => {
+      const { address } = request.params as { address: string };
+      const prisma = getPrismaClient();
 
-    const addressError = validateUserAddress(address);
-    if (addressError) {
-      throw new ValidationError(addressError);
+      const addressError = validateUserAddress(address);
+      if (addressError) {
+        throw new ValidationError(addressError);
+      }
+
+      const positions = await prisma.userPosition.findMany({
+        where: { userAddress: address },
+        include: { market: true },
+      });
+
+      const results = positions.map((p: PositionResult) => ({
+        ...p,
+        potentialPayoutIfYes: p.yesShares,
+        potentialPayoutIfNo: p.noShares,
+        netPosition: p.yesShares - p.noShares,
+      }));
+
+      return results;
     }
-
-    const positions = await prisma.userPosition.findMany({
-      where: { userAddress: address },
-      include: { market: true },
-    });
-
-    const results = positions.map((p: PositionResult) => ({
-      ...p,
-      potentialPayoutIfYes: p.yesShares,
-      potentialPayoutIfNo: p.noShares,
-      netPosition: p.yesShares - p.noShares,
-    }));
-
-    return results;
-  });
+  );
 }
