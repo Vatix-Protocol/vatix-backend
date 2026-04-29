@@ -86,6 +86,46 @@ function requirePositiveInt(
   return value;
 }
 
+/**
+ * Loads ORACLE_POLL_INTERVAL_MS with lower and upper safety bounds.
+ * Lower bound: 5 000 ms — prevents runaway polling under misconfiguration.
+ * Upper bound: 3 600 000 ms (1 hour) — ensures checks are not indefinitely delayed.
+ * Default: 30 000 ms (30 seconds).
+ */
+function loadOraclePollIntervalMs(): number {
+  const MIN_POLL_INTERVAL_MS = 5_000;
+  const MAX_POLL_INTERVAL_MS = 3_600_000;
+  const DEFAULT_POLL_INTERVAL_MS = 30_000;
+
+  const raw = process.env["ORACLE_POLL_INTERVAL_MS"];
+
+  if (raw === undefined || raw === "") {
+    return DEFAULT_POLL_INTERVAL_MS;
+  }
+
+  const value = Number(raw);
+
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(
+      `Environment variable ORACLE_POLL_INTERVAL_MS must be a positive integer, got: ${JSON.stringify(raw)}`
+    );
+  }
+
+  if (value < MIN_POLL_INTERVAL_MS) {
+    throw new Error(
+      `ORACLE_POLL_INTERVAL_MS must be >= ${MIN_POLL_INTERVAL_MS} ms, got: ${JSON.stringify(raw)}`
+    );
+  }
+
+  if (value > MAX_POLL_INTERVAL_MS) {
+    throw new Error(
+      `ORACLE_POLL_INTERVAL_MS must be <= ${MAX_POLL_INTERVAL_MS} ms, got: ${JSON.stringify(raw)}`
+    );
+  }
+
+  return value;
+}
+
 export const config = {
   /**
    * Current runtime environment. Constrained to development | test | production.
@@ -115,5 +155,13 @@ export const config = {
       "ORACLE_CHALLENGE_WINDOW_SECONDS",
       86400
     ),
+    /**
+     * How often the oracle scheduler polls for ingestion and resolution checks (ms).
+     * Recommended default: 30 000 ms (30 seconds).
+     * Lower bound: 5 000 ms — prevents runaway polling under misconfiguration.
+     * Upper bound: 3 600 000 ms (1 hour) — ensures checks are not indefinitely delayed.
+     * Configured via ORACLE_POLL_INTERVAL_MS.
+     */
+    pollIntervalMs: loadOraclePollIntervalMs(),
   },
 } as const;
