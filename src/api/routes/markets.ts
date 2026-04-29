@@ -13,6 +13,9 @@ import type {
 
 interface GetMarketsQueryParams {
   status?: MarketStatus;
+  sort?: "createdAt" | "endTime";
+  direction?: "asc" | "desc";
+  limit?: number;
 }
 
 interface GetMarketsResponse {
@@ -73,6 +76,21 @@ export async function marketsRoutes(fastify: FastifyInstance) {
               type: "string",
               enum: ["ACTIVE", "RESOLVED", "CANCELLED"],
             },
+            sort: {
+              type: "string",
+              enum: ["createdAt", "endTime"],
+            },
+            direction: {
+              type: "string",
+              enum: ["asc", "desc"],
+              default: "desc",
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              default: 50,
+            },
           },
         },
       },
@@ -85,11 +103,14 @@ export async function marketsRoutes(fastify: FastifyInstance) {
 
       const whereClause = status ? { status } : {};
 
+      const orderBy = {
+        [sort]: direction,
+      };
+
       const markets = await prisma.market.findMany({
         where: whereClause,
-        orderBy: {
-          createdAt: "desc",
-        },
+        orderBy,
+        take: limit,
       });
 
       const response: GetMarketsResponse = {
