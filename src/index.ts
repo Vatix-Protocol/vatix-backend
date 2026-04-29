@@ -1,62 +1,133 @@
-import Fastify, { type FastifyInstance } from "fastify";
-import { PrismaClient } from "@prisma/client";
-import { readyRoute } from "./api/routes/ready.js";
+import Fastify from "fastify";
+import { errorHandler } from "./api/middleware/errorHandler.js";
+import positionsRouter from "./api/routes/positions.js";
+import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
+import { signingService } from "./services/signing.js";
+import "dotenv/config";
+import { marketsRoutes } from "./api/routes/markets.js";
+import { ordersRoutes } from "./api/routes/orders.js";
+import { adminRoutes } from "./api/routes/admin.js";
+import { healthRoutes } from "./api/routes/health.js";
+import { rateLimiter } from "./api/middleware/rateLimiter.js";
+import { requestLogger } from "./api/middleware/logger.js";
+import { requestIdMiddleware } from "./api/middleware/requestId.js";
+import { corsPlugin } from "./api/middleware/cors.js";
+
+// Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
+// Oversized requests are rejected with 413 Request Entity Too Large.
+const bodyLimit = Number(process.env.BODY_LIMIT_BYTES) || 65_536;
+
+interface RpcReachabilityResult {
+  url: string | null;
+  reachable: boolean;
+  error?: string;
+}
+
+async function checkRpcReachability(
+  rpcUrl: string | undefined
+): Promise<RpcReachabilityResult> {
+  if (!rpcUrl) {
+    return { url: null, reachable: false, error: "STELLAR_RPC_URL not configured" };
+  }
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth", params: [] }),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+    return { url: rpcUrl, reachable: res.ok || res.status < 500 };
+  } catch (err) {
+    return {
+      url: rpcUrl,
+      reachable: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
 
 const server: FastifyInstance = Fastify({
   logger: true,
+  genReqId: () => crypto.randomUUID(), // Generate unique request IDs
+  bodyLimit,
 });
 
-const prisma = new PrismaClient();
+// Register error handler (must be before routes)
+server.setErrorHandler(errorHandler);
 
-/**
- * All public API routes are registered under the /v1 prefix.
- *
- * Non-versioned paths (e.g. GET /health) are not registered and will
- * receive Fastify's default 404 response.
- *
- * To add new routes, register them inside this plugin so they
- * automatically inherit the /v1 prefix.
- */
-server.register(
-  async (v1) => {
-    /**
-     * GET /v1/health — Liveness probe.
-     * Confirms the HTTP server is alive. No dependency checks.
-     */
-    v1.get("/health", async () => {
-      return { status: "ok", service: "vatix-backend" };
-    });
-  },
-  { prefix: "/v1" }
-);
+// CORS — must be registered before routes so preflight OPTIONS requests are handled
+server.register(corsPlugin);
 
-/**
- * GET /v1/ready — Readiness probe.
- * Checks DB connectivity and index freshness before reporting ready.
- */
-server.register(
-  readyRoute({
-    checkDatabase: async () => {
-      await prisma.$queryRaw`SELECT 1`;
+// Resolve/generate request ID before anything else touches request.id
+server.register(requestIdMiddleware);
+
+// Register request logger (before routes so every request is captured)
+server.register(requestLogger);
+
+// Apply rate limiting globally
+server.addHook("onRequest", rateLimiter);
+
+// Register API routes
+server.register(marketsRoutes);
+server.register(ordersRoutes);
+
+server.register(positionsRouter);
+server.register(adminRoutes);
+server.register(healthRoutes);
+
+server.get("/readiness", async (_req, reply) => {
+  const rpcUrl = process.env.STELLAR_RPC_URL;
+  const rpcStatus = await checkRpcReachability(rpcUrl);
+  const allHealthy = rpcStatus.reachable;
+  reply.status(allHealthy ? 200 : 503);
+  return {
+    status: allHealthy ? "ready" : "not_ready",
+    checks: {
+      stellarRpc: rpcStatus,
     },
-    getLastIndexedAt: async () => {
-      // Query the most recent indexed event timestamp from the DB.
-      // Returns null when no events have been indexed yet.
-      const result = await prisma.$queryRaw<{ last_indexed_at: Date | null }[]>`
-        SELECT MAX("createdAt") AS last_indexed_at FROM "Market"
-      `;
-      const ts = result[0]?.last_indexed_at;
-      return ts ? ts.getTime() : null;
-    },
-  }),
-  { prefix: "/v1" }
-);
+  };
+});
+
+// Test routes for error handling
+server.get("/test/validation-error", async () => {
+  throw new ValidationError("Invalid input data", {
+    email: "Invalid email format",
+    password: "Password must be at least 8 characters",
+  });
+});
+
+server.get("/test/not-found", async () => {
+  throw new NotFoundError("Market not found");
+});
+
+server.get("/test/server-error", async () => {
+  throw new Error("Something went wrong internally");
+});
+
+// Global 404 handler — must be registered after all routes
+// Throws through the error handler for consistent response format
+server.setNotFoundHandler((request, reply) => {
+  const requestId = request.id;
+  reply.status(404).send({
+    error: `Route ${request.method} ${request.url} not found`,
+    requestId,
+    statusCode: 404,
+  });
+});
 
 const start = async () => {
   try {
-    const port = Number(process.env.PORT) || 3000;
+    // Initialize signing service BEFORE starting server
+    signingService.initialize();
+
+    const port = config.port;
     await server.listen({ port, host: "0.0.0.0" });
-    console.log(`Server running at http://localhost:${port}`);
+    server.log.info(
+      { nodeEnv: config.nodeEnv, port },
+      `Server running at http://localhost:${port}`
+    );
   } catch (err) {
     server.log.error(err);
     process.exit(1);
