@@ -5,6 +5,10 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "indexer:dev": "tsx watch apps/indexer/src/main.ts",
+    "indexer:start": "tsx apps/indexer/src/main.ts",
+    "workers:finalization:dev": "tsx watch apps/workers/src/finalization/main.ts",
+    "workers:finalization:start": "tsx apps/workers/src/finalization/main.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest",
@@ -14,14 +18,18 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "prisma:seed": "tsx prisma/seed.ts",
+    "prisma:validate": "tsx scripts/validate-migrations.ts",
+    "prisma:reset": "prisma migrate reset",
+    "prisma:deploy": "prisma migrate deploy",
     "test:run": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "prepare": "husky install",
     "generate:keypair": "tsx scripts/generate-keypair.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=22.0.0",
     "pnpm": ">=8.0.0",
     "npm": "please-use-pnpm",
     "yarn": "please-use-pnpm"

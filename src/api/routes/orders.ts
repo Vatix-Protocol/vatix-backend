@@ -2,11 +2,17 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import { ValidationError } from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
+import { auditService } from "../../services/audit.js";
 import {
   validateUserAddress,
   assertValidOrder,
   type OrderInput,
 } from "../../matching/validation.js";
+import {
+  heavyReadLimiter,
+  writeLimiter,
+} from "../middleware/rateLimiter.js";
+import { success } from "../middleware/responses.js";
 
 interface GetUserOrdersParams {
   address: string;
@@ -14,6 +20,16 @@ interface GetUserOrdersParams {
 
 interface GetUserOrdersQuery {
   status?: OrderStatus;
+  page?: number;
+  limit?: number;
+}
+
+interface GetWalletTradesQuery {
+  page?: number;
+  limit?: number;
+  from?: string;
+  to?: string;
+  marketId?: string;
 }
 
 interface CreateOrderBody {
@@ -28,12 +44,135 @@ interface CreateOrderBody {
 export async function ordersRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
 
+  // Heavy read: two DB queries (findMany + count) per request — apply stricter limit.
+  fastify.get<{
+    Params: GetUserOrdersParams;
+    Querystring: GetWalletTradesQuery;
+  }>(
+    "/trades/user/:address",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["address"],
+          properties: {
+            address: { type: "string" },
+          },
+        },
+        querystring: {
+          type: "object",
+          properties: {
+            page: {
+              type: "integer",
+              minimum: 1,
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+            },
+            from: {
+              type: "string",
+              format: "date-time",
+              description:
+                "Inclusive UTC start timestamp (ISO-8601), e.g. 2026-04-27T00:00:00.000Z",
+            },
+            to: {
+              type: "string",
+              format: "date-time",
+              description:
+                "Inclusive UTC end timestamp (ISO-8601), e.g. 2026-04-27T23:59:59.999Z",
+            },
+            marketId: {
+              type: "string",
+              description: "Filter trades by market identifier",
+            },
+          },
+        },
+      },
+    },
+    async (
+      request: FastifyRequest<{
+        Params: GetUserOrdersParams;
+        Querystring: GetWalletTradesQuery;
+      }>
+    ) => {
+      const { address } = request.params;
+      const { page = 1, limit = 20, from, to, marketId } = request.query;
+
+      const addressError = validateUserAddress(address);
+      if (addressError) {
+        throw new ValidationError(addressError);
+      }
+
+      let fromMs: number | undefined;
+      let toMs: number | undefined;
+
+      if (from !== undefined) {
+        fromMs = Date.parse(from);
+        if (Number.isNaN(fromMs)) {
+          throw new ValidationError("from must be a valid UTC ISO-8601 timestamp");
+        }
+      }
+
+      if (to !== undefined) {
+        toMs = Date.parse(to);
+        if (Number.isNaN(toMs)) {
+          throw new ValidationError("to must be a valid UTC ISO-8601 timestamp");
+        }
+      }
+
+      if (fromMs !== undefined && toMs !== undefined && fromMs > toMs) {
+        throw new ValidationError(
+          "Invalid date range: from must be earlier than or equal to to"
+        );
+      }
+
+      if (marketId !== undefined) {
+        const market = await prisma.market.findUnique({ where: { id: marketId }, select: { id: true } });
+        if (!market) {
+          throw new ValidationError(`Market not found: ${marketId}`);
+        }
+      }
+
+      const { trades, total, hasNext } = await auditService.getWalletTradeHistory(
+        address,
+        page,
+        limit,
+        fromMs,
+        toMs,
+        marketId
+      );
+
+      return {
+        trades: trades.map((entry) => ({
+          id: entry.trade.id,
+          marketId: entry.trade.marketId,
+          outcome: entry.trade.outcome,
+          buyerAddress: entry.trade.buyerAddress,
+          sellerAddress: entry.trade.sellerAddress,
+          buyOrderId: entry.trade.buyOrderId,
+          sellOrderId: entry.trade.sellOrderId,
+          price: entry.trade.price,
+          quantity: entry.trade.quantity,
+          timestamp: entry.trade.timestamp,
+          loggedAt: entry.loggedAt,
+        })),
+        total,
+        hasNext,
+        page,
+        limit,
+      };
+    }
+  );
+
   fastify.get<{
     Params: GetUserOrdersParams;
     Querystring: GetUserOrdersQuery;
   }>(
     "/orders/user/:address",
     {
+      onRequest: [heavyReadLimiter],
       schema: {
         params: {
           type: "object",
@@ -48,6 +187,15 @@ export async function ordersRoutes(fastify: FastifyInstance) {
             status: {
               type: "string",
               enum: ["OPEN", "FILLED", "CANCELLED", "PARTIALLY_FILLED"],
+            },
+            page: {
+              type: "integer",
+              minimum: 1,
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
             },
           },
         },
@@ -73,7 +221,10 @@ export async function ordersRoutes(fastify: FastifyInstance) {
                   },
                 },
               },
-              count: { type: "number" },
+              total: { type: "number" },
+              hasNext: { type: "boolean" },
+              page: { type: "number" },
+              limit: { type: "number" },
             },
           },
         },
@@ -83,10 +234,11 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       request: FastifyRequest<{
         Params: GetUserOrdersParams;
         Querystring: GetUserOrdersQuery;
-      }>
+      }>,
+      reply
     ) => {
       const { address } = request.params;
-      const { status } = request.query;
+      const { status, page = 1, limit = 20 } = request.query;
 
       // Validate Stellar address
       const addressError = validateUserAddress(address);
@@ -99,24 +251,35 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         ...(status ? { status } : {}),
       };
 
-      const orders = await prisma.order.findMany({
-        where: whereClause,
-        orderBy: {
-          createdAt: "desc",
-        },
-      });
+      const skip = (page - 1) * limit;
 
-      return {
+      const [orders, total] = await Promise.all([
+        prisma.order.findMany({
+          where: whereClause,
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          skip,
+          take: limit,
+        }),
+        prisma.order.count({
+          where: whereClause,
+        }),
+      ]);
+
+      success(reply, {
         orders,
-        count: orders.length,
-      };
+        total,
+        hasNext: skip + orders.length < total,
+        page,
+        limit,
+      });
     }
   );
 
-  // POST /orders
+  // Write endpoint: validation + DB write + future matching-engine work — apply strictest limit.
   fastify.post<{ Body: CreateOrderBody }>(
     "/orders",
     {
+      onRequest: [writeLimiter],
       schema: {
         body: {
           type: "object",
@@ -209,8 +372,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       // TODO: Add to matching engine
       // await matchingEngine.addOrder(order);
 
-      reply.code(201);
-      return { order };
+      success(reply, { order }, 201);
     }
   );
 }

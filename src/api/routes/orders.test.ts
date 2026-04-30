@@ -4,9 +4,14 @@ import { ordersRoutes } from "./orders.js";
 import { errorHandler } from "../middleware/errorHandler.js";
 import type { PrismaClient } from "../../generated/prisma/client";
 
+const mockAuditService = {
+  getWalletTradeHistory: vi.fn(),
+};
+
 const mockPrismaClient = {
   order: {
     findMany: vi.fn(),
+    count: vi.fn(),
     create: vi.fn(),
   },
   market: {
@@ -17,6 +22,162 @@ const mockPrismaClient = {
 vi.mock("../../services/prisma.js", () => ({
   getPrismaClient: () => mockPrismaClient,
 }));
+
+vi.mock("../../services/audit.js", () => ({
+  auditService: mockAuditService,
+}));
+
+describe("GET /trades/user/:address", () => {
+  let app: FastifyInstance;
+  const validAddress =
+    "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+
+  beforeEach(async () => {
+    app = Fastify({ logger: false });
+    app.setErrorHandler(errorHandler);
+    await app.register(ordersRoutes);
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("should return wallet trades latest-first with pagination metadata", async () => {
+    (
+      mockAuditService.getWalletTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      trades: [
+        {
+          id: "1714170000002-0",
+          trade: {
+            id: "trade-2",
+            marketId: "market-2",
+            outcome: "NO",
+            buyerAddress: validAddress,
+            sellerAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            buyOrderId: "buy-2",
+            sellOrderId: "sell-2",
+            price: 0.67,
+            quantity: 12,
+            timestamp: 1714170000002,
+          },
+          loggedAt: "2026-04-27T14:00:02.000Z",
+        },
+        {
+          id: "1714170000001-0",
+          trade: {
+            id: "trade-1",
+            marketId: "market-1",
+            outcome: "YES",
+            buyerAddress: "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            sellerAddress: validAddress,
+            buyOrderId: "buy-1",
+            sellOrderId: "sell-1",
+            price: 0.51,
+            quantity: 20,
+            timestamp: 1714170000001,
+          },
+          loggedAt: "2026-04-27T14:00:01.000Z",
+        },
+      ],
+      total: 2,
+      hasNext: false,
+      page: 1,
+      limit: 20,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/trades/user/${validAddress}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.trades).toHaveLength(2);
+    expect(body.trades[0].id).toBe("trade-2");
+    expect(body.trades[0].marketId).toBe("market-2");
+    expect(body.trades[1].id).toBe("trade-1");
+    expect(body.total).toBe(2);
+    expect(body.hasNext).toBe(false);
+    expect(body.page).toBe(1);
+    expect(body.limit).toBe(20);
+  });
+
+  it("should pass pagination args to wallet trade history lookup", async () => {
+    (
+      mockAuditService.getWalletTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      trades: [],
+      total: 3,
+      hasNext: true,
+      page: 2,
+      limit: 1,
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/trades/user/${validAddress}?page=2&limit=1`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockAuditService.getWalletTradeHistory).toHaveBeenCalledWith(
+      validAddress,
+      2,
+      1,
+      undefined,
+      undefined
+    );
+  });
+
+  it("should pass from/to UTC filters to wallet trade history lookup", async () => {
+    (
+      mockAuditService.getWalletTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      trades: [],
+      total: 0,
+      hasNext: false,
+      page: 1,
+      limit: 20,
+    });
+
+    const from = "2026-04-27T00:00:00.000Z";
+    const to = "2026-04-27T23:59:59.999Z";
+    const response = await app.inject({
+      method: "GET",
+      url: `/trades/user/${validAddress}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockAuditService.getWalletTradeHistory).toHaveBeenCalledWith(
+      validAddress,
+      1,
+      20,
+      Date.parse(from),
+      Date.parse(to)
+    );
+  });
+
+  it("should return 400 when from is after to", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/trades/user/${validAddress}?from=2026-04-28T00:00:00.000Z&to=2026-04-27T00:00:00.000Z`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.error).toContain("Invalid date range");
+  });
+
+  it("should return 400 for invalid wallet address", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/trades/user/not-a-wallet",
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+});
 
 describe("GET /orders/user/:address", () => {
   let app: FastifyInstance;
@@ -66,6 +227,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue(mockOrders);
+    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
+      2
+    );
 
     const response = await app.inject({
       method: "GET",
@@ -76,7 +240,8 @@ describe("GET /orders/user/:address", () => {
 
     const body = JSON.parse(response.body);
     expect(body.orders).toHaveLength(2);
-    expect(body.count).toBe(2);
+    expect(body.total).toBe(2);
+    expect(body.hasNext).toBe(false);
     expect(body.orders[0].id).toBe("order-2");
   });
 
@@ -84,6 +249,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue([]);
+    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
+      0
+    );
 
     const response = await app.inject({
       method: "GET",
@@ -97,7 +265,9 @@ describe("GET /orders/user/:address", () => {
         userAddress: validAddress,
         status: "OPEN",
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: 0,
+      take: 20,
     });
   });
 
@@ -105,6 +275,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue([]);
+    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
+      0
+    );
 
     const response = await app.inject({
       method: "GET",
@@ -113,7 +286,51 @@ describe("GET /orders/user/:address", () => {
 
     const body = JSON.parse(response.body);
     expect(body.orders).toEqual([]);
-    expect(body.count).toBe(0);
+    expect(body.total).toBe(0);
+    expect(body.hasNext).toBe(false);
+  });
+
+  it("should support page and limit pagination with hasNext metadata", async () => {
+    (
+      mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
+    ).mockResolvedValue([
+      {
+        id: "order-3",
+        marketId: "market-1",
+        userAddress: validAddress,
+        side: "BUY",
+        outcome: "YES",
+        price: "0.55",
+        quantity: 10,
+        filledQuantity: 0,
+        status: "OPEN",
+        createdAt: new Date("2026-01-15T00:00:00Z"),
+      },
+    ]);
+    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
+      5
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/orders/user/${validAddress}?page=2&limit=2`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockPrismaClient.order.findMany).toHaveBeenCalledWith({
+      where: {
+        userAddress: validAddress,
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: 2,
+      take: 2,
+    });
+
+    const body = JSON.parse(response.body);
+    expect(body.page).toBe(2);
+    expect(body.limit).toBe(2);
+    expect(body.total).toBe(5);
+    expect(body.hasNext).toBe(true);
   });
 
   it("should reject invalid Stellar address", async () => {
@@ -138,6 +355,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockRejectedValue(new Error("Database connection failed"));
+    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
+      0
+    );
 
     const response = await app.inject({
       method: "GET",

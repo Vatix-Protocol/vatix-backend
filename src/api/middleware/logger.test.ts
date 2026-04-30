@@ -10,17 +10,10 @@ describe("Request Logger Middleware", () => {
   const mockLogError = vi.fn();
 
   beforeEach(async () => {
-    // Create a fresh Fastify instance for each test
-    server = Fastify({
-      genReqId: () => "test-request-id",
-    });
-
-    // Mock the logger
+    server = Fastify({ genReqId: () => "test-request-id" });
     server.log.info = mockLogInfo;
     server.log.warn = mockLogWarn;
     server.log.error = mockLogError;
-
-    // Register our middleware
     await server.register(requestLogger);
   });
 
@@ -29,138 +22,121 @@ describe("Request Logger Middleware", () => {
     await server.close();
   });
 
-  it("should log incoming requests and include request ID in response headers", async () => {
-    server.get("/test", async () => {
-      return { ok: true };
-    });
+  it("emits one request log and one response log per request", async () => {
+    server.get("/test", async () => ({ ok: true }));
+    await server.inject({ method: "GET", url: "/test" });
 
-    const response = await server.inject({
-      method: "GET",
-      url: "/test",
-    });
-
-    expect(response.headers["x-request-id"]).toBe("test-request-id");
-    expect(mockLogInfo).toHaveBeenCalled();
-
-    const requestLog = mockLogInfo.mock.calls.find(
-      (call) => call[0] && call[0].type === "request"
+    const requestLogs = mockLogInfo.mock.calls.filter(
+      (c) => c[0]?.type === "request"
     );
-    expect(requestLog).toBeDefined();
-    expect(requestLog![0]).toMatchObject({
-      method: "GET",
-      url: "/test",
-    });
+    const responseLogs = mockLogInfo.mock.calls.filter(
+      (c) => c[0]?.type === "response"
+    );
+    expect(requestLogs).toHaveLength(1);
+    expect(responseLogs).toHaveLength(1);
   });
 
-  it("should log response details including duration and status code", async () => {
-    server.get("/test", async () => {
-      return { ok: true };
-    });
+  it("sets X-Request-ID response header", async () => {
+    server.get("/test", async () => ({ ok: true }));
+    const response = await server.inject({ method: "GET", url: "/test" });
+    expect(response.headers["x-request-id"]).toBe("test-request-id");
+  });
 
+  it("request log contains requestId, method, and path — no body or sensitive headers", async () => {
+    server.get("/test", async () => ({ ok: true }));
     await server.inject({
       method: "GET",
       url: "/test",
+      headers: { authorization: "Bearer secret", cookie: "session=abc" },
     });
 
-    const responseLog = mockLogInfo.mock.calls.find(
-      (call) => call[0] && call[0].type === "response"
-    );
-    expect(responseLog).toBeDefined();
-    expect(responseLog![0]).toMatchObject({
+    const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+    expect(log).toBeDefined();
+    expect(log![0]).toMatchObject({
+      type: "request",
+      requestId: "test-request-id",
       method: "GET",
-      url: "/test",
+      path: "/test",
+    });
+    // Sensitive headers must not appear
+    expect(JSON.stringify(log![0])).not.toContain("secret");
+    expect(JSON.stringify(log![0])).not.toContain("session");
+    // Body must not appear
+    expect(log![0]).not.toHaveProperty("body");
+  });
+
+  it("response log contains requestId, statusCode, and numeric durationMs", async () => {
+    server.get("/test", async () => ({ ok: true }));
+    await server.inject({ method: "GET", url: "/test" });
+
+    const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "response");
+    expect(log).toBeDefined();
+    expect(log![0]).toMatchObject({
+      type: "response",
+      requestId: "test-request-id",
+      method: "GET",
+      path: "/test",
       statusCode: 200,
     });
-    expect(responseLog![0].duration).toMatch(/\d+\.\d+ms/);
+    // durationMs must be a number (machine-parseable)
+    expect(typeof log![0].durationMs).toBe("number");
   });
 
-  it("should use warn level for 4xx responses", async () => {
-    server.get("/404", async (_, reply) => {
+  it("uses warn level for 4xx responses", async () => {
+    server.get("/not-found", async (_, reply) => {
       reply.code(404).send({ error: "Not Found" });
     });
+    await server.inject({ method: "GET", url: "/not-found" });
 
-    await server.inject({
-      method: "GET",
-      url: "/404",
-    });
-
-    expect(mockLogWarn).toHaveBeenCalled();
-    const responseLog = mockLogWarn.mock.calls.find(
-      (call) => call[0] && call[0].type === "response"
-    );
-    expect(responseLog).toBeDefined();
-    expect(responseLog![0].statusCode).toBe(404);
+    const log = mockLogWarn.mock.calls.find((c) => c[0]?.type === "response");
+    expect(log).toBeDefined();
+    expect(log![0].statusCode).toBe(404);
   });
 
-  it("should use error level for 5xx responses", async () => {
-    server.get("/500", async () => {
+  it("uses error level for 5xx responses", async () => {
+    server.get("/boom", async () => {
       throw new Error("Server Error");
     });
+    await server.inject({ method: "GET", url: "/boom" });
 
-    // Note: Fastify default error handler will return 500
-    await server.inject({
-      method: "GET",
-      url: "/500",
-    });
-
-    expect(mockLogError).toHaveBeenCalled();
-    const responseLog = mockLogError.mock.calls.find(
-      (call) => call[0] && call[0].type === "response"
-    );
-    expect(responseLog).toBeDefined();
-    expect(responseLog![0].statusCode).toBe(500);
-  });
-  it("should include user address if provided in params", async () => {
-    server.get("/user/:address", async () => {
-      return { ok: true };
-    });
-
-    await server.inject({
-      method: "GET",
-      url: "/user/GABC123",
-    });
-
-    const requestLog = mockLogInfo.mock.calls.find(
-      (call) => call[0] && call[0].type === "request"
-    );
-    expect(requestLog![0].userAddress).toBe("GABC123");
+    const log = mockLogError.mock.calls.find((c) => c[0]?.type === "response");
+    expect(log).toBeDefined();
+    expect(log![0].statusCode).toBe(500);
   });
 
-  it("should include user address if provided in headers", async () => {
-    server.get("/test", async () => {
-      return { ok: true };
-    });
+  it("includes userAddress from route params when present", async () => {
+    server.get("/user/:address", async () => ({ ok: true }));
+    await server.inject({ method: "GET", url: "/user/GABC123" });
 
+    const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+    expect(log![0].userAddress).toBe("GABC123");
+  });
+
+  it("includes userAddress from x-user-address header when present", async () => {
+    server.get("/test", async () => ({ ok: true }));
     await server.inject({
       method: "GET",
       url: "/test",
-      headers: {
-        "x-user-address": "GDEF456",
-      },
+      headers: { "x-user-address": "GDEF456" },
     });
 
-    const requestLog = mockLogInfo.mock.calls.find(
-      (call) => call[0] && call[0].type === "request"
-    );
-    expect(requestLog![0].userAddress).toBe("GDEF456");
+    const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+    expect(log![0].userAddress).toBe("GDEF456");
   });
 
-  it("should use X-Correlation-ID as request ID if provided", async () => {
+  it("honours X-Correlation-ID as the request ID when genReqId uses it", async () => {
     const correlationId = "corr-123";
     const customServer = Fastify({
       genReqId: (req) =>
         (req.headers["x-correlation-id"] as string) || crypto.randomUUID(),
     });
-
     await customServer.register(requestLogger);
     customServer.get("/test", async () => ({ ok: true }));
 
     const response = await customServer.inject({
       method: "GET",
       url: "/test",
-      headers: {
-        "x-correlation-id": correlationId,
-      },
+      headers: { "x-correlation-id": correlationId },
     });
     expect(response.headers["x-request-id"]).toBe(correlationId);
     await customServer.close();
