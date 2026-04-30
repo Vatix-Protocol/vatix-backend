@@ -167,7 +167,7 @@ model Resolution {
 
   market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
 
-  @@unique([marketId], where: { status : ACTIVE })
+  @@unique([marketId], where: { status: "ACTIVE" })
   @@index([marketId])
   @@index([status])
   @@index([finalizedAt])
