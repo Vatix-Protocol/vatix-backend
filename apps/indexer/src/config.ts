@@ -1,55 +1,91 @@
-/**
- * Indexer configuration.
- *
- * Reads and validates environment variables required by the indexer,
- * including the Soroban network passphrase used for chain client setup
- * and transaction verification.
- */
-
-/** Well-known Soroban network passphrases. */
-export const KNOWN_PASSPHRASES = {
-  testnet: "Test SDF Network ; September 2015",
-  mainnet: "Public Global Stellar Network ; September 2015",
-} as const;
-
-export type KnownNetwork = keyof typeof KNOWN_PASSPHRASES;
-
 export interface IndexerConfig {
-  sorobanNetworkPassphrase: string;
-  horizonUrl: string;
+  nodeEnv: "development" | "test" | "production";
+  stellarRpcUrl: string;
+  ingestionIntervalMs: number;
+  networkId: string;
+  cursorKey: string;
+  checkpointFlushEveryBatches: number;
+  logLevel: "debug" | "info" | "warn" | "error";
 }
 
-/**
- * Load and validate indexer config from environment variables.
- * Warns to stderr when SOROBAN_NETWORK_PASSPHRASE is not a recognised value.
- */
-export function loadIndexerConfig(env: NodeJS.ProcessEnv = process.env): IndexerConfig {
-  const passphrase = env.SOROBAN_NETWORK_PASSPHRASE?.trim();
+const ACCEPTED_NODE_ENVS = ["development", "test", "production"] as const;
+type NodeEnv = (typeof ACCEPTED_NODE_ENVS)[number];
 
-  if (!passphrase) {
+const DEFAULT_INGESTION_INTERVAL_MS = 5_000;
+const DEFAULT_NETWORK_ID = "mainnet";
+const DEFAULT_CURSOR_KEY = "ingestion";
+const DEFAULT_CHECKPOINT_FLUSH_EVERY_BATCHES = 10;
+const DEFAULT_LOG_LEVEL: IndexerConfig["logLevel"] = "info";
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): IndexerConfig {
+  const rawNodeEnv = env.NODE_ENV ?? "development";
+  if (!ACCEPTED_NODE_ENVS.includes(rawNodeEnv as NodeEnv)) {
     throw new Error(
-      "Missing required environment variable: SOROBAN_NETWORK_PASSPHRASE\n" +
-        `  Testnet : "${KNOWN_PASSPHRASES.testnet}"\n` +
-        `  Mainnet : "${KNOWN_PASSPHRASES.mainnet}"`
+      `NODE_ENV must be one of ${ACCEPTED_NODE_ENVS.join(" | ")}, got: ${JSON.stringify(rawNodeEnv)}`
     );
   }
+  const nodeEnv = rawNodeEnv as NodeEnv;
 
-  const isKnown = Object.values(KNOWN_PASSPHRASES).includes(
-    passphrase as (typeof KNOWN_PASSPHRASES)[KnownNetwork]
+  const ingestionIntervalMs = Number(
+    env.INDEXER_INGESTION_INTERVAL_MS ?? DEFAULT_INGESTION_INTERVAL_MS
   );
 
-  if (!isKnown) {
-    process.stderr.write(
-      `[indexer/config] WARNING: SOROBAN_NETWORK_PASSPHRASE "${passphrase}" is not a known value.\n` +
-        `  Expected one of:\n` +
-        `    Testnet : "${KNOWN_PASSPHRASES.testnet}"\n` +
-        `    Mainnet : "${KNOWN_PASSPHRASES.mainnet}"\n` +
-        `  Proceeding, but chain reads/writes may fail or produce misleading data.\n`
-    );
+  if (!Number.isFinite(ingestionIntervalMs) || ingestionIntervalMs < 100) {
+    throw new Error("INDEXER_INGESTION_INTERVAL_MS must be a number >= 100");
   }
 
-  const horizonUrl =
-    env.STELLAR_HORIZON_URL?.trim() || "https://horizon-testnet.stellar.org";
+  const logLevel = (env.INDEXER_LOG_LEVEL ?? DEFAULT_LOG_LEVEL) as IndexerConfig["logLevel"];
+  if (!["debug", "info", "warn", "error"].includes(logLevel)) {
+    throw new Error("INDEXER_LOG_LEVEL must be one of debug|info|warn|error");
+  }
 
-  return { sorobanNetworkPassphrase: passphrase, horizonUrl };
+  const networkId = (env.INDEXER_NETWORK_ID ?? DEFAULT_NETWORK_ID).trim();
+  if (!networkId) {
+    throw new Error("INDEXER_NETWORK_ID must be a non-empty string");
+  }
+
+  const cursorKey = (env.INDEXER_CURSOR_KEY ?? DEFAULT_CURSOR_KEY).trim();
+  if (!cursorKey) {
+    throw new Error("INDEXER_CURSOR_KEY must be a non-empty string");
+  }
+
+  const checkpointFlushEveryBatches = Number(
+    env.INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES ??
+      DEFAULT_CHECKPOINT_FLUSH_EVERY_BATCHES
+  );
+  if (
+    !Number.isInteger(checkpointFlushEveryBatches) ||
+    checkpointFlushEveryBatches < 1
+  ) {
+    throw new Error("INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES must be an integer >= 1");
+  }
+
+  const rawRpcUrl = env.STELLAR_RPC_URL;
+  if (!rawRpcUrl || rawRpcUrl.trim() === "") {
+    throw new Error("Missing required environment variable: STELLAR_RPC_URL");
+  }
+  let parsedRpcUrl: URL;
+  try {
+    parsedRpcUrl = new URL(rawRpcUrl);
+  } catch {
+    throw new Error(
+      "STELLAR_RPC_URL is not a valid URL (expected format: https://soroban-testnet.stellar.org)"
+    );
+  }
+  if (parsedRpcUrl.protocol !== "https:" && parsedRpcUrl.protocol !== "http:") {
+    throw new Error(
+      `STELLAR_RPC_URL must use http:// or https://, got: ${JSON.stringify(parsedRpcUrl.protocol)}`
+    );
+  }
+  const stellarRpcUrl = rawRpcUrl.trim();
+
+  return {
+    nodeEnv,
+    stellarRpcUrl,
+    ingestionIntervalMs,
+    networkId,
+    cursorKey,
+    checkpointFlushEveryBatches,
+    logLevel,
+  };
 }
