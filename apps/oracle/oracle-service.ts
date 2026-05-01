@@ -13,6 +13,7 @@ import type {
   ResolutionRequest,
 } from "./provider-adapter.js";
 import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
+import { withRetry, RetryConfig } from "./retry-utils.js";
 
 /**
  * Oracle service configuration.
@@ -26,6 +27,8 @@ export interface OracleServiceConfig {
   enableFallback?: boolean;
   /** Default timeout for resolution requests */
   defaultTimeoutMs?: number;
+  /** Retry configuration for provider calls */
+  retryConfig?: Partial<RetryConfig>;
 }
 
 /**
@@ -42,6 +45,8 @@ export interface OracleMetrics {
   fallbackFailureCount: number;
   /** Total resolution attempts */
   totalAttempts: number;
+  /** Total retry attempts across all primary resolutions */
+  retryCount: number;
 }
 
 /**
@@ -59,6 +64,7 @@ export class OracleService {
     fallbackUsageCount: 0,
     fallbackFailureCount: 0,
     totalAttempts: 0,
+    retryCount: 0,
   };
 
   constructor(config: OracleServiceConfig) {
@@ -87,6 +93,18 @@ export class OracleService {
       console.log(
         `[OracleService] Resolving market ${request.marketId} using primary provider`
       );
+      
+      const result = await withRetry(
+        () => this.primaryAdapter.resolve(request),
+        this.config.retryConfig,
+        (error, attempt, delay) => {
+          this.metrics.retryCount++;
+          console.warn(
+            `[OracleService] Primary provider retry ${attempt} for market ${request.marketId} (delay: ${delay.toFixed(0)}ms): ${error.message}`
+          );
+        }
+      );
+
       const result = await this.primaryAdapter.resolve(request);
       this.metrics.primarySuccessCount++;
       console.log(
@@ -181,6 +199,7 @@ export class OracleService {
       fallbackUsageCount: 0,
       fallbackFailureCount: 0,
       totalAttempts: 0,
+      retryCount: 0,
     };
   }
 

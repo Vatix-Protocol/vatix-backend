@@ -214,4 +214,76 @@ describe("OracleService", () => {
       expect(oracleService.getFallbackAdapter()).toBe(fallbackAdapter);
     });
   });
+
+  describe("retries", () => {
+    it("should retry on transient failures", async () => {
+      const transientError = new Error("Network timeout");
+      const primaryAdapter = createMockAdapter("primary", false);
+      primaryAdapter.resolve = vi.fn()
+        .mockRejectedValueOnce(transientError)
+        .mockRejectedValueOnce(transientError)
+        .mockResolvedValue({
+          outcome: true,
+          confidence: 0.95,
+          source: "primary",
+          timestamp: new Date().toISOString(),
+        } as ProviderResult);
+
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        retryConfig: { maxRetries: 3, initialDelayMs: 1, useJitter: false },
+      });
+
+      const result = await service.resolve({
+        marketId: "market-001",
+        oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(result.source).toBe("primary");
+      expect(primaryAdapter.resolve).toHaveBeenCalledTimes(3);
+      expect(service.getMetrics().retryCount).toBe(2);
+    });
+
+    it("should not retry on non-transient failures", async () => {
+      const nonTransientError = new Error("HTTP 400 Bad Request");
+      const primaryAdapter = createMockAdapter("primary", false);
+      primaryAdapter.resolve = vi.fn().mockRejectedValue(nonTransientError);
+
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        retryConfig: { maxRetries: 3, initialDelayMs: 1, useJitter: false },
+      });
+
+      await expect(service.resolve({
+        marketId: "market-001",
+        oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      })).rejects.toThrow();
+
+      expect(primaryAdapter.resolve).toHaveBeenCalledTimes(1);
+      expect(service.getMetrics().retryCount).toBe(0);
+    });
+
+    it("should switch to fallback after all retries fail", async () => {
+      const transientError = new Error("Network timeout");
+      const primaryAdapter = createMockAdapter("primary", false);
+      primaryAdapter.resolve = vi.fn().mockRejectedValue(transientError);
+
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        retryConfig: { maxRetries: 2, initialDelayMs: 1, useJitter: false },
+      });
+
+      const result = await service.resolve({
+        marketId: "market-001",
+        oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(result.source).toBe("fallback");
+      expect(primaryAdapter.resolve).toHaveBeenCalledTimes(3); // Initial + 2 retries
+      expect(fallbackAdapter.resolve).toHaveBeenCalledTimes(1);
+    });
+  });
 });
