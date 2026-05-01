@@ -1,14 +1,11 @@
 /**
- * Application configuration parsed and validated from environment variables.
+ * API server config — thin re-export of the shared config loader.
  *
- * NODE_ENV:
- *   Accepted values: development | test | production (default: development)
- *
- * Oracle challenge window:
- *   ORACLE_CHALLENGE_WINDOW_SECONDS — duration of the resolution challenge period
- *   in whole seconds (integer, minimum 1). All window calculations use UTC timestamps.
- *   Example: 86400 = 24 hours, 3600 = 1 hour.
+ * Loaded once at startup; the frozen object is passed to routes/middleware
+ * rather than reading process.env directly.
  */
+export type { NodeEnv, BaseConfig as Config } from "../packages/shared/src/config.js";
+export { loadBaseConfig } from "../packages/shared/src/config.js";
 
 export type NodeEnv = "development" | "test" | "production";
 
