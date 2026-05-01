@@ -48,7 +48,7 @@ async function checkRpcReachability(
   }
 }
 
-const server = Fastify({
+const server: FastifyInstance = Fastify({
   logger: true,
   genReqId: () => crypto.randomUUID(), // Generate unique request IDs
   bodyLimit,
