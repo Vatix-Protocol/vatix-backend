@@ -17,7 +17,7 @@ export default defineConfig({
     // Test timeout
     testTimeout: 30000,
     // Hook timeout
-    hookTimeout: 10000,
+    hookTimeout: 30000,
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"],

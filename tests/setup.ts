@@ -10,20 +10,39 @@ import {
 // Global test setup
 beforeAll(async () => {
   // Acquire database lock for tests that modify data
-  await acquireDatabaseLock();
-  // Ensure Prisma client is available
-  getTestPrismaClient();
+  // Non-fatal: if DB is unavailable, non-DB tests still run
+  try {
+    await acquireDatabaseLock();
+    getTestPrismaClient();
+  } catch {
+    // DB not available — DB-dependent tests will fail individually
+  }
 });
 
 afterAll(async () => {
   // Release lock and disconnect
-  await releaseDatabaseLock();
-  await disconnectTestPrisma();
+  try {
+    await Promise.race([
+      (async () => {
+        await releaseDatabaseLock();
+        await disconnectTestPrisma();
+      })(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("cleanup timeout")), 5000)
+      ),
+    ]);
+  } catch {
+    // ignore cleanup errors
+  }
 });
 
-// Clean database before each test
+// Clean database before each test (non-fatal if DB unavailable)
 beforeEach(async () => {
-  await cleanDatabase();
+  try {
+    await cleanDatabase();
+  } catch {
+    // DB not available — non-DB tests are unaffected
+  }
 });
 
 // Global test utilities

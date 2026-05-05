@@ -13,7 +13,7 @@ import type {
   ResolutionRequest,
 } from "./provider-adapter.js";
 import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
-import { withRetry, RetryConfig } from "./retry-utils.js";
+import { withRetry, RetryConfig, isRetryableError } from "./retry-utils.js";
 
 /**
  * Oracle service configuration.
@@ -73,6 +73,7 @@ export class OracleService {
     this.config = {
       enableFallback: true,
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+      retryConfig: { maxRetries: 0 },
       ...config,
     };
   }
@@ -119,6 +120,11 @@ export class OracleService {
 
       // If fallback is disabled, re-throw the error
       if (!this.config.enableFallback) {
+        throw primaryError;
+      }
+
+      // Only fall back on retryable (transient) errors
+      if (!isRetryableError(primaryError)) {
         throw primaryError;
       }
 
