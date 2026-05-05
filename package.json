@@ -15,7 +15,7 @@
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate",
+    "prisma:migrate": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "prisma:seed": "tsx prisma/seed.ts",
     "prisma:validate": "tsx scripts/validate-migrations.ts",
