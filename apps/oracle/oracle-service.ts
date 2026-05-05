@@ -105,7 +105,6 @@ export class OracleService {
         }
       );
 
-      const result = await this.primaryAdapter.resolve(request);
       this.metrics.primarySuccessCount++;
       console.log(
         `[OracleService] Primary provider succeeded for market ${request.marketId} (source: ${result.source})`

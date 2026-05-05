@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
-import { rateLimiter, heavyReadLimiter, writeLimiter } from "./rateLimiter.js";
+import {
+  rateLimiter,
+  heavyReadLimiter,
+  writeLimiter,
+  clearRateLimitStores,
+} from "./rateLimiter.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -35,6 +40,7 @@ describe("rateLimiter (global)", () => {
   let server: FastifyInstance;
 
   beforeEach(() => {
+    clearRateLimitStores();
     vi.stubEnv("RATE_LIMIT_MAX", "5");
     vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
     server = buildServer(rateLimiter);
@@ -43,6 +49,7 @@ describe("rateLimiter (global)", () => {
   afterEach(async () => {
     await server.close();
     vi.unstubAllEnvs();
+    clearRateLimitStores();
   });
 
   it("allows requests under the limit", async () => {
@@ -89,6 +96,7 @@ describe("rateLimiter (global)", () => {
 describe("heavyReadLimiter", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    clearRateLimitStores();
   });
 
   it("allows requests under the heavy limit", async () => {
@@ -153,6 +161,7 @@ describe("heavyReadLimiter", () => {
 describe("writeLimiter", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    clearRateLimitStores();
   });
 
   it("allows requests under the write limit", async () => {
@@ -215,6 +224,7 @@ describe("writeLimiter", () => {
 describe("quota headers", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    clearRateLimitStores();
   });
 
   it("sets RateLimit-Limit to the configured maximum", async () => {
@@ -327,6 +337,7 @@ describe("quota headers", () => {
 describe("tier isolation", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    clearRateLimitStores();
   });
 
   it("heavy-read counter does not affect global counter", async () => {

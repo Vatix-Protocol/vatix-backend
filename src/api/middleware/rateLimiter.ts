@@ -18,39 +18,14 @@ function getStore(tier: string): Map<string, WindowEntry> {
   return store;
 }
 
+/** Clear all rate limit counters — for use in tests only. */
+export function clearRateLimitStores(): void {
+  stores.clear();
+}
+
 // ---------------------------------------------------------------------------
 // Limit tiers
 // ---------------------------------------------------------------------------
-
-/**
- * Global defaults: 100 req / 60 s per IP.
- * Override via RATE_LIMIT_WINDOW_MS and RATE_LIMIT_MAX.
- */
-const WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 60_000;
-const MAX_REQUESTS = Number(process.env.RATE_LIMIT_MAX) || 100;
-
-/**
- * Heavy-endpoint defaults: 20 req / 60 s per IP.
- * These routes perform expensive DB queries (full-table scans, multi-join
- * reads, or write + matching-engine work) and need tighter controls to
- * prevent overload.
- *
- * Override via RATE_LIMIT_HEAVY_WINDOW_MS and RATE_LIMIT_HEAVY_MAX.
- */
-const HEAVY_WINDOW_MS =
-  Number(process.env.RATE_LIMIT_HEAVY_WINDOW_MS) || 60_000;
-const HEAVY_MAX_REQUESTS = Number(process.env.RATE_LIMIT_HEAVY_MAX) || 20;
-
-/**
- * Write-endpoint defaults: 10 req / 60 s per IP.
- * Mutation routes (order creation) carry the highest per-request cost
- * (validation, DB write, future matching-engine work).
- *
- * Override via RATE_LIMIT_WRITE_WINDOW_MS and RATE_LIMIT_WRITE_MAX.
- */
-const WRITE_WINDOW_MS =
-  Number(process.env.RATE_LIMIT_WRITE_WINDOW_MS) || 60_000;
-const WRITE_MAX_REQUESTS = Number(process.env.RATE_LIMIT_WRITE_MAX) || 10;
 
 // ---------------------------------------------------------------------------
 // Core implementation
@@ -91,9 +66,13 @@ function applyLimit(
   reply: FastifyReply,
   done: () => void,
   tier: string,
-  windowMs: number,
-  maxRequests: number
+  windowMsEnv: string,
+  maxEnv: string,
+  defaultWindowMs: number,
+  defaultMax: number
 ): void {
+  const windowMs = Number(process.env[windowMsEnv]) || defaultWindowMs;
+  const maxRequests = Number(process.env[maxEnv]) || defaultMax;
   const key = extractIp(request);
   const store = getStore(tier);
   const now = Date.now();
@@ -139,19 +118,18 @@ export function rateLimiter(
   reply: FastifyReply,
   done: () => void
 ): void {
-  applyLimit(request, reply, done, "global", WINDOW_MS, MAX_REQUESTS);
+  applyLimit(
+    request,
+    reply,
+    done,
+    "global",
+    "RATE_LIMIT_WINDOW_MS",
+    "RATE_LIMIT_MAX",
+    60_000,
+    100
+  );
 }
 
-/**
- * Heavy-endpoint rate limiter — apply to routes that perform expensive reads.
- *
- * Affected routes:
- *   GET /markets                  — full-table scan, no cursor-based pagination
- *   GET /orders/user/:address     — paginated but requires two DB queries (findMany + count)
- *   GET /positions/user/:address  — findMany with market JOIN
- *
- * Limit: 20 req / 60 s (configurable via RATE_LIMIT_HEAVY_MAX / RATE_LIMIT_HEAVY_WINDOW_MS).
- */
 export function heavyReadLimiter(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -162,19 +140,13 @@ export function heavyReadLimiter(
     reply,
     done,
     "heavy-read",
-    HEAVY_WINDOW_MS,
-    HEAVY_MAX_REQUESTS
+    "RATE_LIMIT_HEAVY_WINDOW_MS",
+    "RATE_LIMIT_HEAVY_MAX",
+    60_000,
+    20
   );
 }
 
-/**
- * Write-endpoint rate limiter — apply to mutation routes.
- *
- * Affected routes:
- *   POST /orders  — input validation, DB write, future matching-engine work
- *
- * Limit: 10 req / 60 s (configurable via RATE_LIMIT_WRITE_MAX / RATE_LIMIT_WRITE_WINDOW_MS).
- */
 export function writeLimiter(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -185,7 +157,9 @@ export function writeLimiter(
     reply,
     done,
     "write",
-    WRITE_WINDOW_MS,
-    WRITE_MAX_REQUESTS
+    "RATE_LIMIT_WRITE_WINDOW_MS",
+    "RATE_LIMIT_WRITE_MAX",
+    60_000,
+    10
   );
 }

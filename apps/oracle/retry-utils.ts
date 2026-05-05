@@ -42,37 +42,24 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
  */
 export function isRetryableError(error: unknown): boolean {
   if (!(error instanceof Error)) {
-    return true; // Assume unknown errors might be transient
+    return true;
   }
 
   const message = error.message.toLowerCase();
 
-  // Network/Connection errors
+  // Non-retryable: 4xx client errors
   if (
-    message.includes("network") ||
-    message.includes("timeout") ||
-    message.includes("econnreset") ||
-    message.includes("econnrefused") ||
-    message.includes("etimedout") ||
-    message.includes("fetch") ||
-    message.includes("abort")
+    message.includes("400") ||
+    message.includes("401") ||
+    message.includes("403") ||
+    message.includes("404") ||
+    message.includes("bad request") ||
+    message.includes("invalid")
   ) {
-    return true;
+    return false;
   }
 
-  // HTTP status codes (if available in message or as property)
-  // Assuming errors might contain status codes like "429" or "503"
-  if (
-    message.includes("429") ||
-    message.includes("500") ||
-    message.includes("502") ||
-    message.includes("503") ||
-    message.includes("504")
-  ) {
-    return true;
-  }
-
-  return false;
+  return true;
 }
 
 /**

@@ -96,7 +96,7 @@ export const testUtils = {
 
   // Generate valid Stellar address
   generateStellarAddress: (prefix: string = "G") => {
-    return prefix + "A".repeat(55);
+    return (prefix + "A".repeat(56)).slice(0, 56);
   },
 
   // Fixed precision assertions for decimal values

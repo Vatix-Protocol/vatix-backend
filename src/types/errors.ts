@@ -7,13 +7,10 @@
  * Extra context:   `metadata`  – optional structured details (e.g. field-level errors).
  */
 export interface ErrorEnvelope {
-  /** Stable snake_case error code, e.g. "validation_error", "not_found". */
   code: string;
-  /** Human-readable description of the error. */
   message: string;
-  /** HTTP status code mirrored in the body for clients that parse JSON only. */
   statusCode: number;
+  requestId?: string;
   fields?: Record<string, string>;
-  // Stack trace included in non-production environments only
   stack?: string;
 }

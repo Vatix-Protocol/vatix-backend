@@ -4,20 +4,21 @@ import { ordersRoutes } from "./orders.js";
 import { errorHandler } from "../middleware/errorHandler.js";
 import type { PrismaClient } from "../../generated/prisma/client";
 
-const mockAuditService = {
-  getWalletTradeHistory: vi.fn(),
-};
-
-const mockPrismaClient = {
-  order: {
-    findMany: vi.fn(),
-    count: vi.fn(),
-    create: vi.fn(),
+const { mockAuditService, mockPrismaClient } = vi.hoisted(() => ({
+  mockAuditService: {
+    getWalletTradeHistory: vi.fn(),
   },
-  market: {
-    findUnique: vi.fn(),
-  },
-} as unknown as PrismaClient;
+  mockPrismaClient: {
+    order: {
+      findMany: vi.fn(),
+      count: vi.fn(),
+      create: vi.fn(),
+    },
+    market: {
+      findUnique: vi.fn(),
+    },
+  } as unknown as PrismaClient,
+}));
 
 vi.mock("../../services/prisma.js", () => ({
   getPrismaClient: () => mockPrismaClient,

@@ -46,11 +46,14 @@ export function errorHandler(
 
   const envelope: ErrorEnvelope = {
     code:
-      "statusCode" in error
-        ? String((error as { code?: string }).code ?? statusCode)
-        : String(statusCode),
+      error instanceof AppError
+        ? error.code
+        : statusCode >= 500
+          ? "internal_error"
+          : String(statusCode),
     message: errorMessage,
     statusCode,
+    requestId: request.id,
     // Include stack trace in response body only outside production
     ...(!isProduction() && isServerError && { stack: error.stack }),
   };
