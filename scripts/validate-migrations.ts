@@ -101,7 +101,7 @@ function validateSchemaSync(): ValidationResult {
     // Check if schema and migrations are in sync
     console.log("Checking schema synchronization...");
     
-    const diffCommand = `npx prisma migrate diff --from-migrations ${MIGRATIONS_DIR} --to-schema-datamodel ${SCHEMA_FILE}`;
+    const diffCommand = `npx prisma migrate diff --from-migrations ${MIGRATIONS_DIR} --to-schema ${SCHEMA_FILE}`;
     const output = execSync(diffCommand, { encoding: "utf8" });
 
     if (output.trim()) {
