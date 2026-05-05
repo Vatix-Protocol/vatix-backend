@@ -66,13 +66,16 @@ export class PollingIngestionLoop implements IngestionLoop {
 
     this.logger.info("Indexer ingestion loop stopped", {
       finalCursor: this.cursor,
-      latestIndexedLedgerSequence: this.metrics.getLatestIndexedLedgerSequence(),
+      latestIndexedLedgerSequence:
+        this.metrics.getLatestIndexedLedgerSequence(),
     });
   }
 
   private async tick(): Promise<void> {
     if (this.isTickInProgress) {
-      this.logger.warn("Skipping ingestion tick because previous tick is active");
+      this.logger.warn(
+        "Skipping ingestion tick because previous tick is active"
+      );
       return;
     }
 
@@ -105,7 +108,8 @@ export class PollingIngestionLoop implements IngestionLoop {
 
     if (
       !force &&
-      this.successfulBatchesSinceLastCheckpoint < this.checkpointFlushEveryBatches
+      this.successfulBatchesSinceLastCheckpoint <
+        this.checkpointFlushEveryBatches
     ) {
       return;
     }
@@ -114,7 +118,8 @@ export class PollingIngestionLoop implements IngestionLoop {
     this.successfulBatchesSinceLastCheckpoint = 0;
     this.logger.debug("Persisted indexer checkpoint cursor", {
       cursor: this.cursor,
-      latestIndexedLedgerSequence: this.metrics.getLatestIndexedLedgerSequence(),
+      latestIndexedLedgerSequence:
+        this.metrics.getLatestIndexedLedgerSequence(),
       forced: force,
     });
   }

@@ -6,17 +6,17 @@ Creates the `markets` table — the core entity for all prediction market data.
 
 ## Table Structure
 
-| Column            | Type          | Nullable | Description                        |
-| ----------------- | ------------- | -------- | ---------------------------------- |
-| id                | UUID          | No       | Primary key                        |
-| question          | TEXT          | No       | Market question                    |
-| end_time          | TIMESTAMPTZ   | No       | When the market closes             |
-| resolution_time   | TIMESTAMPTZ   | Yes      | When the market was resolved       |
-| oracle_address    | VARCHAR(56)   | No       | Stellar address of the oracle      |
-| status            | MarketStatus  | No       | `ACTIVE`, `RESOLVED`, `CANCELLED`  |
-| outcome           | BOOLEAN       | Yes      | Final outcome once resolved        |
-| created_at        | TIMESTAMPTZ   | No       | Row creation timestamp             |
-| updated_at        | TIMESTAMPTZ   | No       | Last update timestamp              |
+| Column          | Type         | Nullable | Description                       |
+| --------------- | ------------ | -------- | --------------------------------- |
+| id              | UUID         | No       | Primary key                       |
+| question        | TEXT         | No       | Market question                   |
+| end_time        | TIMESTAMPTZ  | No       | When the market closes            |
+| resolution_time | TIMESTAMPTZ  | Yes      | When the market was resolved      |
+| oracle_address  | VARCHAR(56)  | No       | Stellar address of the oracle     |
+| status          | MarketStatus | No       | `ACTIVE`, `RESOLVED`, `CANCELLED` |
+| outcome         | BOOLEAN      | Yes      | Final outcome once resolved       |
+| created_at      | TIMESTAMPTZ  | No       | Row creation timestamp            |
+| updated_at      | TIMESTAMPTZ  | No       | Last update timestamp             |
 
 ## Indexes
 

@@ -225,10 +225,13 @@ describe("insertIfNew", () => {
 
     await insertIfNew(persisted, upsert, { logger });
 
-    expect(logger.info).toHaveBeenCalledWith("Skipping duplicate indexer event", {
-      idempotencyKey: persisted.idempotencyKey,
-      duplicateCount: 1,
-    });
+    expect(logger.info).toHaveBeenCalledWith(
+      "Skipping duplicate indexer event",
+      {
+        idempotencyKey: persisted.idempotencyKey,
+        duplicateCount: 1,
+      }
+    );
   });
 
   it("continues inserting later events after duplicate no-ops", async () => {

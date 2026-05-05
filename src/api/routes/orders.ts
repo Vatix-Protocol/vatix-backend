@@ -8,10 +8,7 @@ import {
   assertValidOrder,
   type OrderInput,
 } from "../../matching/validation.js";
-import {
-  heavyReadLimiter,
-  writeLimiter,
-} from "../middleware/rateLimiter.js";
+import { heavyReadLimiter, writeLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
 
 interface GetUserOrdersParams {
@@ -111,14 +108,18 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       if (from !== undefined) {
         fromMs = Date.parse(from);
         if (Number.isNaN(fromMs)) {
-          throw new ValidationError("from must be a valid UTC ISO-8601 timestamp");
+          throw new ValidationError(
+            "from must be a valid UTC ISO-8601 timestamp"
+          );
         }
       }
 
       if (to !== undefined) {
         toMs = Date.parse(to);
         if (Number.isNaN(toMs)) {
-          throw new ValidationError("to must be a valid UTC ISO-8601 timestamp");
+          throw new ValidationError(
+            "to must be a valid UTC ISO-8601 timestamp"
+          );
         }
       }
 
@@ -129,20 +130,24 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       }
 
       if (marketId !== undefined) {
-        const market = await prisma.market.findUnique({ where: { id: marketId }, select: { id: true } });
+        const market = await prisma.market.findUnique({
+          where: { id: marketId },
+          select: { id: true },
+        });
         if (!market) {
           throw new ValidationError(`Market not found: ${marketId}`);
         }
       }
 
-      const { trades, total, hasNext } = await auditService.getWalletTradeHistory(
-        address,
-        page,
-        limit,
-        fromMs,
-        toMs,
-        marketId
-      );
+      const { trades, total, hasNext } =
+        await auditService.getWalletTradeHistory(
+          address,
+          page,
+          limit,
+          fromMs,
+          toMs,
+          marketId
+        );
 
       return {
         trades: trades.map((entry) => ({

@@ -62,7 +62,13 @@ export function isRetryableError(error: unknown): boolean {
 
   // HTTP status codes (if available in message or as property)
   // Assuming errors might contain status codes like "429" or "503"
-  if (message.includes("429") || message.includes("500") || message.includes("502") || message.includes("503") || message.includes("504")) {
+  if (
+    message.includes("429") ||
+    message.includes("500") ||
+    message.includes("502") ||
+    message.includes("503") ||
+    message.includes("504")
+  ) {
     return true;
   }
 
@@ -74,7 +80,8 @@ export function isRetryableError(error: unknown): boolean {
  *
  * @param ms - Duration in milliseconds
  */
-export const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+export const wait = (ms: number) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Execute an async operation with bounded retries and exponential backoff.
@@ -104,8 +111,9 @@ export async function withRetry<T>(
       }
 
       // Calculate delay: initialDelay * factor^attempt
-      let delayMs = fullConfig.initialDelayMs * Math.pow(fullConfig.factor, attempt);
-      
+      let delayMs =
+        fullConfig.initialDelayMs * Math.pow(fullConfig.factor, attempt);
+
       // Cap at maxDelay
       delayMs = Math.min(delayMs, fullConfig.maxDelayMs);
 
@@ -116,7 +124,11 @@ export async function withRetry<T>(
       }
 
       if (onRetry) {
-        onRetry(error instanceof Error ? error : new Error(String(error)), attempt + 1, delayMs);
+        onRetry(
+          error instanceof Error ? error : new Error(String(error)),
+          attempt + 1,
+          delayMs
+        );
       }
 
       await wait(delayMs);

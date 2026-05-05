@@ -52,8 +52,7 @@ describe("GET /v1/ready", () => {
   it("returns 503 and ready:false when the index is stale", async () => {
     const server = buildServer({
       ...freshDeps,
-      getLastIndexedAt: async () =>
-        NOW - INDEX_STALENESS_THRESHOLD_MS - 1000, // 1 second past threshold
+      getLastIndexedAt: async () => NOW - INDEX_STALENESS_THRESHOLD_MS - 1000, // 1 second past threshold
     });
 
     const res = await server.inject({ method: "GET", url: "/v1/ready" });

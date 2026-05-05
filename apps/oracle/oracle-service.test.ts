@@ -219,7 +219,8 @@ describe("OracleService", () => {
     it("should retry on transient failures", async () => {
       const transientError = new Error("Network timeout");
       const primaryAdapter = createMockAdapter("primary", false);
-      primaryAdapter.resolve = vi.fn()
+      primaryAdapter.resolve = vi
+        .fn()
         .mockRejectedValueOnce(transientError)
         .mockRejectedValueOnce(transientError)
         .mockResolvedValue({
@@ -237,7 +238,8 @@ describe("OracleService", () => {
 
       const result = await service.resolve({
         marketId: "market-001",
-        oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       });
 
       expect(result.source).toBe("primary");
@@ -256,10 +258,13 @@ describe("OracleService", () => {
         retryConfig: { maxRetries: 3, initialDelayMs: 1, useJitter: false },
       });
 
-      await expect(service.resolve({
-        marketId: "market-001",
-        oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-      })).rejects.toThrow();
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow();
 
       expect(primaryAdapter.resolve).toHaveBeenCalledTimes(1);
       expect(service.getMetrics().retryCount).toBe(0);
@@ -278,7 +283,8 @@ describe("OracleService", () => {
 
       const result = await service.resolve({
         marketId: "market-001",
-        oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
       });
 
       expect(result.source).toBe("fallback");

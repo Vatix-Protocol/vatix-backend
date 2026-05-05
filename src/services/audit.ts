@@ -226,7 +226,8 @@ export class AuditService {
       .map(([id, fields]) => this.parseStreamEntry(id, fields))
       .filter(
         (entry) =>
-          (entry.trade.buyerAddress === wallet || entry.trade.sellerAddress === wallet) &&
+          (entry.trade.buyerAddress === wallet ||
+            entry.trade.sellerAddress === wallet) &&
           (marketId === undefined || entry.trade.marketId === marketId)
       );
 

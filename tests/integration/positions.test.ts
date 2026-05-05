@@ -13,7 +13,7 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
     await app.register(positionsRouter);
-    
+
     // Generate test wallet address
     testWallet = testUtils.generateStellarAddress("GTEST");
   });
@@ -43,10 +43,10 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
+
       expect(Array.isArray(body)).toBe(true);
       expect(body).toHaveLength(1);
-      
+
       const position = body[0];
       expect(position.marketId).toBe(market.id);
       expect(position.userAddress).toBe(testWallet);
@@ -76,15 +76,15 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
+
       expect(body).toHaveLength(1);
       const position = body[0];
-      
+
       // Verify calculated fields
       expect(position.potentialPayoutIfYes).toBe(200);
       expect(position.potentialPayoutIfNo).toBe(50);
       expect(position.netPosition).toBe(150); // 200 - 50
-      
+
       // Verify market data is included
       expect(position.market).toBeDefined();
       expect(position.market.id).toBe(market.id);
@@ -117,18 +117,18 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
+
       expect(body).toHaveLength(2);
-      
+
       // Verify both positions are returned
       const positionIds = body.map((p: any) => p.marketId);
       expect(positionIds).toContain(market1.id);
       expect(positionIds).toContain(market2.id);
-      
+
       // Verify calculations
       const pos1 = body.find((p: any) => p.marketId === market1.id);
       const pos2 = body.find((p: any) => p.marketId === market2.id);
-      
+
       expect(pos1.netPosition).toBe(100);
       expect(pos2.netPosition).toBe(-100);
     });
@@ -145,7 +145,7 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
+
       expect(Array.isArray(body)).toBe(true);
       expect(body).toHaveLength(0);
     });
@@ -194,13 +194,15 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
+
       const position = body[0];
-      
+
       // Verify precision is maintained
-      expect(testUtils.assertDecimalEqual(position.lockedCollateral, 1.23456789)).toBe(true);
+      expect(
+        testUtils.assertDecimalEqual(position.lockedCollateral, 1.23456789)
+      ).toBe(true);
       expect(position.netPosition).toBe(-333); // 123 - 456
-      
+
       // Test precision assertion utility
       expect(testUtils.assertDecimalEqual(0.12345678, 0.12345678)).toBe(true);
       expect(testUtils.assertDecimalEqual(0.12345678, 0.12345679)).toBe(false);
@@ -224,7 +226,7 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
+
       expect(body).toHaveLength(1);
       expect(body[0].isSettled).toBe(true);
       expect(body[0].netPosition).toBe(100);
@@ -246,7 +248,7 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
+
       expect(body).toHaveLength(1);
       const position = body[0];
       expect(position.yesShares).toBe(0);

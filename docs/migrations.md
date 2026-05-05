@@ -48,6 +48,7 @@ pnpm prisma:migrate -- --name add_new_feature
 ```
 
 This will:
+
 1. Compare schema changes with current database state
 2. Generate migration SQL in `prisma/migrations/`
 3. Apply the migration to the database
@@ -164,7 +165,7 @@ npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamode
 model NewTable {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
-  
+
   @@map("new_tables")
 }
 ```
@@ -183,7 +184,7 @@ model Market {
 ```prisma
 model Market {
   // ... existing fields
-  
+
   @@index([status, endTime])
 }
 ```
@@ -201,6 +202,7 @@ model Market {
 ### Common Issues
 
 1. **Migration lock stuck**
+
    ```bash
    rm prisma/migrations/migration_lock.toml
    ```
@@ -227,6 +229,7 @@ model Market {
 Prisma doesn't support automatic rollbacks. Manual rollback process:
 
 1. **Create rollback migration**
+
    ```bash
    npx prisma migrate dev --name rollback_feature_name
    ```

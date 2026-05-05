@@ -40,5 +40,5 @@ server.register(
 ## Current Versions
 
 | Version | Status | Base path | Notes                  |
-|---------|--------|-----------|------------------------|
+| ------- | ------ | --------- | ---------------------- |
 | v1      | Active | `/v1`     | Initial public version |

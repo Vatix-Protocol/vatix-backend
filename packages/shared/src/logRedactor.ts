@@ -79,10 +79,7 @@ export function isSensitiveKey(key: string): boolean {
  *
  * Non-object values are returned as-is.
  */
-export function redactObject(
-  value: unknown,
-  _depth = 0
-): unknown {
+export function redactObject(value: unknown, _depth = 0): unknown {
   // Guard against deeply nested / circular structures
   if (_depth > 10) return value;
 

@@ -2,7 +2,7 @@
 
 /**
  * Migration validation script for CI/CD
- * 
+ *
  * This script validates that:
  * 1. Migration files are in sync with schema
  * 2. Migration SQL is valid
@@ -33,8 +33,8 @@ function validateMigrationFiles(): ValidationResult {
   try {
     // Check if migrations directory exists
     const migrations = readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
-      .filter(dirent => dirent.isDirectory())
-      .map(dirent => dirent.name)
+      .filter((dirent) => dirent.isDirectory())
+      .map((dirent) => dirent.name)
       .sort();
 
     if (migrations.length === 0) {
@@ -44,15 +44,15 @@ function validateMigrationFiles(): ValidationResult {
     }
 
     console.log(`Found ${migrations.length} migration(s):`);
-    migrations.forEach(migration => console.log(`  - ${migration}`));
+    migrations.forEach((migration) => console.log(`  - ${migration}`));
 
     // Validate each migration file
     for (const migration of migrations) {
       const migrationFile = join(MIGRATIONS_DIR, migration, "migration.sql");
-      
+
       try {
         const sql = readFileSync(migrationFile, "utf8");
-        
+
         // Check for potentially dangerous operations
         const dangerousPatterns = [
           /DROP\s+TABLE/i,
@@ -63,25 +63,27 @@ function validateMigrationFiles(): ValidationResult {
 
         for (const pattern of dangerousPatterns) {
           if (pattern.test(sql)) {
-            result.warnings.push(`Dangerous operation detected in ${migration}: ${pattern.source}`);
+            result.warnings.push(
+              `Dangerous operation detected in ${migration}: ${pattern.source}`
+            );
           }
         }
 
         // Basic SQL syntax check (simple validation)
         if (!sql.trim().startsWith("--")) {
-          const sqlCommands = sql.split(";").filter(cmd => cmd.trim());
+          const sqlCommands = sql.split(";").filter((cmd) => cmd.trim());
           if (sqlCommands.length === 0) {
             result.errors.push(`No SQL commands found in ${migration}`);
             result.valid = false;
           }
         }
-
       } catch (error) {
-        result.errors.push(`Failed to read migration file ${migration}: ${error}`);
+        result.errors.push(
+          `Failed to read migration file ${migration}: ${error}`
+        );
         result.valid = false;
       }
     }
-
   } catch (error) {
     result.errors.push(`Failed to read migrations directory: ${error}`);
     result.valid = false;
@@ -100,7 +102,7 @@ function validateSchemaSync(): ValidationResult {
   try {
     // Check if schema and migrations are in sync
     console.log("Checking schema synchronization...");
-    
+
     const diffCommand = `npx prisma migrate diff --from-migrations ${MIGRATIONS_DIR} --to-schema ${SCHEMA_FILE}`;
     const output = execSync(diffCommand, { encoding: "utf8" });
 
@@ -111,7 +113,6 @@ function validateSchemaSync(): ValidationResult {
     } else {
       console.log("✓ Schema and migrations are in sync");
     }
-
   } catch (error) {
     result.errors.push(`Failed to check schema synchronization: ${error}`);
     result.valid = false;
@@ -148,19 +149,19 @@ function main() {
     validatePrismaClient(),
   ];
 
-  const allErrors = results.flatMap(r => r.errors);
-  const allWarnings = results.flatMap(r => r.warnings);
-  const isValid = results.every(r => r.valid);
+  const allErrors = results.flatMap((r) => r.errors);
+  const allWarnings = results.flatMap((r) => r.warnings);
+  const isValid = results.every((r) => r.valid);
 
   // Print results
   if (allWarnings.length > 0) {
     console.log("\n⚠️  Warnings:");
-    allWarnings.forEach(warning => console.log(`  - ${warning}`));
+    allWarnings.forEach((warning) => console.log(`  - ${warning}`));
   }
 
   if (allErrors.length > 0) {
     console.log("\n❌ Errors:");
-    allErrors.forEach(error => console.log(`  - ${error}`));
+    allErrors.forEach((error) => console.log(`  - ${error}`));
   }
 
   if (isValid) {

@@ -6,11 +6,11 @@ tighter controls without penalising cheap ones.
 
 ## Tiers
 
-| Tier | Default limit | Env vars | Applies to |
-|------|--------------|----------|------------|
-| **Global** | 100 req / 60 s | `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS` | Every route (baseline) |
-| **Heavy read** | 20 req / 60 s | `RATE_LIMIT_HEAVY_MAX`, `RATE_LIMIT_HEAVY_WINDOW_MS` | Expensive read routes (see below) |
-| **Write** | 10 req / 60 s | `RATE_LIMIT_WRITE_MAX`, `RATE_LIMIT_WRITE_WINDOW_MS` | Mutation routes (see below) |
+| Tier           | Default limit  | Env vars                                             | Applies to                        |
+| -------------- | -------------- | ---------------------------------------------------- | --------------------------------- |
+| **Global**     | 100 req / 60 s | `RATE_LIMIT_MAX`, `RATE_LIMIT_WINDOW_MS`             | Every route (baseline)            |
+| **Heavy read** | 20 req / 60 s  | `RATE_LIMIT_HEAVY_MAX`, `RATE_LIMIT_HEAVY_WINDOW_MS` | Expensive read routes (see below) |
+| **Write**      | 10 req / 60 s  | `RATE_LIMIT_WRITE_MAX`, `RATE_LIMIT_WRITE_WINDOW_MS` | Mutation routes (see below)       |
 
 Each tier maintains its own counter, so exhausting the heavy-read budget does
 not consume the global budget and vice versa.
@@ -21,11 +21,11 @@ not consume the global budget and vice versa.
 
 These routes perform expensive database operations on every call:
 
-| Route | Reason |
-|-------|--------|
-| `GET /markets` | Full-table scan; no cursor-based pagination |
-| `GET /orders/user/:address` | Two parallel DB queries (`findMany` + `count`) |
-| `GET /positions/user/:address` | `findMany` with a `market` JOIN |
+| Route                          | Reason                                         |
+| ------------------------------ | ---------------------------------------------- |
+| `GET /markets`                 | Full-table scan; no cursor-based pagination    |
+| `GET /orders/user/:address`    | Two parallel DB queries (`findMany` + `count`) |
+| `GET /positions/user/:address` | `findMany` with a `market` JOIN                |
 
 Limit: **20 req / 60 s** per IP.
 
@@ -34,8 +34,8 @@ Limit: **20 req / 60 s** per IP.
 Mutation routes carry the highest per-request cost (input validation, DB
 write, and future matching-engine work):
 
-| Route | Reason |
-|-------|--------|
+| Route          | Reason                                              |
+| -------------- | --------------------------------------------------- |
 | `POST /orders` | Validation + DB write + matching-engine integration |
 
 Limit: **10 req / 60 s** per IP.
@@ -58,11 +58,11 @@ RateLimit-Remaining: 17
 RateLimit-Reset: 1745798460
 ```
 
-| Header | Value |
-|--------|-------|
-| `RateLimit-Limit` | Maximum requests allowed in the current window |
-| `RateLimit-Remaining` | Requests still available; `0` when the limit is reached |
-| `RateLimit-Reset` | Unix timestamp (seconds UTC) when the window resets and the counter clears |
+| Header                | Value                                                                      |
+| --------------------- | -------------------------------------------------------------------------- |
+| `RateLimit-Limit`     | Maximum requests allowed in the current window                             |
+| `RateLimit-Remaining` | Requests still available; `0` when the limit is reached                    |
+| `RateLimit-Reset`     | Unix timestamp (seconds UTC) when the window resets and the counter clears |
 
 Header names follow the [IETF RateLimit header fields draft](https://datatracker.ietf.org/doc/html/draft-ietf-httpapi-ratelimit-headers).
 

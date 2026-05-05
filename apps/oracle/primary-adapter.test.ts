@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  PrimaryAdapter,
-  PrimaryProviderError,
-} from "./primary-adapter.js";
+import { PrimaryAdapter, PrimaryProviderError } from "./primary-adapter.js";
 
 describe("PrimaryAdapter", () => {
   it("maps a mocked provider response to a provider result", async () => {

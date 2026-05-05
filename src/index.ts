@@ -1,4 +1,8 @@
-import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyRequest,
+  type FastifyReply,
+} from "fastify";
 import { errorHandler } from "./api/middleware/errorHandler.js";
 import positionsRouter from "./api/routes/positions.js";
 import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
@@ -28,7 +32,11 @@ async function checkRpcReachability(
   rpcUrl: string | undefined
 ): Promise<RpcReachabilityResult> {
   if (!rpcUrl) {
-    return { url: null, reachable: false, error: "STELLAR_RPC_URL not configured" };
+    return {
+      url: null,
+      reachable: false,
+      error: "STELLAR_RPC_URL not configured",
+    };
   }
   try {
     const controller = new AbortController();
@@ -36,7 +44,12 @@ async function checkRpcReachability(
     const res = await fetch(rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth", params: [] }),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getHealth",
+        params: [],
+      }),
       signal: controller.signal,
     }).finally(() => clearTimeout(timeout));
     return { url: rpcUrl, reachable: res.ok || res.status < 500 };

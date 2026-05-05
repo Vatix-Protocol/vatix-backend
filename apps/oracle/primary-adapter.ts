@@ -82,20 +82,13 @@ export class PrimaryAdapter implements ProviderAdapter {
       request.timeoutMs ?? this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     const timedResult = await withTimeout<ProviderResult>(
-      async (signal) => {
-        // Simulate fetching from primary provider
-        // In production, this would make an HTTP request to the provider API
-        const response = await this.fetchFromProvider(request, signal);
-        return response;
-      },
+      async (signal) => this.fetchFromProvider(request, signal),
       {
         timeoutMs,
         errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
       }
     );
 
-    if (timedResult.timedOut || timedResult.error) {
-      throw timedResult.error ?? new Error("Primary provider request failed");
     if (timedResult.timedOut) {
       throw new PrimaryProviderError(
         "TIMEOUT",
@@ -119,9 +112,6 @@ export class PrimaryAdapter implements ProviderAdapter {
   async healthCheck(): Promise<boolean> {
     try {
       const timedResult = await withTimeout<boolean>(
-        async () => {
-          // In production, this would ping the provider health endpoint
-          return true;
         async (signal) => {
           const response = await this.fetchFn(
             new URL("/health", this.config.baseUrl),
@@ -158,22 +148,6 @@ export class PrimaryAdapter implements ProviderAdapter {
    * Placeholder for actual HTTP request logic.
    */
   private async fetchFromProvider(
-    _request: ResolutionRequest,
-    _signal: AbortSignal
-  ): Promise<ProviderResult> {
-    // In production, this would make an HTTP request to the provider API
-    // For now, return a placeholder result
-    return {
-      outcome: true,
-      confidence: 0.95,
-      source: this.source,
-      timestamp: new Date().toISOString(),
-      metadata: {
-        provider: "primary",
-        marketId: _request.marketId,
-      },
-    };
-  }
     request: ResolutionRequest,
     signal: AbortSignal
   ): Promise<ProviderResult> {

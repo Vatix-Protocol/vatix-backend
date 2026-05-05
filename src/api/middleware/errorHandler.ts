@@ -45,7 +45,10 @@ export function errorHandler(
   }
 
   const envelope: ErrorEnvelope = {
-    code: "statusCode" in error ? String((error as { code?: string }).code ?? statusCode) : String(statusCode),
+    code:
+      "statusCode" in error
+        ? String((error as { code?: string }).code ?? statusCode)
+        : String(statusCode),
     message: errorMessage,
     statusCode,
     // Include stack trace in response body only outside production
@@ -54,7 +57,9 @@ export function errorHandler(
 
   // Attach field-level details as metadata for ValidationError
   if (error instanceof ValidationError && error.fields) {
-    (envelope as ErrorEnvelope & { metadata?: unknown }).metadata = { fields: error.fields };
+    (envelope as ErrorEnvelope & { metadata?: unknown }).metadata = {
+      fields: error.fields,
+    };
   }
 
   reply.status(statusCode).send(envelope);

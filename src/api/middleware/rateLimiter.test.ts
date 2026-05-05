@@ -1,10 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
-import {
-  rateLimiter,
-  heavyReadLimiter,
-  writeLimiter,
-} from "./rateLimiter.js";
+import { rateLimiter, heavyReadLimiter, writeLimiter } from "./rateLimiter.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -112,11 +108,9 @@ describe("heavyReadLimiter", () => {
     vi.stubEnv("RATE_LIMIT_MAX", "100");
 
     const s = Fastify({ logger: false });
-    s.get(
-      "/markets",
-      { onRequest: [heavyReadLimiter] },
-      async () => ({ ok: true })
-    );
+    s.get("/markets", { onRequest: [heavyReadLimiter] }, async () => ({
+      ok: true,
+    }));
 
     await exhaust(s, 3, "GET", "/markets");
     const res = await s.inject({ method: "GET", url: "/markets" });
@@ -176,11 +170,9 @@ describe("writeLimiter", () => {
     vi.stubEnv("RATE_LIMIT_WRITE_WINDOW_MS", "60000");
 
     const s = Fastify({ logger: false });
-    s.post(
-      "/orders",
-      { onRequest: [writeLimiter] },
-      async () => ({ ok: true })
-    );
+    s.post("/orders", { onRequest: [writeLimiter] }, async () => ({
+      ok: true,
+    }));
 
     await exhaust(s, 2, "POST", "/orders");
     const res = await s.inject({ method: "POST", url: "/orders" });
@@ -344,11 +336,9 @@ describe("tier isolation", () => {
 
     const s = Fastify({ logger: false });
     // /heavy uses heavyReadLimiter; /light uses global rateLimiter
-    s.get(
-      "/heavy",
-      { onRequest: [heavyReadLimiter] },
-      async () => ({ ok: true })
-    );
+    s.get("/heavy", { onRequest: [heavyReadLimiter] }, async () => ({
+      ok: true,
+    }));
     s.get("/light", { onRequest: [rateLimiter] }, async () => ({ ok: true }));
 
     // Exhaust the heavy tier
@@ -370,16 +360,12 @@ describe("tier isolation", () => {
     vi.stubEnv("RATE_LIMIT_HEAVY_WINDOW_MS", "60000");
 
     const s = Fastify({ logger: false });
-    s.post(
-      "/orders",
-      { onRequest: [writeLimiter] },
-      async () => ({ ok: true })
-    );
-    s.get(
-      "/markets",
-      { onRequest: [heavyReadLimiter] },
-      async () => ({ ok: true })
-    );
+    s.post("/orders", { onRequest: [writeLimiter] }, async () => ({
+      ok: true,
+    }));
+    s.get("/markets", { onRequest: [heavyReadLimiter] }, async () => ({
+      ok: true,
+    }));
 
     // Exhaust write tier
     await s.inject({ method: "POST", url: "/orders" });

@@ -22,13 +22,13 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "json", "html"],
       exclude: [
-        "node_modules/", 
-        "dist/", 
-        "**/*.test.ts", 
+        "node_modules/",
+        "dist/",
+        "**/*.test.ts",
         "**/*.spec.ts",
         "tests/",
         "scripts/",
-        "coverage/"
+        "coverage/",
       ],
       thresholds: {
         global: {

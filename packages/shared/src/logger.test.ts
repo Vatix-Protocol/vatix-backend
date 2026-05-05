@@ -56,14 +56,18 @@ describe("Logger", () => {
   it("includes the prefix in output", () => {
     const log = new Logger("indexer", "info");
     log.info("started");
-    expect((console.info as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain("[indexer]");
+    expect(
+      (console.info as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    ).toContain("[indexer]");
   });
 
   it("child logger inherits level and composes prefix", () => {
     const parent = new Logger("api", "debug");
     const child = parent.child("routes");
     child.debug("hit");
-    expect((console.debug as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain("api:routes");
+    expect(
+      (console.debug as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    ).toContain("api:routes");
   });
 
   it("suppresses messages below the active level", () => {

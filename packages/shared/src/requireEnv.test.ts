@@ -24,7 +24,9 @@ describe("requireEnv", () => {
       throw new Error("process.exit called");
     });
 
-    expect(() => requireEnv(["MISSING_KEY"], {})).toThrow("process.exit called");
+    expect(() => requireEnv(["MISSING_KEY"], {})).toThrow(
+      "process.exit called"
+    );
     expect(exit).toHaveBeenCalledWith(1);
   });
 

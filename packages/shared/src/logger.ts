@@ -1,3 +1,3 @@
 export const log = (...args: any[]) => {
-  console.log('[shared]', ...args)
-}
+  console.log("[shared]", ...args);
+};

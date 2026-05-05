@@ -2,13 +2,20 @@ import "dotenv/config";
 import { loadFinalizationConfig } from "./config.js";
 import { FinalizationJob } from "./job.js";
 import { createLogger } from "../../../indexer/src/logger.js";
-import { getPrismaClient, disconnectPrisma } from "../../../../src/services/prisma.js";
+import {
+  getPrismaClient,
+  disconnectPrisma,
+} from "../../../../src/services/prisma.js";
 
 async function bootstrap(): Promise<void> {
   const config = loadFinalizationConfig();
   const logger = createLogger(config.logLevel);
   const prisma = getPrismaClient();
-  const job = new FinalizationJob(prisma, logger, config.challengeWindowSeconds);
+  const job = new FinalizationJob(
+    prisma,
+    logger,
+    config.challengeWindowSeconds
+  );
 
   logger.info("Finalization worker started", {
     intervalMs: config.intervalMs,

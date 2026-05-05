@@ -55,7 +55,10 @@ export class EventProcessor {
         processed++;
       } catch (err) {
         failed++;
-        console.error(`[EventProcessor] Failed to process event ${event.id}:`, err);
+        console.error(
+          `[EventProcessor] Failed to process event ${event.id}:`,
+          err
+        );
       }
     }
 

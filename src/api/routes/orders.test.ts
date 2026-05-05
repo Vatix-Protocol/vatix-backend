@@ -55,7 +55,8 @@ describe("GET /trades/user/:address", () => {
             marketId: "market-2",
             outcome: "NO",
             buyerAddress: validAddress,
-            sellerAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            sellerAddress:
+              "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             buyOrderId: "buy-2",
             sellOrderId: "sell-2",
             price: 0.67,
@@ -70,7 +71,8 @@ describe("GET /trades/user/:address", () => {
             id: "trade-1",
             marketId: "market-1",
             outcome: "YES",
-            buyerAddress: "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            buyerAddress:
+              "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
             sellerAddress: validAddress,
             buyOrderId: "buy-1",
             sellOrderId: "sell-1",
@@ -227,9 +229,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue(mockOrders);
-    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
-      2
-    );
+    (
+      mockPrismaClient.order.count as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(2);
 
     const response = await app.inject({
       method: "GET",
@@ -249,9 +251,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue([]);
-    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
-      0
-    );
+    (
+      mockPrismaClient.order.count as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(0);
 
     const response = await app.inject({
       method: "GET",
@@ -275,9 +277,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue([]);
-    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
-      0
-    );
+    (
+      mockPrismaClient.order.count as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(0);
 
     const response = await app.inject({
       method: "GET",
@@ -307,9 +309,9 @@ describe("GET /orders/user/:address", () => {
         createdAt: new Date("2026-01-15T00:00:00Z"),
       },
     ]);
-    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
-      5
-    );
+    (
+      mockPrismaClient.order.count as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(5);
 
     const response = await app.inject({
       method: "GET",
@@ -355,9 +357,9 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockRejectedValue(new Error("Database connection failed"));
-    (mockPrismaClient.order.count as ReturnType<typeof vi.fn>).mockResolvedValue(
-      0
-    );
+    (
+      mockPrismaClient.order.count as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(0);
 
     const response = await app.inject({
       method: "GET",

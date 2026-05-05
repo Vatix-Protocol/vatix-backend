@@ -24,10 +24,10 @@ describe("Integration Tests: GET /v1/markets", () => {
       const market1 = await testUtils.createTestMarket({
         question: "First market",
       });
-      
+
       // Wait a bit to ensure different timestamps
-      await new Promise(resolve => setTimeout(resolve, 10));
-      
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
       const market2 = await testUtils.createTestMarket({
         question: "Second market",
       });
@@ -39,14 +39,14 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
+
       expect(body.markets).toHaveLength(2);
       expect(body.count).toBe(2);
-      
+
       // Should be sorted by createdAt descending
       expect(body.markets[0].question).toBe("Second market");
       expect(body.markets[1].question).toBe("First market");
-      
+
       // Verify response envelope structure
       expect(body).toHaveProperty("markets");
       expect(body).toHaveProperty("count");
@@ -62,7 +62,7 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
+
       expect(body.markets).toHaveLength(0);
       expect(body.count).toBe(0);
       expect(Array.isArray(body.markets)).toBe(true);
@@ -76,7 +76,7 @@ describe("Integration Tests: GET /v1/markets", () => {
         question: "Active market",
         status: "ACTIVE",
       });
-      
+
       await testUtils.createTestMarket({
         question: "Resolved market",
         status: "RESOLVED",
@@ -136,10 +136,10 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
+
       expect(body.markets).toHaveLength(1);
       const marketResponse = body.markets[0];
-      
+
       // Verify all required fields are present and correctly typed
       expect(marketResponse).toHaveProperty("id");
       expect(marketResponse).toHaveProperty("question");
@@ -150,18 +150,24 @@ describe("Integration Tests: GET /v1/markets", () => {
       expect(marketResponse).toHaveProperty("outcome");
       expect(marketResponse).toHaveProperty("createdAt");
       expect(marketResponse).toHaveProperty("updatedAt");
-      
+
       // Verify field types
       expect(typeof marketResponse.id).toBe("string");
       expect(typeof marketResponse.question).toBe("string");
       expect(typeof marketResponse.endTime).toBe("string");
-      expect(marketResponse.resolutionTime === null || typeof marketResponse.resolutionTime === "string").toBe(true);
+      expect(
+        marketResponse.resolutionTime === null ||
+          typeof marketResponse.resolutionTime === "string"
+      ).toBe(true);
       expect(typeof marketResponse.oracleAddress).toBe("string");
       expect(typeof marketResponse.status).toBe("string");
-      expect(marketResponse.outcome === null || typeof marketResponse.outcome === "boolean").toBe(true);
+      expect(
+        marketResponse.outcome === null ||
+          typeof marketResponse.outcome === "boolean"
+      ).toBe(true);
       expect(typeof marketResponse.createdAt).toBe("string");
       expect(typeof marketResponse.updatedAt).toBe("string");
-      
+
       // Verify values match
       expect(marketResponse.id).toBe(market.id);
       expect(marketResponse.question).toBe(market.question);

@@ -33,28 +33,31 @@ Vatix Backend is a monorepo of services that together power the Vatix prediction
 
 ## Service Boundaries
 
-| Module | Directory | Responsibility |
-|---|---|---|
-| **API** | `src/` | HTTP server (Fastify). Handles order placement, market queries, position reads. Owns the CLOB matching engine. |
-| **Indexer** | `apps/indexer/` | Polls Stellar network for on-chain events, parses them, and writes canonical records to PostgreSQL. |
-| **Oracle** | `apps/oracle/` | Fetches external price/resolution data, signs reports, and submits them on-chain via the Stellar SDK. |
-| **Workers** | `apps/workers/` | Queue consumers and scheduled jobs (e.g. settlement, expiry sweeps). Decoupled from the HTTP request lifecycle. |
-| **Shared DB** | `packages/db/` | Shared Prisma client and migration utilities used by all services. |
+| Module        | Directory       | Responsibility                                                                                                  |
+| ------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
+| **API**       | `src/`          | HTTP server (Fastify). Handles order placement, market queries, position reads. Owns the CLOB matching engine.  |
+| **Indexer**   | `apps/indexer/` | Polls Stellar network for on-chain events, parses them, and writes canonical records to PostgreSQL.             |
+| **Oracle**    | `apps/oracle/`  | Fetches external price/resolution data, signs reports, and submits them on-chain via the Stellar SDK.           |
+| **Workers**   | `apps/workers/` | Queue consumers and scheduled jobs (e.g. settlement, expiry sweeps). Decoupled from the HTTP request lifecycle. |
+| **Shared DB** | `packages/db/`  | Shared Prisma client and migration utilities used by all services.                                              |
 
 ## Major Data Flows
 
 ### Order placement
+
 1. Client `POST /v1/orders` → API validates and writes order to PostgreSQL
 2. CLOB matching engine runs synchronously; fills are written in the same transaction
 3. Matched fills are enqueued to Redis for downstream settlement by Workers
 
 ### Market resolution
+
 1. Oracle fetches external outcome data and signs a resolution report
 2. Oracle submits the report on-chain (Stellar)
 3. Indexer detects the on-chain event and writes a `ResolutionCandidate` to PostgreSQL
 4. Workers pick up the candidate, apply the challenge window, and settle positions
 
 ### Indexer cursor
+
 - The Indexer stores a `ledger_cursor` in PostgreSQL (`IndexerCursor` table) to resume from the last processed ledger after restarts.
 
 ## Open Decisions

@@ -3,7 +3,33 @@ import fp from "fastify-plugin";
 
 function isSensitiveKey(key: string): boolean {
   const lower = key.toLowerCase();
-  const SENSITIVE = new Set(["password","secret","token","accesstoken","access_token","refreshtoken","refresh_token","apikey","api_key","x-api-key","authorization","auth","cookie","set-cookie","session","privatekey","private_key","secretkey","secret_key","signingkey","signing_key","mnemonic","seed","x-auth-token","x-user-token"]);
+  const SENSITIVE = new Set([
+    "password",
+    "secret",
+    "token",
+    "accesstoken",
+    "access_token",
+    "refreshtoken",
+    "refresh_token",
+    "apikey",
+    "api_key",
+    "x-api-key",
+    "authorization",
+    "auth",
+    "cookie",
+    "set-cookie",
+    "session",
+    "privatekey",
+    "private_key",
+    "secretkey",
+    "secret_key",
+    "signingkey",
+    "signing_key",
+    "mnemonic",
+    "seed",
+    "x-auth-token",
+    "x-user-token",
+  ]);
   return SENSITIVE.has(lower);
 }
 

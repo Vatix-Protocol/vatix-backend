@@ -26,11 +26,12 @@ const ACCEPTED_LOG_LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 export type Env = Record<string, string | undefined>;
 
 /** Safe accessor for process.env that works without requiring @types/node in the shared package. */
-const processEnv: Env = (
-  (globalThis as Record<string, unknown>)["process"] as
-    | { env: Env }
-    | undefined
-)?.env ?? {};
+const processEnv: Env =
+  (
+    (globalThis as Record<string, unknown>)["process"] as
+      | { env: Env }
+      | undefined
+  )?.env ?? {};
 
 // ---------------------------------------------------------------------------
 // Validation helpers (pure functions — no side effects)
@@ -116,7 +117,11 @@ function loadNodeEnv(env: Env): NodeEnv {
   return raw as NodeEnv;
 }
 
-function loadLogLevel(name: string, env: Env, fallback: LogLevel = "info"): LogLevel {
+function loadLogLevel(
+  name: string,
+  env: Env,
+  fallback: LogLevel = "info"
+): LogLevel {
   const raw = (env[name] ?? fallback) as LogLevel;
   if (!ACCEPTED_LOG_LEVELS.includes(raw)) {
     throw new Error(
@@ -339,7 +344,9 @@ export interface FinalizationConfig {
  *
  * @param env - Defaults to process.env. Pass a custom object in tests.
  */
-export function loadFinalizationConfig(env: Env = processEnv): FinalizationConfig {
+export function loadFinalizationConfig(
+  env: Env = processEnv
+): FinalizationConfig {
   return {
     intervalMs: requireMinNumber("FINALIZATION_INTERVAL_MS", env, 1000, 60_000),
     challengeWindowSeconds: requireNonNegativeNumber(

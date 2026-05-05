@@ -25,16 +25,17 @@ This runbook provides step-by-step guidance for responding to common backend inc
 
 ## Severity Classification
 
-| Severity | Impact | Response Time | Examples |
-|----------|--------|---------------|----------|
+| Severity             | Impact                                                       | Response Time        | Examples                                                                      |
+| -------------------- | ------------------------------------------------------------ | -------------------- | ----------------------------------------------------------------------------- |
 | **SEV-1 (Critical)** | Complete service outage, data loss risk, or financial impact | Immediate (< 15 min) | DB down, indexer stopped > 10 min, oracle failure on active market resolution |
-| **SEV-2 (High)** | Major feature degradation, partial outage | < 30 min | Indexer lag > 5 min, RPC intermittent failures, high API latency |
-| **SEV-3 (Medium)** | Minor feature impairment, non-critical degradation | < 2 hours | Elevated error rates, slow queries, rate limiting issues |
-| **SEV-4 (Low)** | Cosmetic issues, minor bugs, monitoring gaps | < 1 business day | Log formatting, non-critical alert misfires |
+| **SEV-2 (High)**     | Major feature degradation, partial outage                    | < 30 min             | Indexer lag > 5 min, RPC intermittent failures, high API latency              |
+| **SEV-3 (Medium)**   | Minor feature impairment, non-critical degradation           | < 2 hours            | Elevated error rates, slow queries, rate limiting issues                      |
+| **SEV-4 (Low)**      | Cosmetic issues, minor bugs, monitoring gaps                 | < 1 business day     | Log formatting, non-critical alert misfires                                   |
 
 ### Severity Decision Matrix
 
 Ask these questions to classify:
+
 1. **Is user data at risk?** → SEV-1
 2. **Are markets unable to resolve?** → SEV-1
 3. **Is the API completely down?** → SEV-1
@@ -55,16 +56,17 @@ Ask these questions to classify:
 
 ### Escalation Matrix
 
-| Severity | On-Call Engineer | Engineering Lead | CTO/VP Engineering | Communication |
-|----------|------------------|------------------|-------------------|---------------|
-| SEV-1 | Immediate | < 15 min | < 30 min | Status page update within 30 min |
-| SEV-2 | < 30 min | < 1 hour | If unresolved > 2 hours | Internal team update |
-| SEV-3 | < 2 hours | Next business day | If unresolved > 1 day | Team standup mention |
-| SEV-4 | Next business day | As needed | Not required | Backlog item |
+| Severity | On-Call Engineer  | Engineering Lead  | CTO/VP Engineering      | Communication                    |
+| -------- | ----------------- | ----------------- | ----------------------- | -------------------------------- |
+| SEV-1    | Immediate         | < 15 min          | < 30 min                | Status page update within 30 min |
+| SEV-2    | < 30 min          | < 1 hour          | If unresolved > 2 hours | Internal team update             |
+| SEV-3    | < 2 hours         | Next business day | If unresolved > 1 day   | Team standup mention             |
+| SEV-4    | Next business day | As needed         | Not required            | Backlog item                     |
 
 ### Communication Templates
 
 **Initial Incident Declaration:**
+
 ```
 🚨 INCIDENT DECLARED - [SEV-X]
 Service: Vatix Backend
@@ -75,6 +77,7 @@ Next Update: [Time]
 ```
 
 **Resolution Announcement:**
+
 ```
 ✅ INCIDENT RESOLVED - [SEV-X]
 Service: Vatix Backend
@@ -90,6 +93,7 @@ Post-Incident Review: [Scheduled/Not needed]
 ## Incident 1: Indexer Lag or Stall
 
 ### Symptoms
+
 - Indexer ingestion loop not progressing
 - `event_ingested` count not increasing
 - Cursor checkpoint not updating
@@ -97,6 +101,7 @@ Post-Incident Review: [Scheduled/Not needed]
 - Trade events missing from order history
 
 ### Detection
+
 ```sql
 -- Check latest ingested event timestamp
 SELECT MAX(source_at) as latest_event FROM events;
@@ -105,13 +110,14 @@ SELECT MAX(source_at) as latest_event FROM events;
 SELECT * FROM indexer_cursors WHERE cursor_key = 'ingestion';
 
 -- Count events ingested in last hour
-SELECT COUNT(*) FROM events 
+SELECT COUNT(*) FROM events
 WHERE source_at > NOW() - INTERVAL '1 hour';
 ```
 
 ### Response Steps
 
 #### Step 1: Assess Current State
+
 ```bash
 # Check indexer logs
 docker logs vatix-indexer --tail 100 --follow
@@ -127,6 +133,7 @@ docker exec -it vatix-postgres psql -U postgres -d vatix -c \
 #### Step 2: Identify Root Cause
 
 **A. RPC/Horizon Connectivity Issues**
+
 ```bash
 # Test Horizon connectivity
 curl -s https://horizon-testnet.stellar.org | jq .network
@@ -137,6 +144,7 @@ echo $STELLAR_HORIZON_URL
 ```
 
 **B. Database Connection Issues**
+
 ```bash
 # Test DB connectivity
 docker exec -it vatix-postgres pg_isready -U postgres
@@ -146,10 +154,11 @@ docker logs vatix-indexer 2>&1 | grep -i "connection\|pool\|error"
 ```
 
 **C. Cursor Corruption or Invalid State**
+
 ```sql
 -- Check cursor ledger sequence
-SELECT cursor_key, ledger_sequence, updated_at 
-FROM indexer_cursors 
+SELECT cursor_key, ledger_sequence, updated_at
+FROM indexer_cursors
 WHERE cursor_key = 'ingestion';
 
 -- Compare with current Horizon ledger
@@ -159,6 +168,7 @@ WHERE cursor_key = 'ingestion';
 #### Step 3: Remediation
 
 **A. Restart Indexer (First Attempt)**
+
 ```bash
 # Graceful restart
 docker restart vatix-indexer
@@ -168,26 +178,29 @@ docker logs vatix-indexer --tail 50 --follow
 ```
 
 **B. Reset Cursor (If Corrupted)**
+
 ```sql
 -- WARNING: Only if cursor is stuck on invalid ledger
 -- Get current ledger from Horizon first
-UPDATE indexer_cursors 
-SET ledger_sequence = [CURRENT_LEDGER - 100], 
+UPDATE indexer_cursors
+SET ledger_sequence = [CURRENT_LEDGER - 100],
     updated_at = NOW()
 WHERE cursor_key = 'ingestion';
 ```
 
 **C. Manual Event Backfill (If Gap Detected)**
+
 ```bash
 # Run indexer in catch-up mode (if supported)
 # Or manually trigger ingestion cycle
 ```
 
 #### Step 4: Verification
+
 ```sql
 -- Confirm events are flowing
-SELECT COUNT(*) as events_last_5min 
-FROM events 
+SELECT COUNT(*) as events_last_5min
+FROM events
 WHERE source_at > NOW() - INTERVAL '5 minutes';
 
 -- Verify cursor is advancing
@@ -198,6 +211,7 @@ SELECT * FROM markets ORDER BY created_at DESC LIMIT 5;
 ```
 
 #### Step 5: Prevention
+
 - [ ] Set up alerting on indexer lag > 2 minutes
 - [ ] Monitor cursor checkpoint age
 - [ ] Add Horizon health check to indexer loop
@@ -208,6 +222,7 @@ SELECT * FROM markets ORDER BY created_at DESC LIMIT 5;
 ## Incident 2: RPC/Horizon Outage
 
 ### Symptoms
+
 - Indexer fails to fetch ledger data
 - Timeouts in event fetching
 - `503` or `504` errors from Horizon
@@ -215,6 +230,7 @@ SELECT * FROM markets ORDER BY created_at DESC LIMIT 5;
 - Oracle unable to verify on-chain state
 
 ### Detection
+
 ```bash
 # Test Horizon endpoint
 curl -v https://horizon-testnet.stellar.org/ledgers?order=desc&limit=1
@@ -229,6 +245,7 @@ docker logs vatix-indexer 2>&1 | grep -i "timeout\|error\|503\|504"
 ### Response Steps
 
 #### Step 1: Confirm Outage Scope
+
 ```bash
 # Test multiple Horizon endpoints
 curl -s https://horizon-testnet.stellar.org/ | jq .network
@@ -240,6 +257,7 @@ curl -s https://horizon-testnet.stellar.org/accounts?limit=1 | jq -r '._links.se
 ```
 
 #### Step 2: Assess Impact
+
 - **Indexer:** Will stall until RPC recovers (safe, will resume)
 - **API:** Can continue serving cached data
 - **Oracle:** May be unable to resolve markets if dependent on live data
@@ -248,6 +266,7 @@ curl -s https://horizon-testnet.stellar.org/accounts?limit=1 | jq -r '._links.se
 #### Step 3: Mitigation
 
 **A. Switch to Fallback RPC (If Available)**
+
 ```bash
 # Update environment variable
 export STELLAR_HORIZON_URL=https://horizon-fallback.stellar.org
@@ -257,6 +276,7 @@ docker restart vatix-indexer
 ```
 
 **B. Enable Graceful Degradation**
+
 ```bash
 # If supported, enable cached mode
 export INDEXER_USE_CACHE=true
@@ -266,6 +286,7 @@ export INDEXER_USE_CACHE=true
 ```
 
 **C. Pause Non-Critical Operations**
+
 ```bash
 # Pause indexer if RPC completely down
 # to prevent error log flooding
@@ -276,6 +297,7 @@ docker start vatix-indexer
 ```
 
 #### Step 4: Monitor Recovery
+
 ```bash
 # Continuously test RPC
 watch -n 5 'curl -s https://horizon-testnet.stellar.org/ledgers?order=desc&limit=1 | jq .[0].sequence'
@@ -285,15 +307,16 @@ docker logs vatix-indexer --tail 20 --follow
 ```
 
 #### Step 5: Post-Recovery
+
 ```sql
 -- Verify indexer caught up
-SELECT 
+SELECT
   MAX(source_at) as latest_event,
   NOW() - MAX(source_at) as lag
 FROM events;
 
 -- Check for data gaps
-SELECT 
+SELECT
   ledger_sequence,
   LAG(ledger_sequence) OVER (ORDER BY ledger_sequence) as prev_ledger,
   ledger_sequence - LAG(ledger_sequence) OVER (ORDER BY ledger_sequence) as gap
@@ -303,6 +326,7 @@ LIMIT 100;
 ```
 
 #### Step 6: Prevention
+
 - [ ] Configure multiple RPC endpoints with failover
 - [ ] Implement circuit breaker pattern for RPC calls
 - [ ] Add RPC health monitoring and alerting
@@ -313,6 +337,7 @@ LIMIT 100;
 ## Incident 3: Database Incident
 
 ### Symptoms
+
 - Connection pool exhaustion
 - Query timeouts (> 30s)
 - Deadlocks detected
@@ -321,6 +346,7 @@ LIMIT 100;
 - Failed migrations
 
 ### Detection
+
 ```bash
 # Check PostgreSQL status
 docker exec -it vatix-postgres pg_isready -U postgres
@@ -335,15 +361,16 @@ docker logs vatix-postgres --tail 100
 ### Response Steps
 
 #### Step 1: Assess Database Health
+
 ```sql
 -- Check active connections
-SELECT count(*) as active_connections, 
-       state 
-FROM pg_stat_activity 
+SELECT count(*) as active_connections,
+       state
+FROM pg_stat_activity
 GROUP BY state;
 
 -- Check for long-running queries
-SELECT 
+SELECT
   pid,
   now() - pg_stat_activity.query_start AS duration,
   query,
@@ -353,7 +380,7 @@ WHERE (now() - pg_stat_activity.query_start) > interval '30 seconds'
 ORDER BY duration DESC;
 
 -- Check table sizes
-SELECT 
+SELECT
   schemaname,
   tablename,
   pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
@@ -362,7 +389,7 @@ WHERE schemaname = 'public'
 ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 
 -- Check locks
-SELECT 
+SELECT
   blocked_locks.pid AS blocked_pid,
   blocking_locks.pid AS blocking_pid,
   blocked_activity.query AS blocked_query,
@@ -377,6 +404,7 @@ WHERE NOT blocked_locks.granted;
 #### Step 2: Immediate Remediation
 
 **A. Connection Pool Exhaustion**
+
 ```sql
 -- Check pool status
 SELECT count(*) FROM pg_stat_activity;
@@ -384,7 +412,7 @@ SELECT count(*) FROM pg_stat_activity;
 -- Kill idle connections if necessary
 SELECT pg_terminate_backend(pid)
 FROM pg_stat_activity
-WHERE state = 'idle' 
+WHERE state = 'idle'
   AND now() - query_start > interval '5 minutes'
   AND pid != pg_backend_pid();
 
@@ -394,6 +422,7 @@ WHERE state = 'idle'
 ```
 
 **B. Kill Blocking Queries**
+
 ```sql
 -- Identify the blocking query (from Step 1)
 -- Terminate if safe
@@ -404,6 +433,7 @@ SELECT pg_terminate_backend([BLOCKING_PID]);
 ```
 
 **C. Database Restart (Last Resort)**
+
 ```bash
 # Graceful shutdown
 docker stop vatix-postgres
@@ -423,6 +453,7 @@ docker restart vatix-indexer
 ```
 
 #### Step 3: Disk Space Issues
+
 ```bash
 # Check disk usage
 docker exec -it vatix-postgres df -h
@@ -438,6 +469,7 @@ VACUUM ANALYZE events;
 ```
 
 #### Step 4: Corruption or Data Loss
+
 ```bash
 # Check database integrity
 docker exec -it vatix-postgres psql -U postgres -d vatix -c \
@@ -449,6 +481,7 @@ pg_restore -U postgres -d vatix backup_file.dump
 ```
 
 #### Step 5: Verification
+
 ```sql
 -- Test basic operations
 SELECT COUNT(*) FROM markets;
@@ -464,6 +497,7 @@ docker logs vatix-backend --tail 50
 ```
 
 #### Step 6: Prevention
+
 - [ ] Set up connection pool monitoring and alerting
 - [ ] Implement query performance monitoring
 - [ ] Configure automated backups (daily minimum)
@@ -476,12 +510,14 @@ docker logs vatix-backend --tail 50
 ## Incident 4: Redis Failure
 
 ### Symptoms
+
 - Rate limiting not working
 - Session/cache errors
 - Redis connection timeouts
 - `ECONNREFUSED` errors in logs
 
 ### Detection
+
 ```bash
 # Check Redis status
 docker exec -it vatix-redis redis-cli ping
@@ -496,6 +532,7 @@ docker exec -it vatix-redis redis-cli INFO memory
 ### Response Steps
 
 #### Step 1: Assess Redis Health
+
 ```bash
 # Test connectivity
 docker exec -it vatix-redis redis-cli ping
@@ -509,6 +546,7 @@ docker exec -it vatix-redis redis-cli INFO clients
 ```
 
 #### Step 2: Restart Redis
+
 ```bash
 # Graceful restart
 docker restart vatix-redis
@@ -521,6 +559,7 @@ docker logs vatix-redis --tail 20 --follow
 ```
 
 #### Step 3: Clear Cache (If Corrupted)
+
 ```bash
 # WARNING: This will clear all cached data including rate limits
 docker exec -it vatix-redis redis-cli FLUSHALL
@@ -530,6 +569,7 @@ docker restart vatix-backend
 ```
 
 #### Step 4: Verify Recovery
+
 ```bash
 # Test rate limiting
 curl http://localhost:3000/v1/markets
@@ -539,6 +579,7 @@ docker logs vatix-backend 2>&1 | grep -i redis
 ```
 
 #### Step 5: Prevention
+
 - [ ] Monitor Redis memory usage (alert at >75%)
 - [ ] Implement Redis persistence (RDB/AOF)
 - [ ] Add connection retry logic in application
@@ -549,15 +590,17 @@ docker logs vatix-backend 2>&1 | grep -i redis
 ## Incident 5: Oracle Resolution Failure
 
 ### Symptoms
+
 - Market resolution stuck in `challenged` state
 - Oracle signing failures
 - Resolution candidates not being processed
 - Challenge window expiration without resolution
 
 ### Detection
+
 ```sql
 -- Check markets in challenged state
-SELECT 
+SELECT
   market_id,
   status,
   resolved_at,
@@ -568,7 +611,7 @@ WHERE status IN ('challenged', 'resolving')
 ORDER BY challenge_ends_at ASC;
 
 -- Check resolution candidates
-SELECT 
+SELECT
   market_id,
   source_type,
   confidence_score,
@@ -581,6 +624,7 @@ LIMIT 20;
 ### Response Steps
 
 #### Step 1: Assess Oracle State
+
 ```bash
 # Check oracle service logs
 docker logs vatix-backend 2>&1 | grep -i oracle
@@ -593,6 +637,7 @@ curl http://localhost:3000/v1/oracle/health
 ```
 
 #### Step 2: Manual Resolution (If Automated Fails)
+
 ```sql
 -- WARNING: Only use manual resolution as last resort
 -- Requires admin access and proper authorization
@@ -606,10 +651,10 @@ WHERE market_id = '[MARKET_ID]';
 
 -- Log the manual intervention
 INSERT INTO audit_log (
-  action, 
-  entity_type, 
-  entity_id, 
-  performed_by, 
+  action,
+  entity_type,
+  entity_id,
+  performed_by,
   notes
 ) VALUES (
   'MANUAL_RESOLUTION',
@@ -621,20 +666,22 @@ INSERT INTO audit_log (
 ```
 
 #### Step 3: Verify Resolution
+
 ```sql
 -- Confirm market status
-SELECT market_id, status, resolved_at, outcome 
-FROM markets 
+SELECT market_id, status, resolved_at, outcome
+FROM markets
 WHERE market_id = '[MARKET_ID]';
 
 -- Check positions are settled
 SELECT COUNT(*) as unsettled_positions
 FROM positions
-WHERE market_id = '[MARKET_ID]' 
+WHERE market_id = '[MARKET_ID]'
   AND status != 'settled';
 ```
 
 #### Step 4: Prevention
+
 - [ ] Implement oracle health monitoring
 - [ ] Add fallback oracle providers
 - [ ] Set up alerts for markets approaching challenge window expiry
@@ -672,37 +719,45 @@ WHERE market_id = '[MARKET_ID]'
    - Duration: 30-60 minutes
 
 2. **Review Template**
+
    ```markdown
    # Post-Incident Review: [Incident Name]
-   
+
    ## Summary
+
    - **Date:** [Date]
    - **Severity:** [SEV-X]
    - **Duration:** [X hours Y minutes]
    - **Impact:** [Description]
-   
+
    ## Timeline
+
    - [Time] - Incident started
    - [Time] - Incident detected
    - [Time] - Response initiated
    - [Time] - Root cause identified
    - [Time] - Fix implemented
    - [Time] - Incident resolved
-   
+
    ## Root Cause
+
    [Detailed explanation]
-   
+
    ## What Went Well
+
    - [List]
-   
+
    ## What Could Be Improved
+
    - [List]
-   
+
    ## Action Items
+
    - [ ] [Action 1] - Owner: [Name] - Due: [Date]
    - [ ] [Action 2] - Owner: [Name] - Due: [Date]
-   
+
    ## Lessons Learned
+
    [Key takeaways]
    ```
 
@@ -724,6 +779,7 @@ WHERE market_id = '[MARKET_ID]'
 ## Useful Commands & Queries
 
 ### Quick Health Checks
+
 ```bash
 # All services running
 docker ps
@@ -742,6 +798,7 @@ docker logs vatix-indexer --tail 10
 ```
 
 ### Common Database Queries
+
 ```sql
 -- Latest events
 SELECT * FROM events ORDER BY source_at DESC LIMIT 10;
@@ -753,9 +810,9 @@ SELECT COUNT(*) FROM markets WHERE status = 'active';
 SELECT * FROM indexer_cursors;
 
 -- Recent errors in audit log
-SELECT * FROM audit_log 
-WHERE action LIKE '%ERROR%' 
-ORDER BY created_at DESC 
+SELECT * FROM audit_log
+WHERE action LIKE '%ERROR%'
+ORDER BY created_at DESC
 LIMIT 20;
 
 -- Database size
@@ -763,6 +820,7 @@ SELECT pg_size_pretty(pg_database_size('vatix'));
 ```
 
 ### Log Analysis
+
 ```bash
 # Search for errors in last hour
 docker logs vatix-backend --since 1h 2>&1 | grep -i error
@@ -778,6 +836,7 @@ docker logs vatix-backend --since 2h > backend-logs-$(date +%Y%m%d-%H%M).txt
 ```
 
 ### Performance Diagnostics
+
 ```bash
 # Check API response times
 curl -w "DNS: %{time_namelookup}s\nConnect: %{time_connect}s\nTTFB: %{time_starttransfer}s\nTotal: %{time_total}s\n" \
@@ -797,12 +856,12 @@ docker exec -it vatix-postgres psql -U postgres -d vatix -c \
 
 ### Internal Contacts
 
-| Role | Name | Contact | Availability |
-|------|------|---------|--------------|
-| On-Call Engineer | [Rotation] | Slack: #on-call | 24/7 |
-| Backend Lead | [Name] | Slack/Email | Business hours + on-call |
-| DevOps/SRE | [Name] | Slack/Email | Business hours + on-call |
-| CTO | [Name] | Slack/Phone | SEV-1 only |
+| Role             | Name       | Contact         | Availability             |
+| ---------------- | ---------- | --------------- | ------------------------ |
+| On-Call Engineer | [Rotation] | Slack: #on-call | 24/7                     |
+| Backend Lead     | [Name]     | Slack/Email     | Business hours + on-call |
+| DevOps/SRE       | [Name]     | Slack/Email     | Business hours + on-call |
+| CTO              | [Name]     | Slack/Phone     | SEV-1 only               |
 
 ### External Resources
 
@@ -833,11 +892,13 @@ docker exec -it vatix-postgres psql -U postgres -d vatix -c \
 ## Runbook Maintenance
 
 ### Review Schedule
+
 - **Monthly:** Review and update all incidents sections
 - **After Each Incident:** Add new patterns, update steps based on learnings
 - **Quarterly:** Full runbook audit and cleanup
 
 ### Update Process
+
 1. Identify outdated or missing information
 2. Update relevant sections
 3. Test commands and queries in staging environment
@@ -847,9 +908,9 @@ docker exec -it vatix-postgres psql -U postgres -d vatix -c \
 
 ### Version History
 
-| Date | Version | Changes | Author |
-|------|---------|---------|--------|
-| 2026-04-28 | 1.0 | Initial runbook creation | Backend Team |
+| Date       | Version | Changes                  | Author       |
+| ---------- | ------- | ------------------------ | ------------ |
+| 2026-04-28 | 1.0     | Initial runbook creation | Backend Team |
 
 ---
 

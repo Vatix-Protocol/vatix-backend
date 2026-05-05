@@ -700,7 +700,8 @@ describe("GET /markets/:id", () => {
         question: "Will Bitcoin reach $100k in 2026?",
         endTime: new Date("2026-12-31T23:59:59Z"),
         resolutionTime: null,
-        oracleAddress: "GABC123XYZ456DEF789GHI012JKL345MNO678PQR901STU234VWX567YZA890",
+        oracleAddress:
+          "GABC123XYZ456DEF789GHI012JKL345MNO678PQR901STU234VWX567YZA890",
         status: "ACTIVE",
         outcome: null,
         createdAt: new Date("2026-01-25T10:00:00Z"),

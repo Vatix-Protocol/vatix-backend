@@ -8,22 +8,30 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("loadIndexerConfig", () => {
   it("accepts the testnet passphrase without warning", () => {
-    const warn = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const warn = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
     const cfg = loadIndexerConfig({ SOROBAN_NETWORK_PASSPHRASE: TESTNET });
     expect(cfg.sorobanNetworkPassphrase).toBe(TESTNET);
     expect(warn).not.toHaveBeenCalled();
   });
 
   it("accepts the mainnet passphrase without warning", () => {
-    const warn = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const warn = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
     const cfg = loadIndexerConfig({ SOROBAN_NETWORK_PASSPHRASE: MAINNET });
     expect(cfg.sorobanNetworkPassphrase).toBe(MAINNET);
     expect(warn).not.toHaveBeenCalled();
   });
 
   it("warns on an unknown passphrase but still returns config", () => {
-    const warn = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    const cfg = loadIndexerConfig({ SOROBAN_NETWORK_PASSPHRASE: "Custom Network ; 2024" });
+    const warn = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+    const cfg = loadIndexerConfig({
+      SOROBAN_NETWORK_PASSPHRASE: "Custom Network ; 2024",
+    });
     expect(cfg.sorobanNetworkPassphrase).toBe("Custom Network ; 2024");
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("WARNING"));
   });
@@ -33,9 +41,9 @@ describe("loadIndexerConfig", () => {
   });
 
   it("throws when SOROBAN_NETWORK_PASSPHRASE is empty string", () => {
-    expect(() => loadIndexerConfig({ SOROBAN_NETWORK_PASSPHRASE: "  " })).toThrow(
-      "SOROBAN_NETWORK_PASSPHRASE"
-    );
+    expect(() =>
+      loadIndexerConfig({ SOROBAN_NETWORK_PASSPHRASE: "  " })
+    ).toThrow("SOROBAN_NETWORK_PASSPHRASE");
   });
 
   it("uses STELLAR_HORIZON_URL when provided", () => {

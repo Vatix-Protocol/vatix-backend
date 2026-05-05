@@ -93,7 +93,7 @@ export class OracleService {
       console.log(
         `[OracleService] Resolving market ${request.marketId} using primary provider`
       );
-      
+
       const result = await withRetry(
         () => this.primaryAdapter.resolve(request),
         this.config.retryConfig,

@@ -38,14 +38,18 @@ export const testUtils = {
       status: "ACTIVE",
       outcome: null,
     };
-    
+
     return prisma.market.create({
       data: { ...defaultMarket, ...overrides },
     });
   },
 
   // Create test position
-  createTestPosition: async (marketId: string, userAddress: string, overrides: Partial<any> = {}) => {
+  createTestPosition: async (
+    marketId: string,
+    userAddress: string,
+    overrides: Partial<any> = {}
+  ) => {
     const prisma = getTestPrismaClient();
     const defaultPosition = {
       yesShares: 100,
@@ -53,19 +57,23 @@ export const testUtils = {
       lockedCollateral: 1.5,
       isSettled: false,
     };
-    
+
     return prisma.userPosition.create({
-      data: { 
-        marketId, 
-        userAddress, 
-        ...defaultPosition, 
-        ...overrides 
+      data: {
+        marketId,
+        userAddress,
+        ...defaultPosition,
+        ...overrides,
       },
     });
   },
 
   // Create test order
-  createTestOrder: async (marketId: string, userAddress: string, overrides: Partial<any> = {}) => {
+  createTestOrder: async (
+    marketId: string,
+    userAddress: string,
+    overrides: Partial<any> = {}
+  ) => {
     const prisma = getTestPrismaClient();
     const defaultOrder = {
       side: "BUY",
@@ -75,13 +83,13 @@ export const testUtils = {
       filledQuantity: 0,
       status: "OPEN",
     };
-    
+
     return prisma.order.create({
-      data: { 
-        marketId, 
-        userAddress, 
-        ...defaultOrder, 
-        ...overrides 
+      data: {
+        marketId,
+        userAddress,
+        ...defaultOrder,
+        ...overrides,
       },
     });
   },
@@ -92,7 +100,11 @@ export const testUtils = {
   },
 
   // Fixed precision assertions for decimal values
-  assertDecimalEqual: (actual: number, expected: number, precision: number = 8) => {
+  assertDecimalEqual: (
+    actual: number,
+    expected: number,
+    precision: number = 8
+  ) => {
     const multiplier = Math.pow(10, precision);
     const actualScaled = Math.round(actual * multiplier);
     const expectedScaled = Math.round(expected * multiplier);

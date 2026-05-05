@@ -22,11 +22,13 @@ tests/
 ## Test Types
 
 ### Unit Tests
+
 - Test individual functions and components in isolation
 - Use mocks for external dependencies
 - Fast execution, suitable for TDD
 
 ### Integration Tests
+
 - Test API endpoints with real database
 - Use test database with deterministic fixtures
 - Slower but more comprehensive testing
@@ -102,7 +104,7 @@ const position = await testUtils.createTestPosition(market.id, wallet);
 ### Database Utilities
 
 - `testUtils.createTestMarket()` - Create test market
-- `testUtils.createTestPosition()` - Create test position  
+- `testUtils.createTestPosition()` - Create test position
 - `testUtils.createTestOrder()` - Create test order
 - `testUtils.generateStellarAddress()` - Generate valid address
 - `testUtils.assertDecimalEqual()` - Fixed-precision assertions
@@ -191,8 +193,9 @@ describe("API Endpoint", () => {
 ### Coverage Configuration
 
 Coverage is configured with 80% thresholds for:
+
 - Branches
-- Functions  
+- Functions
 - Lines
 - Statements
 
@@ -209,6 +212,7 @@ open coverage/index.html
 ### Coverage Exclusions
 
 The following are excluded from coverage:
+
 - Test files (`**/*.test.ts`, `**/*.spec.ts`)
 - Test directories (`tests/`)
 - Scripts (`scripts/`)

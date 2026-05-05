@@ -113,15 +113,12 @@ function applyLimit(
   if (entry.count > maxRequests) {
     const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
     setQuotaHeaders(reply, maxRequests, 0, entry.resetAt);
-    reply
-      .status(429)
-      .header("Retry-After", String(retryAfter))
-      .send({
-        error: "Too Many Requests",
-        code: "RATE_LIMITED",
-        statusCode: 429,
-        retryAfter,
-      });
+    reply.status(429).header("Retry-After", String(retryAfter)).send({
+      error: "Too Many Requests",
+      code: "RATE_LIMITED",
+      statusCode: 429,
+      retryAfter,
+    });
     return;
   }
 
