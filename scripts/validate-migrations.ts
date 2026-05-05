@@ -106,7 +106,7 @@ function validateSchemaSync(): ValidationResult {
     const diffCommand = `npx prisma migrate diff --from-migrations ${MIGRATIONS_DIR} --to-schema ${SCHEMA_FILE}`;
     const output = execSync(diffCommand, { encoding: "utf8" });
 
-    if (output.trim()) {
+    if (output.trim() && !output.includes("No difference detected")) {
       result.errors.push("Schema and migrations are out of sync:");
       result.errors.push(output);
       result.valid = false;
