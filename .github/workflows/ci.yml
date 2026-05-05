@@ -76,10 +76,14 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
 
+      - name: Create shadow database
+        run: psql postgresql://postgres:postgres@localhost:5432/postgres -c "CREATE DATABASE vatix_shadow;"
+
       - name: Validate migrations
         run: pnpm prisma:validate
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix_shadow
 
       - name: Run migrations
         run: pnpm prisma:deploy
