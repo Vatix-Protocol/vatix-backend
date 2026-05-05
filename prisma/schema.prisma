@@ -177,7 +177,7 @@ model Resolution {
   createdAt                    DateTime         @default(now()) @map("created_at")
   updatedAt                    DateTime         @default(now()) @updatedAt @map("updated_at")
 
-  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade, map: "resolutions_market_id_fkey")
 
   @@unique([marketId], map: "resolutions_market_id_active_idx", where: { status: "ACTIVE" })
   @@index([marketId])
@@ -200,7 +200,7 @@ model Position {
 
   market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
 
-  @@unique([walletAddress, marketId, outcome])
+  @@unique([walletAddress, marketId, outcome], map: "positions_wallet_market_outcome_key")
   @@index([walletAddress])
   @@index([marketId])
   @@map("positions")
