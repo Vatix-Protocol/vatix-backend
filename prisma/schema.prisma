@@ -50,6 +50,15 @@ enum ResolutionStatus {
   OVERRIDDEN
 }
 
+enum OracleSource {
+  CHAINLINK
+  PYTH
+  UMA
+  API3
+  INTERNAL
+  MANUAL
+}
+
 model Market {
   id             String       @id @default(uuid())
   question       String
@@ -63,6 +72,7 @@ model Market {
 
   orders               Order[]
   positions            UserPosition[]
+  positionSnapshots    Position[]
   oracleReports        OracleReport[]
   resolutionCandidates ResolutionCandidate[]
   resolutions          Resolution[]
@@ -150,6 +160,7 @@ model ResolutionCandidate {
   @@index([marketId])
   @@index([status])
   @@index([marketId, status])
+  @@index([source])
   @@map("resolution_candidates")
 }
 
@@ -168,11 +179,51 @@ model Resolution {
 
   market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
 
-  @@unique([marketId], where: { status: "ACTIVE" })
+  @@unique([marketId], map: "resolutions_market_id_active_idx", where: { status: "ACTIVE" })
   @@index([marketId])
   @@index([status])
   @@index([finalizedAt])
   @@index([marketId, status])
   @@index([createdAt(sort: Desc)])
   @@map("resolutions")
+}
+
+model Position {
+  id            String   @id @default(uuid())
+  walletAddress String   @map("wallet_address") @db.VarChar(56)
+  marketId      String   @map("market_id")
+  outcome       Outcome?
+  quantity      Int      @default(0)
+  valuation     Decimal  @default(0) @map("valuation") @db.Decimal(20, 8)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@unique([walletAddress, marketId, outcome])
+  @@index([walletAddress])
+  @@index([marketId])
+  @@map("positions")
+}
+
+model IndexerCursor {
+  networkId   String   @map("network_id")
+  cursorKey   String   @map("cursor_key")
+  cursorValue String?  @map("cursor_value")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@id([networkId, cursorKey])
+  @@index([networkId])
+  @@map("indexer_cursors")
+}
+
+model OracleSourceAlias {
+  id              Int          @id @default(autoincrement())
+  alias           String       @unique
+  canonicalSource OracleSource @map("canonical_source")
+  createdAt       DateTime     @default(now()) @map("created_at")
+
+  @@index([canonicalSource])
+  @@map("oracle_source_aliases")
 }
