@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import { errorHandler } from "./api/middleware/errorHandler.js";
 import positionsRouter from "./api/routes/positions.js";
 import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
@@ -11,6 +11,7 @@ import { healthRoutes } from "./api/routes/health.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
 import { requestIdMiddleware } from "./api/middleware/requestId.js";
+import { config } from "./config.js";
 import { corsPlugin } from "./api/middleware/cors.js";
 
 // Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
@@ -77,7 +78,7 @@ server.register(positionsRouter);
 server.register(adminRoutes);
 server.register(healthRoutes);
 
-server.get("/readiness", async (_req, reply) => {
+server.get("/readiness", async (_req: FastifyRequest, reply: FastifyReply) => {
   const rpcUrl = process.env.STELLAR_RPC_URL;
   const rpcStatus = await checkRpcReachability(rpcUrl);
   const allHealthy = rpcStatus.reachable;
@@ -108,7 +109,7 @@ server.get("/test/server-error", async () => {
 
 // Global 404 handler — must be registered after all routes
 // Throws through the error handler for consistent response format
-server.setNotFoundHandler((request, reply) => {
+server.setNotFoundHandler((request: FastifyRequest, reply: FastifyReply) => {
   const requestId = request.id;
   reply.status(404).send({
     error: `Route ${request.method} ${request.url} not found`,

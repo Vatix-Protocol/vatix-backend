@@ -185,6 +185,8 @@ export default async function positionsRouter(server: FastifyInstance) {
         lockedCollateral: position.lockedCollateral.toString(),
         isSettled: position.isSettled,
         updatedAt: position.updatedAt,
+        pnlRealized: null,
+        pnlUnrealized: null,
       }));
 
       success(reply, {

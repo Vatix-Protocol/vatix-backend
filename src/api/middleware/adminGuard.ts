@@ -1,6 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { unauthorized, forbidden } from "./responses.js";
-import { Roles } from "../../../packages/shared/roles.js";
+
+const Roles = { ADMIN: "admin" } as const;
 
 // Enforces the ADMIN role. Expects Authorization: Bearer <ADMIN_TOKEN>.
 // ADMIN_TOKEN is set via environment variable.

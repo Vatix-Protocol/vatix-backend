@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi, type MockInstance } from "vitest";
 import { EventProcessor, type IndexerEvent } from "./event-processor";
 import type { Trade } from "../matching/engine";
 
@@ -36,11 +36,11 @@ function makeEvent(
 
 describe("EventProcessor — duplicate event handling", () => {
   let processor: EventProcessor;
-  let handler: ReturnType<typeof vi.fn>;
+  let handler: MockInstance & ((event: IndexerEvent) => Promise<void>);
 
   beforeEach(() => {
     processor = new EventProcessor();
-    handler = vi.fn().mockResolvedValue(undefined);
+    handler = vi.fn().mockResolvedValue(undefined) as MockInstance & ((event: IndexerEvent) => Promise<void>);
   });
 
   // -------------------------------------------------------------------------
@@ -210,7 +210,7 @@ describe("EventProcessor — duplicate event handling", () => {
     const flakyHandler = vi
       .fn()
       .mockRejectedValueOnce(new Error("transient error"))
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(undefined) as MockInstance & ((event: IndexerEvent) => Promise<void>);
 
     const result = await processor.processBatch(
       [failing, succeeding],

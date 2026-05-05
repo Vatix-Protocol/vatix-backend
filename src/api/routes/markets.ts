@@ -99,7 +99,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       request: FastifyRequest<{ Querystring: GetMarketsQueryParams }>,
       reply
     ) => {
-      const { status } = request.query;
+      const { status, sort = "createdAt", direction = "desc", limit = 50 } = request.query;
 
       const whereClause = status ? { status } : {};
 
@@ -172,7 +172,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         where: {
           marketId: id,
           status: {
-            in: OPEN_ORDER_STATUSES,
+            in: [...OPEN_ORDER_STATUSES],
           },
         },
         select: {

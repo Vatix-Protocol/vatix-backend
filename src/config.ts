@@ -1,12 +1,6 @@
 /**
- * API server config — thin re-export of the shared config loader.
- *
- * Loaded once at startup; the frozen object is passed to routes/middleware
- * rather than reading process.env directly.
+ * API server config.
  */
-export type { NodeEnv, BaseConfig as Config } from "../packages/shared/src/config.js";
-export { loadBaseConfig } from "../packages/shared/src/config.js";
-
 export type NodeEnv = "development" | "test" | "production";
 
 const ACCEPTED_NODE_ENVS: NodeEnv[] = ["development", "test", "production"];
