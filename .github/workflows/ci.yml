@@ -82,7 +82,7 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
 
       - name: Run migrations
-        run: pnpm prisma:migrate deploy
+        run: pnpm prisma:deploy
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
 
