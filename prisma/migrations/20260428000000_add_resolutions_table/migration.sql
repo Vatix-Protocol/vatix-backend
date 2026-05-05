@@ -19,7 +19,7 @@ CREATE TABLE "resolutions" (
     "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "resolutions_pkey" PRIMARY KEY ("id"),
-    CONSTRAINT "resolutions_market_id_fkey" FOREIGN KEY ("market_id") REFERENCES "markets"("id") ON DELETE CASCADE
+    CONSTRAINT "resolutions_market_id_fkey" FOREIGN KEY ("market_id") REFERENCES "markets"("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
 
 -- Enforce one active final resolution per market
