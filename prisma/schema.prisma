@@ -5,10 +5,173 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma/client"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+enum MarketStatus {
+  ACTIVE
+  RESOLVED
+  CANCELLED
+}
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderStatus {
+  OPEN
+  FILLED
+  CANCELLED
+  PARTIALLY_FILLED
+}
+
+enum Outcome {
+  YES
+  NO
+}
+
+enum ResolutionCandidateStatus {
+  PROPOSED
+  CHALLENGED
+  ACCEPTED
+  REJECTED
+}
+
+enum ResolutionStatus {
+  ACTIVE
+  CORRECTED
+  OVERRIDDEN
+}
+
+model Market {
+  id             String       @id @default(uuid())
+  question       String
+  endTime        DateTime     @map("end_time")
+  resolutionTime DateTime?    @map("resolution_time")
+  oracleAddress  String       @map("oracle_address") @db.VarChar(56)
+  status         MarketStatus @default(ACTIVE)
+  outcome        Boolean?
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  orders               Order[]
+  positions            UserPosition[]
+  oracleReports        OracleReport[]
+  resolutionCandidates ResolutionCandidate[]
+  resolutions          Resolution[]
+
+  @@index([status])
+  @@index([endTime])
+  @@index([status, endTime])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("markets")
+}
+
+model Order {
+  id             String      @id @default(uuid())
+  marketId       String      @map("market_id")
+  userAddress    String      @map("user_address") @db.VarChar(56)
+  side           OrderSide
+  outcome        Outcome
+  price          Decimal     @db.Decimal(10, 8)
+  quantity       Int
+  filledQuantity Int         @default(0) @map("filled_quantity")
+  status         OrderStatus @default(OPEN)
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@index([marketId])
+  @@index([userAddress])
+  @@index([userAddress, marketId])
+  @@index([status])
+  @@index([marketId, outcome, price, createdAt])
+  @@map("orders")
+}
+
+model OracleReport {
+  id                  String   @id @default(uuid())
+  source              String   @db.VarChar(256)
+  payloadHash         String   @map("payload_hash") @db.VarChar(64)
+  confidence          Decimal  @db.Decimal(5, 4)
+  marketId            String?  @map("market_id")
+  candidateResolution Boolean? @map("candidate_resolution")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  market Market? @relation(fields: [marketId], references: [id], onDelete: SetNull)
+
+  @@index([marketId])
+  @@index([source])
+  @@index([createdAt])
+  @@map("oracle_reports")
+}
+
+model UserPosition {
+  id               String   @id @default(uuid())
+  marketId         String   @map("market_id")
+  userAddress      String   @map("user_address") @db.VarChar(56)
+  yesShares        Int      @default(0) @map("yes_shares")
+  noShares         Int      @default(0) @map("no_shares")
+  lockedCollateral Decimal  @default(0) @map("locked_collateral") @db.Decimal(20, 8)
+  isSettled        Boolean  @default(false) @map("is_settled")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
+
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@unique([marketId, userAddress])
+  @@index([marketId])
+  @@index([userAddress])
+  @@index([userAddress, marketId])
+  @@map("user_positions")
+}
+
+model ResolutionCandidate {
+  id              String                    @id @default(uuid())
+  marketId        String                    @map("market_id")
+  proposedOutcome Boolean                   @map("proposed_outcome")
+  source          String
+  status          ResolutionCandidateStatus @default(PROPOSED)
+  /// Confidence score for this resolution candidate, expressed as a decimal in the range 0.0–1.0
+  /// where 0.0 = no confidence and 1.0 = full confidence. Null if not reported by the source.
+  confidenceScore Decimal?                  @map("confidence_score") @db.Decimal(5, 4)
+  operatorAddress String                    @map("operator_address") @db.VarChar(56)
+  createdAt       DateTime                  @default(now()) @map("created_at")
+  updatedAt       DateTime                  @default(now()) @updatedAt @map("updated_at")
+
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@index([marketId])
+  @@index([status])
+  @@index([marketId, status])
+  @@map("resolution_candidates")
+}
+
+model Resolution {
+  id                           String           @id @default(uuid())
+  marketId                     String           @map("market_id")
+  outcome                      Boolean
+  finalizedAt                  DateTime         @map("finalized_at")
+  provenance                   String
+  status                       ResolutionStatus @default(ACTIVE)
+  /// JSONB field tracking correction and override history
+  /// Example: { "corrected_at": "2026-04-28T00:00:00Z", "previous_outcome": false, "reason": "..." }
+  correctionOverrideMetadata   Json?            @map("correction_override_metadata")
+  createdAt                    DateTime         @default(now()) @map("created_at")
+  updatedAt                    DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@unique([marketId], where: { status : ACTIVE })
+  @@index([marketId])
+  @@index([status])
+  @@index([finalizedAt])
+  @@index([marketId, status])
+  @@index([createdAt(sort: Desc)])
+  @@map("resolutions")
 }
