@@ -166,6 +166,7 @@ Key endpoints with comprehensive test coverage:
 
 - `GET /v1/markets` - Market listing with pagination and filtering
 - `GET /v1/positions/:wallet` - Wallet position data with PnL calculations
+- Orders route docs: [docs/orders-route.md](docs/orders-route.md)
 
 ## License
 
