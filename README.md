@@ -112,8 +112,9 @@ apps/
 └── workers/      # Queue consumers and scheduled jobs
 
 docs/
-├── testing.md    # Comprehensive testing guide
-├── migrations.md # Database migration guide
+├── testing.md           # Comprehensive testing guide
+├── migrations.md        # Database migration guide
+├── cors.md              # CORS configuration and setup
 └── runbooks/
     └── incident-runbook.md  # Incident response procedures
 ```
