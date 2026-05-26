@@ -1,8 +1,32 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 
-interface WindowEntry {
+/**
+ * Represents a single rate limit window entry for an IP address.
+ * Tracks the number of requests and when the window resets.
+ */
+export interface WindowEntry {
   count: number;
   resetAt: number;
+}
+
+/**
+ * Rate limiter middleware function signature.
+ * Follows Fastify's onRequest hook interface for middleware hooks.
+ */
+export type RateLimiterMiddleware = (
+  request: FastifyRequest,
+  reply: FastifyReply,
+  done: () => void
+) => void;
+
+/**
+ * Configuration for a rate limiter tier.
+ * Defines the window duration and maximum request count.
+ */
+export interface RateLimiterConfig {
+  tier: string;
+  windowMs: number;
+  maxRequests: number;
 }
 
 // Separate stores per limit tier so heavy-endpoint counters don't bleed into
@@ -113,11 +137,7 @@ function applyLimit(
  * Global rate limiter — applied to all routes as a baseline.
  * Limit: 100 req / 60 s (configurable via RATE_LIMIT_MAX / RATE_LIMIT_WINDOW_MS).
  */
-export function rateLimiter(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  done: () => void
-): void {
+export const rateLimiter: RateLimiterMiddleware = (request, reply, done) => {
   applyLimit(
     request,
     reply,
@@ -128,13 +148,17 @@ export function rateLimiter(
     60_000,
     100
   );
-}
+};
 
-export function heavyReadLimiter(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  done: () => void
-): void {
+/**
+ * Heavy read rate limiter — applied to expensive read endpoints.
+ * Limit: 20 req / 60 s (configurable via RATE_LIMIT_HEAVY_MAX / RATE_LIMIT_HEAVY_WINDOW_MS).
+ */
+export const heavyReadLimiter: RateLimiterMiddleware = (
+  request,
+  reply,
+  done
+) => {
   applyLimit(
     request,
     reply,
@@ -145,13 +169,13 @@ export function heavyReadLimiter(
     60_000,
     20
   );
-}
+};
 
-export function writeLimiter(
-  request: FastifyRequest,
-  reply: FastifyReply,
-  done: () => void
-): void {
+/**
+ * Write rate limiter — applied to mutation endpoints.
+ * Limit: 10 req / 60 s (configurable via RATE_LIMIT_WRITE_MAX / RATE_LIMIT_WRITE_WINDOW_MS).
+ */
+export const writeLimiter: RateLimiterMiddleware = (request, reply, done) => {
   applyLimit(
     request,
     reply,
@@ -162,4 +186,4 @@ export function writeLimiter(
     60_000,
     10
   );
-}
+};
