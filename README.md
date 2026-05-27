@@ -147,7 +147,7 @@ Database schema is managed through Prisma migrations:
 - **CI Integration**: Migration validation and deployment in CI
 - **Validation**: Automated migration checks and SQL validation
 
-See [docs/migrations.md](docs/migrations.md) for detailed migration guide.
+See [docs/migrations.md](docs/migrations.md) for detailed migration guide, including the [migration validation script](docs/migrations.md#migration-validation).
 
 ## Operations & Incident Response
 

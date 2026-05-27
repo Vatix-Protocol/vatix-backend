@@ -150,12 +150,25 @@ The CI pipeline includes migration checks:
 
 ### Migration Validation
 
-To check if migrations are in sync with schema:
+The project ships a dedicated validation script at [`scripts/validate-migrations.ts`](../scripts/validate-migrations.ts), run via:
 
 ```bash
-# This will fail if schema and migrations don't match
-npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma
+pnpm prisma:validate
 ```
+
+#### What it checks
+
+| Check | Description |
+|---|---|
+| Migration files present | Fails if `prisma/migrations/` contains no directories |
+| SQL readability | Fails if any `migration.sql` cannot be read |
+| Dangerous operations | Warns on `DROP TABLE`, `DROP COLUMN`, `DROP INDEX`, or bare `DELETE FROM` |
+| Schema sync | Runs `prisma migrate diff` and fails if schema and migrations diverge |
+| Client generation | Runs `prisma generate` and fails if the Prisma client cannot be built |
+
+Exit code `0` means all checks passed; exit code `1` means at least one error was found. Warnings are printed but do not cause failure.
+
+The script is executed in the GitHub Actions workflow before migrations are deployed, ensuring no schema drift is introduced by a pull request.
 
 ## Common Migration Scenarios
 
