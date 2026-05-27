@@ -71,6 +71,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       schema: {
         querystring: {
           type: "object",
+          additionalProperties: false,
           properties: {
             status: {
               type: "string",
@@ -134,6 +135,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         params: {
           type: "object",
           required: ["id"],
+          additionalProperties: false,
           properties: {
             id: { type: "string" },
           },
@@ -159,6 +161,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         params: {
           type: "object",
           required: ["id"],
+          additionalProperties: false,
           properties: {
             id: { type: "string" },
           },
