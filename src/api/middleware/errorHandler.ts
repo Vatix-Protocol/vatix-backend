@@ -25,17 +25,17 @@ export function errorHandler(
   const logContext = {
     requestId: request.id,
     method: request.method,
-    url: request.url,
+    path: request.url,
     statusCode,
-    error: error.message,
+    message: error.message,
     // Always include stack in logs for server errors regardless of environment
     ...(isServerError && { stack: error.stack }),
   };
 
   if (isClientError) {
-    request.log.warn(logContext, "Client error");
+    request.log.warn(logContext, "Client request error");
   } else if (isServerError) {
-    request.log.error(logContext, "Server error");
+    request.log.error(logContext, "Unhandled request error");
   }
 
   // Build error response — hide internals in production
