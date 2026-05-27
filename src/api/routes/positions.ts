@@ -189,6 +189,11 @@ export default async function positionsRouter(server: FastifyInstance) {
         pnlUnrealized: null,
       }));
 
+      request.log.info(
+        { wallet, positionCount: exposures.length },
+        "wallet positions fetched"
+      );
+
       success(reply, {
         wallet,
         exposures,
@@ -221,6 +226,11 @@ export default async function positionsRouter(server: FastifyInstance) {
         potentialPayoutIfNo: p.noShares,
         netPosition: p.yesShares - p.noShares,
       }));
+
+      request.log.info(
+        { address, positionCount: results.length },
+        "user positions fetched"
+      );
 
       success(reply, { positions: results, count: results.length });
     }
