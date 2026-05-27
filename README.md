@@ -118,6 +118,7 @@ apps/
 docs/
 ├── testing.md           # Comprehensive testing guide
 ├── migrations.md        # Database migration guide
+├── rate-limiting.md     # Rate limit configuration, behavior, and headers
 ├── cors.md              # CORS configuration and setup
 └── runbooks/
     └── incident-runbook.md  # Incident response procedures
