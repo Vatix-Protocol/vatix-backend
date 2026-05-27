@@ -9,6 +9,7 @@
 export interface ErrorEnvelope {
   code: string;
   message: string;
+  error?: string;
   statusCode: number;
   requestId?: string;
   fields?: Record<string, string>;

@@ -622,6 +622,15 @@ describe("GET /markets", () => {
 
       expect(response.statusCode).toBe(400);
     });
+
+    it("should reject unsupported query parameters", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets?unsupported=true",
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
   });
 
   describe("limit", () => {

@@ -17,14 +17,14 @@ import { exit } from "process";
 const MIGRATIONS_DIR = "prisma/migrations";
 const SCHEMA_FILE = "prisma/schema.prisma";
 
-interface ValidationResult {
+export interface MigrationValidationResult {
   valid: boolean;
   errors: string[];
   warnings: string[];
 }
 
-function validateMigrationFiles(): ValidationResult {
-  const result: ValidationResult = {
+function validateMigrationFiles(): MigrationValidationResult {
+  const result: MigrationValidationResult = {
     valid: true,
     errors: [],
     warnings: [],
@@ -92,8 +92,8 @@ function validateMigrationFiles(): ValidationResult {
   return result;
 }
 
-function validateSchemaSync(): ValidationResult {
-  const result: ValidationResult = {
+function validateSchemaSync(): MigrationValidationResult {
+  const result: MigrationValidationResult = {
     valid: true,
     errors: [],
     warnings: [],
@@ -121,8 +121,8 @@ function validateSchemaSync(): ValidationResult {
   return result;
 }
 
-function validatePrismaClient(): ValidationResult {
-  const result: ValidationResult = {
+function validatePrismaClient(): MigrationValidationResult {
+  const result: MigrationValidationResult = {
     valid: true,
     errors: [],
     warnings: [],

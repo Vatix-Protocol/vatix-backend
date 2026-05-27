@@ -67,23 +67,29 @@ export { isSensitiveHeader };
  */
 async function logger(fastify: FastifyInstance) {
   // Lightweight "incoming" entry — no body, no sensitive headers.
-  fastify.addHook("onRequest", async (request: FastifyRequest) => {
-    const userAddress =
-      (request.params as Record<string, string> | undefined)?.address ||
-      (request.headers["x-user-address"] as string | undefined) ||
-      (request.headers["x-address"] as string | undefined);
+  fastify.addHook(
+    "onRequest",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      // Always echo request ID in response header
+      reply.header("x-request-id", request.id);
 
-    request.log.info(
-      {
-        type: "request",
-        requestId: request.id,
-        method: request.method,
-        path: request.url,
-        ...(userAddress ? { userAddress } : {}),
-      },
-      "incoming request"
-    );
-  });
+      const userAddress =
+        (request.params as Record<string, string> | undefined)?.address ||
+        (request.headers["x-user-address"] as string | undefined) ||
+        (request.headers["x-address"] as string | undefined);
+
+      request.log.info(
+        {
+          type: "request",
+          requestId: request.id,
+          method: request.method,
+          path: request.url,
+          ...(userAddress ? { userAddress } : {}),
+        },
+        "incoming request"
+      );
+    }
+  );
 
   // Full access-log entry emitted once the response is sent.
   fastify.addHook(

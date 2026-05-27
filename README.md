@@ -2,6 +2,10 @@
 
 Backend services for the Vatix prediction market protocol on Stellar.
 
+## Documentation
+
+- [Docker Compose Setup](docs/docker-compose.md)
+
 ## Tech Stack
 
 Node.js • TypeScript • Fastify • PostgreSQL • Prisma • Redis • Stellar SDK
@@ -167,6 +171,7 @@ Key endpoints with comprehensive test coverage:
 
 - `GET /v1/markets` - Market listing with pagination and filtering
 - `GET /v1/positions/:wallet` - Wallet position data with PnL calculations
+- Orders route docs: [docs/orders-route.md](docs/orders-route.md)
 
 ## License
 
