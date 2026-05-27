@@ -260,6 +260,11 @@ export default async function positionsRouter(server: FastifyInstance) {
         .reduce((acc, e) => addFixedPoint(acc, e.pnlUnrealized!), ZERO);
       const pnlTotal = addFixedPoint(pnlRealized, pnlUnrealized);
 
+      request.log.info(
+        { wallet, positionCount: exposures.length },
+        "wallet positions fetched"
+      );
+
       success(reply, {
         wallet,
         exposures,
