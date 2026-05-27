@@ -11,17 +11,17 @@ import {
 import { heavyReadLimiter, writeLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
 
-interface GetUserOrdersParams {
+export interface GetUserOrdersParams {
   address: string;
 }
 
-interface GetUserOrdersQuery {
+export interface GetUserOrdersQuery {
   status?: OrderStatus;
   page?: number;
   limit?: number;
 }
 
-interface GetWalletTradesQuery {
+export interface GetWalletTradesQuery {
   page?: number;
   limit?: number;
   from?: string;
@@ -29,13 +29,56 @@ interface GetWalletTradesQuery {
   marketId?: string;
 }
 
-interface CreateOrderBody {
+export interface CreateOrderBody {
   marketId: string;
   userAddress: string;
   side: OrderSide;
   outcome: Outcome;
   price: number;
   quantity: number;
+}
+
+export interface OrderResponse {
+  id: string;
+  marketId: string;
+  userAddress: string;
+  side: OrderSide;
+  outcome: Outcome;
+  price: string;
+  quantity: number;
+  filledQuantity: number;
+  status: OrderStatus;
+  createdAt: Date;
+}
+
+export interface OrderListResponse {
+  orders: OrderResponse[];
+  total: number;
+  hasNext: boolean;
+  page: number;
+  limit: number;
+}
+
+export interface TradeEntry {
+  id: string;
+  marketId: string;
+  outcome: Outcome;
+  buyerAddress: string;
+  sellerAddress: string;
+  buyOrderId: string;
+  sellOrderId: string;
+  price: number;
+  quantity: number;
+  timestamp: number;
+  loggedAt: string;
+}
+
+export interface TradeListResponse {
+  trades: TradeEntry[];
+  total: number;
+  hasNext: boolean;
+  page: number;
+  limit: number;
 }
 
 export async function ordersRoutes(fastify: FastifyInstance) {
