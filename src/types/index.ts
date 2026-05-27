@@ -18,6 +18,13 @@ export type {
   Prisma,
 };
 
+export type {
+  DockerComposeConfig,
+  DockerComposePort,
+  DockerComposeService,
+  DockerComposeVolume,
+} from "./docker-compose.js";
+
 export type Order = {
   id: string;
   /** Market ID where the trade occurred */
