@@ -1,7 +1,15 @@
-import { describe, it, expect } from "vitest";
-import { openApiSpec } from "./openapi.js";
+import { describe, it, expect, afterEach } from "vitest";
+import Fastify, { type FastifyInstance } from "fastify";
+import { openApiSpec, openApiStubHandler } from "./openapi.js";
 
 describe("OpenAPI Stub", () => {
+  let server: FastifyInstance | undefined;
+
+  afterEach(async () => {
+    await server?.close();
+    server = undefined;
+  });
+
   it("exports a valid OpenAPI spec object", () => {
     expect(openApiSpec).toBeDefined();
     expect(typeof openApiSpec).toBe("object");
@@ -78,5 +86,33 @@ describe("OpenAPI Stub", () => {
     expect(openApiSpec.components).toBeDefined();
     expect(openApiSpec.components).toHaveProperty("schemas");
     expect(openApiSpec.components?.schemas).toHaveProperty("Error");
+  });
+
+  it("returns 400 when required field is missing", async () => {
+    server = Fastify({ logger: false });
+    server.post("/stub", openApiStubHandler);
+
+    const res = await server.inject({
+      method: "POST",
+      url: "/stub",
+      payload: {},
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: "name is required" });
+  });
+
+  it("returns 200 on valid input", async () => {
+    server = Fastify({ logger: false });
+    server.post("/stub", openApiStubHandler);
+
+    const res = await server.inject({
+      method: "POST",
+      url: "/stub",
+      payload: { name: "test" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ok: true });
   });
 });

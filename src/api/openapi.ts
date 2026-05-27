@@ -4,6 +4,35 @@
  * by tools like Swagger UI or ReDoc for interactive documentation.
  */
 
+import type { FastifyReply, FastifyRequest } from "fastify";
+
+interface OpenApiStubBody {
+  name: string;
+}
+
+function validateOpenApiStubBody(body: unknown): body is OpenApiStubBody {
+  return (
+    typeof body === "object" &&
+    body !== null &&
+    "name" in body &&
+    typeof (body as { name?: unknown }).name === "string" &&
+    (body as { name: string }).name.trim().length > 0
+  );
+}
+
+export async function openApiStubHandler(
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  if (!validateOpenApiStubBody(request.body)) {
+    return reply.status(400).send({
+      error: "name is required",
+    });
+  }
+
+  return reply.status(200).send({ ok: true });
+}
+
 export const openApiSpec = {
   openapi: "3.0.0",
   info: {
