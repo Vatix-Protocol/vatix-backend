@@ -21,7 +21,7 @@ async function requestIdPlugin(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       const incoming = request.headers["x-request-id"];
 
-      if (typeof incoming === "string" && incoming.length > 0) {
+      if (typeof incoming === "string" && UUID_REGEX.test(incoming)) {
         (request as unknown as { id: string }).id = incoming;
       }
 

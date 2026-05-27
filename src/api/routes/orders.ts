@@ -145,8 +145,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           page,
           limit,
           fromMs,
-          toMs,
-          marketId
+          toMs
         );
 
       return {
@@ -270,7 +269,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         }),
       ]);
 
-      success(reply, {
+      reply.status(200).send({
         orders,
         total,
         hasNext: skip + orders.length < total,
@@ -377,7 +376,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       // TODO: Add to matching engine
       // await matchingEngine.addOrder(order);
 
-      success(reply, { order }, 201);
+      reply.status(201).send({ order });
     }
   );
 }

@@ -3,6 +3,7 @@ import Fastify, { FastifyInstance } from "fastify";
 import { ordersRoutes } from "./orders.js";
 import { errorHandler } from "../middleware/errorHandler.js";
 import type { PrismaClient } from "../../generated/prisma/client";
+import { clearRateLimitStores } from "../middleware/rateLimiter.js";
 
 const { mockAuditService, mockPrismaClient } = vi.hoisted(() => ({
   mockAuditService: {
@@ -34,6 +35,7 @@ describe("GET /trades/user/:address", () => {
     "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
 
   beforeEach(async () => {
+    clearRateLimitStores();
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
     await app.register(ordersRoutes);
@@ -42,6 +44,7 @@ describe("GET /trades/user/:address", () => {
 
   afterEach(async () => {
     await app.close();
+    clearRateLimitStores();
   });
 
   it("should return wallet trades latest-first with pagination metadata", async () => {
@@ -189,6 +192,7 @@ describe("GET /orders/user/:address", () => {
     "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
 
   beforeEach(async () => {
+    clearRateLimitStores();
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
     await app.register(ordersRoutes);
@@ -197,6 +201,7 @@ describe("GET /orders/user/:address", () => {
 
   afterEach(async () => {
     await app.close();
+    clearRateLimitStores();
   });
 
   it("should return user orders sorted by newest first", async () => {
@@ -379,6 +384,7 @@ describe("POST /orders", () => {
     "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
 
   beforeEach(async () => {
+    clearRateLimitStores();
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
     await app.register(ordersRoutes);
@@ -399,6 +405,7 @@ describe("POST /orders", () => {
 
   afterEach(async () => {
     await app.close();
+    clearRateLimitStores();
   });
 
   const validMarket = {

@@ -168,31 +168,105 @@ export default async function positionsRouter(server: FastifyInstance) {
             select: {
               id: true,
               question: true,
+              outcome: true,
+              status: true,
             },
           },
         },
-        orderBy: {
-          updatedAt: "desc",
-        },
+        orderBy: { updatedAt: "desc" },
       });
 
-      const exposures: WalletExposureRow[] = positions.map((position) => ({
-        marketId: position.market.id,
-        marketQuestion: position.market.question,
-        yesShares: position.yesShares,
-        noShares: position.noShares,
-        netExposure: position.yesShares - position.noShares,
-        lockedCollateral: position.lockedCollateral.toString(),
-        isSettled: position.isSettled,
-        updatedAt: position.updatedAt,
-        pnlRealized: null,
-        pnlUnrealized: null,
-      }));
+      // Fetch best bid/ask per market for unrealized PnL pricing
+      const marketIds = [...new Set(positions.map((p) => p.marketId))];
+      const orderGroups =
+        marketIds.length > 0
+          ? await (prisma as any).order.groupBy({
+              by: ["marketId", "side"],
+              where: {
+                marketId: { in: marketIds },
+                status: { in: ["OPEN", "PARTIALLY_FILLED"] },
+                outcome: "YES",
+              },
+              _min: { price: true },
+              _max: { price: true },
+            })
+          : [];
+
+      // Build mid-price map per market
+      const midPriceMap = new Map<string, number | null>();
+      for (const marketId of marketIds) {
+        const ask = orderGroups.find(
+          (g: any) => g.marketId === marketId && g.side === "SELL"
+        );
+        const bid = orderGroups.find(
+          (g: any) => g.marketId === marketId && g.side === "BUY"
+        );
+        const askPrice = ask?._min?.price ? Number(ask._min.price) : null;
+        const bidPrice = bid?._max?.price ? Number(bid._max.price) : null;
+        if (askPrice !== null && bidPrice !== null) {
+          midPriceMap.set(marketId, (askPrice + bidPrice) / 2);
+        } else if (askPrice !== null) {
+          midPriceMap.set(marketId, askPrice);
+        } else if (bidPrice !== null) {
+          midPriceMap.set(marketId, bidPrice);
+        } else {
+          midPriceMap.set(marketId, null);
+        }
+      }
+
+      const exposures: WalletExposureRow[] = positions.map((position) => {
+        const market = position.market as any;
+        const lockedCollateral = position.lockedCollateral.toString();
+        let pnlRealized: string | null = null;
+        let pnlUnrealized: string | null = null;
+
+        if (position.isSettled && market.outcome !== null) {
+          pnlRealized = computeRealizedPnl(
+            position.yesShares,
+            position.noShares,
+            lockedCollateral,
+            market.outcome as boolean
+          );
+        } else if (!position.isSettled) {
+          const midPrice = midPriceMap.get(position.marketId) ?? null;
+          pnlUnrealized = computeUnrealizedPnl(
+            position.yesShares,
+            position.noShares,
+            lockedCollateral,
+            midPrice
+          );
+        }
+
+        return {
+          marketId: market.id,
+          marketQuestion: market.question,
+          yesShares: position.yesShares,
+          noShares: position.noShares,
+          netExposure: position.yesShares - position.noShares,
+          lockedCollateral,
+          isSettled: position.isSettled,
+          updatedAt: position.updatedAt,
+          pnlRealized,
+          pnlUnrealized,
+        };
+      });
+
+      const ZERO = "0.00000000";
+      const pnlRealized = exposures
+        .filter((e) => e.pnlRealized !== null)
+        .reduce((acc, e) => addFixedPoint(acc, e.pnlRealized!), ZERO);
+      const pnlUnrealized = exposures
+        .filter((e) => e.pnlUnrealized !== null)
+        .reduce((acc, e) => addFixedPoint(acc, e.pnlUnrealized!), ZERO);
+      const pnlTotal = addFixedPoint(pnlRealized, pnlUnrealized);
 
       success(reply, {
         wallet,
         exposures,
         count: exposures.length,
+        pnlRealized,
+        pnlUnrealized,
+        pnlTotal,
       });
     }
   );
@@ -222,7 +296,7 @@ export default async function positionsRouter(server: FastifyInstance) {
         netPosition: p.yesShares - p.noShares,
       }));
 
-      success(reply, { positions: results, count: results.length });
+      reply.status(200).send(results);
     }
   );
 }

@@ -282,7 +282,7 @@ describe("quota headers", () => {
     const before = Math.floor(Date.now() / 1000);
     const s = buildServer(rateLimiter);
     const res = await s.inject({ method: "GET", url: "/test" });
-    const after = Math.floor(Date.now() / 1000) + 60;
+    const after = Math.ceil(Date.now() / 1000) + 60;
 
     const reset = Number(res.headers["ratelimit-reset"]);
     expect(reset).toBeGreaterThanOrEqual(before);

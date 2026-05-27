@@ -52,6 +52,7 @@ export function errorHandler(
           ? "internal_error"
           : String(statusCode),
     message: errorMessage,
+    error: errorMessage,
     statusCode,
     requestId: request.id,
     // Include stack trace in response body only outside production
