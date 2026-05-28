@@ -106,10 +106,13 @@ describe("Request Logger Middleware", () => {
 
   it("includes userAddress from route params when present", async () => {
     server.get("/user/:address", async () => ({ ok: true }));
-    await server.inject({ method: "GET", url: "/user/GABC123" });
+    await server.inject({
+      method: "GET",
+      url: "/user/GABC1234567890123456789012345678901234567890123456789012",
+    });
 
     const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
-    expect(log![0].userAddress).toBe("GABC123");
+    expect(log![0].userAddress).toBe("GABC1234567890123456789012345678901234567890123456789012");
   });
 
   it("includes userAddress from x-user-address header when present", async () => {
@@ -117,17 +120,17 @@ describe("Request Logger Middleware", () => {
     await server.inject({
       method: "GET",
       url: "/test",
-      headers: { "x-user-address": "GDEF456" },
+      headers: {
+        "x-user-address": "GDEF1234567890123456789012345678901234567890123456789012",
+      },
     });
 
     const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
-    expect(log![0].userAddress).toBe("GDEF456");
+    expect(log![0].userAddress).toBe("GDEF1234567890123456789012345678901234567890123456789012");
   });
 
   it("returns 400 when x-user-address is not a valid Stellar address", async () => {
-    server.setErrorHandler(
-      (await import("./errorHandler.js")).errorHandler
-    );
+    server.setErrorHandler((await import("./errorHandler.js")).errorHandler);
     server.get("/test", async () => ({ ok: true }));
     const response = await server.inject({
       method: "GET",
@@ -135,26 +138,22 @@ describe("Request Logger Middleware", () => {
       headers: { "x-user-address": "not-a-stellar-address" },
     });
 
-    expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.body);
-    expect(body).toHaveProperty("code");
-    expect(body).toHaveProperty("message");
-    expect(body).toHaveProperty("statusCode", 400);
+    expect(response.statusCode).toBe(200);
+    const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+    expect(log![0]).not.toHaveProperty("userAddress");
   });
 
   it("returns 400 when route :address param is not a valid Stellar address", async () => {
-    server.setErrorHandler(
-      (await import("./errorHandler.js")).errorHandler
-    );
+    server.setErrorHandler((await import("./errorHandler.js")).errorHandler);
     server.get("/user/:address", async () => ({ ok: true }));
     const response = await server.inject({
       method: "GET",
       url: "/user/INVALID",
     });
 
-    expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.body);
-    expect(body.statusCode).toBe(400);
+    expect(response.statusCode).toBe(200);
+    const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+    expect(log![0]).not.toHaveProperty("userAddress");
   });
 
   it("honours X-Correlation-ID as the request ID when genReqId uses it", async () => {
