@@ -2,7 +2,10 @@ import "dotenv/config";
 import { loadConfig } from "./config.js";
 import { PollingIngestionLoop } from "./ingestion.js";
 import { createLogger } from "./logger.js";
-import { InternalIndexerMetricsService } from "./metrics.js";
+import {
+  InternalIndexerMetricsService,
+  type IndexerMetricsLog,
+} from "./metrics.js";
 import { PrismaCursorStorageClient } from "./storage.js";
 import { disconnectPrisma } from "../../../src/services/prisma.js";
 
@@ -42,7 +45,7 @@ async function bootstrap(): Promise<void> {
 
   await ingestionLoop.start(initialCursor);
   logger.info("Indexer startup complete", {
-    metrics: metrics.getSnapshot(),
+    metrics: metrics.getSnapshot() satisfies IndexerMetricsLog,
   });
 
   let isShuttingDown = false;

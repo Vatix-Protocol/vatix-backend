@@ -9,6 +9,14 @@ export interface FinalizationCandidate {
   createdAt: Date;
 }
 
+export class FinalizationValidationError extends Error {
+  readonly statusCode = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = "FinalizationValidationError";
+  }
+}
+
 export class FinalizationJob {
   constructor(
     private readonly prisma: PrismaClient,
@@ -17,6 +25,15 @@ export class FinalizationJob {
   ) {}
 
   async run(): Promise<void> {
+    if (
+      !Number.isFinite(this.challengeWindowSeconds) ||
+      this.challengeWindowSeconds < 0
+    ) {
+      throw new FinalizationValidationError(
+        `challengeWindowSeconds must be a non-negative number, got: ${this.challengeWindowSeconds}`
+      );
+    }
+
     const windowCutoff = new Date(
       Date.now() - this.challengeWindowSeconds * 1000
     );

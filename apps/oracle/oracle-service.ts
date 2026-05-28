@@ -14,6 +14,7 @@ import type {
 } from "./provider-adapter.js";
 import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
 import { withRetry, RetryConfig, isRetryableError } from "./retry-utils.js";
+import type { Logger } from "../indexer/src/logger.js";
 
 /**
  * Oracle service configuration.
@@ -29,6 +30,8 @@ export interface OracleServiceConfig {
   defaultTimeoutMs?: number;
   /** Retry configuration for provider calls */
   retryConfig?: Partial<RetryConfig>;
+  /** Structured logger — defaults to a no-op logger if omitted */
+  logger?: Logger;
 }
 
 /**
@@ -57,6 +60,7 @@ export class OracleService {
   private primaryAdapter: ProviderAdapter;
   private fallbackAdapter: ProviderAdapter;
   private config: OracleServiceConfig;
+  private readonly logger: Logger;
 
   private metrics: OracleMetrics = {
     primarySuccessCount: 0,
@@ -70,6 +74,12 @@ export class OracleService {
   constructor(config: OracleServiceConfig) {
     this.primaryAdapter = config.primaryAdapter;
     this.fallbackAdapter = config.fallbackAdapter;
+    this.logger = config.logger ?? {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+    };
     this.config = {
       enableFallback: true,
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
@@ -91,32 +101,39 @@ export class OracleService {
 
     try {
       // Attempt primary provider
-      console.log(
-        `[OracleService] Resolving market ${request.marketId} using primary provider`
-      );
+      this.logger.info("Resolving market via primary provider", {
+        marketId: request.marketId,
+      });
 
       const result = await withRetry(
         () => this.primaryAdapter.resolve(request),
         this.config.retryConfig,
         (error, attempt, delay) => {
           this.metrics.retryCount++;
-          console.warn(
-            `[OracleService] Primary provider retry ${attempt} for market ${request.marketId} (delay: ${delay.toFixed(0)}ms): ${error.message}`
-          );
+          this.logger.warn("Primary provider retry", {
+            marketId: request.marketId,
+            attempt,
+            delayMs: Math.round(delay),
+            error: error.message,
+          });
         }
       );
 
       this.metrics.primarySuccessCount++;
-      console.log(
-        `[OracleService] Primary provider succeeded for market ${request.marketId} (source: ${result.source})`
-      );
+      this.logger.info("Primary provider resolved market", {
+        marketId: request.marketId,
+        source: result.source,
+      });
       return result;
     } catch (primaryError) {
       this.metrics.primaryFailureCount++;
-      console.error(
-        `[OracleService] Primary provider failed for market ${request.marketId}:`,
-        primaryError instanceof Error ? primaryError.message : primaryError
-      );
+      this.logger.error("Primary provider failed", {
+        marketId: request.marketId,
+        error:
+          primaryError instanceof Error
+            ? primaryError.message
+            : String(primaryError),
+      });
 
       // If fallback is disabled, re-throw the error
       if (!this.config.enableFallback) {
@@ -144,23 +161,27 @@ export class OracleService {
   private async resolveWithFallback(
     request: ResolutionRequest
   ): Promise<ProviderResult> {
-    console.warn(
-      `[OracleService] Falling back to secondary provider for market ${request.marketId}`
-    );
+    this.logger.warn("Falling back to secondary provider", {
+      marketId: request.marketId,
+    });
 
     try {
       const result = await this.fallbackAdapter.resolve(request);
       this.metrics.fallbackUsageCount++;
-      console.log(
-        `[OracleService] Fallback provider succeeded for market ${request.marketId} (source: ${result.source})`
-      );
+      this.logger.info("Fallback provider resolved market", {
+        marketId: request.marketId,
+        source: result.source,
+      });
       return result;
     } catch (fallbackError) {
       this.metrics.fallbackFailureCount++;
-      console.error(
-        `[OracleService] Fallback provider also failed for market ${request.marketId}:`,
-        fallbackError instanceof Error ? fallbackError.message : fallbackError
-      );
+      this.logger.error("Fallback provider failed", {
+        marketId: request.marketId,
+        error:
+          fallbackError instanceof Error
+            ? fallbackError.message
+            : String(fallbackError),
+      });
 
       throw new Error(
         `All providers failed for market ${request.marketId}. Primary: ${
