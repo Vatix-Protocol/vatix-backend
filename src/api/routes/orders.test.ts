@@ -681,6 +681,24 @@ describe("POST /orders", () => {
     expect(response.statusCode).toBe(400);
   });
 
+  it("should reject invalid input before creating a Prisma order", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/orders",
+      payload: {
+        marketId: "market-1",
+        userAddress: validAddress,
+        side: "BUY",
+        outcome: "YES",
+        price: "not-a-number",
+        quantity: 100,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mockPrismaClient.order.create).not.toHaveBeenCalled();
+  });
+
   it("should handle database errors gracefully", async () => {
     (
       mockPrismaClient.order.create as ReturnType<typeof vi.fn>
