@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import fp from "fastify-plugin";
+import { ValidationError } from "./errors.js";
 
 function isSensitiveKey(key: string): boolean {
   const lower = key.toLowerCase();
@@ -77,6 +78,12 @@ async function logger(fastify: FastifyInstance) {
         (request.params as Record<string, string> | undefined)?.address ||
         (request.headers["x-user-address"] as string | undefined) ||
         (request.headers["x-address"] as string | undefined);
+
+      if (userAddress !== undefined && !/^G[A-Z2-7]{55}$/.test(userAddress)) {
+        throw new ValidationError("Invalid Stellar address", {
+          userAddress: "must be a 56-character Stellar G-address",
+        });
+      }
 
       request.log.info(
         {

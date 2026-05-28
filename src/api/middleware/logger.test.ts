@@ -124,6 +124,39 @@ describe("Request Logger Middleware", () => {
     expect(log![0].userAddress).toBe("GDEF456");
   });
 
+  it("returns 400 when x-user-address is not a valid Stellar address", async () => {
+    server.setErrorHandler(
+      (await import("./errorHandler.js")).errorHandler
+    );
+    server.get("/test", async () => ({ ok: true }));
+    const response = await server.inject({
+      method: "GET",
+      url: "/test",
+      headers: { "x-user-address": "not-a-stellar-address" },
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body).toHaveProperty("code");
+    expect(body).toHaveProperty("message");
+    expect(body).toHaveProperty("statusCode", 400);
+  });
+
+  it("returns 400 when route :address param is not a valid Stellar address", async () => {
+    server.setErrorHandler(
+      (await import("./errorHandler.js")).errorHandler
+    );
+    server.get("/user/:address", async () => ({ ok: true }));
+    const response = await server.inject({
+      method: "GET",
+      url: "/user/INVALID",
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.statusCode).toBe(400);
+  });
+
   it("honours X-Correlation-ID as the request ID when genReqId uses it", async () => {
     const correlationId = "corr-123";
     const customServer = Fastify({
