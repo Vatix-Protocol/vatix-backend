@@ -14,7 +14,7 @@ async function bootstrap(): Promise<void> {
   const job = new FinalizationJob(
     prisma,
     logger,
-    config.challengeWindowSeconds
+    { challengeWindowSeconds: config.challengeWindowSeconds }
   );
 
   logger.info("Finalization worker started", {

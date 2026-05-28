@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { Logger, LOG_LEVELS } from "./logger.js";
+import { Logger, LoggerValidationError, LOG_LEVELS } from "./logger.js";
 
 describe("LOG_LEVELS", () => {
   it("contains the four standard levels in order", () => {
@@ -80,5 +80,41 @@ describe("Logger", () => {
     expect(console.info).not.toHaveBeenCalled();
     expect(console.warn).not.toHaveBeenCalled();
     expect(console.error).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Logger input validation", () => {
+  it("throws LoggerValidationError with statusCode 400 when msg is not a string", () => {
+    const log = new Logger("", "debug");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => log.info(42 as any)).toThrow(LoggerValidationError);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => log.info(42 as any)).toMatchObject({ statusCode: 400 });
+  });
+
+  it("throws for null message", () => {
+    const log = new Logger();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => log.warn(null as any)).toThrow(LoggerValidationError);
+  });
+
+  it("throws for object message", () => {
+    const log = new Logger();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => log.error({} as any)).toThrow(LoggerValidationError);
+  });
+
+  it("throws for undefined message", () => {
+    const log = new Logger();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => log.debug(undefined as any)).toThrow(LoggerValidationError);
+  });
+
+  it("does not throw for valid string messages", () => {
+    const log = new Logger("", "debug");
+    expect(() => log.debug("ok")).not.toThrow();
+    expect(() => log.info("ok")).not.toThrow();
+    expect(() => log.warn("ok")).not.toThrow();
+    expect(() => log.error("ok")).not.toThrow();
   });
 });

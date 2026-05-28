@@ -9,6 +9,22 @@ const LEVEL_INDEX: Record<LogLevel, number> = {
   error: 3,
 };
 
+export class LoggerValidationError extends Error {
+  readonly statusCode = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = "LoggerValidationError";
+  }
+}
+
+function validateMsg(msg: unknown): asserts msg is string {
+  if (typeof msg !== "string") {
+    throw new LoggerValidationError(
+      `Log message must be a string, got: ${typeof msg}`
+    );
+  }
+}
+
 export class Logger {
   private level: LogLevel;
   private prefix: string;
@@ -41,18 +57,22 @@ export class Logger {
   }
 
   debug(msg: string): void {
+    validateMsg(msg);
     if (this.shouldLog("debug")) console.debug(this.format(msg));
   }
 
   info(msg: string): void {
+    validateMsg(msg);
     if (this.shouldLog("info")) console.info(this.format(msg));
   }
 
   warn(msg: string): void {
+    validateMsg(msg);
     if (this.shouldLog("warn")) console.warn(this.format(msg));
   }
 
   error(msg: string): void {
+    validateMsg(msg);
     if (this.shouldLog("error")) console.error(this.format(msg));
   }
 
