@@ -3,6 +3,7 @@ import {
   // Re-exported Prisma types
   Market,
   Order,
+  PrismaOrder,
   UserPosition,
   MarketStatus,
   OrderSide,
@@ -83,6 +84,14 @@ describe("Type Definitions", () => {
       expectTypeOf<Outcome>().toBeString();
       expectTypeOf<"YES">().toMatchTypeOf<Outcome>();
       expectTypeOf<"NO">().toMatchTypeOf<Outcome>();
+    });
+
+    it("should export PrismaOrder schema type", () => {
+      expectTypeOf<PrismaOrder>().toHaveProperty("id");
+      expectTypeOf<PrismaOrder>().toHaveProperty("marketId");
+      expectTypeOf<PrismaOrder>().toHaveProperty("userAddress");
+      expectTypeOf<PrismaOrder>().toHaveProperty("side");
+      expectTypeOf<PrismaOrder>().toHaveProperty("status");
     });
 
     it("should export Prisma namespace", () => {
