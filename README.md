@@ -131,7 +131,10 @@ See `.env.example` for all options. Key variables:
 
 - `DATABASE_URL` - PostgreSQL connection
 - `REDIS_URL` - Redis connection
+- `API_KEY` - API key for protected endpoints
+- `ADMIN_TOKEN` - Admin bearer token for protected admin endpoints
 - `ORACLE_SECRET_KEY` - Oracle signing key (generate with `pnpm generate:keypair`)
+- `LOG_LEVEL` - Optional global log verbosity for shared logger
 
 ## Testing
 
