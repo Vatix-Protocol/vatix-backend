@@ -105,32 +105,25 @@ describe("Request Logger Middleware", () => {
   });
 
   it("includes userAddress from route params when present", async () => {
+    const addr = "GABC2222222222222222222222222222222222222222222222222222";
     server.get("/user/:address", async () => ({ ok: true }));
-    await server.inject({
-      method: "GET",
-      url: "/user/GABC2222222222222222222222222222222222222222222222222222",
-    });
+    await server.inject({ method: "GET", url: `/user/${addr}` });
 
     const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
-    expect(log![0].userAddress).toBe(
-      "GABC2222222222222222222222222222222222222222222222222222"
-    );
+    expect(log![0].userAddress).toBe(addr);
   });
 
   it("includes userAddress from x-user-address header when present", async () => {
+    const addr = "GDEF2222222222222222222222222222222222222222222222222222";
     server.get("/test", async () => ({ ok: true }));
     await server.inject({
       method: "GET",
       url: "/test",
-      headers: {
-        "x-user-address": "GDEF2222222222222222222222222222222222222222222222222222",
-      },
+      headers: { "x-user-address": addr },
     });
 
     const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
-    expect(log![0].userAddress).toBe(
-      "GDEF2222222222222222222222222222222222222222222222222222"
-    );
+    expect(log![0].userAddress).toBe(addr);
   });
 
   it("returns 400 when x-user-address is not a valid Stellar address", async () => {
