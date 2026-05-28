@@ -49,6 +49,13 @@ Vatix Backend is a monorepo of services that together power the Vatix prediction
 2. CLOB matching engine runs synchronously; fills are written in the same transaction
 3. Matched fills are enqueued to Redis for downstream settlement by Workers
 
+### Submission queue
+
+The API and Oracle submit asynchronous work into Redis-backed queues that are processed by the Workers service.
+This submission queue decouples real-time HTTP request handling from downstream settlement and finalization.
+
+Workers consume queue entries and perform background tasks such as trade settlement, expiry sweeps, and resolution candidate processing.
+
 ### Market resolution
 
 1. Oracle fetches external outcome data and signs a resolution report

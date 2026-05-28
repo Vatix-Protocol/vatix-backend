@@ -6,6 +6,9 @@ export {
   redactMeta,
 } from "./logRedactor.js";
 
+export { Logger, LoggerValidationError, LOG_LEVELS } from "./logger.js";
+export type { LogLevel } from "./logger.js";
+
 export type {
   NodeEnv,
   LogLevel,
