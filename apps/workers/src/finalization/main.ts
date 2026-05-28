@@ -30,15 +30,16 @@ async function bootstrap(): Promise<void> {
     if (isShuttingDown) return;
     isShuttingDown = true;
 
-    logger.info("Finalization worker shutting down", { signal });
+    logger.warn("Finalization worker shutting down", { signal });
     clearInterval(timer);
 
     try {
       await disconnectPrisma();
-      logger.info("Finalization worker shutdown complete");
+      logger.info("Finalization worker shutdown complete", { signal });
       process.exit(0);
     } catch (error) {
       logger.error("Finalization worker shutdown failed", {
+        signal,
         error: error instanceof Error ? error.message : String(error),
       });
       process.exit(1);
