@@ -2,6 +2,11 @@ export interface IndexerMetricsSnapshot {
   latestIndexedLedgerSequence: number | null;
 }
 
+/** Typed payload used when logging a metrics snapshot. */
+export interface IndexerMetricsLog {
+  latestIndexedLedgerSequence: number | null;
+}
+
 export class InternalIndexerMetricsService {
   private latestIndexedLedgerSequence: number | null = null;
 
