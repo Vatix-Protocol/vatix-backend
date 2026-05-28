@@ -5,7 +5,7 @@ Backend services for the Vatix prediction market protocol on Stellar.
 ## Documentation
 
 - [Docker Compose Setup](docs/docker-compose.md)
-- [Architecture](docs/architecture.md)
+- [Database Schema](docs/schema.md)
 
 ## Tech Stack
 

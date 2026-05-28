@@ -7,30 +7,11 @@ import type {
 } from "./types.js";
 import type { Telemetry } from "./telemetry.js";
 import { consoleTelemetry } from "./telemetry.js";
+import { isTransientError, sleep } from "./retry.js";
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const DEFAULT_PAGE_LIMIT = 100;
-
-const TRANSIENT_ERRORS = new Set([
-  "ECONNRESET",
-  "ECONNREFUSED",
-  "ETIMEDOUT",
-  "ENOTFOUND",
-  "socket hang up",
-]);
-
-function isTransient(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  return (
-    TRANSIENT_ERRORS.has((err as NodeJS.ErrnoException).code ?? "") ||
-    TRANSIENT_ERRORS.has(err.message)
-  );
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export class EventFetcher {
   private readonly server: StellarRpc.Server;
@@ -121,7 +102,7 @@ export class EventFetcher {
         return response;
       } catch (err) {
         const isLast = attempt === maxRetries;
-        if (isLast || !isTransient(err)) {
+        if (isLast || !isTransientError(err)) {
           this.telemetry.record("indexer.rpc.error", 1, {
             attempt: String(attempt),
             transient: String(isTransient(err)),

@@ -1,6 +1,16 @@
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
 import type { Logger } from "../../../indexer/src/logger.js";
 
+/**
+ * Configuration for a single FinalizationJob run.
+ * Passed to the constructor so callers never deal with raw primitives.
+ */
+export interface FinalizationJobConfig {
+  /** How long (in seconds) a resolution candidate must sit in PROPOSED
+   *  before it is eligible for finalization. Must be >= 0. */
+  challengeWindowSeconds: number;
+}
+
 export interface FinalizationCandidate {
   id: string;
   marketId: string;
@@ -18,11 +28,15 @@ export class FinalizationValidationError extends Error {
 }
 
 export class FinalizationJob {
+  private readonly challengeWindowSeconds: number;
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly logger: Logger,
-    private readonly challengeWindowSeconds: number
-  ) {}
+    config: FinalizationJobConfig
+  ) {
+    this.challengeWindowSeconds = config.challengeWindowSeconds;
+  }
 
   async run(): Promise<void> {
     if (
