@@ -11,11 +11,9 @@ async function bootstrap(): Promise<void> {
   const config = loadFinalizationConfig();
   const logger = createLogger(config.logLevel);
   const prisma = getPrismaClient();
-  const job = new FinalizationJob(
-    prisma,
-    logger,
-    { challengeWindowSeconds: config.challengeWindowSeconds }
-  );
+  const job = new FinalizationJob(prisma, logger, {
+    challengeWindowSeconds: config.challengeWindowSeconds,
+  });
 
   logger.info("Finalization worker started", {
     intervalMs: config.intervalMs,
@@ -30,12 +28,18 @@ async function bootstrap(): Promise<void> {
     if (isShuttingDown) return;
     isShuttingDown = true;
 
-    logger.info("Graceful shutdown initiated", { signal, component: "finalization-worker" });
+    logger.info("Graceful shutdown initiated", {
+      signal,
+      component: "finalization-worker",
+    });
     clearInterval(timer);
 
     try {
       await disconnectPrisma();
-      logger.info("Worker shutdown complete", { signal, component: "finalization-worker" });
+      logger.info("Worker shutdown complete", {
+        signal,
+        component: "finalization-worker",
+      });
       process.exit(0);
     } catch (error) {
       logger.error("Worker shutdown failed", {
