@@ -15,7 +15,8 @@ async function bootstrap(): Promise<void> {
   const metrics = new InternalIndexerMetricsService();
   const storage = new PrismaCursorStorageClient(
     config.networkId,
-    config.cursorKey
+    config.cursorKey,
+    logger
   );
   const ingestionLoop = new PollingIngestionLoop(
     logger,

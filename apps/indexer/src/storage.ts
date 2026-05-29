@@ -1,4 +1,5 @@
 import { getPrismaClient } from "../../../src/services/prisma.js";
+import type { Logger } from "./logger.js";
 
 export interface CursorStorageClient {
   loadCursor(): Promise<string | null>;
@@ -10,7 +11,8 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
 
   constructor(
     private readonly networkId: string,
-    private readonly cursorKey: string
+    private readonly cursorKey: string,
+    private readonly logger?: Logger
   ) {}
 
   async loadCursor(): Promise<string | null> {
@@ -26,7 +28,14 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
       },
     });
 
-    return row?.cursor ?? null;
+    const cursor = row?.cursor ?? null;
+    this.logger?.debug("Ledger cursor loaded", {
+      networkId: this.networkId,
+      cursorKey: this.cursorKey,
+      cursor,
+      found: cursor !== null,
+    });
+    return cursor;
   }
 
   async saveCursor(cursor: string): Promise<void> {
@@ -47,6 +56,11 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
           cursor,
         },
       });
+    });
+    this.logger?.debug("Ledger cursor saved", {
+      networkId: this.networkId,
+      cursorKey: this.cursorKey,
+      cursor,
     });
   }
 }

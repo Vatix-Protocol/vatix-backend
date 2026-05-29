@@ -39,3 +39,65 @@ export interface SubmissionQueueSnapshot {
   failed: number;
   items: SubmissionQueueItem[];
 }
+
+const VALID_STATUSES: SubmissionStatus[] = ["pending", "submitted", "failed"];
+
+export class SubmissionQueueValidationError extends Error {
+  readonly statusCode = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = "SubmissionQueueValidationError";
+  }
+}
+
+/**
+ * Validates a SubmissionQueueItem, throwing a 400-status error on invalid input.
+ *
+ * @throws {SubmissionQueueValidationError} When the item is invalid.
+ */
+export function validateSubmissionQueueItem(
+  item: unknown
+): SubmissionQueueItem {
+  if (!item || typeof item !== "object") {
+    throw new SubmissionQueueValidationError("item must be an object");
+  }
+  const i = item as Record<string, unknown>;
+
+  if (!i.id || typeof i.id !== "string") {
+    throw new SubmissionQueueValidationError("id must be a non-empty string");
+  }
+  if (!i.request || typeof i.request !== "object") {
+    throw new SubmissionQueueValidationError("request must be an object");
+  }
+  const req = i.request as Record<string, unknown>;
+  if (!req.marketId || typeof req.marketId !== "string") {
+    throw new SubmissionQueueValidationError(
+      "request.marketId must be a non-empty string"
+    );
+  }
+  if (!req.oracleAddress || typeof req.oracleAddress !== "string") {
+    throw new SubmissionQueueValidationError(
+      "request.oracleAddress must be a non-empty string"
+    );
+  }
+  if (!i.result || typeof i.result !== "object") {
+    throw new SubmissionQueueValidationError("result must be an object");
+  }
+  if (!VALID_STATUSES.includes(i.status as SubmissionStatus)) {
+    throw new SubmissionQueueValidationError(
+      `status must be one of: ${VALID_STATUSES.join(", ")}`
+    );
+  }
+  if (!i.enqueuedAt || typeof i.enqueuedAt !== "string") {
+    throw new SubmissionQueueValidationError(
+      "enqueuedAt must be a non-empty string"
+    );
+  }
+  if (!Number.isInteger(i.attempts) || (i.attempts as number) < 0) {
+    throw new SubmissionQueueValidationError(
+      "attempts must be a non-negative integer"
+    );
+  }
+
+  return item as SubmissionQueueItem;
+}

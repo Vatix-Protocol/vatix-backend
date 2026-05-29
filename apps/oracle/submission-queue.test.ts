@@ -1,5 +1,5 @@
 /**
- * Tests for submission queue types.
+ * Tests for submission queue types and validation.
  */
 
 import { describe, it, expect } from "vitest";
@@ -7,6 +7,10 @@ import type {
   SubmissionQueueItem,
   SubmissionQueueSnapshot,
   SubmissionStatus,
+} from "./submission-queue.js";
+import {
+  validateSubmissionQueueItem,
+  SubmissionQueueValidationError,
 } from "./submission-queue.js";
 
 function makeItem(
@@ -82,5 +86,65 @@ describe("SubmissionQueueSnapshot", () => {
     };
     expect(snapshot.pending).toBe(2);
     expect(snapshot.items).toHaveLength(2);
+  });
+});
+
+// ─── validateSubmissionQueueItem ───────────────────────────────────────────────
+
+describe("validateSubmissionQueueItem", () => {
+  it("returns the item when valid", () => {
+    const item = makeItem();
+    expect(validateSubmissionQueueItem(item)).toEqual(item);
+  });
+
+  it("throws SubmissionQueueValidationError (statusCode 400) for null input", () => {
+    expect(() => validateSubmissionQueueItem(null)).toThrow(
+      SubmissionQueueValidationError
+    );
+    expect(() => validateSubmissionQueueItem(null)).toThrow(
+      expect.objectContaining({ statusCode: 400 })
+    );
+  });
+
+  it("throws for missing id", () => {
+    expect(() =>
+      validateSubmissionQueueItem({ ...makeItem(), id: "" })
+    ).toThrow(SubmissionQueueValidationError);
+  });
+
+  it("throws for missing request.marketId", () => {
+    expect(() =>
+      validateSubmissionQueueItem({
+        ...makeItem(),
+        request: { ...makeItem().request, marketId: "" },
+      })
+    ).toThrow(SubmissionQueueValidationError);
+  });
+
+  it("throws for missing request.oracleAddress", () => {
+    expect(() =>
+      validateSubmissionQueueItem({
+        ...makeItem(),
+        request: { ...makeItem().request, oracleAddress: "" },
+      })
+    ).toThrow(SubmissionQueueValidationError);
+  });
+
+  it("throws for invalid status", () => {
+    expect(() =>
+      validateSubmissionQueueItem({ ...makeItem(), status: "unknown" })
+    ).toThrow(SubmissionQueueValidationError);
+  });
+
+  it("throws for negative attempts", () => {
+    expect(() =>
+      validateSubmissionQueueItem({ ...makeItem(), attempts: -1 })
+    ).toThrow(SubmissionQueueValidationError);
+  });
+
+  it("throws for missing enqueuedAt", () => {
+    expect(() =>
+      validateSubmissionQueueItem({ ...makeItem(), enqueuedAt: "" })
+    ).toThrow(SubmissionQueueValidationError);
   });
 });
