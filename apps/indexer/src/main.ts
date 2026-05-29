@@ -60,7 +60,7 @@ async function bootstrap(): Promise<void> {
     try {
       await ingestionLoop.stop();
       await disconnectPrisma();
-      logger.info("Indexer shutdown complete");
+      logger.info("Worker shutdown complete", { signal, component: "indexer" });
       process.exit(0);
     } catch (error) {
       logger.error("Indexer shutdown failed", {
