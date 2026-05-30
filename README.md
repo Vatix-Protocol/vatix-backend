@@ -128,6 +128,8 @@ docs/
 ## Environment Variables
 
 See `.env.example` for all options. Key variables:
+See [docs/env-validation.md](docs/env-validation.md) for full validation rules, types, and defaults.
+
 
 - `DATABASE_URL` - PostgreSQL connection
 - `REDIS_URL` - Redis connection
