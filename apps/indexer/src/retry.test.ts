@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { isTransientError, withRetry } from "./retry.js";
+import { isTransientError, withRetry, RetryValidationError } from "./retry.js";
 
 // ─── isTransientError ────────────────────────────────────────────────────────
 
@@ -102,5 +102,59 @@ describe("withRetry", () => {
     ).rejects.toThrow("socket hang up");
 
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── withRetry input validation ───────────────────────────────────────────────
+
+describe("withRetry input validation", () => {
+  it("throws RetryValidationError (statusCode 400) for negative maxRetries", async () => {
+    await expect(
+      withRetry(() => Promise.resolve("ok"), {
+        maxRetries: -1,
+        retryDelayMs: 0,
+      })
+    ).rejects.toThrow(RetryValidationError);
+
+    await expect(
+      withRetry(() => Promise.resolve("ok"), {
+        maxRetries: -1,
+        retryDelayMs: 0,
+      })
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("throws RetryValidationError (statusCode 400) for non-integer maxRetries", async () => {
+    await expect(
+      withRetry(() => Promise.resolve("ok"), {
+        maxRetries: 1.5,
+        retryDelayMs: 0,
+      })
+    ).rejects.toThrow(RetryValidationError);
+  });
+
+  it("throws RetryValidationError (statusCode 400) for negative retryDelayMs", async () => {
+    await expect(
+      withRetry(() => Promise.resolve("ok"), {
+        maxRetries: 1,
+        retryDelayMs: -1,
+      })
+    ).rejects.toThrow(RetryValidationError);
+
+    await expect(
+      withRetry(() => Promise.resolve("ok"), {
+        maxRetries: 1,
+        retryDelayMs: -1,
+      })
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("throws RetryValidationError (statusCode 400) for NaN retryDelayMs", async () => {
+    await expect(
+      withRetry(() => Promise.resolve("ok"), {
+        maxRetries: 1,
+        retryDelayMs: NaN,
+      })
+    ).rejects.toThrow(RetryValidationError);
   });
 });
