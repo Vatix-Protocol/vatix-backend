@@ -1,5 +1,19 @@
 import { describe, it, expect, vi } from "vitest";
-import { isTransientError, withRetry } from "./retry.js";
+import { isTransientError, sleep, withRetry } from "./retry.js";
+
+// ─── sleep ───────────────────────────────────────────────────────────────────
+
+describe("sleep", () => {
+  it("resolves to undefined", async () => {
+    await expect(sleep(0)).resolves.toBeUndefined();
+  });
+
+  it("waits at least the requested duration", async () => {
+    const start = Date.now();
+    await sleep(50);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(40);
+  });
+});
 
 // ─── isTransientError ────────────────────────────────────────────────────────
 

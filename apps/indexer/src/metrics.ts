@@ -4,6 +4,7 @@ export interface IndexerMetricsSnapshot {
 
 /** Typed payload used when logging a metrics snapshot. */
 export interface IndexerMetricsLog {
+  event: "indexer.metrics.snapshot";
   latestIndexedLedgerSequence: number | null;
 }
 
@@ -20,6 +21,13 @@ export class InternalIndexerMetricsService {
 
   getSnapshot(): IndexerMetricsSnapshot {
     return {
+      latestIndexedLedgerSequence: this.latestIndexedLedgerSequence,
+    };
+  }
+
+  toLogFields(): IndexerMetricsLog {
+    return {
+      event: "indexer.metrics.snapshot",
       latestIndexedLedgerSequence: this.latestIndexedLedgerSequence,
     };
   }

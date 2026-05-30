@@ -134,6 +134,7 @@ export class PollingIngestionLoop implements IngestionLoop {
         : null;
 
     this.logger.info("Indexer heartbeat", {
+      event: "indexer.heartbeat",
       cursor: this.cursor,
       latestIndexedLedgerSequence,
       batchesProcessed: this.batchesSinceLastHeartbeat,
