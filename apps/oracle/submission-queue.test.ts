@@ -157,9 +157,12 @@ describe("SubmissionQueue", () => {
   it("enqueues a valid item and logs it", () => {
     const logs: any[] = [];
     const mockLogger = {
-      info: (msg: string, meta?: any) => logs.push({ level: "info", msg, meta }),
-      warn: (msg: string, meta?: any) => logs.push({ level: "warn", msg, meta }),
-      error: (msg: string, meta?: any) => logs.push({ level: "error", msg, meta }),
+      info: (msg: string, meta?: any) =>
+        logs.push({ level: "info", msg, meta }),
+      warn: (msg: string, meta?: any) =>
+        logs.push({ level: "warn", msg, meta }),
+      error: (msg: string, meta?: any) =>
+        logs.push({ level: "error", msg, meta }),
     };
 
     const queue = new SubmissionQueue(mockLogger);
@@ -169,7 +172,7 @@ describe("SubmissionQueue", () => {
 
     expect(logs).toHaveLength(1);
     expect(logs[0].level).toBe("info");
-    expect(logs[0].msg).toBe("Submission queued successfully");
+    expect(logs[0].msg).toBe("Oracle submission queued");
     expect(logs[0].meta).toMatchObject({
       id: item.id,
       marketId: item.request.marketId,
@@ -188,6 +191,8 @@ describe("SubmissionQueue", () => {
 
     const queue = new SubmissionQueue(mockLogger);
 
-    expect(() => queue.enqueue(null as any)).toThrow(SubmissionQueueValidationError);
+    expect(() => queue.enqueue(null as any)).toThrow(
+      SubmissionQueueValidationError
+    );
   });
 });
