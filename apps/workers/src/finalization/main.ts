@@ -23,8 +23,26 @@ async function bootstrap(): Promise<void> {
   await job.run();
   const timer = setInterval(() => void job.run(), config.intervalMs);
 
+  const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
   let isShuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (
+      typeof signal !== "string" ||
+      signal.trim() === "" ||
+      !VALID_SHUTDOWN_SIGNALS.includes(
+        signal as (typeof VALID_SHUTDOWN_SIGNALS)[number],
+      )
+    ) {
+      logger.warn("Graceful shutdown called with invalid signal", {
+        signal,
+        statusCode: 400,
+        component: "finalization-worker",
+        validSignals: [...VALID_SHUTDOWN_SIGNALS],
+      });
+      return;
+    }
+
     if (isShuttingDown) return;
     isShuttingDown = true;
 
