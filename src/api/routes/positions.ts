@@ -279,7 +279,23 @@ export default async function positionsRouter(server: FastifyInstance) {
   // Heavy read: findMany with market JOIN — apply stricter limit.
   server.get(
     "/positions/user/:address",
-    { onRequest: [heavyReadLimiter] },
+    {
+      onRequest: [heavyReadLimiter],
+      schema: {
+        params: {
+          type: "object",
+          required: ["address"],
+          properties: {
+            address: {
+              type: "string",
+              pattern: STELLAR_PUBLIC_KEY_REGEX.source,
+              description:
+                "Stellar public key (StrKey): starts with G and is 56 chars using [A-Z2-7]",
+            },
+          },
+        },
+      },
+    },
     async (request, reply) => {
       const { address } = request.params as { address: string };
       const prisma = getPrismaClient();

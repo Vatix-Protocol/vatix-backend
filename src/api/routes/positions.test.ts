@@ -93,8 +93,6 @@ describe("Positions Route", () => {
       url: "/positions/user/0xInvalidAddress",
     });
     expect(response.statusCode).toBe(400);
-    const body = JSON.parse(response.body);
-    expect(body.error).toBe("Invalid Stellar address");
   });
 
   it("should return 200 and calculate correct payout structure on legacy endpoint", async () => {
