@@ -84,6 +84,7 @@ docker compose down        # Stop containers
 
 See [docs/architecture.md](docs/architecture.md) for service boundaries and data flow.
 For details on external data retrieval, see [docs/price-fetcher.md](docs/price-fetcher.md).
+For oracle report signing and verification, see [docs/signature-helper.md](docs/signature-helper.md).
 
 ## Project Structure
 
