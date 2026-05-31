@@ -31,3 +31,9 @@ export type {
   PersistedResolution,
 } from "./idempotency.js";
 export { TradeParseError, ResolutionParseError } from "./types.js";
+export type {
+  BatchRecord,
+  BatchWriteError,
+  BatchWriteResult,
+  BatchWriter,
+} from "./batchWriter.js";
