@@ -42,7 +42,7 @@ export async function healthRoutes(fastify: FastifyInstance) {
 
       return reply.status(200).send({
         status,
-        service: "vatix-backend",
+        service: process.env.SERVICE_NAME ?? "vatix-backend",
         version: process.env.npm_package_version ?? "unknown",
         uptime,
         timestamp: new Date().toISOString(),
