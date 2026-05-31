@@ -25,12 +25,28 @@ function validateMsg(msg: unknown): asserts msg is string {
   }
 }
 
+function validatePrefix(prefix: unknown): asserts prefix is string {
+  if (typeof prefix !== "string") {
+    throw new LoggerValidationError(
+      `Logger prefix must be a string, got: ${typeof prefix}`
+    );
+  }
+}
+
+function validateLogLevel(level: unknown): asserts level is LogLevel {
+  if (level !== undefined && !LOG_LEVELS.includes(level as LogLevel)) {
+    throw new LoggerValidationError(`Invalid log level: ${String(level)}`);
+  }
+}
+
 export class Logger {
   private level: LogLevel;
   private prefix: string;
 
   constructor(prefix = "", level?: LogLevel) {
-    if (level) {
+    validatePrefix(prefix);
+    if (level !== undefined) {
+      validateLogLevel(level);
       this.level = level;
     } else {
       const env = process.env.LOG_LEVEL;
@@ -77,6 +93,7 @@ export class Logger {
   }
 
   child(childPrefix: string): Logger {
+    validatePrefix(childPrefix);
     const combined = this.prefix
       ? `${this.prefix}:${childPrefix}`
       : childPrefix;

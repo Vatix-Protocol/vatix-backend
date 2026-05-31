@@ -28,23 +28,28 @@ async function bootstrap(): Promise<void> {
     if (isShuttingDown) return;
     isShuttingDown = true;
 
-    logger.info("Graceful shutdown initiated", {
+    logger.info("Finalization worker shutdown initiated", {
       signal,
       component: "finalization-worker",
+      status: "initiated",
     });
     clearInterval(timer);
 
     try {
       await disconnectPrisma();
-      logger.info("Worker shutdown complete", {
+      logger.info("Finalization worker shutdown complete", {
         signal,
         component: "finalization-worker",
+        status: "complete",
+        exitCode: 0,
       });
       process.exit(0);
     } catch (error) {
-      logger.error("Worker shutdown failed", {
+      logger.error("Finalization worker shutdown failed", {
         signal,
         component: "finalization-worker",
+        status: "failed",
+        exitCode: 1,
         error: error instanceof Error ? error.message : String(error),
       });
       process.exit(1);

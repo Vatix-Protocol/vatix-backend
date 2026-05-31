@@ -66,6 +66,23 @@ describe("withRetry", () => {
     expect(fn).toHaveBeenCalledTimes(3);
   });
 
+  it("applies exponential backoff between retries", async () => {
+    vi.useFakeTimers();
+    const transient = Object.assign(new Error("socket hang up"), {
+      code: "ECONNRESET",
+    });
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(transient)
+      .mockResolvedValue("ok");
+
+    const resultPromise = withRetry(fn, { maxRetries: 1, retryDelayMs: 100 });
+    await vi.runAllTimersAsync();
+    await expect(resultPromise).resolves.toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
   it("throws after exhausting all retries", async () => {
     const err = Object.assign(new Error("socket hang up"), {
       code: "ECONNRESET",
