@@ -68,16 +68,18 @@ export function validateTimeout(timeoutMs: unknown): number {
   }
 
   if (timeoutMs < MIN_TIMEOUT_MS) {
-    console.warn(
-      `Timeout ${timeoutMs}ms is below minimum ${MIN_TIMEOUT_MS}ms, clamping`
-    );
+    console.warn("Timeout is below minimum, clamping", {
+      providedTimeoutMs: timeoutMs,
+      minTimeoutMs: MIN_TIMEOUT_MS,
+    });
     return MIN_TIMEOUT_MS;
   }
 
   if (timeoutMs > MAX_TIMEOUT_MS) {
-    console.warn(
-      `Timeout ${timeoutMs}ms exceeds maximum ${MAX_TIMEOUT_MS}ms, clamping`
-    );
+    console.warn("Timeout exceeds maximum, clamping", {
+      providedTimeoutMs: timeoutMs,
+      maxTimeoutMs: MAX_TIMEOUT_MS,
+    });
     return MAX_TIMEOUT_MS;
   }
 
@@ -183,9 +185,11 @@ export async function withTimeout<T>(
         error.message === config.errorMessage);
 
     if (isTimeout) {
-      console.warn(
-        `[TimeoutUtils] Operation timed out after ${config.timeoutMs}ms (${durationMs.toFixed(0)}ms elapsed)`
-      );
+      console.warn("Operation timed out", {
+        context: "TimeoutUtils",
+        configuredTimeoutMs: config.timeoutMs,
+        elapsedDurationMs: Number(durationMs.toFixed(0)),
+      });
     }
 
     return {

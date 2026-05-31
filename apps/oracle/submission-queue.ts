@@ -102,11 +102,17 @@ export function validateSubmissionQueueItem(
   return item as SubmissionQueueItem;
 }
 
+export interface QueueLogger {
+  info: (msg: string, meta?: unknown) => void;
+  warn: (msg: string, meta?: unknown) => void;
+  error: (msg: string, meta?: unknown) => void;
+}
+
 export class SubmissionQueue {
   private items: SubmissionQueueItem[] = [];
   
   // Use structured logging
-  constructor(private readonly logger: { info: (msg: string, meta?: any) => void; warn: (msg: string, meta?: any) => void; error: (msg: string, meta?: any) => void }) {}
+  constructor(private readonly logger: QueueLogger) {}
 
   enqueue(item: SubmissionQueueItem): void {
     validateSubmissionQueueItem(item);
