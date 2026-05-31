@@ -101,3 +101,22 @@ export function validateSubmissionQueueItem(
 
   return item as SubmissionQueueItem;
 }
+
+export class SubmissionQueue {
+  private items: SubmissionQueueItem[] = [];
+  
+  // Use structured logging
+  constructor(private readonly logger: { info: (msg: string, meta?: any) => void; warn: (msg: string, meta?: any) => void; error: (msg: string, meta?: any) => void }) {}
+
+  enqueue(item: SubmissionQueueItem): void {
+    validateSubmissionQueueItem(item);
+    this.items.push(item);
+    this.logger.info("Submission queued successfully", {
+      id: item.id,
+      marketId: item.request.marketId,
+      oracleAddress: item.request.oracleAddress,
+      status: item.status,
+      enqueuedAt: item.enqueuedAt
+    });
+  }
+}

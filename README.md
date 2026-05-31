@@ -83,6 +83,7 @@ docker compose down        # Stop containers
 | **Shared DB** | [`packages/db/`](packages/db/)   | Shared Prisma client and migration utilities                |
 
 See [docs/architecture.md](docs/architecture.md) for service boundaries and data flow.
+For details on external data retrieval, see [docs/price-fetcher.md](docs/price-fetcher.md).
 
 ## Project Structure
 
