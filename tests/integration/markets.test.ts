@@ -176,6 +176,44 @@ describe("Integration Tests: GET /v1/markets", () => {
     });
   });
 
+  describe("Input validation", () => {
+    it("should return 400 for invalid status value", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets?status=INVALID",
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it("should return 400 for limit below minimum", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets?limit=0",
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it("should return 400 for limit above maximum", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets?limit=101",
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+
+    it("should return 400 for unknown query parameters", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets?unknown=value",
+      });
+
+      expect(response.statusCode).toBe(400);
+    });
+  });
+
   describe("Edge cases", () => {
     it("should handle markets with null resolutionTime", async () => {
       await testUtils.createTestMarket({
