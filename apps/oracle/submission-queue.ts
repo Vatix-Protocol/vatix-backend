@@ -32,6 +32,23 @@ export interface SubmissionQueueItem {
   lastError?: string;
 }
 
+export interface SubmissionQueueLogger {
+  info(message: string, meta?: Record<string, unknown>): void;
+  warn(message: string, meta?: Record<string, unknown>): void;
+  error(message: string, meta?: Record<string, unknown>): void;
+}
+
+export interface SubmissionQueueLogMeta {
+  id: string;
+  marketId: string;
+  oracleAddress: string;
+  status: SubmissionStatus;
+  enqueuedAt: string;
+  attempts?: number;
+  lastAttemptAt?: string;
+  lastError?: string;
+}
+
 /** Snapshot of the submission queue at a point in time. */
 export interface SubmissionQueueSnapshot {
   pending: number;
@@ -122,7 +139,10 @@ export class SubmissionQueue {
       marketId: item.request.marketId,
       oracleAddress: item.request.oracleAddress,
       status: item.status,
-      enqueuedAt: item.enqueuedAt
-    });
+      enqueuedAt: item.enqueuedAt,
+      attempts: item.attempts,
+      lastAttemptAt: item.lastAttemptAt,
+      lastError: item.lastError,
+    } satisfies SubmissionQueueLogMeta);
   }
 }
