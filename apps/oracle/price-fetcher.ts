@@ -5,8 +5,23 @@ export interface PriceFetcherConfig {
   timeoutMs: number;
 }
 
+export class PriceFetcherValidationError extends Error {
+  readonly statusCode = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = "PriceFetcherValidationError";
+  }
+}
+
 export class PriceFetcher {
-  constructor(private readonly logger: Logger, private readonly config: PriceFetcherConfig) {}
+  constructor(private readonly logger: Logger, private readonly config: PriceFetcherConfig) {
+    if (!config.assetId || typeof config.assetId !== "string") {
+      throw new PriceFetcherValidationError("Invalid assetId: must be a non-empty string");
+    }
+    if (typeof config.timeoutMs !== "number" || config.timeoutMs <= 0 || isNaN(config.timeoutMs)) {
+      throw new PriceFetcherValidationError("Invalid timeoutMs: must be a positive number");
+    }
+  }
 
   async fetchPrice(): Promise<number> {
     this.logger.info("Initiating price fetch", {
