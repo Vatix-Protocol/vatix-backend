@@ -46,18 +46,25 @@ export interface TimedResult<T> {
   error?: Error;
 }
 
+export class TimeoutValidationError extends Error {
+  readonly statusCode = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeoutValidationError";
+  }
+}
+
 /**
  * Validate that a timeout value is within acceptable bounds.
  *
  * @param timeoutMs - Timeout value to validate
  * @returns The validated timeout value (clamped to bounds)
  */
-export function validateTimeout(timeoutMs: number): number {
-  if (typeof timeoutMs !== "number" || isNaN(timeoutMs)) {
-    console.warn(
-      `Invalid timeout value: ${timeoutMs}, using default: ${DEFAULT_TIMEOUT_MS}ms`
+export function validateTimeout(timeoutMs: unknown): number {
+  if (typeof timeoutMs !== "number" || isNaN(timeoutMs as number)) {
+    throw new TimeoutValidationError(
+      `Invalid timeout value: ${timeoutMs}`
     );
-    return DEFAULT_TIMEOUT_MS;
   }
 
   if (timeoutMs < MIN_TIMEOUT_MS) {
