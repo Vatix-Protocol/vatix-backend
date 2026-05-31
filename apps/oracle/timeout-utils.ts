@@ -133,6 +133,12 @@ export function createTimeoutSignal(
 }
 
 /**
+ * A function that executes an operation with support for abort signaling.
+ * Used with withTimeout to handle long-running operations.
+ */
+export type TimeoutHandler<T> = (signal: AbortSignal) => Promise<T>;
+
+/**
  * Execute an async operation with a timeout.
  * If the operation exceeds the timeout, it is aborted and a timeout error is returned.
  *
@@ -141,7 +147,7 @@ export function createTimeoutSignal(
  * @returns Promise resolving to a TimedResult
  */
 export async function withTimeout<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
+  operation: TimeoutHandler<T>,
   config: TimeoutConfig
 ): Promise<TimedResult<T>> {
   const startTime = performance.now();
