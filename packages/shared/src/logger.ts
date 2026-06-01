@@ -101,6 +101,17 @@ export class Logger {
   }
 }
 
-export const log = (...args: unknown[]) => {
-  console.log("[shared]", ...args);
+export const log = (
+  msg: string,
+  fields: Record<string, unknown> = {}
+): void => {
+  console.info(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level: "info",
+      component: "shared",
+      message: msg,
+      ...fields,
+    })
+  );
 };
