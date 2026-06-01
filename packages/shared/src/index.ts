@@ -7,7 +7,7 @@ export {
 } from "./logRedactor.js";
 
 export { Logger, LoggerValidationError, LOG_LEVELS } from "./logger.js";
-export type { LogLevel } from "./logger.js";
+export type { LogLevel, ILogger } from "./logger.js";
 
 export type {
   Env,
