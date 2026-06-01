@@ -1,5 +1,5 @@
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
-import type { Logger } from "../../../indexer/src/logger.js";
+import type { ILogger } from "../../../../packages/shared/src/logger.js";
 
 /**
  * Configuration for a single FinalizationJob run.
@@ -32,7 +32,7 @@ export class FinalizationJob {
 
   constructor(
     private readonly prisma: PrismaClient,
-    private readonly logger: Logger,
+    private readonly logger: ILogger,
     config: FinalizationJobConfig
   ) {
     this.challengeWindowSeconds = config.challengeWindowSeconds;

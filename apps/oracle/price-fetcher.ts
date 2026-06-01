@@ -1,4 +1,4 @@
-import type { Logger } from "../../indexer/src/logger.js";
+import type { ILogger } from "../../packages/shared/src/logger.js";
 
 export interface PriceFetcherConfig {
   assetId: string;
@@ -14,7 +14,7 @@ export class PriceFetcherValidationError extends Error {
 }
 
 export class PriceFetcher {
-  constructor(private readonly logger: Logger, private readonly config: PriceFetcherConfig) {
+  constructor(private readonly logger: ILogger, private readonly config: PriceFetcherConfig) {
     if (!config.assetId || typeof config.assetId !== "string") {
       throw new PriceFetcherValidationError("Invalid assetId: must be a non-empty string");
     }

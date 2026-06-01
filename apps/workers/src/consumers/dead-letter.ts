@@ -1,4 +1,4 @@
-import type { Logger } from "../../../indexer/src/logger.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
 
 export interface DeadLetterMessage {
   id: string;
@@ -7,7 +7,7 @@ export interface DeadLetterMessage {
   reason: string;
 }
 
-export function logDeadLetter(logger: Logger, message: DeadLetterMessage): void {
+export function logDeadLetter(logger: ILogger, message: DeadLetterMessage): void {
   logger.error("Dead letter message recorded", {
     messageId: message.id,
     queue: message.queue,

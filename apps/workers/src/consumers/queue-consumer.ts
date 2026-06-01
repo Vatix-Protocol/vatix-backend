@@ -8,7 +8,7 @@
  * @module apps/workers/src/consumers/queue-consumer
  */
 
-import type { Logger } from "../../../indexer/src/logger.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
 
 /** Shape of a single job pulled from the queue. */
 export interface QueueJob {
@@ -42,7 +42,7 @@ export type JobHandler = (job: QueueJob) => Promise<void>;
  *   - `error` — terminal failure (max attempts exceeded)
  */
 export async function processJob(
-  logger: Logger,
+  logger: ILogger,
   config: QueueConsumerConfig,
   job: QueueJob,
   handler: JobHandler,

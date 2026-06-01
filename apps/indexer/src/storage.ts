@@ -1,5 +1,5 @@
 import { getPrismaClient } from "../../../src/services/prisma.js";
-import type { Logger } from "./logger.js";
+import type { ILogger } from "../../packages/shared/src/logger.js";
 
 export interface CursorStorageClient {
   loadCursor(): Promise<string | null>;
@@ -12,7 +12,7 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
   constructor(
     private readonly networkId: string,
     private readonly cursorKey: string,
-    private readonly logger?: Logger
+    private readonly logger?: ILogger
   ) {}
 
   async loadCursor(): Promise<string | null> {

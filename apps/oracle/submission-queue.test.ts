@@ -8,6 +8,7 @@ import type {
   SubmissionQueueSnapshot,
   SubmissionStatus,
 } from "./submission-queue.js";
+import type { ILogger } from "../../packages/shared/src/logger.js";
 import {
   validateSubmissionQueueItem,
   SubmissionQueueValidationError,
@@ -155,14 +156,16 @@ import { SubmissionQueue } from "./submission-queue.js";
 
 describe("SubmissionQueue", () => {
   it("enqueues a valid item and logs it", () => {
-    const logs: any[] = [];
-    const mockLogger = {
-      info: (msg: string, meta?: any) =>
+    const logs: Array<{ level: string; msg: string; meta?: Record<string, unknown> }> = [];
+    const mockLogger: ILogger = {
+      debug: () => {},
+      info: (msg: string, meta?: Record<string, unknown>) =>
         logs.push({ level: "info", msg, meta }),
-      warn: (msg: string, meta?: any) =>
+      warn: (msg: string, meta?: Record<string, unknown>) =>
         logs.push({ level: "warn", msg, meta }),
-      error: (msg: string, meta?: any) =>
+      error: (msg: string, meta?: Record<string, unknown>) =>
         logs.push({ level: "error", msg, meta }),
+      child: () => mockLogger,
     };
 
     const queue = new SubmissionQueue(mockLogger);

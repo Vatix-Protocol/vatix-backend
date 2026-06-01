@@ -1,4 +1,4 @@
-import type { Logger } from "./logger.js";
+import type { ILogger } from "../../packages/shared/src/logger.js";
 import type { CursorStorageClient } from "./storage.js";
 import type { InternalIndexerMetricsService } from "./metrics.js";
 
@@ -24,7 +24,7 @@ export class PollingIngestionLoop implements IngestionLoop {
   private lastHeartbeatLedgerSequence: number | null = null;
 
   constructor(
-    private readonly logger: Logger,
+    private readonly logger: ILogger,
     private readonly storage: CursorStorageClient,
     private readonly metrics: InternalIndexerMetricsService,
     private readonly intervalMs: number,

@@ -5,14 +5,15 @@ import {
   type QueueConsumerConfig,
   type JobHandler,
 } from "./queue-consumer.js";
-import type { Logger } from "../../../indexer/src/logger.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
 
-function makeLogger(): Logger {
+function makeLogger(): ILogger {
   return {
     debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
+    child: vi.fn(),
   };
 }
 
@@ -35,7 +36,7 @@ function makeJob(overrides?: Partial<QueueJob>): QueueJob {
 }
 
 describe("Queue Consumer — processJob", () => {
-  let logger: Logger;
+  let logger: ILogger;
 
   beforeEach(() => {
     logger = makeLogger();
