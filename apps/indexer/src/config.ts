@@ -24,7 +24,12 @@ export function loadIndexerConfig(env: Env = process.env): IndexerConfig {
   const known = Object.values(KNOWN_PASSPHRASES) as string[];
   if (!known.includes(passphrase)) {
     process.stderr.write(
-      `WARNING: SOROBAN_NETWORK_PASSPHRASE "${passphrase}" is not a known network passphrase\n`
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: "warn",
+        message: "Unknown Soroban network passphrase",
+        passphrase,
+      }) + "\n"
     );
   }
 

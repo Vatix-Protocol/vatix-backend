@@ -30,4 +30,9 @@ describe("docker-compose.yml", () => {
     expect(content).toContain("postgres_data:");
     expect(content).toContain("redis_data:");
   });
+
+  it("uses pinned image versions (not latest)", () => {
+    const content = readFileSync(COMPOSE_PATH, "utf8");
+    expect(content).not.toMatch(/image:\s+\S+:latest/);
+  });
 });

@@ -10,6 +10,7 @@ export { Logger, LoggerValidationError, LOG_LEVELS } from "./logger.js";
 export type { LogLevel } from "./logger.js";
 
 export type {
+  Env,
   NodeEnv,
   LogLevel,
   BaseConfig,
@@ -20,6 +21,7 @@ export type {
 } from "./config.js";
 
 export {
+  ConfigValidationError,
   loadBaseConfig,
   loadIndexerConfig,
   loadFinalizationConfig,

@@ -7,6 +7,7 @@ Backend services for the Vatix prediction market protocol on Stellar.
 - [Docker Compose Setup](docs/docker-compose.md)
 - [Database Schema](docs/schema.md)
 - [Dead Letter Log](docs/dead-letter-log.md)
+- [Environment Variable Validation](docs/env-validation.md)
 
 ## Tech Stack
 
@@ -132,7 +133,6 @@ docs/
 
 See `.env.example` for all options. Key variables:
 See [docs/env-validation.md](docs/env-validation.md) for full validation rules, types, and defaults.
-
 
 - `DATABASE_URL` - PostgreSQL connection
 - `REDIS_URL` - Redis connection
