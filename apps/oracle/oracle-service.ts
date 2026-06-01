@@ -14,7 +14,7 @@ import type {
 } from "./provider-adapter.js";
 import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
 import { withRetry, RetryConfig, isRetryableError } from "./retry-utils.js";
-import type { Logger } from "../indexer/src/logger.js";
+import type { ILogger } from "../../packages/shared/src/logger.js";
 
 /**
  * Oracle service configuration.
@@ -31,7 +31,7 @@ export interface OracleServiceConfig {
   /** Retry configuration for provider calls */
   retryConfig?: Partial<RetryConfig>;
   /** Structured logger — defaults to a no-op logger if omitted */
-  logger?: Logger;
+  logger?: ILogger;
 }
 
 /**
@@ -60,7 +60,7 @@ export class OracleService {
   private primaryAdapter: ProviderAdapter;
   private fallbackAdapter: ProviderAdapter;
   private config: OracleServiceConfig;
-  private readonly logger: Logger;
+  private readonly logger: ILogger;
 
   private metrics: OracleMetrics = {
     primarySuccessCount: 0,

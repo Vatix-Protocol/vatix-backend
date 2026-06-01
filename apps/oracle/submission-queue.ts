@@ -8,6 +8,7 @@
  */
 
 import type { ProviderResult, ResolutionRequest } from "./provider-adapter.js";
+import type { ILogger } from "../../packages/shared/src/logger.js";
 
 /** Possible states of a queued submission. */
 export type SubmissionStatus = "pending" | "submitted" | "failed";
@@ -30,12 +31,6 @@ export interface SubmissionQueueItem {
   lastAttemptAt?: string;
   /** Error message from the last failed attempt, if any. */
   lastError?: string;
-}
-
-export interface SubmissionQueueLogger {
-  info(message: string, meta?: Record<string, unknown>): void;
-  warn(message: string, meta?: Record<string, unknown>): void;
-  error(message: string, meta?: Record<string, unknown>): void;
 }
 
 export interface SubmissionQueueLogMeta {
@@ -119,17 +114,10 @@ export function validateSubmissionQueueItem(
   return item as SubmissionQueueItem;
 }
 
-export interface QueueLogger {
-  info: (msg: string, meta?: unknown) => void;
-  warn: (msg: string, meta?: unknown) => void;
-  error: (msg: string, meta?: unknown) => void;
-}
-
 export class SubmissionQueue {
   private items: SubmissionQueueItem[] = [];
 
-  // Use structured logging
-  constructor(private readonly logger: QueueLogger) {}
+  constructor(private readonly logger: ILogger) {}
 
   enqueue(item: SubmissionQueueItem): void {
     validateSubmissionQueueItem(item);
