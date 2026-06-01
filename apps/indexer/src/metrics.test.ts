@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { InternalIndexerMetricsService, type IndexerMetricsLog } from "./metrics.js";
+import {
+  InternalIndexerMetricsService,
+  type IndexerMetricsLog,
+} from "./metrics.js";
 
 describe("InternalIndexerMetricsService", () => {
   it("initializes with latestIndexedLedgerSequence = null", () => {
@@ -21,15 +24,13 @@ describe("InternalIndexerMetricsService", () => {
     });
   });
 
-  it("verify the snapshot conforms to the IndexerMetricsLog contract", () => {
+  it("toLogFields returns a valid IndexerMetricsLog payload", () => {
     const service = new InternalIndexerMetricsService();
     service.setLatestIndexedLedgerSequence(98765);
-    const snapshot = service.getSnapshot();
-
-    // Verify type assertion/satisfaction at compile time (TypeScript check)
-    const logPayload: IndexerMetricsLog = snapshot;
+    const logPayload: IndexerMetricsLog = service.toLogFields();
 
     expect(logPayload).toEqual({
+      event: "indexer.metrics.snapshot",
       latestIndexedLedgerSequence: 98765,
     });
   });

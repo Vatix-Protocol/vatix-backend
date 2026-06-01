@@ -38,8 +38,9 @@ export function requireEnv(
     JSON.stringify({
       ts: new Date().toISOString(),
       level: "error",
-      message: `Missing required environment variable${missing.length > 1 ? "s" : ""}`,
+      message: "Missing required environment variables",
       missing,
+      count: missing.length,
     })
   );
 
