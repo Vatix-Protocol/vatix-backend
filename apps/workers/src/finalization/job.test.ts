@@ -21,37 +21,64 @@ function makePrisma(candidates: FinalizationCandidate[] = []) {
   } as unknown as PrismaClient;
 }
 
-function makeConfig(
-  challengeWindowSeconds: number
-): FinalizationJobConfig {
+function makeConfig(challengeWindowSeconds: number): FinalizationJobConfig {
   return { challengeWindowSeconds };
 }
 
 describe("FinalizationJob", () => {
   describe("input validation", () => {
     it("throws FinalizationValidationError (statusCode 400) for negative challengeWindowSeconds", async () => {
-      const job = new FinalizationJob(makePrisma(), makeLogger(), makeConfig(-1));
+      const job = new FinalizationJob(
+        makePrisma(),
+        makeLogger(),
+        makeConfig(-1)
+      );
       await expect(job.run()).rejects.toThrow(FinalizationValidationError);
       await expect(job.run()).rejects.toMatchObject({ statusCode: 400 });
     });
 
     it("throws FinalizationValidationError for NaN challengeWindowSeconds", async () => {
-      const job = new FinalizationJob(makePrisma(), makeLogger(), makeConfig(NaN));
+      const job = new FinalizationJob(
+        makePrisma(),
+        makeLogger(),
+        makeConfig(NaN)
+      );
       await expect(job.run()).rejects.toThrow(FinalizationValidationError);
     });
 
     it("throws FinalizationValidationError for Infinity challengeWindowSeconds", async () => {
-      const job = new FinalizationJob(makePrisma(), makeLogger(), makeConfig(Infinity));
+      const job = new FinalizationJob(
+        makePrisma(),
+        makeLogger(),
+        makeConfig(Infinity)
+      );
       await expect(job.run()).rejects.toThrow(FinalizationValidationError);
     });
 
     it("accepts zero challengeWindowSeconds", async () => {
-      const job = new FinalizationJob(makePrisma(), makeLogger(), makeConfig(0));
+      const job = new FinalizationJob(
+        makePrisma(),
+        makeLogger(),
+        makeConfig(0)
+      );
       await expect(job.run()).resolves.toBeUndefined();
     });
 
     it("accepts a positive challengeWindowSeconds", async () => {
-      const job = new FinalizationJob(makePrisma(), makeLogger(), makeConfig(3600));
+      const job = new FinalizationJob(
+        makePrisma(),
+        makeLogger(),
+        makeConfig(3600)
+      );
+      await expect(job.run()).resolves.toBeUndefined();
+    });
+
+    it("accepts a fractional challengeWindowSeconds", async () => {
+      const job = new FinalizationJob(
+        makePrisma(),
+        makeLogger(),
+        makeConfig(0.5)
+      );
       await expect(job.run()).resolves.toBeUndefined();
     });
   });
