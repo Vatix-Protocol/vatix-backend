@@ -127,14 +127,14 @@ export interface QueueLogger {
 
 export class SubmissionQueue {
   private items: SubmissionQueueItem[] = [];
-  
+
   // Use structured logging
   constructor(private readonly logger: QueueLogger) {}
 
   enqueue(item: SubmissionQueueItem): void {
     validateSubmissionQueueItem(item);
     this.items.push(item);
-    this.logger.info("Submission queued successfully", {
+    this.logger.info("Oracle submission queued", {
       id: item.id,
       marketId: item.request.marketId,
       oracleAddress: item.request.oracleAddress,
