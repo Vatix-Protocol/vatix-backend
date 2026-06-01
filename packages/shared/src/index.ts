@@ -20,6 +20,7 @@ export type {
 } from "./config.js";
 
 export {
+  ConfigValidationError,
   loadBaseConfig,
   loadIndexerConfig,
   loadFinalizationConfig,

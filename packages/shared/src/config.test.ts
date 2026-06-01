@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { loadBaseConfig, loadIndexerConfig } from "./config.js";
+import {
+  loadBaseConfig,
+  loadIndexerConfig,
+  ConfigValidationError,
+} from "./config.js";
 
 const BASE_ENV = {
   DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
@@ -80,5 +84,28 @@ describe("loadIndexerConfig", () => {
     expect(() => loadIndexerConfig(env)).toThrow(
       "INDEXER_INGESTION_INTERVAL_MS"
     );
+  });
+});
+
+describe("ConfigValidationError", () => {
+  it("has statusCode 400 on invalid input", () => {
+    const env = { ...BASE_ENV, NODE_ENV: "invalid" };
+    try {
+      loadBaseConfig(env);
+      throw new Error("expected to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConfigValidationError);
+      expect((err as ConfigValidationError).statusCode).toBe(400);
+    }
+  });
+
+  it("has statusCode 400 when DATABASE_URL is missing", () => {
+    const env = { ...BASE_ENV, DATABASE_URL: undefined };
+    expect(() => loadBaseConfig(env)).toThrow(ConfigValidationError);
+    try {
+      loadBaseConfig(env);
+    } catch (err) {
+      expect((err as ConfigValidationError).statusCode).toBe(400);
+    }
   });
 });
