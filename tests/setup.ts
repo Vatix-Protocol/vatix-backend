@@ -45,16 +45,50 @@ beforeEach(async () => {
   }
 });
 
+import type {
+  MarketStatus,
+  OrderSide,
+  OrderStatus,
+  Outcome,
+} from "../src/generated/prisma/client/index.js";
+
+/** Overridable fields when creating a test Market. */
+export interface TestMarketOverrides {
+  question?: string;
+  endTime?: Date;
+  oracleAddress?: string;
+  status?: MarketStatus;
+  outcome?: boolean | null;
+}
+
+/** Overridable fields when creating a test UserPosition. */
+export interface TestPositionOverrides {
+  yesShares?: number;
+  noShares?: number;
+  lockedCollateral?: number;
+  isSettled?: boolean;
+}
+
+/** Overridable fields when creating a test Order. */
+export interface TestOrderOverrides {
+  side?: OrderSide;
+  outcome?: Outcome;
+  price?: number;
+  quantity?: number;
+  filledQuantity?: number;
+  status?: OrderStatus;
+}
+
 // Global test utilities
 export const testUtils = {
   // Create test market
-  createTestMarket: async (overrides: Partial<any> = {}) => {
+  createTestMarket: async (overrides: TestMarketOverrides = {}) => {
     const prisma = getTestPrismaClient();
     const defaultMarket = {
       question: "Test market question?",
       endTime: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours from now
       oracleAddress: "G" + "A".repeat(55), // Valid Stellar address
-      status: "ACTIVE",
+      status: "ACTIVE" as MarketStatus,
       outcome: null,
     };
 
@@ -67,7 +101,7 @@ export const testUtils = {
   createTestPosition: async (
     marketId: string,
     userAddress: string,
-    overrides: Partial<any> = {}
+    overrides: TestPositionOverrides = {}
   ) => {
     const prisma = getTestPrismaClient();
     const defaultPosition = {
@@ -91,16 +125,16 @@ export const testUtils = {
   createTestOrder: async (
     marketId: string,
     userAddress: string,
-    overrides: Partial<any> = {}
+    overrides: TestOrderOverrides = {}
   ) => {
     const prisma = getTestPrismaClient();
     const defaultOrder = {
-      side: "BUY",
-      outcome: "YES",
+      side: "BUY" as OrderSide,
+      outcome: "YES" as Outcome,
       price: 0.5,
       quantity: 100,
       filledQuantity: 0,
-      status: "OPEN",
+      status: "OPEN" as OrderStatus,
     };
 
     return prisma.order.create({
