@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { loadBaseConfig, loadIndexerConfig } from "./config.js";
+import {
+  loadBaseConfig,
+  loadIndexerConfig,
+  loadFinalizationConfig,
+} from "./config.js";
 
 const BASE_ENV = {
   DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
@@ -80,5 +84,44 @@ describe("loadIndexerConfig", () => {
     expect(() => loadIndexerConfig(env)).toThrow(
       "INDEXER_INGESTION_INTERVAL_MS"
     );
+  });
+});
+
+describe("loadFinalizationConfig", () => {
+  it("loads valid config with defaults", () => {
+    const config = loadFinalizationConfig({});
+    expect(config.intervalMs).toBe(60_000);
+    expect(config.challengeWindowSeconds).toBe(3600);
+    expect(config.logLevel).toBe("info");
+  });
+
+  it("reads FINALIZATION_INTERVAL_MS from env", () => {
+    const config = loadFinalizationConfig({ FINALIZATION_INTERVAL_MS: "5000" });
+    expect(config.intervalMs).toBe(5000);
+  });
+
+  it("throws when FINALIZATION_INTERVAL_MS is below minimum (1000)", () => {
+    expect(() =>
+      loadFinalizationConfig({ FINALIZATION_INTERVAL_MS: "500" })
+    ).toThrow("FINALIZATION_INTERVAL_MS");
+  });
+
+  it("throws on invalid FINALIZATION_LOG_LEVEL", () => {
+    expect(() =>
+      loadFinalizationConfig({ FINALIZATION_LOG_LEVEL: "verbose" })
+    ).toThrow("FINALIZATION_LOG_LEVEL");
+  });
+
+  it("reads FINALIZATION_CHALLENGE_WINDOW_SECONDS from env", () => {
+    const config = loadFinalizationConfig({
+      FINALIZATION_CHALLENGE_WINDOW_SECONDS: "7200",
+    });
+    expect(config.challengeWindowSeconds).toBe(7200);
+  });
+
+  it("throws when FINALIZATION_CHALLENGE_WINDOW_SECONDS is negative", () => {
+    expect(() =>
+      loadFinalizationConfig({ FINALIZATION_CHALLENGE_WINDOW_SECONDS: "-1" })
+    ).toThrow("FINALIZATION_CHALLENGE_WINDOW_SECONDS");
   });
 });
