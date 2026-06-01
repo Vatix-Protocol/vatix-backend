@@ -39,7 +39,15 @@ function validateLogLevel(level: unknown): asserts level is LogLevel {
   }
 }
 
-export class Logger {
+export interface ILogger {
+  debug(msg: string): void;
+  info(msg: string): void;
+  warn(msg: string): void;
+  error(msg: string): void;
+  child(childPrefix: string): ILogger;
+}
+
+export class Logger implements ILogger {
   private level: LogLevel;
   private prefix: string;
 
