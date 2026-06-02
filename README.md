@@ -8,6 +8,7 @@ Backend services for the Vatix prediction market protocol on Stellar.
 - [Database Schema](docs/schema.md)
 - [Dead Letter Log](docs/dead-letter-log.md)
 - [Environment Variable Validation](docs/env-validation.md)
+- [Indexer Metrics Log](docs/metrics-log.md)
 
 ## Tech Stack
 
