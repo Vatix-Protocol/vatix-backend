@@ -1,59 +1,95 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createShutdownHandler, VALID_SHUTDOWN_SIGNALS } from "./shutdown.js";
+import type { ShutdownDeps } from "./shutdown.js";
 
-/**
- * Tests for graceful shutdown input validation in the finalization worker.
- *
- * The VALID_SHUTDOWN_SIGNALS constant and validation logic lives inside
- * bootstrap(), so we verify the contract by testing the allowlist and
- * rejection logic in isolation.
- */
-
-const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-
-function isValidShutdownSignal(signal: unknown): boolean {
-  return (
-    typeof signal === "string" &&
-    signal.trim() !== "" &&
-    VALID_SHUTDOWN_SIGNALS.includes(
-      signal as (typeof VALID_SHUTDOWN_SIGNALS)[number],
-    )
-  );
+function makeDeps(overrides?: Partial<ShutdownDeps>): ShutdownDeps {
+  return {
+    logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    timer: setInterval(() => {}, 999999),
+    disconnectPrisma: vi.fn().mockResolvedValue(undefined),
+    exit: vi.fn(),
+    ...overrides,
+  };
 }
 
-describe("Graceful shutdown input validation", () => {
-  it("accepts SIGINT as a valid shutdown signal", () => {
-    expect(isValidShutdownSignal("SIGINT")).toBe(true);
+describe("createShutdownHandler", () => {
+  let deps: ShutdownDeps;
+
+  beforeEach(() => {
+    deps = makeDeps();
   });
 
-  it("accepts SIGTERM as a valid shutdown signal", () => {
-    expect(isValidShutdownSignal("SIGTERM")).toBe(true);
+  it("calls disconnectPrisma and exits 0 on SIGTERM", async () => {
+    const shutdown = createShutdownHandler(deps);
+    await shutdown("SIGTERM");
+
+    expect(deps.disconnectPrisma).toHaveBeenCalledOnce();
+    expect(deps.exit).toHaveBeenCalledWith(0);
   });
 
-  it("accepts SIGHUP as a valid shutdown signal", () => {
-    expect(isValidShutdownSignal("SIGHUP")).toBe(true);
+  it("calls disconnectPrisma and exits 0 on SIGINT", async () => {
+    const shutdown = createShutdownHandler(deps);
+    await shutdown("SIGINT");
+
+    expect(deps.disconnectPrisma).toHaveBeenCalledOnce();
+    expect(deps.exit).toHaveBeenCalledWith(0);
   });
 
-  it("rejects an empty string", () => {
-    expect(isValidShutdownSignal("")).toBe(false);
+  it("calls disconnectPrisma and exits 0 on SIGHUP", async () => {
+    const shutdown = createShutdownHandler(deps);
+    await shutdown("SIGHUP");
+
+    expect(deps.disconnectPrisma).toHaveBeenCalledOnce();
+    expect(deps.exit).toHaveBeenCalledWith(0);
   });
 
-  it("rejects a whitespace-only string", () => {
-    expect(isValidShutdownSignal("   ")).toBe(false);
+  it("is idempotent — second call is a no-op", async () => {
+    const shutdown = createShutdownHandler(deps);
+    await shutdown("SIGTERM");
+    await shutdown("SIGTERM");
+
+    expect(deps.disconnectPrisma).toHaveBeenCalledOnce();
+    expect(deps.exit).toHaveBeenCalledOnce();
   });
 
-  it("rejects an unknown signal name", () => {
-    expect(isValidShutdownSignal("SIGKILL")).toBe(false);
+  it("exits 1 when disconnectPrisma rejects", async () => {
+    deps.disconnectPrisma = vi.fn().mockRejectedValue(new Error("db error"));
+    const shutdown = createShutdownHandler(deps);
+    await shutdown("SIGTERM");
+
+    expect(deps.exit).toHaveBeenCalledWith(1);
+    expect(deps.logger.error).toHaveBeenCalledWith(
+      "Finalization worker shutdown failed",
+      expect.objectContaining({ error: "db error" })
+    );
   });
 
-  it("rejects a non-string value (number)", () => {
-    expect(isValidShutdownSignal(42)).toBe(false);
-  });
+  it.each(["", "   ", "SIGKILL", 42, null, undefined])(
+    "ignores invalid signal %j and does not exit",
+    async (signal) => {
+      const shutdown = createShutdownHandler(deps);
+      await shutdown(signal as string);
 
-  it("rejects null", () => {
-    expect(isValidShutdownSignal(null)).toBe(false);
-  });
+      expect(deps.disconnectPrisma).not.toHaveBeenCalled();
+      expect(deps.exit).not.toHaveBeenCalled();
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        "Graceful shutdown called with invalid signal",
+        expect.objectContaining({ validSignals: [...VALID_SHUTDOWN_SIGNALS] })
+      );
+    }
+  );
 
-  it("rejects undefined", () => {
-    expect(isValidShutdownSignal(undefined)).toBe(false);
+  it("logs shutdown initiated and complete on success", async () => {
+    const shutdown = createShutdownHandler(deps);
+    await shutdown("SIGTERM");
+
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      "Finalization worker shutdown initiated",
+      expect.objectContaining({ signal: "SIGTERM", status: "initiated" })
+    );
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      "Finalization worker shutdown complete",
+      expect.objectContaining({ signal: "SIGTERM", status: "complete" })
+    );
   });
 });
