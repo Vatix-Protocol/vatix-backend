@@ -152,11 +152,17 @@ Must be a positive integer, optionally within a bounded range.
 | `PORT` | 1 | 65535 | `3000` |
 | `BODY_LIMIT_BYTES` | 1 | — | `65536` |
 | `RATE_LIMIT_MAX` | 1 | — | `100` |
+| `RATE_LIMIT_WINDOW_MS` | 1 | — | `60000` |
 | `RATE_LIMIT_HEAVY_MAX` | 1 | — | `20` |
+| `RATE_LIMIT_HEAVY_WINDOW_MS` | 1 | — | `60000` |
 | `RATE_LIMIT_WRITE_MAX` | 1 | — | `10` |
+| `RATE_LIMIT_WRITE_WINDOW_MS` | 1 | — | `60000` |
 | `ORACLE_POLL_INTERVAL_MS` | 5000 | 3600000 | `30000` |
 | `ORACLE_CHALLENGE_WINDOW_SECONDS` | 1 | — | `86400` |
 | `FINALIZATION_INTERVAL_MS` | 1000 | — | `60000` |
+| `FINALIZATION_CHALLENGE_WINDOW_SECONDS` | 0 | — | `3600` |
+| `INDEXER_INGESTION_INTERVAL_MS` | 100 | — | `5000` |
+| `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | 1 | — | `10` |
 
 **Error example:**
 ```
@@ -172,8 +178,8 @@ These variables are safe to omit; a sensible default is used when absent.
 |---|---|
 | `STELLAR_NETWORK` | `testnet` |
 | `STELLAR_HORIZON_URL` | `https://horizon-testnet.stellar.org` |
-| `REDIS_KEY_PREFIX` | `vatix:` |
 | `INDEXER_CURSOR_KEY` | `ingestion` |
+| `INDEXER_NETWORK_ID` | `mainnet` |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:5173` (non-production) / empty (production) |
 
 ### CORS origins
