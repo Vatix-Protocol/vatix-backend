@@ -9,6 +9,8 @@ Backend services for the Vatix prediction market protocol on Stellar.
 - [Dead Letter Log](docs/dead-letter-log.md)
 - [Environment Variable Validation](docs/env-validation.md)
 
+> See [docs/schema.md](docs/schema.md) for the full Prisma schema reference (models, enums, indexes).
+
 ## Tech Stack
 
 Node.js • TypeScript • Fastify • PostgreSQL • Prisma • Redis • Stellar SDK
