@@ -47,6 +47,18 @@ export interface FinalizationJobResult {
   durationMs: number;
 }
 
+/**
+ * Valid OS signals that trigger a graceful shutdown.
+ * Constrained to the three signals the finalization worker handles.
+ */
+export type ShutdownSignal = "SIGINT" | "SIGTERM" | "SIGHUP";
+
+/**
+ * Async handler invoked when a shutdown signal is received.
+ * Receives the signal name, performs cleanup, and exits the process.
+ */
+export type ShutdownHandler = (signal: ShutdownSignal) => Promise<void>;
+
 /** Payload shape for a finalization job enqueued via Redis or similar. */
 export interface FinalizationJobPayload {
   /** Unique job ID for idempotency. */
