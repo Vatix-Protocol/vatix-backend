@@ -34,19 +34,20 @@ const message: DeadLetterMessage = {
 };
 
 logDeadLetter(logger, message);
-// => logger.error("Dead letter message recorded", { messageId, queue, reason, timestamp })
+// => logger.error("Job dead-lettered", { messageId, queue, reason, payloadType, timestamp })
 ```
 
 **Log fields emitted:**
 
-| Field        | Source              | Description                           |
-| ------------ | ------------------- | ------------------------------------- |
-| `messageId`  | `message.id`        | Correlates with upstream job ID       |
-| `queue`      | `message.queue`     | Which queue the message came from     |
-| `reason`     | `message.reason`    | Why the message was dead-lettered     |
-| `timestamp`  | `new Date().toISOString()` | When the dead letter was recorded |
+| Field         | Source                      | Description                               |
+| ------------- | --------------------------- | ----------------------------------------- |
+| `messageId`   | `message.id`                | Correlates with upstream job ID           |
+| `queue`       | `message.queue`             | Which queue the message came from         |
+| `reason`      | `message.reason`            | Why the message was dead-lettered         |
+| `payloadType` | `typeof message.payload`    | JS type of the payload (e.g. `"object"`)  |
+| `timestamp`   | `new Date().toISOString()`  | When the dead letter was recorded         |
 
-> **Note:** The `payload` field is intentionally **not** logged to avoid leaking sensitive data. If you need payload details, inspect the dead letter store or enable `debug`-level logging upstream.
+> **Note:** The `payload` value is intentionally **not** logged to avoid leaking sensitive data. `payloadType` gives operators enough context to distinguish missing payloads from structured ones. If you need payload details, inspect the dead letter store or enable `debug`-level logging upstream.
 
 ## When Messages Are Dead-Lettered
 
@@ -60,7 +61,7 @@ A message is sent to the dead letter log when:
 A Vitest test file is colocated at `apps/workers/src/consumers/dead-letter.test.ts`. It verifies:
 
 - `logDeadLetter` calls `logger.error` exactly once
-- Structured fields (`messageId`, `queue`, `reason`, `timestamp`) are present in the log output
+- Structured fields (`messageId`, `queue`, `reason`, `payloadType`, `timestamp`) are present in the log output
 
 Run tests:
 
