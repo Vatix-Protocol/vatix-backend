@@ -8,10 +8,11 @@ export interface DeadLetterMessage {
 }
 
 export function logDeadLetter(logger: ILogger, message: DeadLetterMessage): void {
-  logger.error("Dead letter message recorded", {
+  logger.error("Job dead-lettered", {
     messageId: message.id,
     queue: message.queue,
     reason: message.reason,
-    timestamp: new Date().toISOString()
+    payloadType: typeof message.payload,
+    timestamp: new Date().toISOString(),
   });
 }

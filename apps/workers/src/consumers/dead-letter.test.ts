@@ -21,12 +21,13 @@ describe("Dead Letter Log", () => {
 
     expect(mockLogger.error).toHaveBeenCalledOnce();
     expect(mockLogger.error).toHaveBeenCalledWith(
-      "Dead letter message recorded",
+      "Job dead-lettered",
       expect.objectContaining({
         messageId: "msg-123",
         queue: "settlement",
         reason: "Max retries exceeded",
-        timestamp: expect.any(String)
+        payloadType: "object",
+        timestamp: expect.any(String),
       })
     );
   });
