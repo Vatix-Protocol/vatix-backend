@@ -6,6 +6,7 @@ import {
   getPrismaClient,
   disconnectPrisma,
 } from "../../../../src/services/prisma.js";
+import type { ShutdownHandler, ShutdownSignal } from "./types.js";
 
 async function bootstrap(): Promise<void> {
   const config = loadFinalizationConfig();
@@ -26,7 +27,7 @@ async function bootstrap(): Promise<void> {
   const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
   let isShuttingDown = false;
-  const shutdown = async (signal: string) => {
+  const shutdown: ShutdownHandler = async (signal: ShutdownSignal) => {
     if (
       typeof signal !== "string" ||
       signal.trim() === "" ||
