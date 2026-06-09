@@ -11,9 +11,10 @@ The Vatix Backend utilizes automated validation schemas to enforce that all requ
 We use a validation layer that checks configurations immediately upon initialization.
 
 ### Key Checked Fields:
-* **Server Configurations:** `PORT`, `NODE_ENV`
-* **Database Credentials:** `DATABASE_URL`
-* **Authentication Keys:** `JWT_SECRET`
+
+- **Server Configurations:** `PORT`, `NODE_ENV`
+- **Database Credentials:** `DATABASE_URL`
+- **Authentication Keys:** `JWT_SECRET`
 
 ## Local Setup
 
@@ -21,4 +22,5 @@ We use a validation layer that checks configurations immediately upon initializa
 2. **Missing Variables:** If a required variable is missing or fails validation, the application will log an error and terminate immediately on startup.
 
 ---
-*For a full list of available keys, refer back to the root [README.md](../README.md).*
+
+_For a full list of available keys, refer back to the root [README.md](../README.md)._

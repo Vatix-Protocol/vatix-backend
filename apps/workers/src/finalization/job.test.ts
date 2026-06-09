@@ -56,7 +56,11 @@ describe("FinalizationJob", () => {
     });
 
     it("throws FinalizationValidationError for -Infinity challengeWindowSeconds", async () => {
-      const job = new FinalizationJob(makePrisma(), makeLogger(), makeConfig(-Infinity));
+      const job = new FinalizationJob(
+        makePrisma(),
+        makeLogger(),
+        makeConfig(-Infinity)
+      );
       await expect(job.run()).rejects.toThrow(FinalizationValidationError);
     });
 

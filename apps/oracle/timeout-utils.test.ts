@@ -22,13 +22,19 @@ describe("validateTimeout", () => {
 
   it("should throw TimeoutValidationError for NaN", () => {
     expect(() => validateTimeout(NaN)).toThrowError(
-      expect.objectContaining({ name: "TimeoutValidationError", statusCode: 400 })
+      expect.objectContaining({
+        name: "TimeoutValidationError",
+        statusCode: 400,
+      })
     );
   });
 
   it("should throw TimeoutValidationError for non-number", () => {
     expect(() => validateTimeout("abc" as unknown as number)).toThrowError(
-      expect.objectContaining({ name: "TimeoutValidationError", statusCode: 400 })
+      expect.objectContaining({
+        name: "TimeoutValidationError",
+        statusCode: 400,
+      })
     );
   });
 

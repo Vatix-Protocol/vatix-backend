@@ -17,7 +17,9 @@ function makeLogger(): ILogger {
   };
 }
 
-function makeConfig(overrides?: Partial<QueueConsumerConfig>): QueueConsumerConfig {
+function makeConfig(
+  overrides?: Partial<QueueConsumerConfig>
+): QueueConsumerConfig {
   return {
     queueName: "test-queue",
     maxAttempts: 3,
@@ -56,7 +58,7 @@ describe("Queue Consumer — processJob", () => {
         queue: "test-queue",
         attempt: 1,
         maxAttempts: 3,
-      }),
+      })
     );
 
     expect(logger.info).toHaveBeenCalledWith(
@@ -66,7 +68,7 @@ describe("Queue Consumer — processJob", () => {
         queue: "test-queue",
         attempt: 1,
         durationMs: expect.any(Number),
-      }),
+      })
     );
   });
 
@@ -87,7 +89,7 @@ describe("Queue Consumer — processJob", () => {
     const job = makeJob({ attempts: 1 });
 
     await expect(processJob(logger, config, job, handler)).rejects.toThrow(
-      "transient failure",
+      "transient failure"
     );
 
     expect(logger.warn).toHaveBeenCalledWith(
@@ -98,7 +100,7 @@ describe("Queue Consumer — processJob", () => {
         attempt: 1,
         maxAttempts: 3,
         error: "transient failure",
-      }),
+      })
     );
 
     expect(logger.error).not.toHaveBeenCalled();
@@ -111,7 +113,7 @@ describe("Queue Consumer — processJob", () => {
     const job = makeJob({ attempts: 3 });
 
     await expect(processJob(logger, config, job, handler)).rejects.toThrow(
-      "permanent failure",
+      "permanent failure"
     );
 
     expect(logger.error).toHaveBeenCalledWith(
@@ -122,7 +124,7 @@ describe("Queue Consumer — processJob", () => {
         attempt: 3,
         maxAttempts: 3,
         error: "permanent failure",
-      }),
+      })
     );
 
     expect(logger.warn).not.toHaveBeenCalled();
@@ -135,24 +137,24 @@ describe("Queue Consumer — processJob", () => {
 
     await processJob(logger, config, job, handler);
 
-    const successCall = (logger.info as ReturnType<typeof vi.fn>).mock.calls.find(
-      (call) => call[0] === "Job processed successfully",
-    );
+    const successCall = (
+      logger.info as ReturnType<typeof vi.fn>
+    ).mock.calls.find((call) => call[0] === "Job processed successfully");
     expect(successCall).toBeDefined();
     expect(successCall![1].durationMs).toBeGreaterThanOrEqual(0);
   });
 
   it("should include durationMs in failure log", async () => {
-    const handler: JobHandler = vi
-      .fn()
-      .mockRejectedValue(new Error("fail"));
+    const handler: JobHandler = vi.fn().mockRejectedValue(new Error("fail"));
     const config = makeConfig({ maxAttempts: 1 });
     const job = makeJob({ attempts: 1 });
 
     await expect(processJob(logger, config, job, handler)).rejects.toThrow();
 
-    const errorCall = (logger.error as ReturnType<typeof vi.fn>).mock.calls.find(
-      (call) => call[0] === "Job processing failed, max attempts exceeded",
+    const errorCall = (
+      logger.error as ReturnType<typeof vi.fn>
+    ).mock.calls.find(
+      (call) => call[0] === "Job processing failed, max attempts exceeded"
     );
     expect(errorCall).toBeDefined();
     expect(errorCall![1].durationMs).toBeGreaterThanOrEqual(0);
@@ -164,14 +166,14 @@ describe("Queue Consumer — processJob", () => {
     const job = makeJob({ attempts: 1 });
 
     await expect(processJob(logger, config, job, handler)).rejects.toBe(
-      "string error",
+      "string error"
     );
 
     expect(logger.error).toHaveBeenCalledWith(
       "Job processing failed, max attempts exceeded",
       expect.objectContaining({
         error: "string error",
-      }),
+      })
     );
   });
 });

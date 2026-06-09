@@ -5,6 +5,7 @@ The Oracle Signature Helper provides Ed25519 signing and verification utilities 
 ## Resolution Payload
 
 The data payload that is signed for a resolution report includes:
+
 - `marketId`: The ID of the market being resolved.
 - `outcome`: The resolved outcome (`true` for YES, `false` for NO).
 - `timestamp`: ISO timestamp of the resolution.
@@ -23,10 +24,13 @@ import { signResolutionReport } from "../apps/oracle/signature-helper";
 const payload = {
   marketId: "12345",
   outcome: true,
-  timestamp: new Date().toISOString()
+  timestamp: new Date().toISOString(),
 };
 
-const signedReport = signResolutionReport(payload, process.env.ORACLE_SECRET_KEY);
+const signedReport = signResolutionReport(
+  payload,
+  process.env.ORACLE_SECRET_KEY
+);
 ```
 
 ### Verifying a Report

@@ -34,7 +34,10 @@ describe("signResolutionReport", () => {
 
   it("produces different signatures when marketId differs", () => {
     const r1 = signResolutionReport(basePayload, SECRET);
-    const r2 = signResolutionReport({ ...basePayload, marketId: "market-002" }, SECRET);
+    const r2 = signResolutionReport(
+      { ...basePayload, marketId: "market-002" },
+      SECRET
+    );
 
     expect(r1.signature).not.toBe(r2.signature);
   });

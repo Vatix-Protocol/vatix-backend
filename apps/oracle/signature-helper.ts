@@ -69,7 +69,9 @@ export function signResolutionReport(
  * @param report - The signed report to check
  * @returns `true` when the signature is valid and the payload is unmodified
  */
-export function verifyResolutionReport(report: SignedResolutionReport): boolean {
+export function verifyResolutionReport(
+  report: SignedResolutionReport
+): boolean {
   try {
     const message = Buffer.from(canonicalise(report.payload), "utf8");
     const signatureBuffer = Buffer.from(report.signature, "base64");

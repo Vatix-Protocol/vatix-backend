@@ -12,11 +12,11 @@ The dead letter log lives in `apps/workers/src/consumers/dead-letter.ts` and exp
 
 ### `DeadLetterMessage` (interface)
 
-| Field     | Type      | Description                                   |
-| --------- | --------- | --------------------------------------------- |
-| `id`      | `string`  | Unique identifier of the failed message       |
-| `queue`   | `string`  | Name of the queue the message originated from  |
-| `payload` | `unknown` | Original job payload (opaque to the logger)    |
+| Field     | Type      | Description                                     |
+| --------- | --------- | ----------------------------------------------- |
+| `id`      | `string`  | Unique identifier of the failed message         |
+| `queue`   | `string`  | Name of the queue the message originated from   |
+| `payload` | `unknown` | Original job payload (opaque to the logger)     |
 | `reason`  | `string`  | Human-readable reason the job was dead-lettered |
 
 ### `logDeadLetter(logger, message)` (function)
@@ -39,13 +39,13 @@ logDeadLetter(logger, message);
 
 **Log fields emitted:**
 
-| Field         | Source                      | Description                               |
-| ------------- | --------------------------- | ----------------------------------------- |
-| `messageId`   | `message.id`                | Correlates with upstream job ID           |
-| `queue`       | `message.queue`             | Which queue the message came from         |
-| `reason`      | `message.reason`            | Why the message was dead-lettered         |
-| `payloadType` | `typeof message.payload`    | JS type of the payload (e.g. `"object"`)  |
-| `timestamp`   | `new Date().toISOString()`  | When the dead letter was recorded         |
+| Field         | Source                     | Description                              |
+| ------------- | -------------------------- | ---------------------------------------- |
+| `messageId`   | `message.id`               | Correlates with upstream job ID          |
+| `queue`       | `message.queue`            | Which queue the message came from        |
+| `reason`      | `message.reason`           | Why the message was dead-lettered        |
+| `payloadType` | `typeof message.payload`   | JS type of the payload (e.g. `"object"`) |
+| `timestamp`   | `new Date().toISOString()` | When the dead letter was recorded        |
 
 > **Note:** The `payload` value is intentionally **not** logged to avoid leaking sensitive data. `payloadType` gives operators enough context to distinguish missing payloads from structured ones. If you need payload details, inspect the dead letter store or enable `debug`-level logging upstream.
 

@@ -71,10 +71,7 @@ describe("withRetry", () => {
     const transient = Object.assign(new Error("socket hang up"), {
       code: "ECONNRESET",
     });
-    const fn = vi
-      .fn()
-      .mockRejectedValueOnce(transient)
-      .mockResolvedValue("ok");
+    const fn = vi.fn().mockRejectedValueOnce(transient).mockResolvedValue("ok");
 
     const resultPromise = withRetry(fn, { maxRetries: 1, retryDelayMs: 100 });
     await vi.runAllTimersAsync();

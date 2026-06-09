@@ -7,7 +7,10 @@ export interface DeadLetterMessage {
   reason: string;
 }
 
-export function logDeadLetter(logger: ILogger, message: DeadLetterMessage): void {
+export function logDeadLetter(
+  logger: ILogger,
+  message: DeadLetterMessage
+): void {
   logger.error("Job dead-lettered", {
     messageId: message.id,
     queue: message.queue,

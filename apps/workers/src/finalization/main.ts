@@ -32,7 +32,7 @@ async function bootstrap(): Promise<void> {
       typeof signal !== "string" ||
       signal.trim() === "" ||
       !VALID_SHUTDOWN_SIGNALS.includes(
-        signal as (typeof VALID_SHUTDOWN_SIGNALS)[number],
+        signal as (typeof VALID_SHUTDOWN_SIGNALS)[number]
       )
     ) {
       logger.warn("Graceful shutdown called with invalid signal", {

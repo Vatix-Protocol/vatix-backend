@@ -18,33 +18,33 @@ correct position after a restart instead of re-scanning from genesis.
 ## Database schema
 
 The cursor is stored in the `indexerCursor` table with a composite primary key of
-`(networkId, cursorKey)`.  This allows multiple indexer consumers to coexist on the same
+`(networkId, cursorKey)`. This allows multiple indexer consumers to coexist on the same
 database — each with a distinct `cursorKey` — without clobbering one another.
 
-| Column       | Type   | Description                                         |
-|--------------|--------|-----------------------------------------------------|
-| `networkId`  | string | Stellar network identifier (e.g. `"testnet"`)       |
-| `cursorKey`  | string | Logical consumer name, configured via `INDEXER_CURSOR_KEY` |
-| `cursor`     | string | Last processed ledger sequence number               |
+| Column      | Type   | Description                                                |
+| ----------- | ------ | ---------------------------------------------------------- |
+| `networkId` | string | Stellar network identifier (e.g. `"testnet"`)              |
+| `cursorKey` | string | Logical consumer name, configured via `INDEXER_CURSOR_KEY` |
+| `cursor`    | string | Last processed ledger sequence number                      |
 
 ## Configuration
 
-| Variable             | Required | Default      | Description                                                      |
-|----------------------|----------|--------------|------------------------------------------------------------------|
-| `INDEXER_CURSOR_KEY` | Optional | `ingestion`  | Key used to namespace the cursor row. Change only when running multiple consumers against the same network. |
+| Variable             | Required | Default     | Description                                                                                                 |
+| -------------------- | -------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
+| `INDEXER_CURSOR_KEY` | Optional | `ingestion` | Key used to namespace the cursor row. Change only when running multiple consumers against the same network. |
 
 ## Checkpoint flushing
 
 The cursor is not written to the database on every tick — frequent small writes would create
-unnecessary load.  Instead it is flushed after a configurable number of successful batches
-(`checkpointFlushEveryBatches`) and unconditionally on graceful shutdown.  If the process
+unnecessary load. Instead it is flushed after a configurable number of successful batches
+(`checkpointFlushEveryBatches`) and unconditionally on graceful shutdown. If the process
 crashes between checkpoints the indexer will re-process a small number of ledgers, which is
 safe because event ingestion is idempotent.
 
 ## Recovery
 
 If the cursor row is absent (e.g. first run, or after manual deletion) the indexer starts from
-ledger 0 and scans forward.  To reset the indexer to a specific ledger, delete or update the
+ledger 0 and scans forward. To reset the indexer to a specific ledger, delete or update the
 `indexerCursor` row directly in PostgreSQL.
 
 ```sql

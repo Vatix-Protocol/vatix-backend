@@ -43,7 +43,10 @@ describe("checkStartupHealth", () => {
   });
 
   it("returns 400 when cursor is non-numeric", () => {
-    const result = checkStartupHealth({ ...validInput, cursor: "not-a-number" });
+    const result = checkStartupHealth({
+      ...validInput,
+      cursor: "not-a-number",
+    });
     expect(result.status).toBe(400);
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes("cursor"))).toBe(true);

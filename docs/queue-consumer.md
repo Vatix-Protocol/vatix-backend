@@ -12,21 +12,21 @@ The queue consumer lives in `apps/workers/src/consumers/queue-consumer.ts`. It p
 
 Represents a single job pulled from the queue.
 
-| Field      | Type                       | Description                              |
-| ---------- | -------------------------- | ---------------------------------------- |
-| `id`       | `string`                   | Unique job identifier                    |
-| `payload`  | `Record<string, unknown>`  | Arbitrary job data                       |
-| `attempts` | `number`                   | Delivery attempt count (starts at 1)     |
+| Field      | Type                      | Description                          |
+| ---------- | ------------------------- | ------------------------------------ |
+| `id`       | `string`                  | Unique job identifier                |
+| `payload`  | `Record<string, unknown>` | Arbitrary job data                   |
+| `attempts` | `number`                  | Delivery attempt count (starts at 1) |
 
 ### `QueueConsumerConfig`
 
 Configuration passed to `processJob`.
 
-| Field                  | Type     | Description                                           |
-| ---------------------- | -------- | ----------------------------------------------------- |
-| `queueName`            | `string` | Logical queue name (e.g. `"settlement"`)              |
-| `maxAttempts`          | `number` | Maximum delivery attempts before dead-lettering       |
-| `processingTimeoutMs`  | `number` | Per-job processing timeout in milliseconds            |
+| Field                 | Type     | Description                                     |
+| --------------------- | -------- | ----------------------------------------------- |
+| `queueName`           | `string` | Logical queue name (e.g. `"settlement"`)        |
+| `maxAttempts`         | `number` | Maximum delivery attempts before dead-lettering |
+| `processingTimeoutMs` | `number` | Per-job processing timeout in milliseconds      |
 
 ### `JobHandler`
 
@@ -50,12 +50,12 @@ await processJob(logger, config, job, async (job) => {
 
 ## Log Levels
 
-| Event                         | Level   |
-| ----------------------------- | ------- |
-| Job received                  | `info`  |
-| Job completed successfully    | `info`  |
-| Failure with retries remaining | `warn` |
-| Failure at max attempts       | `error` |
+| Event                          | Level   |
+| ------------------------------ | ------- |
+| Job received                   | `info`  |
+| Job completed successfully     | `info`  |
+| Failure with retries remaining | `warn`  |
+| Failure at max attempts        | `error` |
 
 ## Retry and Dead-Letter Flow
 
@@ -82,7 +82,11 @@ When `processJob` re-throws after the final attempt, the caller is responsible f
 ## Example
 
 ```typescript
-import { processJob, type QueueConsumerConfig, type QueueJob } from "./consumers/queue-consumer.js";
+import {
+  processJob,
+  type QueueConsumerConfig,
+  type QueueJob,
+} from "./consumers/queue-consumer.js";
 
 const config: QueueConsumerConfig = {
   queueName: "settlement",

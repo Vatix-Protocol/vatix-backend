@@ -12,10 +12,10 @@ descriptive startup failure rather than a silent bug at runtime.
 
 Two utilities work together:
 
-| Utility | File | Purpose |
-|---|---|---|
-| `requireEnv()` | `packages/shared/src/requireEnv.ts` | Fail-fast presence check |
-| `loadBaseConfig()` etc. | `packages/shared/src/config.ts` | Typed, validated config object |
+| Utility                 | File                                | Purpose                        |
+| ----------------------- | ----------------------------------- | ------------------------------ |
+| `requireEnv()`          | `packages/shared/src/requireEnv.ts` | Fail-fast presence check       |
+| `loadBaseConfig()` etc. | `packages/shared/src/config.ts`     | Typed, validated config object |
 
 ---
 
@@ -25,9 +25,9 @@ A lightweight guard that asserts every listed variable is present and non-empty.
 Call it once at the top of a service entry point before any other initialization.
 
 ```ts
-import { requireEnv } from '@vatix/shared';
+import { requireEnv } from "@vatix/shared";
 
-requireEnv(['DATABASE_URL', 'API_KEY', 'REDIS_URL']);
+requireEnv(["DATABASE_URL", "API_KEY", "REDIS_URL"]);
 ```
 
 If any variable is missing the process exits immediately with code `1` and
@@ -43,7 +43,7 @@ The function accepts an optional second argument for testing without touching
 real environment state:
 
 ```ts
-requireEnv(['DATABASE_URL'], { DATABASE_URL: 'postgresql://...' });
+requireEnv(["DATABASE_URL"], { DATABASE_URL: "postgresql://..." });
 ```
 
 ---
@@ -59,7 +59,7 @@ object around instead of accessing `process.env` directly.
 Used by the API server and any service that shares the core stack.
 
 ```ts
-import { loadBaseConfig } from '@vatix/shared';
+import { loadBaseConfig } from "@vatix/shared";
 
 const config = loadBaseConfig(); // reads process.env
 ```
@@ -69,7 +69,7 @@ const config = loadBaseConfig(); // reads process.env
 Used by `apps/indexer`.
 
 ```ts
-import { loadIndexerConfig } from '@vatix/shared';
+import { loadIndexerConfig } from "@vatix/shared";
 
 const config = loadIndexerConfig();
 ```
@@ -79,7 +79,7 @@ const config = loadIndexerConfig();
 Used by `apps/workers` finalization worker.
 
 ```ts
-import { loadFinalizationConfig } from '@vatix/shared';
+import { loadFinalizationConfig } from "@vatix/shared";
 
 const config = loadFinalizationConfig();
 ```
@@ -98,15 +98,16 @@ descriptive error that prevents startup.
 
 Variables that must be present and non-empty. Missing value → startup failure.
 
-| Variable | Used by |
-|---|---|
-| `DATABASE_URL` | All services |
-| `STELLAR_RPC_URL` | All services |
-| `ORACLE_SECRET_KEY` | API, Oracle |
-| `API_KEY` | API |
-| `ADMIN_TOKEN` | API |
+| Variable            | Used by      |
+| ------------------- | ------------ |
+| `DATABASE_URL`      | All services |
+| `STELLAR_RPC_URL`   | All services |
+| `ORACLE_SECRET_KEY` | API, Oracle  |
+| `API_KEY`           | API          |
+| `ADMIN_TOKEN`       | API          |
 
 **Error example:**
+
 ```
 Missing required environment variable: API_KEY
 ```
@@ -115,13 +116,14 @@ Missing required environment variable: API_KEY
 
 Must be a valid URL and use one of the accepted schemes.
 
-| Variable | Accepted schemes |
-|---|---|
-| `DATABASE_URL` | `postgresql://`, `postgres://` |
-| `REDIS_URL` | `redis://`, `rediss://` |
-| `STELLAR_RPC_URL` | `https://`, `http://` |
+| Variable          | Accepted schemes               |
+| ----------------- | ------------------------------ |
+| `DATABASE_URL`    | `postgresql://`, `postgres://` |
+| `REDIS_URL`       | `redis://`, `rediss://`        |
+| `STELLAR_RPC_URL` | `https://`, `http://`          |
 
 **Error example:**
+
 ```
 DATABASE_URL must use one of [postgresql:, postgres:], got: "mysql:"
 ```
@@ -130,15 +132,16 @@ DATABASE_URL must use one of [postgresql:, postgres:], got: "mysql:"
 
 Must be one of a fixed set of string values.
 
-| Variable | Accepted values | Default |
-|---|---|---|
-| `NODE_ENV` | `development` \| `test` \| `production` | `development` |
-| `LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` | `info` |
-| `ORACLE_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` | `info` |
-| `FINALIZATION_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` | `info` |
-| `INDEXER_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` | `info` |
+| Variable                 | Accepted values                         | Default       |
+| ------------------------ | --------------------------------------- | ------------- |
+| `NODE_ENV`               | `development` \| `test` \| `production` | `development` |
+| `LOG_LEVEL`              | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+| `ORACLE_LOG_LEVEL`       | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+| `FINALIZATION_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+| `INDEXER_LOG_LEVEL`      | `debug` \| `info` \| `warn` \| `error`  | `info`        |
 
 **Error example:**
+
 ```
 NODE_ENV must be one of development | test | production, got: "staging"
 ```
@@ -147,24 +150,25 @@ NODE_ENV must be one of development | test | production, got: "staging"
 
 Must be a positive integer, optionally within a bounded range.
 
-| Variable | Min | Max | Default |
-|---|---|---|---|
-| `PORT` | 1 | 65535 | `3000` |
-| `BODY_LIMIT_BYTES` | 1 | — | `65536` |
-| `RATE_LIMIT_MAX` | 1 | — | `100` |
-| `RATE_LIMIT_WINDOW_MS` | 1 | — | `60000` |
-| `RATE_LIMIT_HEAVY_MAX` | 1 | — | `20` |
-| `RATE_LIMIT_HEAVY_WINDOW_MS` | 1 | — | `60000` |
-| `RATE_LIMIT_WRITE_MAX` | 1 | — | `10` |
-| `RATE_LIMIT_WRITE_WINDOW_MS` | 1 | — | `60000` |
-| `ORACLE_POLL_INTERVAL_MS` | 5000 | 3600000 | `30000` |
-| `ORACLE_CHALLENGE_WINDOW_SECONDS` | 1 | — | `86400` |
-| `FINALIZATION_INTERVAL_MS` | 1000 | — | `60000` |
-| `FINALIZATION_CHALLENGE_WINDOW_SECONDS` | 0 | — | `3600` |
-| `INDEXER_INGESTION_INTERVAL_MS` | 100 | — | `5000` |
-| `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | 1 | — | `10` |
+| Variable                                 | Min  | Max     | Default |
+| ---------------------------------------- | ---- | ------- | ------- |
+| `PORT`                                   | 1    | 65535   | `3000`  |
+| `BODY_LIMIT_BYTES`                       | 1    | —       | `65536` |
+| `RATE_LIMIT_MAX`                         | 1    | —       | `100`   |
+| `RATE_LIMIT_WINDOW_MS`                   | 1    | —       | `60000` |
+| `RATE_LIMIT_HEAVY_MAX`                   | 1    | —       | `20`    |
+| `RATE_LIMIT_HEAVY_WINDOW_MS`             | 1    | —       | `60000` |
+| `RATE_LIMIT_WRITE_MAX`                   | 1    | —       | `10`    |
+| `RATE_LIMIT_WRITE_WINDOW_MS`             | 1    | —       | `60000` |
+| `ORACLE_POLL_INTERVAL_MS`                | 5000 | 3600000 | `30000` |
+| `ORACLE_CHALLENGE_WINDOW_SECONDS`        | 1    | —       | `86400` |
+| `FINALIZATION_INTERVAL_MS`               | 1000 | —       | `60000` |
+| `FINALIZATION_CHALLENGE_WINDOW_SECONDS`  | 0    | —       | `3600`  |
+| `INDEXER_INGESTION_INTERVAL_MS`          | 100  | —       | `5000`  |
+| `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | 1    | —       | `10`    |
 
 **Error example:**
+
 ```
 PORT must be a positive integer, got: "abc"
 PORT must be <= 65535, got: "99999"
@@ -174,12 +178,12 @@ PORT must be <= 65535, got: "99999"
 
 These variables are safe to omit; a sensible default is used when absent.
 
-| Variable | Default |
-|---|---|
-| `STELLAR_NETWORK` | `testnet` |
-| `STELLAR_HORIZON_URL` | `https://horizon-testnet.stellar.org` |
-| `INDEXER_CURSOR_KEY` | `ingestion` |
-| `INDEXER_NETWORK_ID` | `mainnet` |
+| Variable               | Default                                                                             |
+| ---------------------- | ----------------------------------------------------------------------------------- |
+| `STELLAR_NETWORK`      | `testnet`                                                                           |
+| `STELLAR_HORIZON_URL`  | `https://horizon-testnet.stellar.org`                                               |
+| `INDEXER_CURSOR_KEY`   | `ingestion`                                                                         |
+| `INDEXER_NETWORK_ID`   | `mainnet`                                                                           |
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:5173` (non-production) / empty (production) |
 
 ### CORS origins
@@ -224,16 +228,16 @@ All loaders accept an optional `env` parameter, making them testable without
 touching `process.env`:
 
 ```ts
-import { loadBaseConfig } from '@vatix/shared';
+import { loadBaseConfig } from "@vatix/shared";
 
-it('throws when DATABASE_URL is missing', () => {
+it("throws when DATABASE_URL is missing", () => {
   expect(() =>
     loadBaseConfig({
-      NODE_ENV: 'test',
-      STELLAR_RPC_URL: 'https://soroban-testnet.stellar.org',
+      NODE_ENV: "test",
+      STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
       // DATABASE_URL intentionally omitted
     })
-  ).toThrow('Missing required environment variable: DATABASE_URL');
+  ).toThrow("Missing required environment variable: DATABASE_URL");
 });
 ```
 

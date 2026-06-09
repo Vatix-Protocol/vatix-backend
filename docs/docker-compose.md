@@ -27,6 +27,7 @@ This guide explains how to use Docker Compose to set up the required services fo
    ```bash
    cp .env.example .env
    ```
+
    Edit `.env` if needed (see `.env.example` for details).
 
 3. **Start Docker services:**
@@ -34,6 +35,7 @@ This guide explains how to use Docker Compose to set up the required services fo
    ```bash
    docker compose up -d
    ```
+
    This will start PostgreSQL (on port 5433) and Redis (on port 6379).
 
 4. **Initialize the database:**

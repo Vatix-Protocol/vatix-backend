@@ -62,9 +62,7 @@ export class TimeoutValidationError extends Error {
  */
 export function validateTimeout(timeoutMs: unknown): number {
   if (typeof timeoutMs !== "number" || isNaN(timeoutMs as number)) {
-    throw new TimeoutValidationError(
-      `Invalid timeout value: ${timeoutMs}`
-    );
+    throw new TimeoutValidationError(`Invalid timeout value: ${timeoutMs}`);
   }
 
   if (timeoutMs < MIN_TIMEOUT_MS) {

@@ -8,10 +8,7 @@
  */
 
 /** Status of an individual finalization candidate after processing. */
-export type FinalizationCandidateStatus =
-  | "finalized"
-  | "skipped"
-  | "errored";
+export type FinalizationCandidateStatus = "finalized" | "skipped" | "errored";
 
 /** Result of processing a single finalization candidate. */
 export interface FinalizationCandidateResult {

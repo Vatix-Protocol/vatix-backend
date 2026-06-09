@@ -14,12 +14,23 @@ export class PriceFetcherValidationError extends Error {
 }
 
 export class PriceFetcher {
-  constructor(private readonly logger: ILogger, private readonly config: PriceFetcherConfig) {
+  constructor(
+    private readonly logger: ILogger,
+    private readonly config: PriceFetcherConfig
+  ) {
     if (!config.assetId || typeof config.assetId !== "string") {
-      throw new PriceFetcherValidationError("Invalid assetId: must be a non-empty string");
+      throw new PriceFetcherValidationError(
+        "Invalid assetId: must be a non-empty string"
+      );
     }
-    if (typeof config.timeoutMs !== "number" || config.timeoutMs <= 0 || isNaN(config.timeoutMs)) {
-      throw new PriceFetcherValidationError("Invalid timeoutMs: must be a positive number");
+    if (
+      typeof config.timeoutMs !== "number" ||
+      config.timeoutMs <= 0 ||
+      isNaN(config.timeoutMs)
+    ) {
+      throw new PriceFetcherValidationError(
+        "Invalid timeoutMs: must be a positive number"
+      );
     }
   }
 
@@ -33,13 +44,13 @@ export class PriceFetcher {
     try {
       // Mock price fetch implementation
       const price = 100.5;
-      
+
       this.logger.info("Price fetch successful", {
         assetId: this.config.assetId,
         price,
         timestamp: new Date().toISOString(),
       });
-      
+
       return price;
     } catch (error) {
       this.logger.error("Price fetch failed", {

@@ -45,7 +45,7 @@ export async function processJob(
   logger: ILogger,
   config: QueueConsumerConfig,
   job: QueueJob,
-  handler: JobHandler,
+  handler: JobHandler
 ): Promise<void> {
   logger.info("Job received from queue", {
     jobId: job.id,
@@ -70,8 +70,7 @@ export async function processJob(
     });
   } catch (error) {
     const durationMs = Date.now() - start;
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
 
     if (job.attempts < config.maxAttempts) {
       logger.warn("Job processing failed, will retry", {

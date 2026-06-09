@@ -156,7 +156,11 @@ import { SubmissionQueue } from "./submission-queue.js";
 
 describe("SubmissionQueue", () => {
   it("enqueues a valid item and logs it", () => {
-    const logs: Array<{ level: string; msg: string; meta?: Record<string, unknown> }> = [];
+    const logs: Array<{
+      level: string;
+      msg: string;
+      meta?: Record<string, unknown>;
+    }> = [];
     const mockLogger: ILogger = {
       debug: () => {},
       info: (msg: string, meta?: Record<string, unknown>) =>
