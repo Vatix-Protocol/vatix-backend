@@ -1,32 +1,15 @@
-import { beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { afterAll, beforeEach } from "vitest";
 import {
   getTestPrismaClient,
   cleanDatabase,
   disconnectTestPrisma,
-  acquireDatabaseLock,
-  releaseDatabaseLock,
 } from "./helpers/test-database.js";
 
-// Global test setup
-beforeAll(async () => {
-  // Acquire database lock for tests that modify data
-  // Non-fatal: if DB is unavailable, non-DB tests still run
-  try {
-    await acquireDatabaseLock();
-    getTestPrismaClient();
-  } catch {
-    // DB not available — DB-dependent tests will fail individually
-  }
-});
-
+// Global test setup — no advisory lock here; DB test files acquire their own.
 afterAll(async () => {
-  // Release lock and disconnect
   try {
     await Promise.race([
-      (async () => {
-        await releaseDatabaseLock();
-        await disconnectTestPrisma();
-      })(),
+      disconnectTestPrisma(),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("cleanup timeout")), 5000)
       ),

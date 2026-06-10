@@ -54,7 +54,7 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
       expect(position.userAddress).toBe(testWallet);
       expect(position.yesShares).toBe(150);
       expect(position.noShares).toBe(75);
-      expect(position.lockedCollateral).toBe(2.25);
+      expect(position.lockedCollateral).toBe("2.25");
       expect(position.isSettled).toBe(false);
     });
 
@@ -198,7 +198,10 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       // Verify precision is maintained
       expect(
-        testUtils.assertDecimalEqual(position.lockedCollateral, 1.23456789)
+        testUtils.assertDecimalEqual(
+          Number(position.lockedCollateral),
+          1.23456789
+        )
       ).toBe(true);
       expect(position.netPosition).toBe(-333); // 123 - 456
 
@@ -252,7 +255,7 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
       const position = body[0];
       expect(position.yesShares).toBe(0);
       expect(position.noShares).toBe(0);
-      expect(position.lockedCollateral).toBe(0);
+      expect(position.lockedCollateral).toBe("0");
       expect(position.netPosition).toBe(0);
     });
   });

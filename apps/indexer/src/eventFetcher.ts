@@ -105,7 +105,7 @@ export class EventFetcher {
         if (isLast || !isTransientError(err)) {
           this.telemetry.record("indexer.rpc.error", 1, {
             attempt: String(attempt),
-            transient: String(isTransient(err)),
+            transient: String(isTransientError(err)),
           });
           throw err;
         }
