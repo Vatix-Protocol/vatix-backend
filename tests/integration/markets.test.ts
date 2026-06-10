@@ -40,18 +40,20 @@ describe("Integration Tests: GET /v1/markets", () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
 
-      expect(body.markets).toHaveLength(2);
-      expect(body.count).toBe(2);
+      expect(body.data.markets).toHaveLength(2);
+      expect(body.data.count).toBe(2);
 
       // Should be sorted by createdAt descending
-      expect(body.markets[0].question).toBe("Second market");
-      expect(body.markets[1].question).toBe("First market");
+      expect(body.data.markets[0].question).toBe("Second market");
+      expect(body.data.markets[1].question).toBe("First market");
 
       // Verify response envelope structure
-      expect(body).toHaveProperty("markets");
-      expect(body).toHaveProperty("count");
-      expect(Array.isArray(body.markets)).toBe(true);
-      expect(typeof body.count).toBe("number");
+      expect(body).toHaveProperty("success");
+      expect(body).toHaveProperty("data");
+      expect(body.data).toHaveProperty("markets");
+      expect(body.data).toHaveProperty("count");
+      expect(Array.isArray(body.data.markets)).toBe(true);
+      expect(typeof body.data.count).toBe("number");
     });
 
     it("should handle empty market list correctly", async () => {
@@ -63,9 +65,9 @@ describe("Integration Tests: GET /v1/markets", () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
 
-      expect(body.markets).toHaveLength(0);
-      expect(body.count).toBe(0);
-      expect(Array.isArray(body.markets)).toBe(true);
+      expect(body.data.markets).toHaveLength(0);
+      expect(body.data.count).toBe(0);
+      expect(Array.isArray(body.data.markets)).toBe(true);
     });
   });
 
@@ -91,9 +93,9 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       expect(activeResponse.statusCode).toBe(200);
       const activeBody = JSON.parse(activeResponse.body);
-      expect(activeBody.markets).toHaveLength(1);
-      expect(activeBody.markets[0].status).toBe("ACTIVE");
-      expect(activeBody.count).toBe(1);
+      expect(activeBody.data.markets).toHaveLength(1);
+      expect(activeBody.data.markets[0].status).toBe("ACTIVE");
+      expect(activeBody.data.count).toBe(1);
 
       // Test RESOLVED filter
       const resolvedResponse = await app.inject({
@@ -103,9 +105,9 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       expect(resolvedResponse.statusCode).toBe(200);
       const resolvedBody = JSON.parse(resolvedResponse.body);
-      expect(resolvedBody.markets).toHaveLength(1);
-      expect(resolvedBody.markets[0].status).toBe("RESOLVED");
-      expect(resolvedBody.count).toBe(1);
+      expect(resolvedBody.data.markets).toHaveLength(1);
+      expect(resolvedBody.data.markets[0].status).toBe("RESOLVED");
+      expect(resolvedBody.data.count).toBe(1);
     });
 
     it("should return empty list for non-existent status", async () => {
@@ -116,8 +118,8 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.markets).toHaveLength(0);
-      expect(body.count).toBe(0);
+      expect(body.data.markets).toHaveLength(0);
+      expect(body.data.count).toBe(0);
     });
   });
 
@@ -137,8 +139,8 @@ describe("Integration Tests: GET /v1/markets", () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
 
-      expect(body.markets).toHaveLength(1);
-      const marketResponse = body.markets[0];
+      expect(body.data.markets).toHaveLength(1);
+      const marketResponse = body.data.markets[0];
 
       // Verify all required fields are present and correctly typed
       expect(marketResponse).toHaveProperty("id");
@@ -228,8 +230,8 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.markets).toHaveLength(1);
-      expect(body.markets[0].resolutionTime).toBeNull();
+      expect(body.data.markets).toHaveLength(1);
+      expect(body.data.markets[0].resolutionTime).toBeNull();
     });
 
     it("should handle markets with resolutionTime", async () => {
@@ -247,9 +249,9 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      expect(body.markets).toHaveLength(1);
-      expect(body.markets[0].resolutionTime).not.toBeNull();
-      expect(typeof body.markets[0].resolutionTime).toBe("string");
+      expect(body.data.markets).toHaveLength(1);
+      expect(body.data.markets[0].resolutionTime).not.toBeNull();
+      expect(typeof body.data.markets[0].resolutionTime).toBe("string");
     });
   });
 });
