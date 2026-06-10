@@ -106,8 +106,12 @@ describe("Logger input validation", () => {
     const log = new Logger("", "debug");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => log.info(42 as any)).toThrow(LoggerValidationError);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(() => log.info(42 as any)).toMatchObject({ statusCode: 400 });
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      log.info(42 as any);
+    } catch (error) {
+      expect(error).toMatchObject({ statusCode: 400 });
+    }
   });
 
   it("throws for null message", () => {

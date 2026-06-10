@@ -13,13 +13,15 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
     await app.register(positionsRouter);
-
-    // Generate test wallet address
-    testWallet = testUtils.generateStellarAddress("GTEST");
   });
 
   afterAll(async () => {
     await app.close();
+  });
+
+  beforeEach(() => {
+    // Generate a fresh test wallet for each test to ensure isolation
+    testWallet = testUtils.generateStellarAddress("GTEST");
   });
 
   describe("Wallet with data", () => {

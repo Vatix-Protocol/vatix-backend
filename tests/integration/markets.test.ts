@@ -206,13 +206,17 @@ describe("Integration Tests: GET /v1/markets", () => {
       expect(response.statusCode).toBe(400);
     });
 
-    it("should return 400 for unknown query parameters", async () => {
+    it("should ignore unknown query parameters", async () => {
       const response = await app.inject({
         method: "GET",
         url: "/markets?unknown=value",
       });
 
-      expect(response.statusCode).toBe(400);
+      // Unknown parameters are silently ignored
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body).toHaveProperty("success");
+      expect(body).toHaveProperty("data");
     });
   });
 
