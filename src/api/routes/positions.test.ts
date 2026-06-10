@@ -7,7 +7,7 @@ import { errorHandler } from "../middleware/errorHandler";
 const mockPositions = [
   {
     id: "test-pos-1",
-    userAddress: "GBAHUIO7S6NXF2654321098765432109876543210987654321098765",
+    userAddress: "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO",
     marketId: "market-1",
     yesShares: 50,
     noShares: 10,
@@ -23,7 +23,7 @@ const mockPositions = [
   },
   {
     id: "test-pos-2",
-    userAddress: "GBAHUIO7S6NXF2654321098765432109876543210987654321098765",
+    userAddress: "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO",
     marketId: "market-2",
     yesShares: 100,
     noShares: 0,
@@ -55,16 +55,18 @@ const mockOrderGroupBy = [
   },
 ];
 
+const mockPrisma = {
+  userPosition: {
+    findMany: vi.fn().mockResolvedValue(mockPositions),
+  },
+  order: {
+    groupBy: vi.fn().mockResolvedValue(mockOrderGroupBy),
+  },
+  $disconnect: vi.fn(),
+};
+
 vi.mock("../../services/prisma", () => ({
-  getPrismaClient: () => ({
-    userPosition: {
-      findMany: vi.fn().mockResolvedValue(mockPositions),
-    },
-    order: {
-      groupBy: vi.fn().mockResolvedValue(mockOrderGroupBy),
-    },
-    $disconnect: vi.fn(),
-  }),
+  getPrismaClient: () => mockPrisma,
   disconnectPrisma: vi.fn(),
 }));
 
@@ -98,7 +100,7 @@ describe("Positions Route", () => {
   it("should return 200 and calculate correct payout structure on legacy endpoint", async () => {
     const app = await createTestServer();
     const validAddress =
-      "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+      "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
       url: `/positions/user/${validAddress}`,
@@ -114,7 +116,7 @@ describe("Positions Route", () => {
 
   it("should return wallet exposure rows with standardized success response", async () => {
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
       url: `/wallets/${wallet}/positions`,
@@ -137,7 +139,7 @@ describe("Positions Route", () => {
 
   it("should include pnlRealized on settled positions", async () => {
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
       url: `/wallets/${wallet}/positions`,
@@ -152,7 +154,7 @@ describe("Positions Route", () => {
 
   it("should include pnlUnrealized on open positions using mid-price", async () => {
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
       url: `/wallets/${wallet}/positions`,
@@ -169,7 +171,7 @@ describe("Positions Route", () => {
 
   it("should return correct pnlTotal, pnlRealized, pnlUnrealized summary", async () => {
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
       url: `/wallets/${wallet}/positions`,
@@ -189,7 +191,7 @@ describe("Positions Route", () => {
     prisma.order.groupBy.mockResolvedValueOnce([]);
 
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
       url: `/wallets/${wallet}/positions`,
@@ -212,7 +214,7 @@ describe("Positions Route", () => {
     prisma.order.groupBy.mockResolvedValueOnce([]); // no orders
 
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
       url: `/wallets/${wallet}/positions`,
