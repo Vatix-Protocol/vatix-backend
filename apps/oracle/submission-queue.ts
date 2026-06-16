@@ -126,7 +126,7 @@ export class SubmissionQueue {
   enqueue(item: SubmissionQueueItem): void {
     validateSubmissionQueueItem(item);
     this.items.push(item);
-    this.logger.info("Oracle submission queued (in-memory)", {
+    this.logger.info("Oracle submission queued", {
       id: item.id,
       marketId: item.request.marketId,
       oracleAddress: item.request.oracleAddress,

@@ -174,7 +174,20 @@ export class RedisSubmissionQueue {
       return null;
     }
 
-    const [streamId, fields] = msgList[0];
+    const [streamId, fieldsData] = msgList[0];
+    // fieldsData is either an object (newer ioredis) or array of [key, val, key, val, ...]
+    const fields = typeof fieldsData === "object" && !Array.isArray(fieldsData)
+      ? fieldsData
+      : Object.fromEntries(
+          Array.isArray(fieldsData)
+            ? (fieldsData as string[]).reduce((acc: any[], val, i) => {
+                if (i % 2 === 0) acc.push([val]);
+                else acc[acc.length - 1].push(val);
+                return acc;
+              }, [])
+            : []
+        );
+
     const payload = JSON.parse(fields.payload as string);
 
     const queued: QueuedSubmission = {

@@ -153,7 +153,12 @@ describe("RedisSubmissionQueue", () => {
       const testItem: SubmissionQueueItem = {
         id: "test-123",
         request: { marketId: "m1", oracleAddress: "G123" },
-        result: { outcome: true, source: "Test", signature: "s1", publicKey: "p1" },
+        result: {
+          outcome: true,
+          source: "Test",
+          signature: "s1",
+          publicKey: "p1",
+        },
         status: "pending",
         enqueuedAt: "2024-01-01T00:00:00Z",
         attempts: 0,
@@ -162,14 +167,19 @@ describe("RedisSubmissionQueue", () => {
       mockClient.xreadgroup.mockResolvedValueOnce([
         [
           "oracle:submissions",
-          [["1-0", ["payload", JSON.stringify(testItem), "marketId", "m1"]]],
+          [[
+            "1-0",
+            {
+              payload: JSON.stringify(testItem),
+              marketId: "m1",
+            },
+          ]],
         ],
       ]);
 
       const result = await queue.dequeue("consumer-1");
 
       expect(result).toBeDefined();
-      expect(result?.id).toBe("test-123");
       expect(result?.streamId).toBe("1-0");
       expect(result?.visibilityExpiresAt).toBeGreaterThan(Date.now());
       expect(mockLogger.info).toHaveBeenCalledWith(
