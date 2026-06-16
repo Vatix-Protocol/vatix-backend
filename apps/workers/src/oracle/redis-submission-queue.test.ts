@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { RedisSubmissionQueue } from "./redis-submission-queue.js";
-import type { SubmissionQueueItem } from "../../../apps/oracle/submission-queue.js";
+import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
 
 // Mock logger
 const mockLogger = {
@@ -167,13 +167,15 @@ describe("RedisSubmissionQueue", () => {
       mockClient.xreadgroup.mockResolvedValueOnce([
         [
           "oracle:submissions",
-          [[
-            "1-0",
-            {
-              payload: JSON.stringify(testItem),
-              marketId: "m1",
-            },
-          ]],
+          [
+            [
+              "1-0",
+              {
+                payload: JSON.stringify(testItem),
+                marketId: "m1",
+              },
+            ],
+          ],
         ],
       ]);
 
@@ -196,7 +198,12 @@ describe("RedisSubmissionQueue", () => {
       const item = {
         id: "test-123",
         request: { marketId: "m1", oracleAddress: "G123" },
-        result: { outcome: true, source: "Test", signature: "s1", publicKey: "p1" },
+        result: {
+          outcome: true,
+          source: "Test",
+          signature: "s1",
+          publicKey: "p1",
+        },
         status: "pending" as const,
         enqueuedAt: "2024-01-01T00:00:00Z",
         attempts: 0,
@@ -225,7 +232,12 @@ describe("RedisSubmissionQueue", () => {
       const item = {
         id: "test-123",
         request: { marketId: "m1", oracleAddress: "G123" },
-        result: { outcome: true, source: "Test", signature: "s1", publicKey: "p1" },
+        result: {
+          outcome: true,
+          source: "Test",
+          signature: "s1",
+          publicKey: "p1",
+        },
         status: "pending" as const,
         enqueuedAt: "2024-01-01T00:00:00Z",
         attempts: 1,

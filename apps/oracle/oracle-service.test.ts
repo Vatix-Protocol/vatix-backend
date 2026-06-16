@@ -321,9 +321,9 @@ describe("OracleService", () => {
     });
 
     it("should not break resolution if enqueue fails", async () => {
-      const enqueueCallback = vi.fn().mockRejectedValue(
-        new Error("Queue error")
-      );
+      const enqueueCallback = vi
+        .fn()
+        .mockRejectedValue(new Error("Queue error"));
 
       const service = new OracleService({
         primaryAdapter,

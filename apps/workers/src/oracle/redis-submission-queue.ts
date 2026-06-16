@@ -8,8 +8,8 @@
  */
 
 import { createHash } from "crypto";
-import type { ILogger } from "../../../packages/shared/src/logger.js";
-import type { SubmissionQueueItem } from "../../../apps/oracle/submission-queue.js";
+import type { ILogger } from "../../../../packages/shared/src/logger.js";
+import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
 
 const STREAM_KEY = "oracle:submissions";
 const CONSUMER_GROUP = "oracle-worker";
@@ -47,13 +47,9 @@ export class RedisSubmissionQueue {
    */
   async initialize(): Promise<void> {
     try {
-      await this.redisClient.xgroup(
-        "CREATE",
-        STREAM_KEY,
-        CONSUMER_GROUP,
-        "$",
-        { MKSTREAM: true }
-      );
+      await this.redisClient.xgroup("CREATE", STREAM_KEY, CONSUMER_GROUP, "$", {
+        MKSTREAM: true,
+      });
       this.logger.info("Oracle submission queue initialized", {
         stream: STREAM_KEY,
         group: CONSUMER_GROUP,
@@ -176,17 +172,18 @@ export class RedisSubmissionQueue {
 
     const [streamId, fieldsData] = msgList[0];
     // fieldsData is either an object (newer ioredis) or array of [key, val, key, val, ...]
-    const fields = typeof fieldsData === "object" && !Array.isArray(fieldsData)
-      ? fieldsData
-      : Object.fromEntries(
-          Array.isArray(fieldsData)
-            ? (fieldsData as string[]).reduce((acc: any[], val, i) => {
-                if (i % 2 === 0) acc.push([val]);
-                else acc[acc.length - 1].push(val);
-                return acc;
-              }, [])
-            : []
-        );
+    const fields =
+      typeof fieldsData === "object" && !Array.isArray(fieldsData)
+        ? fieldsData
+        : Object.fromEntries(
+            Array.isArray(fieldsData)
+              ? (fieldsData as string[]).reduce((acc: any[], val, i) => {
+                  if (i % 2 === 0) acc.push([val]);
+                  else acc[acc.length - 1].push(val);
+                  return acc;
+                }, [])
+              : []
+          );
 
     const payload = JSON.parse(fields.payload as string);
 
@@ -210,7 +207,11 @@ export class RedisSubmissionQueue {
    * Acknowledge successful processing (remove from consumer group).
    */
   async acknowledge(submission: QueuedSubmission): Promise<void> {
-    await this.redisClient.xack(STREAM_KEY, CONSUMER_GROUP, submission.streamId);
+    await this.redisClient.xack(
+      STREAM_KEY,
+      CONSUMER_GROUP,
+      submission.streamId
+    );
 
     this.logger.info("Acknowledged oracle submission", {
       id: submission.id,

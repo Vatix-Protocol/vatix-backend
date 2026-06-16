@@ -297,8 +297,7 @@ export class OracleService {
     } catch (error) {
       this.logger.error("Failed to enqueue resolution for submission", {
         marketId: request.marketId,
-        error:
-          error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }

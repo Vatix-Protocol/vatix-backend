@@ -277,18 +277,21 @@ Example failure log:
    - If dead, restart: `pnpm workers:oracle:start`
 
 2. **Check Redis connection**:
+
    ```bash
    redis-cli -u $REDIS_URL ping
    # Should return: PONG
    ```
 
 3. **Check queue depth**:
+
    ```bash
    redis-cli -u $REDIS_URL XINFO STREAM oracle:submissions
    # Look for: last-generated-id, length
    ```
 
 4. **Check consumer group**:
+
    ```bash
    redis-cli -u $REDIS_URL XINFO GROUPS oracle:submissions
    # Look for: consumers, pending
@@ -301,6 +304,7 @@ Example failure log:
 If a message remains pending > 5 minutes:
 
 1. **Manual claim back to active consumer**:
+
    ```bash
    redis-cli -u $REDIS_URL XCLAIM oracle:submissions oracle-worker consumer-1 0 {message-id}
    ```
@@ -319,6 +323,7 @@ If OracleReport records exist without corresponding submissions:
    - If missing, enqueue is skipped due to dedup cache
 
 2. **Force reprocess**:
+
    ```bash
    # Delete dedup key to allow re-enqueue
    redis-cli DEL oracle:dedup:{marketId}:{payloadHash}
@@ -360,16 +365,19 @@ pnpm test:integration -- --reporter=verbose
 ### Manual Testing
 
 1. **Start redis and PostgreSQL**:
+
    ```bash
    docker-compose up postgres redis
    ```
 
 2. **Run migrations**:
+
    ```bash
    pnpm prisma:migrate
    ```
 
 3. **Start oracle worker**:
+
    ```bash
    ORACLE_SUBMISSION_LOG_LEVEL=debug pnpm workers:oracle:dev
    ```
@@ -377,6 +385,7 @@ pnpm test:integration -- --reporter=verbose
 4. **Trigger resolution** (via API or direct call to OracleService)
 
 5. **Check Redis queue**:
+
    ```bash
    redis-cli -u $REDIS_URL XLEN oracle:submissions
    redis-cli -u $REDIS_URL XRANGE oracle:submissions - +

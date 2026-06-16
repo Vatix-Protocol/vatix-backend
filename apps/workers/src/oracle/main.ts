@@ -8,13 +8,13 @@
  */
 
 import "dotenv/config";
-import { createLogger } from "../../../apps/indexer/src/logger.js";
+import { createLogger } from "../../../indexer/src/logger.js";
 import {
   getPrismaClient,
   disconnectPrisma,
-} from "../../../src/services/prisma.js";
-import { redis } from "../../../src/services/redis.js";
-import { loadOracleWorkerConfig } from "../../../packages/shared/src/config.js";
+} from "../../../../src/services/prisma.js";
+import { redis } from "../../../../src/services/redis.js";
+import { loadOracleWorkerConfig } from "../../../../packages/shared/src/config.js";
 import { RedisSubmissionQueue } from "./redis-submission-queue.js";
 import { SubmissionWorker } from "./submission-worker.js";
 import type { ShutdownHandler, ShutdownSignal } from "../finalization/types.js";
@@ -71,7 +71,10 @@ async function bootstrap(): Promise<void> {
 
   // Start continuous polling
   await runWorker();
-  const timer = setInterval(() => void runWorker(), config.submissionPollIntervalMs);
+  const timer = setInterval(
+    () => void runWorker(),
+    config.submissionPollIntervalMs
+  );
 
   const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 

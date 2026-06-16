@@ -3,12 +3,20 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+
+vi.mock("../../../oracle/signature-helper.js", () => ({
+  verifyResolutionReport: vi.fn((report: { signature?: string }) =>
+    Boolean(report.signature)
+  ),
+}));
+
 import { SubmissionWorker } from "./submission-worker.js";
 import type { QueuedSubmission } from "./redis-submission-queue.js";
 
 // Mock Prisma
 const mockPrisma = {
   oracleReport: {
+    create: vi.fn(),
     upsert: vi.fn(),
     updateMany: vi.fn(),
   },
@@ -65,7 +73,7 @@ describe("SubmissionWorker", () => {
   describe("processSubmission", () => {
     it("should process successful submission", async () => {
       const submission = createTestSubmission();
-      mockPrisma.oracleReport.upsert.mockResolvedValueOnce({
+      mockPrisma.oracleReport.create.mockResolvedValueOnce({
         id: "report-1",
       });
       mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
@@ -75,7 +83,7 @@ describe("SubmissionWorker", () => {
 
       await worker.processSubmission(submission);
 
-      expect(mockPrisma.oracleReport.upsert).toHaveBeenCalled();
+      expect(mockPrisma.oracleReport.create).toHaveBeenCalled();
       expect(mockPrisma.resolutionCandidate.upsert).toHaveBeenCalled();
       expect(mockQueue.acknowledge).toHaveBeenCalledWith(submission);
       expect(mockLogger.info).toHaveBeenCalledWith(
@@ -137,7 +145,7 @@ describe("SubmissionWorker", () => {
 
     it("should handle Prisma errors gracefully", async () => {
       const submission = createTestSubmission();
-      mockPrisma.oracleReport.upsert.mockRejectedValueOnce(
+      mockPrisma.oracleReport.create.mockRejectedValueOnce(
         new Error("DB error")
       );
 

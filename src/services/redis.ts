@@ -273,8 +273,7 @@ class RedisService {
       }
       return await (client.xgroup as any)(...args);
     } catch (error) {
-      const errMsg =
-        error instanceof Error ? error.message : String(error);
+      const errMsg = error instanceof Error ? error.message : String(error);
       if (errMsg.includes("BUSYGROUP")) {
         return; // Group already exists, which is OK
       }

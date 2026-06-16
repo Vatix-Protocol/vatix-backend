@@ -8,16 +8,16 @@
  */
 
 import { PrismaClient } from "@prisma/client";
-import type { ILogger } from "../../../packages/shared/src/logger.js";
+import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import {
   verifyResolutionReport,
   type SignedResolutionReport,
-} from "../../../apps/oracle/signature-helper.js";
+} from "../../../oracle/signature-helper.js";
 import {
   RedisSubmissionQueue,
   type QueuedSubmission,
 } from "./redis-submission-queue.js";
-import type { SubmissionQueueItem } from "../../../apps/oracle/submission-queue.js";
+import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
 
 export interface SubmissionWorkerConfig {
   submissionMaxRetries: number;
@@ -136,7 +136,9 @@ export class SubmissionWorker {
   /**
    * Create a signed resolution report from a queued submission.
    */
-  private createSignedReport(submission: SubmissionQueueItem): SignedResolutionReport {
+  private createSignedReport(
+    submission: SubmissionQueueItem
+  ): SignedResolutionReport {
     const { result, request } = submission;
 
     return {
