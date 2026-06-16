@@ -9,6 +9,8 @@
     "indexer:start": "tsx apps/indexer/src/main.ts",
     "workers:finalization:dev": "tsx watch apps/workers/src/finalization/main.ts",
     "workers:finalization:start": "tsx apps/workers/src/finalization/main.ts",
+    "workers:oracle:dev": "tsx watch apps/workers/src/oracle/main.ts",
+    "workers:oracle:start": "tsx apps/workers/src/oracle/main.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "vitest",

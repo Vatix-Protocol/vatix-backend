@@ -256,6 +256,34 @@ class RedisService {
   }
 
   /**
+   * Create a consumer group for a stream
+   */
+  async xgroup(
+    subcommand: "CREATE",
+    key: string,
+    groupName: string,
+    id: string,
+    options?: { MKSTREAM?: boolean }
+  ): Promise<string | void> {
+    try {
+      const client = this.getClient();
+      const args = [subcommand, key, groupName, id];
+      if (options?.MKSTREAM) {
+        args.push("MKSTREAM");
+      }
+      return await (client.xgroup as any)(...args);
+    } catch (error) {
+      const errMsg =
+        error instanceof Error ? error.message : String(error);
+      if (errMsg.includes("BUSYGROUP")) {
+        return; // Group already exists, which is OK
+      }
+      console.error({ service: "redis", err: error }, "Redis XGROUP failed");
+      throw error;
+    }
+  }
+
+  /**
    * Add entry to Redis Stream
    */
   async xadd(...args: (string | number)[]): Promise<string | null> {
@@ -320,6 +348,79 @@ class RedisService {
         { service: "redis", key, err: error },
         "Redis XREVRANGE failed"
       );
+      throw error;
+    }
+  }
+
+  /**
+   * Read from a consumer group (blocking)
+   */
+  async xreadgroup(
+    groupName: string,
+    consumerName: string,
+    streamKey: string,
+    id: string,
+    options?: { COUNT?: number; BLOCK?: number }
+  ): Promise<Array<[string, Array<[string, string[]]>]>> {
+    try {
+      const client = this.getClient();
+      const args = ["GROUP", groupName, consumerName];
+      if (options?.COUNT) {
+        args.push("COUNT", String(options.COUNT));
+      }
+      if (options?.BLOCK) {
+        args.push("BLOCK", String(options.BLOCK));
+      }
+      args.push("STREAMS", streamKey, id);
+      return await (client.xreadgroup as any)(...args);
+    } catch (error) {
+      console.error(
+        { service: "redis", err: error },
+        "Redis XREADGROUP failed"
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Acknowledge a message in a consumer group
+   */
+  async xack(
+    streamKey: string,
+    groupName: string,
+    ...messageIds: string[]
+  ): Promise<number> {
+    try {
+      const client = this.getClient();
+      return await (client.xack as any)(streamKey, groupName, ...messageIds);
+    } catch (error) {
+      console.error({ service: "redis", err: error }, "Redis XACK failed");
+      throw error;
+    }
+  }
+
+  /**
+   * Claim messages from a consumer group (visibility timeout)
+   */
+  async xclaim(
+    streamKey: string,
+    groupName: string,
+    consumerName: string,
+    minIdleTimeMs: number,
+    ...messageIds: string[]
+  ): Promise<Array<[string, string[]]>> {
+    try {
+      const client = this.getClient();
+      const args = [
+        streamKey,
+        groupName,
+        consumerName,
+        minIdleTimeMs,
+        ...messageIds,
+      ];
+      return await (client.xclaim as any)(...args);
+    } catch (error) {
+      console.error({ service: "redis", err: error }, "Redis XCLAIM failed");
       throw error;
     }
   }

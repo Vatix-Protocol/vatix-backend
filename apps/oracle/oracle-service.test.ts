@@ -292,4 +292,69 @@ describe("OracleService", () => {
       expect(fallbackAdapter.resolve).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe("enqueue callback", () => {
+    it("should invoke enqueue callback on successful resolution", async () => {
+      const enqueueCallback = vi.fn().mockResolvedValue(undefined);
+
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        enqueueCallback,
+      });
+
+      await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(enqueueCallback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: expect.any(String),
+          request: expect.objectContaining({
+            marketId: "market-001",
+          }),
+          status: "pending",
+        })
+      );
+    });
+
+    it("should not break resolution if enqueue fails", async () => {
+      const enqueueCallback = vi.fn().mockRejectedValue(
+        new Error("Queue error")
+      );
+
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        enqueueCallback,
+      });
+
+      const result = await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(result.source).toBe("primary");
+      expect(enqueueCallback).toHaveBeenCalled();
+    });
+
+    it("should skip enqueue if not configured", async () => {
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+      });
+
+      const result = await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(result.source).toBe("primary");
+      // No error, enqueue was skipped gracefully
+    });
+  });
 });
