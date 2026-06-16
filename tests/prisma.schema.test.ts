@@ -27,6 +27,8 @@ describe("Prisma Schema", () => {
     expect(prisma.userPosition).toBeDefined();
     expect(prisma.position).toBeDefined();
     expect(prisma.indexerCursor).toBeDefined();
+    expect(prisma.indexerProcessedEvent).toBeDefined();
+    expect(prisma.indexedTrade).toBeDefined();
   });
 
   it("should define the expected schema models", () => {
@@ -39,8 +41,10 @@ describe("Prisma Schema", () => {
       "Resolution",
       "Position",
       "IndexerCursor",
+      "IndexerProcessedEvent",
+      "IndexedTrade",
       "OracleSourceAlias",
     ]);
-    expect(modelNames).toHaveLength(9);
+    expect(modelNames).toHaveLength(11);
   });
 });

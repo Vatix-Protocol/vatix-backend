@@ -314,7 +314,11 @@ export function loadBaseConfig(env: Env = processEnv): BaseConfig {
 export interface IndexerConfig {
   nodeEnv: NodeEnv;
   stellarRpcUrl: string;
+  /** Soroban contract ID whose events the indexer ingests. */
+  contractId: string;
   ingestionIntervalMs: number;
+  /** Max ledgers to scan per ingestion tick. */
+  ledgerWindowSize: number;
   networkId: string;
   cursorKey: string;
   checkpointFlushEveryBatches: number;
@@ -326,16 +330,33 @@ export interface IndexerConfig {
  *
  * @param env - Defaults to process.env. Pass a custom object in tests.
  */
+function loadIndexerContractId(env: Env): string {
+  const contractId =
+    env["INDEXER_CONTRACT_ID"]?.trim() ||
+    env["MARKET_CONTRACT_ID"]?.trim() ||
+    "";
+  if (contractId === "") {
+    throw new ConfigValidationError(
+      "Missing required environment variable: INDEXER_CONTRACT_ID (or MARKET_CONTRACT_ID)"
+    );
+  }
+  return contractId;
+}
+
 export function loadIndexerConfig(env: Env = processEnv): IndexerConfig {
   return {
     nodeEnv: loadNodeEnv(env),
     stellarRpcUrl: loadUrl("STELLAR_RPC_URL", env, ["https:", "http:"]),
+    contractId: loadIndexerContractId(env),
     ingestionIntervalMs: requireMinNumber(
       "INDEXER_INGESTION_INTERVAL_MS",
       env,
       100,
       5_000
     ),
+    ledgerWindowSize: requirePositiveInt("INDEXER_LEDGER_WINDOW_SIZE", env, {
+      fallback: 100,
+    }),
     networkId: optionalString("INDEXER_NETWORK_ID", "mainnet", env),
     cursorKey: optionalString("INDEXER_CURSOR_KEY", "ingestion", env),
     checkpointFlushEveryBatches: requirePositiveInt(

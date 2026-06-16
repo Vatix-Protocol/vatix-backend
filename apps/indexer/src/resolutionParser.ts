@@ -29,8 +29,10 @@ function toResolutionOutcome(
   eventId: string
 ): ResolutionOutcome {
   if (value === "YES" || value === "NO") return value;
+  if (value === true) return "YES";
+  if (value === false) return "NO";
   throw new ResolutionParseError(
-    `Unknown resolution outcome: "${String(value)}" — must be "YES" or "NO"`,
+    `Unknown resolution outcome: "${String(value)}" — must be YES/NO or boolean`,
     eventId
   );
 }
@@ -44,14 +46,61 @@ function isResolutionEvent(topicsXdr: string[]): boolean {
   }
 }
 
+interface ResolutionPayload {
+  marketId: string;
+  outcome: ResolutionOutcome;
+  oracleAddress: string;
+}
+
+/**
+ * Supports both legacy ScvMap payloads ({ market_id, outcome, oracle })
+ * and the on-chain tuple (market_id: u32, outcome: bool, resolved_at: u64).
+ */
+function parseResolutionPayload(
+  decoded: unknown,
+  eventId: string
+): ResolutionPayload {
+  if (Array.isArray(decoded)) {
+    if (decoded.length < 2) {
+      throw new ResolutionParseError(
+        "Tuple resolution payload must include market_id and outcome",
+        eventId
+      );
+    }
+
+    return {
+      marketId: String(decoded[0]),
+      outcome: toResolutionOutcome(decoded[1], eventId),
+      oracleAddress: "",
+    };
+  }
+
+  if (
+    typeof decoded !== "object" ||
+    decoded === null ||
+    Array.isArray(decoded)
+  ) {
+    throw new ResolutionParseError(
+      "Event value is not an ScvMap or tuple",
+      eventId
+    );
+  }
+
+  const map = decoded as Record<string, unknown>;
+
+  return {
+    marketId: String(field(map, "market_id", eventId)),
+    outcome: toResolutionOutcome(field(map, "outcome", eventId), eventId),
+    oracleAddress: map.oracle != null ? String(map.oracle) : "",
+  };
+}
+
 /**
  * Parse a single RawChainEvent into a NormalizedResolution.
  *
- * Contract event value is expected to be an ScvMap with keys:
- *   market_id, outcome, oracle
- *
- * The source ledger sequence is preserved in the returned record
- * as the authoritative timestamp for settlement ordering.
+ * Contract event value may be:
+ *   - ScvMap: market_id, outcome (YES/NO), oracle
+ *   - Tuple:  (market_id: u32, outcome: bool, resolved_at: u64)
  *
  * @throws ResolutionParseError if the event is not a resolution event or payload is malformed
  */
@@ -76,24 +125,20 @@ export function parseResolutionEvent(
     );
   }
 
-  if (
-    typeof decoded !== "object" ||
-    decoded === null ||
-    Array.isArray(decoded)
-  ) {
-    throw new ResolutionParseError("Event value is not an ScvMap", event.id);
-  }
+  const payload = parseResolutionPayload(decoded, event.id);
 
-  const map = decoded as Record<string, unknown>;
+  if (payload.oracleAddress === "" && !Array.isArray(decoded)) {
+    throw new ResolutionParseError('Missing field "oracle"', event.id);
+  }
 
   return {
     eventId: event.id,
     ledger: event.ledger,
     ledgerClosedAt: event.ledgerClosedAt,
     contractId: event.contractId,
-    marketId: String(field(map, "market_id", event.id)),
-    outcome: toResolutionOutcome(field(map, "outcome", event.id), event.id),
-    oracleAddress: String(field(map, "oracle", event.id)),
+    marketId: payload.marketId,
+    outcome: payload.outcome,
+    oracleAddress: payload.oracleAddress,
   };
 }
 

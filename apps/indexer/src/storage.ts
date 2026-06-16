@@ -24,11 +24,11 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
         },
       },
       select: {
-        cursor: true,
+        cursorValue: true,
       },
     });
 
-    const cursor = row?.cursor ?? null;
+    const cursor = row?.cursorValue ?? null;
     this.logger?.debug("Ledger cursor loaded", {
       networkId: this.networkId,
       cursorKey: this.cursorKey,
@@ -50,10 +50,10 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
         create: {
           networkId: this.networkId,
           cursorKey: this.cursorKey,
-          cursor,
+          cursorValue: cursor,
         },
         update: {
-          cursor,
+          cursorValue: cursor,
         },
       });
     });
