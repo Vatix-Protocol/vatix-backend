@@ -15,6 +15,13 @@ import type {
 import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
 import { withRetry, RetryConfig, isRetryableError } from "./retry-utils.js";
 import type { ILogger } from "../../packages/shared/src/logger.js";
+import type { SubmissionQueueItem } from "./submission-queue.js";
+import { SubmissionQueue } from "./submission-queue.js";
+
+/**
+ * Callback invoked when a resolution succeeds and should be enqueued.
+ */
+export type EnqueueCallback = (item: SubmissionQueueItem) => Promise<void>;
 
 /**
  * Oracle service configuration.
@@ -32,6 +39,10 @@ export interface OracleServiceConfig {
   retryConfig?: Partial<RetryConfig>;
   /** Structured logger — defaults to a no-op logger if omitted */
   logger?: ILogger;
+  /** Optional submission queue for enqueuing resolved reports */
+  submissionQueue?: SubmissionQueue;
+  /** Optional enqueue callback (alternative to submissionQueue) */
+  enqueueCallback?: EnqueueCallback;
 }
 
 /**
@@ -55,12 +66,15 @@ export interface OracleMetrics {
 /**
  * Oracle service for market resolution.
  * Uses primary adapter by default, switches to fallback on primary failure.
+ * Optionally enqueues successful resolutions for on-chain submission.
  */
 export class OracleService {
   private primaryAdapter: ProviderAdapter;
   private fallbackAdapter: ProviderAdapter;
   private config: OracleServiceConfig;
   private readonly logger: ILogger;
+  private submissionQueue?: SubmissionQueue;
+  private enqueueCallback?: EnqueueCallback;
 
   private metrics: OracleMetrics = {
     primarySuccessCount: 0,
@@ -80,6 +94,8 @@ export class OracleService {
       warn: () => {},
       error: () => {},
     };
+    this.submissionQueue = config.submissionQueue;
+    this.enqueueCallback = config.enqueueCallback;
     this.config = {
       enableFallback: true,
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
@@ -124,6 +140,10 @@ export class OracleService {
         marketId: request.marketId,
         source: result.source,
       });
+
+      // Enqueue for on-chain submission if configured
+      await this.enqueueResult(request, result);
+
       return result;
     } catch (primaryError) {
       this.metrics.primaryFailureCount++;
@@ -172,6 +192,10 @@ export class OracleService {
         marketId: request.marketId,
         source: result.source,
       });
+
+      // Enqueue for on-chain submission if configured
+      await this.enqueueResult(request, result);
+
       return result;
     } catch (fallbackError) {
       this.metrics.fallbackFailureCount++;
@@ -241,5 +265,40 @@ export class OracleService {
    */
   getFallbackAdapter(): ProviderAdapter {
     return this.fallbackAdapter;
+  }
+
+  /**
+   * Enqueue a resolved result for on-chain submission.
+   * Skips if no queue or callback is configured.
+   */
+  private async enqueueResult(
+    request: ResolutionRequest,
+    result: ProviderResult
+  ): Promise<void> {
+    if (!this.submissionQueue && !this.enqueueCallback) {
+      return;
+    }
+
+    try {
+      const item: SubmissionQueueItem = {
+        id: `${request.marketId}-${Date.now()}`,
+        request,
+        result,
+        status: "pending",
+        enqueuedAt: new Date().toISOString(),
+        attempts: 0,
+      };
+
+      if (this.enqueueCallback) {
+        await this.enqueueCallback(item);
+      } else if (this.submissionQueue) {
+        this.submissionQueue.enqueue(item);
+      }
+    } catch (error) {
+      this.logger.error("Failed to enqueue resolution for submission", {
+        marketId: request.marketId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }

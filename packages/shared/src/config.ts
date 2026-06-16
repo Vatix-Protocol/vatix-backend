@@ -396,3 +396,47 @@ export function loadFinalizationConfig(
     logLevel: loadLogLevel("FINALIZATION_LOG_LEVEL", env, "info"),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Oracle worker config
+// ---------------------------------------------------------------------------
+
+export interface OracleWorkerConfig {
+  submissionPollIntervalMs: number;
+  submissionMaxRetries: number;
+  submissionVisibilityTimeoutMs: number;
+  logLevel: LogLevel;
+  redisUrl: string;
+  databaseUrl: string;
+}
+
+/**
+ * Loads and validates oracle worker config.
+ *
+ * @param env - Defaults to process.env. Pass a custom object in tests.
+ */
+export function loadOracleWorkerConfig(
+  env: Env = processEnv
+): OracleWorkerConfig {
+  return {
+    submissionPollIntervalMs: requireMinNumber(
+      "ORACLE_SUBMISSION_POLL_INTERVAL_MS",
+      env,
+      1000,
+      5_000
+    ),
+    submissionMaxRetries: requirePositiveInt(
+      "ORACLE_SUBMISSION_MAX_RETRIES",
+      env,
+      { fallback: 3 }
+    ),
+    submissionVisibilityTimeoutMs: requirePositiveInt(
+      "ORACLE_SUBMISSION_VISIBILITY_TIMEOUT_MS",
+      env,
+      { fallback: 300_000 }
+    ),
+    logLevel: loadLogLevel("ORACLE_SUBMISSION_LOG_LEVEL", env, "info"),
+    redisUrl: loadUrl("REDIS_URL", env, ["redis:", "rediss:"]),
+    databaseUrl: loadUrl("DATABASE_URL", env, ["postgresql:", "postgres:"]),
+  };
+}

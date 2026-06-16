@@ -114,6 +114,10 @@ export function validateSubmissionQueueItem(
   return item as SubmissionQueueItem;
 }
 
+/**
+ * In-memory submission queue (deprecated — use Redis via apps/workers/src/oracle/redis-submission-queue.ts).
+ * Provided for backwards compatibility during migration.
+ */
 export class SubmissionQueue {
   private items: SubmissionQueueItem[] = [];
 
