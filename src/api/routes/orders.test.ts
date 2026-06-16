@@ -5,21 +5,26 @@ import { errorHandler } from "../middleware/errorHandler.js";
 import type { PrismaClient } from "../../generated/prisma/client";
 import { clearRateLimitStores } from "../middleware/rateLimiter.js";
 
-const { mockAuditService, mockPrismaClient } = vi.hoisted(() => ({
-  mockAuditService: {
-    getWalletTradeHistory: vi.fn(),
-  },
-  mockPrismaClient: {
-    order: {
-      findMany: vi.fn(),
-      count: vi.fn(),
-      create: vi.fn(),
+const { mockAuditService, mockPrismaClient, mockMatchingService } = vi.hoisted(
+  () => ({
+    mockAuditService: {
+      getWalletTradeHistory: vi.fn(),
     },
-    market: {
-      findUnique: vi.fn(),
+    mockPrismaClient: {
+      order: {
+        findMany: vi.fn(),
+        count: vi.fn(),
+        create: vi.fn(),
+      },
+      market: {
+        findUnique: vi.fn(),
+      },
+    } as unknown as PrismaClient,
+    mockMatchingService: {
+      placeOrder: vi.fn(),
     },
-  } as unknown as PrismaClient,
-}));
+  })
+);
 
 vi.mock("../../services/prisma.js", () => ({
   getPrismaClient: () => mockPrismaClient,
@@ -27,6 +32,10 @@ vi.mock("../../services/prisma.js", () => ({
 
 vi.mock("../../services/audit.js", () => ({
   auditService: mockAuditService,
+}));
+
+vi.mock("../../matching/matching-service.js", () => ({
+  matchingService: mockMatchingService,
 }));
 
 describe("GET /trades/user/:address", () => {
@@ -436,9 +445,18 @@ describe("POST /orders", () => {
       createdAt: new Date(),
     };
 
+    // Mock market for validation
     (
-      mockPrismaClient.order.create as ReturnType<typeof vi.fn>
-    ).mockResolvedValue(createdOrder);
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(validMarket);
+
+    (
+      mockMatchingService.placeOrder as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      order: createdOrder,
+      trades: [],
+      filledQuantity: 0,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -453,6 +471,8 @@ describe("POST /orders", () => {
     expect(body.order.id).toBe("order-123");
     expect(body.order.side).toBe("BUY");
     expect(body.order.status).toBe("OPEN");
+    expect(body.trades).toEqual([]);
+    expect(body.filledQuantity).toBe(0);
   });
 
   it("should reject order with invalid Stellar address", async () => {
@@ -700,8 +720,13 @@ describe("POST /orders", () => {
   });
 
   it("should handle database errors gracefully", async () => {
+    // Mock market for validation
     (
-      mockPrismaClient.order.create as ReturnType<typeof vi.fn>
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(validMarket);
+
+    (
+      mockMatchingService.placeOrder as ReturnType<typeof vi.fn>
     ).mockRejectedValue(new Error("Database error"));
 
     const response = await app.inject({
