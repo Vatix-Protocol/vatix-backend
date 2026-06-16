@@ -61,13 +61,30 @@ describe("loadBaseConfig", () => {
 describe("loadIndexerConfig", () => {
   const INDEXER_ENV = {
     STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
+    INDEXER_CONTRACT_ID: "CABC123",
   };
 
   it("loads valid indexer config with defaults", () => {
     const config = loadIndexerConfig(INDEXER_ENV);
     expect(config.stellarRpcUrl).toBe(INDEXER_ENV.STELLAR_RPC_URL);
+    expect(config.contractId).toBe("CABC123");
+    expect(config.ledgerWindowSize).toBe(100);
     expect(config.networkId).toBe("mainnet");
     expect(config.cursorKey).toBe("ingestion");
+  });
+
+  it("accepts MARKET_CONTRACT_ID as alias", () => {
+    const config = loadIndexerConfig({
+      STELLAR_RPC_URL: INDEXER_ENV.STELLAR_RPC_URL,
+      MARKET_CONTRACT_ID: "CMARKET",
+    });
+    expect(config.contractId).toBe("CMARKET");
+  });
+
+  it("throws on missing contract id", () => {
+    expect(() =>
+      loadIndexerConfig({ STELLAR_RPC_URL: INDEXER_ENV.STELLAR_RPC_URL })
+    ).toThrow("INDEXER_CONTRACT_ID");
   });
 
   it("throws on missing STELLAR_RPC_URL", () => {

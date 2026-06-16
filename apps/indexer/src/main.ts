@@ -4,6 +4,8 @@ import { PollingIngestionLoop } from "./ingestion.js";
 import { createLogger } from "./logger.js";
 import { InternalIndexerMetricsService } from "./metrics.js";
 import { PrismaCursorStorageClient } from "./storage.js";
+import { EventFetcher } from "./eventFetcher.js";
+import { PrismaBatchWriter } from "./batchWriter.js";
 import { disconnectPrisma } from "../../../src/services/prisma.js";
 
 async function bootstrap(): Promise<void> {
@@ -15,19 +17,32 @@ async function bootstrap(): Promise<void> {
     config.cursorKey,
     logger
   );
+  const eventFetcher = new EventFetcher({
+    rpcUrl: config.stellarRpcUrl,
+    contractId: config.contractId,
+  });
+  const batchWriter = new PrismaBatchWriter(logger);
   const ingestionLoop = new PollingIngestionLoop(
     logger,
     storage,
     metrics,
     config.ingestionIntervalMs,
-    config.checkpointFlushEveryBatches
+    config.checkpointFlushEveryBatches,
+    {
+      eventFetcher,
+      batchWriter,
+      contractId: config.contractId,
+      ledgerWindowSize: config.ledgerWindowSize,
+    }
   );
 
   logger.info("Indexer bootstrap started", {
     nodeEnv: config.nodeEnv,
     ingestionIntervalMs: config.ingestionIntervalMs,
+    ledgerWindowSize: config.ledgerWindowSize,
     networkId: config.networkId,
     cursorKey: config.cursorKey,
+    contractId: config.contractId,
     checkpointFlushEveryBatches: config.checkpointFlushEveryBatches,
   });
 

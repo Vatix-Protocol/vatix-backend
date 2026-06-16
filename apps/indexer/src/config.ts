@@ -1,4 +1,9 @@
-export type { IndexerConfig } from "../../../packages/shared/src/config.js";
+import {
+  loadIndexerConfig as loadSharedIndexerConfig,
+  type IndexerConfig as SharedIndexerConfig,
+} from "../../../packages/shared/src/config.js";
+
+export type { SharedIndexerConfig };
 
 export const KNOWN_PASSPHRASES = {
   testnet: "Test SDF Network ; September 2015",
@@ -7,12 +12,14 @@ export const KNOWN_PASSPHRASES = {
 
 type Env = Record<string, string | undefined>;
 
-export interface IndexerConfig {
+export interface ChainConfig {
   sorobanNetworkPassphrase: string;
   horizonUrl: string;
 }
 
-export function loadIndexerConfig(env: Env = process.env): IndexerConfig {
+export interface IndexerAppConfig extends SharedIndexerConfig, ChainConfig {}
+
+export function loadChainConfig(env: Env = process.env): ChainConfig {
   const passphrase = env["SOROBAN_NETWORK_PASSPHRASE"];
 
   if (!passphrase || passphrase.trim() === "") {
@@ -40,4 +47,17 @@ export function loadIndexerConfig(env: Env = process.env): IndexerConfig {
       : "https://horizon-testnet.stellar.org");
 
   return { sorobanNetworkPassphrase: passphrase, horizonUrl };
+}
+
+/** Unified indexer bootstrap config (shared env + chain parser env). */
+export function loadConfig(env: Env = process.env): IndexerAppConfig {
+  return {
+    ...loadSharedIndexerConfig(env),
+    ...loadChainConfig(env),
+  };
+}
+
+/** @deprecated Use loadChainConfig — kept for existing tests. */
+export function loadIndexerConfig(env: Env = process.env): ChainConfig {
+  return loadChainConfig(env);
 }
