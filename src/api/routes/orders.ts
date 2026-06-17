@@ -3,6 +3,7 @@ import { getPrismaClient } from "../../services/prisma.js";
 import { ValidationError } from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
 import { auditService } from "../../services/audit.js";
+import { matchingService } from "../../matching/matching-service.js";
 import {
   validateUserAddress,
   assertValidOrder,
@@ -379,6 +380,25 @@ export async function ordersRoutes(fastify: FastifyInstance) {
                   createdAt: { type: "string" },
                 },
               },
+              trades: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    marketId: { type: "string" },
+                    outcome: { type: "string" },
+                    buyerAddress: { type: "string" },
+                    sellerAddress: { type: "string" },
+                    buyOrderId: { type: "string" },
+                    sellOrderId: { type: "string" },
+                    price: { type: "number" },
+                    quantity: { type: "number" },
+                    timestamp: { type: "number" },
+                  },
+                },
+              },
+              filledQuantity: { type: "number" },
             },
           },
         },
@@ -402,24 +422,11 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       // Validates: address format, market exists/active, price range, quantity > 0
       await assertValidOrder(orderInput);
 
-      // Create order in database
-      const order = await prisma.order.create({
-        data: {
-          marketId,
-          userAddress,
-          side,
-          outcome,
-          price: price.toString(),
-          quantity,
-          filledQuantity: 0,
-          status: "OPEN",
-        },
-      });
+      // Wire into matching engine and persist atomically
+      const { order, trades, filledQuantity } =
+        await matchingService.placeOrder(orderInput);
 
-      // TODO: Add to matching engine
-      // await matchingEngine.addOrder(order);
-
-      reply.status(201).send({ order });
+      reply.status(201).send({ order, trades, filledQuantity });
     }
   );
 }
