@@ -48,7 +48,7 @@ export const openApiSpec = {
     },
   ],
   paths: {
-    "/health": {
+    "/v1/health": {
       get: {
         summary: "Health check",
         description: "Returns the health status of the API",
@@ -77,7 +77,7 @@ export const openApiSpec = {
         },
       },
     },
-    "/readiness": {
+    "/v1/ready": {
       get: {
         summary: "Readiness check",
         description: "Returns the readiness status including dependency health",
@@ -92,7 +92,7 @@ export const openApiSpec = {
         },
       },
     },
-    "/markets": {
+    "/v1/markets": {
       get: {
         summary: "List markets",
         description: "Retrieve a paginated list of prediction markets",
@@ -126,7 +126,53 @@ export const openApiSpec = {
         },
       },
     },
-    "/orders": {
+    "/v1/markets/{id}": {
+      get: {
+        summary: "Market details",
+        description: "Retrieve a single market by ID",
+        tags: ["Markets"],
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Market details",
+          },
+          "404": {
+            description: "Market not found",
+          },
+        },
+      },
+    },
+    "/v1/markets/{id}/orderbook": {
+      get: {
+        summary: "Market orderbook",
+        description: "Retrieve the orderbook for a market",
+        tags: ["Markets"],
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Market orderbook",
+          },
+          "404": {
+            description: "Market not found",
+          },
+        },
+      },
+    },
+    "/v1/orders": {
       post: {
         summary: "Create an order",
         description: "Submit a new order to the prediction market",
@@ -177,6 +223,118 @@ export const openApiSpec = {
         responses: {
           "201": {
             description: "Order created",
+          },
+          "400": {
+            description: "Invalid request",
+          },
+        },
+      },
+    },
+    "/v1/orders/user/{address}": {
+      get: {
+        summary: "User orders",
+        description: "Retrieve orders submitted by a user",
+        tags: ["Orders"],
+        parameters: [
+          {
+            name: "address",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "User orders",
+          },
+        },
+      },
+    },
+    "/v1/trades/user/{address}": {
+      get: {
+        summary: "User trade history",
+        description: "Retrieve trade history for a wallet",
+        tags: ["Trades"],
+        parameters: [
+          {
+            name: "address",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "User trades",
+          },
+        },
+      },
+    },
+    "/v1/wallets/{wallet}/positions": {
+      get: {
+        summary: "Wallet positions",
+        description: "Retrieve position exposures for a wallet",
+        tags: ["Positions"],
+        parameters: [
+          {
+            name: "wallet",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Wallet positions",
+          },
+        },
+      },
+    },
+    "/v1/admin/markets": {
+      get: {
+        summary: "Admin market listing",
+        description: "List markets for admin users",
+        tags: ["Admin"],
+        responses: {
+          "200": {
+            description: "Admin market list",
+          },
+        },
+      },
+    },
+    "/v1/admin/markets/{id}/status": {
+      patch: {
+        summary: "Update market status",
+        description: "Admin endpoint to change market status",
+        tags: ["Admin"],
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["status"],
+                properties: {
+                  status: {
+                    type: "string",
+                    enum: ["ACTIVE", "RESOLVED", "CANCELLED"],
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Market updated",
           },
           "400": {
             description: "Invalid request",

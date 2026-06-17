@@ -11,7 +11,7 @@ describe("Integration Tests: GET /v1/markets", () => {
     // Create test server with real database
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
-    await app.register(marketsRoutes);
+    await app.register(marketsRoutes, { prefix: "/v1" });
   });
 
   afterAll(async () => {
@@ -34,7 +34,7 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: "/markets",
+        url: "/v1/markets",
       });
 
       expect(response.statusCode).toBe(200);
@@ -59,7 +59,7 @@ describe("Integration Tests: GET /v1/markets", () => {
     it("should handle empty market list correctly", async () => {
       const response = await app.inject({
         method: "GET",
-        url: "/markets",
+        url: "/v1/markets",
       });
 
       expect(response.statusCode).toBe(200);
@@ -88,7 +88,7 @@ describe("Integration Tests: GET /v1/markets", () => {
       // Test ACTIVE filter
       const activeResponse = await app.inject({
         method: "GET",
-        url: "/markets?status=ACTIVE",
+        url: "/v1/markets?status=ACTIVE",
       });
 
       expect(activeResponse.statusCode).toBe(200);
@@ -100,7 +100,7 @@ describe("Integration Tests: GET /v1/markets", () => {
       // Test RESOLVED filter
       const resolvedResponse = await app.inject({
         method: "GET",
-        url: "/markets?status=RESOLVED",
+        url: "/v1/markets?status=RESOLVED",
       });
 
       expect(resolvedResponse.statusCode).toBe(200);
@@ -113,7 +113,7 @@ describe("Integration Tests: GET /v1/markets", () => {
     it("should return empty list for non-existent status", async () => {
       const response = await app.inject({
         method: "GET",
-        url: "/markets?status=CANCELLED",
+        url: "/v1/markets?status=CANCELLED",
       });
 
       expect(response.statusCode).toBe(200);
@@ -133,7 +133,7 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: "/markets",
+        url: "/v1/markets",
       });
 
       expect(response.statusCode).toBe(200);
@@ -182,7 +182,7 @@ describe("Integration Tests: GET /v1/markets", () => {
     it("should return 400 for invalid status value", async () => {
       const response = await app.inject({
         method: "GET",
-        url: "/markets?status=INVALID",
+        url: "/v1/markets?status=INVALID",
       });
 
       expect(response.statusCode).toBe(400);
@@ -191,7 +191,7 @@ describe("Integration Tests: GET /v1/markets", () => {
     it("should return 400 for limit below minimum", async () => {
       const response = await app.inject({
         method: "GET",
-        url: "/markets?limit=0",
+        url: "/v1/markets?limit=0",
       });
 
       expect(response.statusCode).toBe(400);
@@ -200,7 +200,7 @@ describe("Integration Tests: GET /v1/markets", () => {
     it("should return 400 for limit above maximum", async () => {
       const response = await app.inject({
         method: "GET",
-        url: "/markets?limit=101",
+        url: "/v1/markets?limit=101",
       });
 
       expect(response.statusCode).toBe(400);
@@ -209,7 +209,7 @@ describe("Integration Tests: GET /v1/markets", () => {
     it("should ignore unknown query parameters", async () => {
       const response = await app.inject({
         method: "GET",
-        url: "/markets?unknown=value",
+        url: "/v1/markets?unknown=value",
       });
 
       // Unknown parameters are silently ignored
@@ -229,7 +229,7 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: "/markets",
+        url: "/v1/markets",
       });
 
       expect(response.statusCode).toBe(200);
@@ -248,7 +248,7 @@ describe("Integration Tests: GET /v1/markets", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: "/markets",
+        url: "/v1/markets",
       });
 
       expect(response.statusCode).toBe(200);

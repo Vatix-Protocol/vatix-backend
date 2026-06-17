@@ -21,11 +21,11 @@ not consume the global budget and vice versa.
 
 These routes perform expensive database operations on every call:
 
-| Route                          | Reason                                         |
-| ------------------------------ | ---------------------------------------------- |
-| `GET /markets`                 | Full-table scan; no cursor-based pagination    |
-| `GET /orders/user/:address`    | Two parallel DB queries (`findMany` + `count`) |
-| `GET /positions/user/:address` | `findMany` with a `market` JOIN                |
+| Route                                | Reason                                         |
+| ------------------------------------ | ---------------------------------------------- |
+| `GET /v1/markets`                    | Full-table scan; no cursor-based pagination    |
+| `GET /v1/orders/user/:address`       | Two parallel DB queries (`findMany` + `count`) |
+| `GET /v1/wallets/{wallet}/positions` | `findMany` with a `market` JOIN                |
 
 Limit: **20 req / 60 s** per IP.
 
@@ -34,15 +34,15 @@ Limit: **20 req / 60 s** per IP.
 Mutation routes carry the highest per-request cost (input validation, DB
 write, and future matching-engine work):
 
-| Route          | Reason                                              |
-| -------------- | --------------------------------------------------- |
-| `POST /orders` | Validation + DB write + matching-engine integration |
+| Route             | Reason                                              |
+| ----------------- | --------------------------------------------------- |
+| `POST /v1/orders` | Validation + DB write + matching-engine integration |
 
 Limit: **10 req / 60 s** per IP.
 
 ### Standard endpoints
 
-All other routes (e.g. `GET /health`, admin routes) are covered only by the
+All other routes (e.g. `GET /v1/health`, admin routes) are covered only by the
 global baseline.
 
 Limit: **100 req / 60 s** per IP.

@@ -1,17 +1,23 @@
 import Fastify, {
+  type FastifyServerOptions,
   type FastifyInstance,
   type FastifyRequest,
   type FastifyReply,
 } from "fastify";
+import { pathToFileURL } from "node:url";
 import { errorHandler } from "./api/middleware/errorHandler.js";
 import positionsRouter from "./api/routes/positions.js";
 import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
 import { signingService } from "./services/signing.js";
 import "dotenv/config";
+import { getPrismaClient } from "./services/prisma.js";
 import { marketsRoutes } from "./api/routes/markets.js";
 import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { healthRoutes } from "./api/routes/health.js";
+import { readyRoute } from "./api/routes/ready.js";
+import { registerDeprecatedAliases } from "./api/routes/legacy.js";
+import { openApiSpec } from "./api/openapi.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
 import { requestIdMiddleware } from "./api/middleware/requestId.js";
@@ -22,116 +28,107 @@ import { corsPlugin } from "./api/middleware/cors.js";
 // Oversized requests are rejected with 413 Request Entity Too Large.
 const bodyLimit = Number(process.env.BODY_LIMIT_BYTES) || 65_536;
 
-interface RpcReachabilityResult {
-  url: string | null;
-  reachable: boolean;
-  error?: string;
+export interface BuildServerOptions {
+  logger?: FastifyServerOptions["logger"];
+  readyDeps?: Parameters<typeof readyRoute>[0];
+  registerTestRoutes?: boolean;
 }
 
-async function checkRpcReachability(
-  rpcUrl: string | undefined
-): Promise<RpcReachabilityResult> {
-  if (!rpcUrl) {
-    return {
-      url: null,
-      reachable: false,
-      error: "STELLAR_RPC_URL not configured",
-    };
-  }
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getHealth",
-        params: [],
-      }),
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timeout));
-    return { url: rpcUrl, reachable: res.ok || res.status < 500 };
-  } catch (err) {
-    return {
-      url: rpcUrl,
-      reachable: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
-const server: FastifyInstance = Fastify({
-  logger: true,
-  genReqId: () => crypto.randomUUID(), // Generate unique request IDs
-  bodyLimit,
-});
-
-// Register error handler (must be before routes)
-server.setErrorHandler(errorHandler);
-
-// CORS — must be registered before routes so preflight OPTIONS requests are handled
-server.register(corsPlugin);
-
-// Resolve/generate request ID before anything else touches request.id
-server.register(requestIdMiddleware);
-
-// Register request logger (before routes so every request is captured)
-server.register(requestLogger);
-
-// Apply rate limiting globally
-server.addHook("onRequest", rateLimiter);
-
-// Register API routes
-server.register(marketsRoutes);
-server.register(ordersRoutes);
-
-server.register(positionsRouter);
-server.register(adminRoutes);
-server.register(healthRoutes);
-
-server.get("/readiness", async (_req: FastifyRequest, reply: FastifyReply) => {
-  const rpcUrl = process.env.STELLAR_RPC_URL;
-  const rpcStatus = await checkRpcReachability(rpcUrl);
-  const allHealthy = rpcStatus.reachable;
-  reply.status(allHealthy ? 200 : 503);
+function createDefaultReadyDeps(): Parameters<typeof readyRoute>[0] {
   return {
-    status: allHealthy ? "ready" : "not_ready",
-    checks: {
-      stellarRpc: rpcStatus,
+    checkDatabase: async () => {
+      const prisma = getPrismaClient();
+      await prisma.$queryRaw`SELECT 1`;
+    },
+    getLastIndexedAt: async () => {
+      const prisma = getPrismaClient();
+      const cursor = await prisma.indexerCursor.findFirst({
+        orderBy: { updatedAt: "desc" },
+        select: { updatedAt: true },
+      });
+      return cursor ? cursor.updatedAt.getTime() : null;
     },
   };
-});
+}
 
-// Test routes for error handling
-server.get("/test/validation-error", async () => {
-  throw new ValidationError("Invalid input data", {
-    email: "Invalid email format",
-    password: "Password must be at least 8 characters",
+export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
+  const server: FastifyInstance = Fastify({
+    logger: options.logger ?? true,
+    genReqId: () => crypto.randomUUID(), // Generate unique request IDs
+    bodyLimit,
   });
-});
 
-server.get("/test/not-found", async () => {
-  throw new NotFoundError("Market not found");
-});
+  // Register error handler (must be before routes)
+  server.setErrorHandler(errorHandler);
 
-server.get("/test/server-error", async () => {
-  throw new Error("Something went wrong internally");
-});
+  // CORS — must be registered before routes so preflight OPTIONS requests are handled
+  server.register(corsPlugin);
 
-// Global 404 handler — must be registered after all routes
-// Throws through the error handler for consistent response format
-server.setNotFoundHandler((request: FastifyRequest, reply: FastifyReply) => {
-  const requestId = request.id;
-  reply.status(404).send({
-    error: `Route ${request.method} ${request.url} not found`,
-    requestId,
-    statusCode: 404,
+  // Resolve/generate request ID before anything else touches request.id
+  server.register(requestIdMiddleware);
+
+  // Register request logger (before routes so every request is captured)
+  server.register(requestLogger);
+
+  // Apply rate limiting globally
+  server.addHook("onRequest", rateLimiter);
+
+  // Register API routes under /v1
+  server.register(
+    async (v1) => {
+      await v1.register(marketsRoutes);
+      await v1.register(ordersRoutes);
+      await v1.register(positionsRouter);
+      await v1.register(adminRoutes);
+      await v1.register(healthRoutes);
+      await v1.register(
+        readyRoute(options.readyDeps ?? createDefaultReadyDeps())
+      );
+
+      v1.get("/openapi.json", async (_request, reply) => {
+        return reply.status(200).send(openApiSpec);
+      });
+    },
+    { prefix: "/v1" }
+  );
+
+  registerDeprecatedAliases(server);
+
+  if (options.registerTestRoutes !== false) {
+    // Test routes for error handling
+    server.get("/test/validation-error", async () => {
+      throw new ValidationError("Invalid input data", {
+        email: "Invalid email format",
+        password: "Password must be at least 8 characters",
+      });
+    });
+
+    server.get("/test/not-found", async () => {
+      throw new NotFoundError("Market not found");
+    });
+
+    server.get("/test/server-error", async () => {
+      throw new Error("Something went wrong internally");
+    });
+  }
+
+  // Global 404 handler — must be registered after all routes
+  // Throws through the error handler for consistent response format
+  server.setNotFoundHandler((request: FastifyRequest, reply: FastifyReply) => {
+    const requestId = request.id;
+    reply.status(404).send({
+      error: `Route ${request.method} ${request.url} not found`,
+      requestId,
+      statusCode: 404,
+    });
   });
-});
+
+  return server;
+}
 
 const start = async () => {
+  const server = buildServer();
+
   try {
     // Initialize signing service BEFORE starting server
     signingService.initialize();
@@ -148,4 +145,9 @@ const start = async () => {
   }
 };
 
-start();
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  start();
+}

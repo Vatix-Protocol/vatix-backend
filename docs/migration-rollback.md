@@ -86,8 +86,8 @@ After completing the rollback:
 3. **Restart the application** and verify the health endpoint responds correctly:
 
    ```bash
-   curl http://localhost:3000/health
-   # Expected: {"status":"ok","service":"vatix-backend"}
+   curl http://localhost:3000/v1/health
+   # Expected: {"status":"ok","service":"vatix-backend",...}
    ```
 
 4. **Restore application traffic** once health checks pass.

@@ -48,7 +48,7 @@ pnpm prisma:migrate dev
 pnpm dev
 ```
 
-Visit `http://localhost:3000/health` to verify.
+Visit `http://localhost:3000/v1/health` to verify.
 
 ## Development
 
@@ -183,8 +183,13 @@ See [docs/runbooks/incident-runbook.md](docs/runbooks/incident-runbook.md) for t
 
 Key endpoints with comprehensive test coverage:
 
+- `GET /v1/health` - Liveness and dependency health summary
+- `GET /v1/ready` - Readiness check for serving traffic
 - `GET /v1/markets` - Market listing with pagination and filtering
-- `GET /v1/positions/:wallet` - Wallet position data with PnL calculations
+- `GET /v1/wallets/:wallet/positions` - Wallet position data with PnL calculations
+- `POST /v1/orders` - Order placement
+- `GET /v1/orders/user/:address` - Wallet order history
+- `GET /v1/trades/user/:address` - Wallet trade history
 - Orders route docs: [docs/orders-route.md](docs/orders-route.md)
 
 ## License
