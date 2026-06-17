@@ -279,7 +279,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
 
     expect(response.statusCode).toBe(400);
     const body = JSON.parse(response.body);
-    expect(body.error).toContain("self-trade");
+    expect(body.error).toMatch(/self-trade/i);
   });
 
   it("should enqueue settlement job per trade", async () => {
