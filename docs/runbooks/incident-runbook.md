@@ -778,6 +778,25 @@ WHERE market_id = '[MARKET_ID]'
 
 ## Useful Commands & Queries
 
+### Canonical API URLs
+
+Use these URLs as the operational source of truth:
+
+| Purpose             | Method | Path                            |
+| ------------------- | ------ | ------------------------------- |
+| Health              | GET    | `/v1/health`                    |
+| Readiness           | GET    | `/v1/ready`                     |
+| Markets             | GET    | `/v1/markets`                   |
+| Market details      | GET    | `/v1/markets/:id`               |
+| Market orderbook    | GET    | `/v1/markets/:id/orderbook`     |
+| Create order        | POST   | `/v1/orders`                    |
+| User orders         | GET    | `/v1/orders/user/:address`      |
+| User trades         | GET    | `/v1/trades/user/:address`      |
+| Wallet positions    | GET    | `/v1/wallets/:wallet/positions` |
+| Admin markets       | GET    | `/v1/admin/markets`             |
+| Admin market status | PATCH  | `/v1/admin/markets/:id/status`  |
+| OpenAPI spec        | GET    | `/v1/openapi.json`              |
+
 ### Quick Health Checks
 
 ```bash
@@ -785,7 +804,7 @@ WHERE market_id = '[MARKET_ID]'
 docker ps
 
 # Backend health endpoint
-curl http://localhost:3000/health
+curl http://localhost:3000/v1/health
 
 # Database connectivity
 docker exec -it vatix-postgres pg_isready -U postgres

@@ -88,30 +88,34 @@ describe("Positions Route", () => {
     return app;
   };
 
-  it("should return 400 for invalid address on legacy endpoint", async () => {
+  it("should return 400 for invalid address on canonical endpoint", async () => {
     const app = await createTestServer();
     const response = await app.inject({
       method: "GET",
-      url: "/positions/user/0xInvalidAddress",
+      url: "/wallets/0xInvalidAddress/positions",
     });
     expect(response.statusCode).toBe(400);
   });
 
-  it("should return 200 and calculate correct payout structure on legacy endpoint", async () => {
+  it("should return 200 and calculate correct payout structure on canonical endpoint", async () => {
     const app = await createTestServer();
     const validAddress =
       "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
-      url: `/positions/user/${validAddress}`,
+      url: `/wallets/${validAddress}/positions`,
     });
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
-    expect(Array.isArray(body)).toBe(true);
-    expect(body[0].potentialPayoutIfYes).toBe(50);
-    expect(body[0].potentialPayoutIfNo).toBe(10);
-    expect(body[0].netPosition).toBe(40);
-    expect(body[0].market.question).toBe("Will it rain?");
+    expect(body.success).toBe(true);
+    expect(body.data.wallet).toBe(validAddress);
+    expect(body.data.exposures[0]).toMatchObject({
+      marketId: "market-1",
+      marketQuestion: "Will it rain?",
+      yesShares: 50,
+      noShares: 10,
+      netExposure: 40,
+    });
   });
 
   it("should return wallet exposure rows with standardized success response", async () => {

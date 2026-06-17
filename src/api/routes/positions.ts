@@ -8,12 +8,6 @@ import { ValidationError } from "../middleware/errors.js";
 import { heavyReadLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
 
-interface PositionResult {
-  yesShares: number;
-  noShares: number;
-  [key: string]: any;
-}
-
 interface WalletExposureRow {
   marketId: string;
   marketQuestion: string;
@@ -137,6 +131,7 @@ export default async function positionsRouter(server: FastifyInstance) {
   server.get(
     "/wallets/:wallet/positions",
     {
+      onRequest: [heavyReadLimiter],
       schema: {
         params: {
           type: "object",
@@ -273,51 +268,6 @@ export default async function positionsRouter(server: FastifyInstance) {
         pnlUnrealized,
         pnlTotal,
       });
-    }
-  );
-
-  // Heavy read: findMany with market JOIN — apply stricter limit.
-  server.get(
-    "/positions/user/:address",
-    {
-      onRequest: [heavyReadLimiter],
-      schema: {
-        params: {
-          type: "object",
-          required: ["address"],
-          properties: {
-            address: {
-              type: "string",
-              pattern: STELLAR_PUBLIC_KEY_REGEX.source,
-              description:
-                "Stellar public key (StrKey): starts with G and is 56 chars using [A-Z2-7]",
-            },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { address } = request.params as { address: string };
-      const prisma = getPrismaClient();
-
-      const addressError = validateUserAddress(address);
-      if (addressError) {
-        throw new ValidationError(addressError);
-      }
-
-      const positions = await prisma.userPosition.findMany({
-        where: { userAddress: address },
-        include: { market: true },
-      });
-
-      const results = positions.map((p: PositionResult) => ({
-        ...p,
-        potentialPayoutIfYes: p.yesShares,
-        potentialPayoutIfNo: p.noShares,
-        netPosition: p.yesShares - p.noShares,
-      }));
-
-      reply.status(200).send(results);
     }
   );
 }

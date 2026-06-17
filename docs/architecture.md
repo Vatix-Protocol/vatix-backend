@@ -43,6 +43,10 @@ Vatix Backend is a monorepo of services that together power the Vatix prediction
 
 ## Major Data Flows
 
+All public HTTP routes are mounted under `/v1`. The canonical positions read is
+`GET /v1/wallets/:wallet/positions`; the older
+`GET /positions/user/:address` root path is a temporary deprecation redirect.
+
 ### Order placement
 
 1. Client `POST /v1/orders` → API validates and writes order to PostgreSQL

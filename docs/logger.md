@@ -175,7 +175,7 @@ import { Logger } from "@vatix/shared";
 const logger = new Logger("MarketsRoute");
 
 export async function getMarkets(request, reply) {
-  logger.info("GET /markets request received");
+  logger.info("GET /v1/markets request received");
 
   try {
     const markets = await fetchMarkets();

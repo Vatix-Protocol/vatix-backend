@@ -41,18 +41,23 @@ describe("OpenAPI Stub", () => {
   });
 
   it("has expected API endpoints documented", () => {
-    expect(openApiSpec.paths).toHaveProperty("/health");
-    expect(openApiSpec.paths).toHaveProperty("/markets");
-    expect(openApiSpec.paths).toHaveProperty("/orders");
+    expect(openApiSpec.paths).toHaveProperty("/v1/health");
+    expect(openApiSpec.paths).toHaveProperty("/v1/markets");
+    expect(openApiSpec.paths).toHaveProperty("/v1/orders");
+    expect(openApiSpec.paths).toHaveProperty("/v1/ready");
+    expect(openApiSpec.paths).toHaveProperty("/v1/wallets/{wallet}/positions");
   });
 
   it("health endpoint is documented with GET method", () => {
-    const healthPath = openApiSpec.paths["/health"] as Record<string, unknown>;
+    const healthPath = openApiSpec.paths["/v1/health"] as Record<
+      string,
+      unknown
+    >;
     expect(healthPath).toHaveProperty("get");
   });
 
   it("markets endpoint is documented with GET method", () => {
-    const marketsPath = openApiSpec.paths["/markets"] as Record<
+    const marketsPath = openApiSpec.paths["/v1/markets"] as Record<
       string,
       unknown
     >;
@@ -60,7 +65,10 @@ describe("OpenAPI Stub", () => {
   });
 
   it("orders endpoint is documented with POST method", () => {
-    const ordersPath = openApiSpec.paths["/orders"] as Record<string, unknown>;
+    const ordersPath = openApiSpec.paths["/v1/orders"] as Record<
+      string,
+      unknown
+    >;
     expect(ordersPath).toHaveProperty("post");
   });
 

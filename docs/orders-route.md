@@ -3,7 +3,10 @@
 The orders route lets clients create market orders and fetch a wallet's order
 history. Routes are implemented in `src/api/routes/orders.ts`.
 
-## `GET /orders/user/:address`
+All public paths are mounted under `/v1`. Legacy root aliases redirect with
+deprecation headers during the compatibility window.
+
+## `GET /v1/orders/user/:address`
 
 Returns orders submitted by a Stellar wallet, sorted newest first.
 
@@ -55,7 +58,7 @@ Common errors:
 | `400`  | Invalid Stellar address, status, page, or limit. |
 | `500`  | Database lookup failed.                          |
 
-## `POST /orders`
+## `POST /v1/orders`
 
 Creates a new order after validating the wallet address, market state, price,
 quantity, side, and outcome.
@@ -116,3 +119,17 @@ Common errors:
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `400`  | Missing field, invalid Stellar address, invalid side/outcome, invalid price or quantity, unknown market, closed market, or expired market. |
 | `500`  | Database write failed.                                                                                                                     |
+
+## `GET /v1/trades/user/:address`
+
+Returns trade history for a Stellar wallet.
+
+Query parameters:
+
+| Field      | Type   | Required | Description                                     |
+| ---------- | ------ | -------- | ----------------------------------------------- |
+| `page`     | number | no       | Page number, minimum `1`. Defaults to `1`.      |
+| `limit`    | number | no       | Page size, from `1` to `100`. Defaults to `20`. |
+| `from`     | string | no       | Inclusive UTC ISO-8601 start timestamp.         |
+| `to`       | string | no       | Inclusive UTC ISO-8601 end timestamp.           |
+| `marketId` | string | no       | Restrict results to one market.                 |

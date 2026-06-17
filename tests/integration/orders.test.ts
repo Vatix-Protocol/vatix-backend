@@ -21,7 +21,7 @@ import { settlementQueue } from "../../src/services/settlement-queue.js";
 const validAddress = testUtils.generateStellarAddress("GUSER");
 const makerAddress = testUtils.generateStellarAddress("GMAKER");
 
-describe("Integration Tests: POST /orders with Matching", () => {
+describe("Integration Tests: POST /v1/orders with Matching", () => {
   let app: FastifyInstance;
   const prisma = getTestPrismaClient();
 
@@ -29,7 +29,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
     await acquireDatabaseLock();
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
-    await app.register(ordersRoutes);
+    await app.register(ordersRoutes, { prefix: "/v1" });
 
     // Mock settlement queue to track calls
     vi.spyOn(settlementQueue, "enqueue").mockResolvedValue(undefined);
@@ -67,7 +67,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
     // Taker: buy order at 0.5 (should match fully)
     const response = await app.inject({
       method: "POST",
-      url: "/orders",
+      url: "/v1/orders",
       payload: {
         marketId: market.id,
         userAddress: validAddress,
@@ -124,7 +124,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
     // Taker: buy 100 at 0.5 (only 50 will match, 50 will rest)
     const response = await app.inject({
       method: "POST",
-      url: "/orders",
+      url: "/v1/orders",
       payload: {
         marketId: market.id,
         userAddress: validAddress,
@@ -168,7 +168,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
     // No existing orders, so this should be OPEN
     const response = await app.inject({
       method: "POST",
-      url: "/orders",
+      url: "/v1/orders",
       payload: {
         marketId: market.id,
         userAddress: validAddress,
@@ -190,7 +190,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
     // Order should be visible in orderbook API
     const ordersResponse = await app.inject({
       method: "GET",
-      url: `/orders/user/${validAddress}`,
+      url: `/v1/orders/user/${validAddress}`,
     });
     expect(ordersResponse.statusCode).toBe(200);
     const ordersBody = JSON.parse(ordersResponse.body);
@@ -214,7 +214,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
     // Taker: buy 100 YES at 0.5
     await app.inject({
       method: "POST",
-      url: "/orders",
+      url: "/v1/orders",
       payload: {
         marketId: market.id,
         userAddress: validAddress,
@@ -266,7 +266,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
     // Try to place a crossing buy order from the same user
     const response = await app.inject({
       method: "POST",
-      url: "/orders",
+      url: "/v1/orders",
       payload: {
         marketId: market.id,
         userAddress: validAddress,
@@ -298,7 +298,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
     // Taker: buy 100 (1 trade)
     await app.inject({
       method: "POST",
-      url: "/orders",
+      url: "/v1/orders",
       payload: {
         marketId: market.id,
         userAddress: validAddress,
@@ -324,7 +324,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
     // Create two buy orders concurrently at different prices
     const promise1 = app.inject({
       method: "POST",
-      url: "/orders",
+      url: "/v1/orders",
       payload: {
         marketId: market.id,
         userAddress: validAddress,
@@ -337,7 +337,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
 
     const promise2 = app.inject({
       method: "POST",
-      url: "/orders",
+      url: "/v1/orders",
       payload: {
         marketId: market.id,
         userAddress: makerAddress,
@@ -386,7 +386,7 @@ describe("Integration Tests: POST /orders with Matching", () => {
     // Place matching order (book should be re-hydrated)
     const response = await app.inject({
       method: "POST",
-      url: "/orders",
+      url: "/v1/orders",
       payload: {
         marketId: market.id,
         userAddress: validAddress,
