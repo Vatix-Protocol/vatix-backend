@@ -61,22 +61,51 @@ async function bootstrap(): Promise<void> {
     metrics: metrics.toLogFields(),
   });
 
+  const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
   let isShuttingDown = false;
+
   const shutdown = async (signal: string) => {
     if (isShuttingDown) {
       return;
     }
 
     isShuttingDown = true;
-    logger.info("Indexer shutdown initiated", { signal });
+    logger.info("Indexer shutdown initiated", {
+      signal,
+      component: "indexer",
+      status: "initiated",
+    });
+
+    // Set hard timeout to force exit if shutdown hangs
+    const timeoutHandle = setTimeout(() => {
+      logger.error("Shutdown timeout exceeded, forcing exit", {
+        signal,
+        component: "indexer",
+        timeoutMs: SHUTDOWN_TIMEOUT_MS,
+      });
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
 
     try {
+      // Stop ingestion loop and flush checkpoint
       await ingestionLoop.stop();
       await disconnectPrisma();
-      logger.info("Worker shutdown complete", { signal, component: "indexer" });
+      clearTimeout(timeoutHandle);
+
+      logger.info("Indexer shutdown complete", {
+        signal,
+        component: "indexer",
+        status: "complete",
+        exitCode: 0,
+      });
       process.exit(0);
     } catch (error) {
+      clearTimeout(timeoutHandle);
       logger.error("Indexer shutdown failed", {
+        signal,
+        component: "indexer",
+        status: "failed",
+        exitCode: 1,
         error: error instanceof Error ? error.message : String(error),
       });
       process.exit(1);

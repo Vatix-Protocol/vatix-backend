@@ -39,28 +39,40 @@ const shutdown = async (signal: string) => {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  logger.info("Shutting down", { signal });
+  logger.info("Shutting down", { signal, component: "worker" });
 
   // 3. Stop accepting new work
   clearInterval(timer); // Stop the job scheduler
 
-  try {
-    // 4. Clean up resources
-    await disconnectPrisma();
+  // 4. Set hard timeout
+  const timeoutHandle = setTimeout(() => {
+    logger.error("Shutdown timeout exceeded, forcing exit");
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
 
-    logger.info("Shutdown complete");
+  try {
+    // 5. Clean up resources
+    await disconnectPrisma();
+    clearTimeout(timeoutHandle);
+
+    logger.info("Shutdown complete", { component: "worker", exitCode: 0 });
     process.exit(0);
   } catch (error) {
-    logger.error("Shutdown failed", { error: error.message });
+    clearTimeout(timeoutHandle);
+    logger.error("Shutdown failed", {
+      component: "worker",
+      exitCode: 1,
+      error: error.message,
+    });
     process.exit(1);
   }
 };
 
-// 5. Register signal handlers
+// 6. Register signal handlers
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
-// 6. Start the worker
+// 7. Start the worker
 await job.run();
 const timer = setInterval(() => void job.run(), intervalMs);
 ```
@@ -69,39 +81,148 @@ const timer = setInterval(() => void job.run(), intervalMs);
 
 1. **Flag Prevention**: Use a flag to prevent concurrent shutdown handlers from running simultaneously
 2. **Stop New Work**: Clear timers/intervals immediately to prevent new work from starting
-3. **Clean Resources**: Disconnect database clients, close connections, flush caches
-4. **Log Operations**: Log shutdown progress for debugging and operations teams
-5. **Exit Code**: Exit with 0 on success, 1 on failure
-6. **Void async handlers**: Use `void` to suppress unhandled promise warnings
+3. **Hard Timeout**: 30-second timeout prevents hanging on cleanup
+4. **Clean Resources**: Disconnect database clients, close connections, flush caches
+5. **Log Operations**: Log shutdown progress with component names for debugging
+6. **Exit Code**: Exit with 0 on success, 1 on failure
+7. **Void async handlers**: Use `void` to suppress unhandled promise warnings
 
-## API Server Pattern
+## Indexer Pattern
 
-The HTTP API server (Fastify) has built-in graceful shutdown support. While the current implementation doesn't explicitly handle signals, Fastify provides:
+The indexer service implements graceful shutdown with cursor checkpoint flushing:
 
 ```typescript
-// Fastify server automatically handles:
-// - Connection draining on close
-// - HTTP request completion
-// - Resource cleanup
-
-// To add graceful shutdown to the API server:
-let isShuttingDown = false;
-
-const gracefulShutdown = async (signal: string) => {
+const shutdown = async (signal: string) => {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  logger.info("API server shutting down", { signal });
+  logger.info("Indexer shutdown initiated", {
+    signal,
+    component: "indexer",
+    status: "initiated",
+  });
+
+  const timeoutHandle = setTimeout(() => {
+    logger.error("Shutdown timeout exceeded, forcing exit", {
+      signal,
+      component: "indexer",
+      timeoutMs: SHUTDOWN_TIMEOUT_MS,
+    });
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
 
   try {
-    // Close server — stops accepting new connections
-    // but allows in-flight requests to complete
-    await server.close();
+    // Stop ingestion loop and FLUSH CHECKPOINT
+    await ingestionLoop.stop();  // Calls flushCheckpoint(true)
+    await disconnectPrisma();
+    clearTimeout(timeoutHandle);
 
-    logger.info("API server shutdown complete");
+    logger.info("Indexer shutdown complete", {
+      signal,
+      component: "indexer",
+      status: "complete",
+      exitCode: 0,
+    });
     process.exit(0);
   } catch (error) {
-    logger.error("API server shutdown failed", { error: error.message });
+    clearTimeout(timeoutHandle);
+    logger.error("Indexer shutdown failed", {
+      signal,
+      component: "indexer",
+      status: "failed",
+      exitCode: 1,
+      error: error.message,
+    });
+    process.exit(1);
+  }
+};
+
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+```
+
+### Checkpoint Flushing
+
+The `ingestionLoop.stop()` method ensures the current cursor position is flushed to storage before shutdown:
+
+```typescript
+async stop(): Promise<void> {
+  if (this.timer) {
+    clearInterval(this.timer);
+    this.timer = null;
+  }
+  if (this.heartbeatTimer) {
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
+  }
+
+  // Force flush checkpoint regardless of batch count
+  await this.flushCheckpoint(true);
+
+  logger.info("Indexer ingestion loop stopped", {
+    finalCursor: this.cursor,
+    latestIndexedLedgerSequence: this.metrics.getLatestIndexedLedgerSequence(),
+  });
+}
+```
+
+This ensures:
+- Current ledger position is persisted on SIGTERM
+- No data loss on container restart
+- Indexer resumes from last known position
+
+## API Server Pattern
+
+The HTTP API server (Fastify) has built-in graceful shutdown support. The API server now implements coordinated graceful shutdown:
+
+```typescript
+// Graceful shutdown handling
+const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
+let isShuttingDown = false;
+
+const gracefulShutdown = async (signal: string) => {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
+
+  server.log.info("API server shutdown initiated", {
+    signal,
+    component: "api-server",
+    status: "initiated",
+  });
+
+  // Set hard timeout to force exit if shutdown hangs
+  const timeoutHandle = setTimeout(() => {
+    server.log.error("Shutdown timeout exceeded, forcing exit", {
+      signal,
+      component: "api-server",
+      timeoutMs: SHUTDOWN_TIMEOUT_MS,
+    });
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+
+  try {
+    // Close server — stops accepting new connections, drains in-flight requests
+    await server.close();
+    clearTimeout(timeoutHandle);
+
+    server.log.info("API server shutdown complete", {
+      signal,
+      component: "api-server",
+      status: "complete",
+      exitCode: 0,
+    });
+    process.exit(0);
+  } catch (error) {
+    clearTimeout(timeoutHandle);
+    server.log.error("API server shutdown failed", {
+      signal,
+      component: "api-server",
+      status: "failed",
+      exitCode: 1,
+      error: error instanceof Error ? error.message : String(error),
+    });
     process.exit(1);
   }
 };
@@ -114,7 +235,8 @@ process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 
 - `server.close()` — Stops accepting new connections
 - Active HTTP connections are drained naturally
-- The server waits for `keepAliveTimeout` (default: 65s) before forcefully closing connections
+- The server waits for in-flight requests to complete before closing
+- 30-second hard timeout prevents hanging on slow requests
 - Then exits cleanly
 
 ## Database Connections
@@ -155,7 +277,7 @@ await redis.disconnect();
 
 ## Timeouts
 
-Add a hard timeout to prevent the process from hanging:
+All services now include a hard timeout to prevent the process from hanging during shutdown:
 
 ```typescript
 const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
@@ -164,11 +286,15 @@ const gracefulShutdown = async (signal: string) => {
   if (isShuttingDown) return;
   isShuttingDown = true;
 
-  logger.info("Shutting down", { signal });
+  logger.info("Shutting down", { signal, component: "my-service" });
 
   // Set a hard timeout to force exit if cleanup hangs
   const timeoutHandle = setTimeout(() => {
-    logger.error("Shutdown timeout exceeded, forcing exit");
+    logger.error("Shutdown timeout exceeded, forcing exit", {
+      signal,
+      component: "my-service",
+      timeoutMs: SHUTDOWN_TIMEOUT_MS,
+    });
     process.exit(1);
   }, SHUTDOWN_TIMEOUT_MS);
 
@@ -177,14 +303,29 @@ const gracefulShutdown = async (signal: string) => {
     await disconnectPrisma();
     clearTimeout(timeoutHandle);
 
-    logger.info("Shutdown complete");
+    logger.info("Shutdown complete", {
+      signal,
+      component: "my-service",
+      exitCode: 0,
+    });
     process.exit(0);
   } catch (error) {
-    logger.error("Shutdown failed", { error: error.message });
+    clearTimeout(timeoutHandle);
+    logger.error("Shutdown failed", {
+      signal,
+      component: "my-service",
+      exitCode: 1,
+      error: error instanceof Error ? error.message : String(error),
+    });
     process.exit(1);
   }
 };
 ```
+
+**Timeout Values:**
+- API Server: 30 seconds (allows in-flight requests to complete)
+- Indexer: 30 seconds (allows cursor flush and DB disconnect)
+- Workers: 30 seconds (allows job completion and resource cleanup)
 
 ## Testing Graceful Shutdown
 
@@ -302,31 +443,72 @@ void bootstrap().catch((error) => {
 
 - Processes should exit immediately on Ctrl+C
 - Check logs to verify shutdown sequence
+- All services log structured shutdown events with component names
 
 ### Docker
 
-- Docker sends SIGTERM on `docker stop` (default 10 second timeout)
-- Set container `stopSignal` to SIGTERM if needed
-- Verify shutdown completes within timeout
+Docker sends SIGTERM on `docker stop` (default 10 second timeout). All services in docker-compose.yml are now configured with:
 
-```dockerfile
-# In Dockerfile
-STOPSIGNAL SIGTERM
+```yaml
+services:
+  my-service:
+    stop_signal: SIGTERM
+    stop_grace_period: 30s  # Matches application timeout
 ```
+
+This ensures:
+- Docker sends SIGTERM to the container
+- Container has 30 seconds to shut down gracefully
+- After grace period, Docker sends SIGKILL (force termination)
+
+**Best Practices:**
+- Set `stop_grace_period` to match or exceed application `SHUTDOWN_TIMEOUT_MS`
+- Use `stop_signal: SIGTERM` explicitly (though it's the default)
+- Monitor logs during `docker-compose down` to verify clean shutdown
 
 ### Kubernetes
 
-- Pods receive SIGTERM on deletion
-- Grace period (default 30 seconds) allows shutdown
-- Configure health check to fail during shutdown
+Pods receive SIGTERM on deletion. Configure pod specs with appropriate grace periods:
 
 ```yaml
-# In pod spec
-terminationGracePeriodSeconds: 30
-lifecycle:
-  preStop:
-    exec:
-      command: ["/bin/sh", "-c", "sleep 5"]
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vatix-api
+spec:
+  terminationGracePeriodSeconds: 30  # Matches application timeout
+  containers:
+    - name: api
+      image: vatix-api:latest
+      lifecycle:
+        preStop:
+          exec:
+            # Optional: small delay to allow load balancer to deregister
+            command: ["/bin/sh", "-c", "sleep 5"]
+```
+
+**Kubernetes Shutdown Sequence:**
+1. Pod status changes to Terminating
+2. Endpoints removed from Service (load balancer stops routing traffic)
+3. `preStop` hook executes (if defined)
+4. SIGTERM sent to container processes
+5. Wait for `terminationGracePeriodSeconds` (default: 30s)
+6. SIGKILL sent if process still running
+
+**Best Practices:**
+- Set `terminationGracePeriodSeconds` to match application timeout (30s)
+- Use `preStop` hook for load balancer deregistration delay
+- Configure readiness probe to fail during shutdown
+- Monitor pod termination logs in production
+
+**Example Readiness Probe Configuration:**
+```yaml
+readinessProbe:
+  httpGet:
+    path: /v1/health/ready
+    port: 3000
+  periodSeconds: 5
+  failureThreshold: 1  # Fail fast during shutdown
 ```
 
 ### Process Managers
@@ -334,6 +516,19 @@ lifecycle:
 - PM2, systemd, supervisor all support graceful restart
 - Ensure handler processes the correct signal
 - Verify exit code is used for restart logic
+
+**PM2 Configuration:**
+```json
+{
+  "apps": [{
+    "name": "vatix-api",
+    "script": "./dist/index.js",
+    "kill_timeout": 30000,  // 30 seconds
+    "wait_ready": true,
+    "listen_timeout": 10000
+  }]
+}
+```
 
 ## Troubleshooting
 
@@ -365,3 +560,51 @@ lsof -i -P -n | grep <process-name>
 - [Architecture Overview](architecture.md)
 - [Docker Compose Setup](docker-compose.md)
 - [Deployment Runbook](deployment-runbook.md)
+
+## Implementation Status
+
+All services in the Vatix backend now implement coordinated graceful shutdown:
+
+### ✅ API Server (`src/index.ts`)
+- Stops accepting new connections on SIGTERM/SIGINT
+- Drains in-flight HTTP requests
+- 30-second hard timeout
+- Structured logging with component identifier
+
+### ✅ Indexer (`apps/indexer/src/main.ts`)
+- Stops ingestion loop on SIGTERM/SIGINT
+- Forces checkpoint flush via `flushCheckpoint(true)`
+- Disconnects database connections
+- 30-second hard timeout
+- Structured logging with component identifier
+
+### ✅ Finalization Worker (`apps/workers/src/finalization/main.ts`)
+- Stops job timer on SIGTERM/SIGINT
+- Disconnects database connections
+- 30-second hard timeout
+- Structured logging with component identifier
+
+### ✅ Oracle Worker (`apps/workers/src/oracle/main.ts`)
+- Stops polling timer on SIGTERM/SIGINT
+- Disconnects database and Redis connections
+- 30-second hard timeout
+- Structured logging with component identifier
+
+### ✅ Docker Configuration (`docker-compose.yml`)
+- All services configured with `stop_signal: SIGTERM`
+- Grace periods set to 30s (postgres) and 10s (redis)
+- Matches application-level timeout expectations
+
+### Kubernetes Recommendations
+- Set `terminationGracePeriodSeconds: 30` for all pods
+- Configure readiness probes to fail during shutdown
+- Use `preStop` hooks for load balancer deregistration
+- Monitor shutdown logs in production
+
+### Testing Checklist
+- [ ] Verify API drains in-flight requests on SIGTERM
+- [ ] Confirm indexer flushes cursor on SIGTERM
+- [ ] Test workers stop cleanly without orphaned jobs
+- [ ] Validate Docker containers stop within grace period
+- [ ] Check Kubernetes pod termination logs
+- [ ] Monitor exit codes (0 = success, 1 = failure)

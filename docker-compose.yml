@@ -4,6 +4,8 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: vatix-postgres
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -16,6 +18,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: vatix-redis
+    stop_signal: SIGTERM
+    stop_grace_period: 10s
     ports:
       - "6379:6379"
     volumes:

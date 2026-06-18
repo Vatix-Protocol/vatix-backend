@@ -77,6 +77,7 @@ async function bootstrap(): Promise<void> {
   );
 
   const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
 
   let isShuttingDown = false;
   const shutdown: ShutdownHandler = async (signal: ShutdownSignal) => {
@@ -105,11 +106,24 @@ async function bootstrap(): Promise<void> {
       status: "initiated",
     });
 
+    // Stop polling for new jobs
     clearInterval(timer);
 
+    // Set hard timeout to force exit if shutdown hangs
+    const timeoutHandle = setTimeout(() => {
+      logger.error("Shutdown timeout exceeded, forcing exit", {
+        signal,
+        component: "oracle-worker",
+        timeoutMs: SHUTDOWN_TIMEOUT_MS,
+      });
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+
     try {
+      // Clean up resources
       await disconnectPrisma();
       await redis.disconnect();
+      clearTimeout(timeoutHandle);
 
       logger.info("Oracle worker shutdown complete", {
         signal,
@@ -119,6 +133,7 @@ async function bootstrap(): Promise<void> {
       });
       process.exit(0);
     } catch (error) {
+      clearTimeout(timeoutHandle);
       logger.error("Oracle worker shutdown failed", {
         signal,
         component: "oracle-worker",
