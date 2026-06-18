@@ -179,8 +179,11 @@ jobs:
       - name: Check code formatting
         run: pnpm format:check
 
-      - name: Check TypeScript
+      - name: Check TypeScript (src)
         run: pnpm tsc --noEmit
+
+      - name: Check TypeScript (apps + packages)
+        run: pnpm tsc --noEmit -p apps/tsconfig.json
 
   build:
     name: Build
