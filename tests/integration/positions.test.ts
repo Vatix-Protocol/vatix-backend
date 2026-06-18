@@ -60,7 +60,37 @@ describe("Integration Tests: GET /v1/wallets/:wallet/positions", () => {
       expect(position.isSettled).toBe(false);
     });
 
-    it("should calculate PnL fields and totals correctly", async () => {
+    it("should omit PnL fields by default (includePnl not set)", async () => {
+      const market = await testUtils.createTestMarket({
+        question: "PnL omitted by default test",
+      });
+
+      await testUtils.createTestPosition(market.id, testWallet, {
+        yesShares: 200,
+        noShares: 50,
+        lockedCollateral: 3.75,
+      });
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/wallets/${testWallet}/positions`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+
+      expect(body.data.exposures).toHaveLength(1);
+      const position = body.data.exposures[0];
+
+      expect(position.netExposure).toBe(150); // 200 - 50
+      expect(position.pnlRealized).toBeUndefined();
+      expect(position.pnlUnrealized).toBeUndefined();
+      expect(body.data.pnlRealized).toBeUndefined();
+      expect(body.data.pnlUnrealized).toBeUndefined();
+      expect(body.data.pnlTotal).toBeUndefined();
+    });
+
+    it("should calculate PnL fields and totals correctly when includePnl=true", async () => {
       // Create test market
       const market = await testUtils.createTestMarket({
         question: "PnL calculation test",
@@ -75,7 +105,7 @@ describe("Integration Tests: GET /v1/wallets/:wallet/positions", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: `/v1/wallets/${testWallet}/positions`,
+        url: `/v1/wallets/${testWallet}/positions?includePnl=true`,
       });
 
       expect(response.statusCode).toBe(200);

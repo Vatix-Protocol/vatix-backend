@@ -186,7 +186,7 @@ Key endpoints with comprehensive test coverage:
 - `GET /v1/health` - Liveness and dependency health summary
 - `GET /v1/ready` - Readiness check for serving traffic
 - `GET /v1/markets` - Market listing with pagination and filtering
-- `GET /v1/wallets/:wallet/positions` - Wallet position data with PnL calculations
+- `GET /v1/wallets/:wallet/positions` - Wallet position exposures; pass `?includePnl=true` for PnL calculations (response DTO: [docs/schema.md](docs/schema.md#api-response-dtos))
 - `POST /v1/orders` - Order placement
 - `GET /v1/orders/user/:address` - Wallet order history
 - `GET /v1/trades/user/:address` - Wallet trade history

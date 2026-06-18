@@ -141,12 +141,30 @@ describe("Positions Route", () => {
     });
   });
 
-  it("should include pnlRealized on settled positions", async () => {
+  it("should omit PnL fields by default (includePnl not set)", async () => {
     const app = await createTestServer();
     const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
       url: `/wallets/${wallet}/positions`,
+    });
+    const { data } = JSON.parse(response.body);
+
+    expect(data.pnlRealized).toBeUndefined();
+    expect(data.pnlUnrealized).toBeUndefined();
+    expect(data.pnlTotal).toBeUndefined();
+    for (const exposure of data.exposures) {
+      expect(exposure.pnlRealized).toBeUndefined();
+      expect(exposure.pnlUnrealized).toBeUndefined();
+    }
+  });
+
+  it("should include pnlRealized on settled positions when includePnl=true", async () => {
+    const app = await createTestServer();
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
+    const response = await app.inject({
+      method: "GET",
+      url: `/wallets/${wallet}/positions?includePnl=true`,
     });
     const { data } = JSON.parse(response.body);
 
@@ -156,12 +174,12 @@ describe("Positions Route", () => {
     expect(settled.pnlUnrealized).toBeNull();
   });
 
-  it("should include pnlUnrealized on open positions using mid-price", async () => {
+  it("should include pnlUnrealized on open positions using mid-price when includePnl=true", async () => {
     const app = await createTestServer();
     const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
-      url: `/wallets/${wallet}/positions`,
+      url: `/wallets/${wallet}/positions?includePnl=true`,
     });
     const { data } = JSON.parse(response.body);
 
@@ -173,12 +191,12 @@ describe("Positions Route", () => {
     expect(open.pnlRealized).toBeNull();
   });
 
-  it("should return correct pnlTotal, pnlRealized, pnlUnrealized summary", async () => {
+  it("should return correct pnlTotal, pnlRealized, pnlUnrealized summary when includePnl=true", async () => {
     const app = await createTestServer();
     const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
-      url: `/wallets/${wallet}/positions`,
+      url: `/wallets/${wallet}/positions?includePnl=true`,
     });
     const { data } = JSON.parse(response.body);
 
@@ -188,7 +206,7 @@ describe("Positions Route", () => {
     expect(data.pnlTotal).toBe("46.50000000");
   });
 
-  it("should return 200 with empty list and zero totals for new wallet (empty state)", async () => {
+  it("should return 200 with empty list and zero totals for new wallet (empty state, includePnl=true)", async () => {
     const { getPrismaClient } = await import("../../services/prisma");
     const prisma = getPrismaClient() as any;
     prisma.userPosition.findMany.mockResolvedValueOnce([]);
@@ -198,7 +216,7 @@ describe("Positions Route", () => {
     const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
-      url: `/wallets/${wallet}/positions`,
+      url: `/wallets/${wallet}/positions?includePnl=true`,
     });
 
     expect(response.statusCode).toBe(200);
@@ -211,7 +229,7 @@ describe("Positions Route", () => {
     expect(body.data.pnlTotal).toBe("0.00000000");
   });
 
-  it("should return null pnlUnrealized when no open orders exist to price position", async () => {
+  it("should return null pnlUnrealized when no open orders exist to price position (includePnl=true)", async () => {
     const { getPrismaClient } = await import("../../services/prisma");
     const prisma = getPrismaClient() as any;
     prisma.userPosition.findMany.mockResolvedValueOnce([mockPositions[0]]);
@@ -221,12 +239,27 @@ describe("Positions Route", () => {
     const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
-      url: `/wallets/${wallet}/positions`,
+      url: `/wallets/${wallet}/positions?includePnl=true`,
     });
 
     const { data } = JSON.parse(response.body);
     expect(data.exposures[0].pnlUnrealized).toBeNull();
     expect(data.pnlUnrealized).toBe("0.00000000");
+  });
+
+  it("should not query the order book when includePnl is not set", async () => {
+    const { getPrismaClient } = await import("../../services/prisma");
+    const prisma = getPrismaClient() as any;
+    prisma.order.groupBy.mockClear();
+
+    const app = await createTestServer();
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
+    await app.inject({
+      method: "GET",
+      url: `/wallets/${wallet}/positions`,
+    });
+
+    expect(prisma.order.groupBy).not.toHaveBeenCalled();
   });
 
   it("should return 400 for invalid wallet identifier on wallet exposure endpoint", async () => {
