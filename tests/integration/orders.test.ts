@@ -8,7 +8,9 @@ import {
   vi,
 } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { Keypair } from "@stellar/stellar-sdk";
 import { ordersRoutes } from "../../src/api/routes/orders.js";
+import { buildSignableMessage } from "../../src/api/middleware/stellarAuth.js";
 import { buildTestApp, resetRateLimits } from "./helpers/build-test-app.js";
 import { testUtils, getTestPrismaClient } from "../setup.js";
 import {
@@ -18,8 +20,30 @@ import {
 import { matchingService } from "../../src/matching/matching-service.js";
 import { settlementQueue } from "../../src/services/settlement-queue.js";
 
-const userAddress = testUtils.generateStellarAddress("GUSER");
-const makerAddress = testUtils.generateStellarAddress("GMAKER");
+// Real keypairs so POST /orders requests can carry valid Ed25519 signatures.
+const userKeypair = Keypair.random();
+const makerKeypair = Keypair.random();
+const userAddress = userKeypair.publicKey();
+const makerAddress = makerKeypair.publicKey();
+
+/** Returns the two auth headers required by POST /v1/orders. */
+function authHeaders(
+  keypair: Keypair,
+  body: {
+    marketId: string;
+    userAddress: string;
+    side: string;
+    outcome: string;
+    price: number;
+    quantity: number;
+  }
+): Record<string, string> {
+  const timestamp = Date.now();
+  const sig = keypair
+    .sign(buildSignableMessage({ ...body, timestamp }))
+    .toString("base64");
+  return { "x-signature": sig, "x-timestamp": String(timestamp) };
+}
 
 // ---------------------------------------------------------------------------
 // Acceptance criteria: creation, validation, persistence, listing
@@ -50,17 +74,19 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
   it("returns 201 with order.id and status: OPEN for a valid payload on an ACTIVE market", async () => {
     const market = await testUtils.createTestMarket({ status: "ACTIVE" });
 
+    const payload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 10,
+    };
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 10,
-      },
+      headers: authHeaders(userKeypair, payload),
+      payload,
     });
 
     expect(res.statusCode).toBe(201);
@@ -79,17 +105,19 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
   it("persists the created order to the DB with correct fields", async () => {
     const market = await testUtils.createTestMarket({ status: "ACTIVE" });
 
+    const payload = {
+      marketId: market.id,
+      userAddress,
+      side: "SELL",
+      outcome: "NO",
+      price: 0.3,
+      quantity: 5,
+    };
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "SELL",
-        outcome: "NO",
-        price: 0.3,
-        quantity: 5,
-      },
+      headers: authHeaders(userKeypair, payload),
+      payload,
     });
 
     expect(res.statusCode).toBe(201);
@@ -110,17 +138,19 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
   it("serializes price as a decimal string in the response", async () => {
     const market = await testUtils.createTestMarket({ status: "ACTIVE" });
 
+    const payload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.25,
+      quantity: 1,
+    };
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.25,
-        quantity: 1,
-      },
+      headers: authHeaders(userKeypair, payload),
+      payload,
     });
 
     expect(res.statusCode).toBe(201);
@@ -131,17 +161,19 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
   });
 
   it("returns 400 for a non-existent market", async () => {
+    const payload = {
+      marketId: "00000000-0000-0000-0000-000000000000",
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 1,
+    };
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: "00000000-0000-0000-0000-000000000000",
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 1,
-      },
+      headers: authHeaders(userKeypair, payload),
+      payload,
     });
     expect(res.statusCode).toBe(400);
   });
@@ -149,17 +181,19 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
   it("returns 400 for a CANCELLED market", async () => {
     const market = await testUtils.createTestMarket({ status: "CANCELLED" });
 
+    const payload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 1,
+    };
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 1,
-      },
+      headers: authHeaders(userKeypair, payload),
+      payload,
     });
     expect(res.statusCode).toBe(400);
   });
@@ -200,12 +234,18 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("returns 400 for an invalid Stellar address", async () => {
+  it("returns 401 for an invalid Stellar address (cannot verify wallet ownership)", async () => {
     const market = await testUtils.createTestMarket({ status: "ACTIVE" });
 
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
+      // No valid signature can be produced for a non-Stellar address; the
+      // middleware rejects with 401 before application validation runs.
+      headers: {
+        "x-signature": "aW52YWxpZA==",
+        "x-timestamp": String(Date.now()),
+      },
       payload: {
         marketId: market.id,
         userAddress: "not-a-stellar-address",
@@ -215,7 +255,7 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
         quantity: 1,
       },
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(401);
   });
 
   it("returns 400 for quantity = 0", async () => {
@@ -283,17 +323,19 @@ describe("GET /v1/orders/user/:address — listing and status filter", () => {
   it("returns the created order after POST", async () => {
     const market = await testUtils.createTestMarket({ status: "ACTIVE" });
 
+    const createPayload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 7,
+    };
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 7,
-      },
+      headers: authHeaders(userKeypair, createPayload),
+      payload: createPayload,
     });
 
     const res = await app.inject({
@@ -385,17 +427,19 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
       }
     );
 
+    const filledPayload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 100,
+    };
     const response = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 100,
-      },
+      headers: authHeaders(userKeypair, filledPayload),
+      payload: filledPayload,
     });
 
     expect(response.statusCode).toBe(201);
@@ -433,17 +477,19 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
       }
     );
 
+    const partialPayload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 100,
+    };
     const response = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 100,
-      },
+      headers: authHeaders(userKeypair, partialPayload),
+      payload: partialPayload,
     });
 
     expect(response.statusCode).toBe(201);
@@ -469,17 +515,19 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
   it("should create OPEN order when no match found", async () => {
     const market = await testUtils.createTestMarket({ status: "ACTIVE" });
 
+    const openPayload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 100,
+    };
     const response = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 100,
-      },
+      headers: authHeaders(userKeypair, openPayload),
+      payload: openPayload,
     });
 
     expect(response.statusCode).toBe(201);
@@ -511,17 +559,19 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
       status: "OPEN",
     });
 
+    const posPayload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 100,
+    };
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 100,
-      },
+      headers: authHeaders(userKeypair, posPayload),
+      payload: posPayload,
     });
 
     const takerPos = await prisma.userPosition.findUnique({
@@ -554,17 +604,19 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
       status: "OPEN",
     });
 
+    const selfTradePayload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 100,
+    };
     const response = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 100,
-      },
+      headers: authHeaders(userKeypair, selfTradePayload),
+      payload: selfTradePayload,
     });
 
     expect(response.statusCode).toBe(400);
@@ -584,17 +636,19 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
       status: "OPEN",
     });
 
+    const settlementPayload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 100,
+    };
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 100,
-      },
+      headers: authHeaders(userKeypair, settlementPayload),
+      payload: settlementPayload,
     });
 
     expect(settlementQueue.enqueue).toHaveBeenCalledTimes(1);
@@ -608,30 +662,34 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
   it("should serialize concurrent orders to same market", async () => {
     const market = await testUtils.createTestMarket({ status: "ACTIVE" });
 
+    const concPayload1 = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.3,
+      quantity: 50,
+    };
+    const concPayload2 = {
+      marketId: market.id,
+      userAddress: makerAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.4,
+      quantity: 50,
+    };
     const [response1, response2] = await Promise.all([
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        payload: {
-          marketId: market.id,
-          userAddress,
-          side: "BUY",
-          outcome: "YES",
-          price: 0.3,
-          quantity: 50,
-        },
+        headers: authHeaders(userKeypair, concPayload1),
+        payload: concPayload1,
       }),
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        payload: {
-          marketId: market.id,
-          userAddress: makerAddress,
-          side: "BUY",
-          outcome: "YES",
-          price: 0.4,
-          quantity: 50,
-        },
+        headers: authHeaders(makerKeypair, concPayload2),
+        payload: concPayload2,
       }),
     ]);
 
@@ -660,17 +718,19 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
 
     (matchingService as any).books?.clear();
 
+    const rebuildPayload = {
+      marketId: market.id,
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 100,
+    };
     const response = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      payload: {
-        marketId: market.id,
-        userAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.5,
-        quantity: 100,
-      },
+      headers: authHeaders(userKeypair, rebuildPayload),
+      payload: rebuildPayload,
     });
 
     expect(response.statusCode).toBe(201);
