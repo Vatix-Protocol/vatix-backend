@@ -156,8 +156,8 @@ docker logs vatix-indexer 2>&1 | grep -i "connection\|pool\|error"
 **C. Cursor Corruption or Invalid State**
 
 ```sql
--- Check cursor ledger sequence
-SELECT cursor_key, ledger_sequence, updated_at
+-- Check cursor value
+SELECT network_id, cursor_key, cursor_value, updated_at
 FROM indexer_cursors
 WHERE cursor_key = 'ingestion';
 
@@ -183,9 +183,9 @@ docker logs vatix-indexer --tail 50 --follow
 -- WARNING: Only if cursor is stuck on invalid ledger
 -- Get current ledger from Horizon first
 UPDATE indexer_cursors
-SET ledger_sequence = [CURRENT_LEDGER - 100],
+SET cursor_value = '[CURRENT_LEDGER - 100]',
     updated_at = NOW()
-WHERE cursor_key = 'ingestion';
+WHERE network_id = 'testnet' AND cursor_key = 'ingestion';
 ```
 
 **C. Manual Event Backfill (If Gap Detected)**
@@ -204,10 +204,30 @@ FROM events
 WHERE source_at > NOW() - INTERVAL '5 minutes';
 
 -- Verify cursor is advancing
-SELECT * FROM indexer_cursors WHERE cursor_key = 'ingestion';
+SELECT network_id, cursor_key, cursor_value, updated_at
+FROM indexer_cursors
+WHERE cursor_key = 'ingestion';
 
 -- Check for recent market creations
 SELECT * FROM markets ORDER BY created_at DESC LIMIT 5;
+```
+
+#### Step 4b: Cursor Verification (Post-Deploy)
+
+After any deploy or restart, verify the cursor row is correctly persisted:
+
+```sql
+-- Confirm cursor_value is non-null and recently updated
+SELECT network_id, cursor_key, cursor_value, updated_at
+FROM indexer_cursors
+WHERE network_id = 'testnet' AND cursor_key = 'ingestion';
+-- Expected: cursor_value is a ledger sequence string (e.g. '1234567'), updated_at is recent
+
+-- If cursor_value is NULL or row is absent, the indexer will re-index from ledger 0.
+-- Insert a known-good starting ledger to avoid full re-scan:
+INSERT INTO indexer_cursors (network_id, cursor_key, cursor_value)
+VALUES ('testnet', 'ingestion', '[LAST_KNOWN_GOOD_LEDGER]')
+ON CONFLICT (network_id, cursor_key) DO UPDATE SET cursor_value = EXCLUDED.cursor_value;
 ```
 
 #### Step 5: Prevention

@@ -1,5 +1,5 @@
 import { getPrismaClient } from "../../../src/services/prisma.js";
-import type { ILogger } from "../../packages/shared/src/logger.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
 
 export interface CursorStorageClient {
   loadCursor(): Promise<string | null>;
@@ -57,10 +57,11 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
         },
       });
     });
-    this.logger?.debug("Ledger cursor saved", {
+    this.logger?.info("Indexer cursor saved", {
+      event: "indexer.cursor.saved",
+      cursorValue: cursor,
       networkId: this.networkId,
       cursorKey: this.cursorKey,
-      cursor,
     });
   }
 }
