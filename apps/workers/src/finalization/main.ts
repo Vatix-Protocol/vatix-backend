@@ -25,6 +25,7 @@ async function bootstrap(): Promise<void> {
   const timer = setInterval(() => void job.run(), config.intervalMs);
 
   const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
 
   let isShuttingDown = false;
   const shutdown: ShutdownHandler = async (signal: ShutdownSignal) => {
@@ -52,10 +53,25 @@ async function bootstrap(): Promise<void> {
       component: "finalization-worker",
       status: "initiated",
     });
+
+    // Stop accepting new jobs
     clearInterval(timer);
 
+    // Set hard timeout to force exit if shutdown hangs
+    const timeoutHandle = setTimeout(() => {
+      logger.error("Shutdown timeout exceeded, forcing exit", {
+        signal,
+        component: "finalization-worker",
+        timeoutMs: SHUTDOWN_TIMEOUT_MS,
+      });
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+
     try {
+      // Clean up resources
       await disconnectPrisma();
+      clearTimeout(timeoutHandle);
+
       logger.info("Finalization worker shutdown complete", {
         signal,
         component: "finalization-worker",
@@ -64,6 +80,7 @@ async function bootstrap(): Promise<void> {
       });
       process.exit(0);
     } catch (error) {
+      clearTimeout(timeoutHandle);
       logger.error("Finalization worker shutdown failed", {
         signal,
         component: "finalization-worker",
