@@ -187,3 +187,22 @@ export const writeLimiter: RateLimiterMiddleware = (request, reply, done) => {
     10
   );
 };
+
+/**
+ * Admin rate limiter — applied to all admin routes.
+ * Stricter than the global baseline; admin operations are privileged and
+ * already gated behind API-key + admin-role checks.
+ * Limit: 30 req / 60 s (configurable via RATE_LIMIT_ADMIN_MAX / RATE_LIMIT_ADMIN_WINDOW_MS).
+ */
+export const adminLimiter: RateLimiterMiddleware = (request, reply, done) => {
+  applyLimit(
+    request,
+    reply,
+    done,
+    "admin",
+    "RATE_LIMIT_ADMIN_WINDOW_MS",
+    "RATE_LIMIT_ADMIN_MAX",
+    60_000,
+    30
+  );
+};

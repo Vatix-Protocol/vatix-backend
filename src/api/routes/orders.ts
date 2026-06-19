@@ -92,6 +92,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
   }>(
     "/trades/user/:address",
     {
+      onRequest: [heavyReadLimiter],
       schema: {
         params: {
           type: "object",
