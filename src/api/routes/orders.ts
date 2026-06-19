@@ -11,6 +11,7 @@ import {
 } from "../../matching/validation.js";
 import { heavyReadLimiter, writeLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
+import { verifyStellarSignature } from "../middleware/stellarAuth.js";
 
 export interface GetUserOrdersParams {
   address: string;
@@ -328,6 +329,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
     "/orders",
     {
       onRequest: [writeLimiter],
+      preHandler: [verifyStellarSignature],
       schema: {
         body: {
           type: "object",

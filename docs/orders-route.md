@@ -60,10 +60,72 @@ Common errors:
 
 ## `POST /v1/orders`
 
-Creates a new order after validating the wallet address, market state, price,
-quantity, side, and outcome.
+Creates a new order after validating wallet ownership via Ed25519 signature,
+then checking the market state, price, quantity, side, and outcome.
 
-### Request
+### Authentication
+
+Every `POST /v1/orders` request must carry two headers that prove the caller
+controls the Stellar wallet identified by `userAddress`.
+
+| Header        | Type   | Description                                                            |
+| ------------- | ------ | ---------------------------------------------------------------------- |
+| `x-timestamp` | string | Current Unix time in **milliseconds** as a decimal string.             |
+| `x-signature` | string | Base64-encoded Ed25519 signature of the canonical message (see below). |
+
+The server rejects requests whose `x-timestamp` differs from server time by
+more than **5 minutes** to prevent replay attacks.
+
+#### Canonical message
+
+Build the UTF-8 JSON string with the following keys in **alphabetical order**
+and sign its raw bytes with the wallet's Ed25519 private key:
+
+```json
+{
+  "marketId": "<marketId from body>",
+  "outcome": "<outcome from body>",
+  "price": <price from body>,
+  "quantity": <quantity from body>,
+  "side": "<side from body>",
+  "timestamp": <x-timestamp value as number>,
+  "userAddress": "<userAddress from body>"
+}
+```
+
+#### Example (TypeScript / `@stellar/stellar-sdk`)
+
+```typescript
+import { Keypair } from "@stellar/stellar-sdk";
+import { buildSignableMessage } from "src/api/middleware/stellarAuth";
+
+const keypair = Keypair.fromSecret("S...");
+const timestamp = Date.now();
+
+const body = {
+  marketId: "market-1",
+  userAddress: keypair.publicKey(),
+  side: "BUY",
+  outcome: "YES",
+  price: 0.6,
+  quantity: 100,
+};
+
+const message = buildSignableMessage({ ...body, timestamp });
+const signature = keypair.sign(message).toString("base64");
+
+fetch("/v1/orders", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-timestamp": String(timestamp),
+    "x-signature": signature,
+  },
+  body: JSON.stringify(body),
+});
+```
+
+### Request body
 
 ```json
 {
@@ -93,23 +155,20 @@ Success returns HTTP `201`.
 
 ```json
 {
-  "success": true,
-  "data": {
-    "order": {
-      "id": "order-123",
-      "marketId": "market-1",
-      "userAddress": "G...",
-      "side": "BUY",
-      "outcome": "YES",
-      "price": "0.6",
-      "quantity": 100,
-      "filledQuantity": 0,
-      "status": "OPEN",
-      "createdAt": "2026-01-20T00:00:00.000Z"
-    }
+  "order": {
+    "id": "order-123",
+    "marketId": "market-1",
+    "userAddress": "G...",
+    "side": "BUY",
+    "outcome": "YES",
+    "price": "0.6",
+    "quantity": 100,
+    "filledQuantity": 0,
+    "status": "OPEN",
+    "createdAt": "2026-01-20T00:00:00.000Z"
   },
-  "requestId": "7fd69c48-8c45-4b3f-9d23-55d542e6ab2f",
-  "timestamp": "2026-01-20T00:00:00.000Z"
+  "trades": [],
+  "filledQuantity": 0
 }
 ```
 
@@ -118,6 +177,7 @@ Common errors:
 | Status | Cause                                                                                                                                      |
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `400`  | Missing field, invalid Stellar address, invalid side/outcome, invalid price or quantity, unknown market, closed market, or expired market. |
+| `401`  | Missing or invalid `x-signature`/`x-timestamp` headers, expired timestamp, or signature mismatch.                                          |
 | `500`  | Database write failed.                                                                                                                     |
 
 ## `GET /v1/trades/user/:address`
