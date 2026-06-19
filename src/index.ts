@@ -150,19 +150,25 @@ const start = async () => {
       }
       isShuttingDown = true;
 
-      server.log.info("API server shutdown initiated", {
-        signal,
-        component: "api-server",
-        status: "initiated",
-      });
+      server.log.info(
+        {
+          signal,
+          component: "api-server",
+          status: "initiated",
+        },
+        "API server shutdown initiated"
+      );
 
       // Set hard timeout to force exit if shutdown hangs
       const timeoutHandle = setTimeout(() => {
-        server.log.error("Shutdown timeout exceeded, forcing exit", {
-          signal,
-          component: "api-server",
-          timeoutMs: SHUTDOWN_TIMEOUT_MS,
-        });
+        server.log.error(
+          {
+            signal,
+            component: "api-server",
+            timeoutMs: SHUTDOWN_TIMEOUT_MS,
+          },
+          "Shutdown timeout exceeded, forcing exit"
+        );
         process.exit(1);
       }, SHUTDOWN_TIMEOUT_MS);
 
@@ -171,22 +177,28 @@ const start = async () => {
         await server.close();
         clearTimeout(timeoutHandle);
 
-        server.log.info("API server shutdown complete", {
-          signal,
-          component: "api-server",
-          status: "complete",
-          exitCode: 0,
-        });
+        server.log.info(
+          {
+            signal,
+            component: "api-server",
+            status: "complete",
+            exitCode: 0,
+          },
+          "API server shutdown complete"
+        );
         process.exit(0);
       } catch (error) {
         clearTimeout(timeoutHandle);
-        server.log.error("API server shutdown failed", {
-          signal,
-          component: "api-server",
-          status: "failed",
-          exitCode: 1,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        server.log.error(
+          {
+            signal,
+            component: "api-server",
+            status: "failed",
+            exitCode: 1,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "API server shutdown failed"
+        );
         process.exit(1);
       }
     };

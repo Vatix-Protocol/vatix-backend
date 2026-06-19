@@ -113,7 +113,7 @@ const shutdown = async (signal: string) => {
 
   try {
     // Stop ingestion loop and FLUSH CHECKPOINT
-    await ingestionLoop.stop();  // Calls flushCheckpoint(true)
+    await ingestionLoop.stop(); // Calls flushCheckpoint(true)
     await disconnectPrisma();
     clearTimeout(timeoutHandle);
 
@@ -167,6 +167,7 @@ async stop(): Promise<void> {
 ```
 
 This ensures:
+
 - Current ledger position is persisted on SIGTERM
 - No data loss on container restart
 - Indexer resumes from last known position
@@ -493,12 +494,14 @@ lsof -i -P -n | grep <process-name>
 All services in the Vatix backend now implement coordinated graceful shutdown:
 
 ### ✅ API Server (`src/index.ts`)
+
 - Stops accepting new connections on SIGTERM/SIGINT
 - Drains in-flight HTTP requests
 - 30-second hard timeout
 - Structured logging with component identifier
 
 ### ✅ Indexer (`apps/indexer/src/main.ts`)
+
 - Stops ingestion loop on SIGTERM/SIGINT
 - Forces checkpoint flush via `flushCheckpoint(true)`
 - Disconnects database connections
@@ -506,18 +509,21 @@ All services in the Vatix backend now implement coordinated graceful shutdown:
 - Structured logging with component identifier
 
 ### ✅ Finalization Worker (`apps/workers/src/finalization/main.ts`)
+
 - Stops job timer on SIGTERM/SIGINT
 - Disconnects database connections
 - 30-second hard timeout
 - Structured logging with component identifier
 
 ### ✅ Oracle Worker (`apps/workers/src/oracle/main.ts`)
+
 - Stops polling timer on SIGTERM/SIGINT
 - Disconnects database and Redis connections
 - 30-second hard timeout
 - Structured logging with component identifier
 
 ### ✅ Docker Configuration (`docker-compose.yml`)
+
 - All services configured with `stop_signal: SIGTERM`
 - Grace periods set to 30s (postgres) and 10s (redis)
 - Matches application-level timeout expectations
