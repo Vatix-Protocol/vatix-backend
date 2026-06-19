@@ -5,35 +5,26 @@ import { errorHandler } from "../middleware/errorHandler.js";
 import type { PrismaClient } from "../../generated/prisma/client";
 import { clearRateLimitStores } from "../middleware/rateLimiter.js";
 
-const {
-  mockAuditService,
-  mockPrismaClient,
-  mockMatchingService,
-  mockVerifyStellarSignature,
-} = vi.hoisted(() => ({
-  mockAuditService: {
-    getWalletTradeHistory: vi.fn(),
-  },
-  mockPrismaClient: {
-    order: {
-      findMany: vi.fn(),
-      count: vi.fn(),
-      create: vi.fn(),
+const { mockAuditService, mockPrismaClient, mockMatchingService } = vi.hoisted(
+  () => ({
+    mockAuditService: {
+      getWalletTradeHistory: vi.fn(),
     },
-    market: {
-      findUnique: vi.fn(),
+    mockPrismaClient: {
+      order: {
+        findMany: vi.fn(),
+        count: vi.fn(),
+        create: vi.fn(),
+      },
+      market: {
+        findUnique: vi.fn(),
+      },
+    } as unknown as PrismaClient,
+    mockMatchingService: {
+      placeOrder: vi.fn(),
     },
-  } as unknown as PrismaClient,
-  mockMatchingService: {
-    placeOrder: vi.fn(),
-  },
-  // Bypasses signature verification by default so existing route tests remain
-  // focused on business logic. Signature-specific behaviour is tested in
-  // stellarAuth.test.ts using real keypairs.
-  mockVerifyStellarSignature: vi.fn(
-    (_req: unknown, _reply: unknown, done: () => void) => done()
-  ),
-}));
+  })
+);
 
 vi.mock("../../services/prisma.js", () => ({
   getPrismaClient: () => mockPrismaClient,
@@ -47,8 +38,12 @@ vi.mock("../../matching/matching-service.js", () => ({
   matchingService: mockMatchingService,
 }));
 
+// Bypasses signature verification so route tests stay focused on business
+// logic. Signature-specific behaviour is covered in stellarAuth.test.ts.
 vi.mock("../middleware/stellarAuth.js", () => ({
-  verifyStellarSignature: mockVerifyStellarSignature,
+  verifyStellarSignature: vi.fn(
+    (_req: unknown, _reply: unknown, done: () => void) => done()
+  ),
   buildSignableMessage: vi.fn(),
 }));
 

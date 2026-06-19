@@ -141,7 +141,9 @@ describe("Integration Tests: API versioning", () => {
           price: 0.5,
           quantity: 1,
         },
-        expected: [201],
+        // 401 when no x-signature/x-timestamp headers are supplied;
+        // 201 when a correctly-signed request is sent.
+        expected: [201, 401],
       },
       { method: "GET", url: `/v1/orders/user/${wallet}`, expected: [200] },
       { method: "GET", url: `/v1/trades/user/${wallet}`, expected: [200] },
