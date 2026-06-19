@@ -105,6 +105,59 @@ await processJob(logger, config, job, async (j) => {
 });
 ```
 
+## Settlement Worker
+
+The settlement worker (`apps/workers/src/settlement/`) consumes the Redis settlement queue populated by `MatchingService` after each order match. It uses `processJob()` with dead-letter support and enforces idempotency on `tradeId`.
+
+### Environment Variables
+
+| Variable                | Default             | Description                           |
+| ----------------------- | ------------------- | ------------------------------------- |
+| `SETTLEMENT_QUEUE_NAME` | `settlement-trades` | Redis stream name for settlement jobs |
+| `REDIS_KEY_PREFIX`      | `vatix:`            | Key prefix applied to the stream name |
+
+### `SettlementJob` Payload
+
+| Field           | Type     | Description                               |
+| --------------- | -------- | ----------------------------------------- |
+| `tradeId`       | `string` | Unique trade identifier (idempotency key) |
+| `marketId`      | `string` | Market the trade occurred in              |
+| `outcome`       | `string` | Outcome side (`YES` / `NO`)               |
+| `buyOrderId`    | `string` | Taker or maker buy order ID               |
+| `sellOrderId`   | `string` | Taker or maker sell order ID              |
+| `buyerAddress`  | `string` | Stellar address of the buyer              |
+| `sellerAddress` | `string` | Stellar address of the seller             |
+| `price`         | `string` | Execution price (stringified)             |
+| `quantity`      | `string` | Matched quantity (stringified)            |
+| `timestamp`     | `string` | Unix epoch milliseconds (stringified)     |
+
+### Idempotency
+
+Before processing, the worker checks `settlement:processed:{tradeId}` in Redis. If the key exists the job is acknowledged and skipped. On successful processing the key is written with a 24-hour TTL so duplicate deliveries are silently discarded.
+
+### Flow
+
+```
+MatchingService.placeOrder()
+    │
+    └─ settlementQueue.enqueue(job)   ← fire-and-forget
+           │
+           ▼
+      Redis Stream (SETTLEMENT_QUEUE_NAME)
+           │
+           ▼
+      settlement consumer (XREADGROUP)
+           │
+           ├─ idempotency check (EXISTS settlement:processed:{tradeId})
+           │       └─ already processed → ACK, skip
+           │
+           └─ processJob() → handler
+                   ├─ success → SET idempotency key → ACK
+                   └─ error
+                         ├─ attempts < maxAttempts → warn, leave PENDING
+                         └─ attempts >= maxAttempts → logDeadLetter(), ACK
+```
+
 ## Related Documentation
 
 - [Dead Letter Log](dead-letter-log.md) — What happens after max retries
