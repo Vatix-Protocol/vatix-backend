@@ -273,7 +273,8 @@ export const openApiSpec = {
     "/v1/wallets/{wallet}/positions": {
       get: {
         summary: "Wallet positions",
-        description: "Retrieve position exposures for a wallet",
+        description:
+          "Retrieve position exposures for a wallet. Set includePnl=true to also compute realized/unrealized PnL (this is the canonical replacement for the deprecated /positions/user/:address endpoint).",
         tags: ["Positions"],
         parameters: [
           {
@@ -281,11 +282,28 @@ export const openApiSpec = {
             in: "path",
             required: true,
             schema: { type: "string" },
+            description:
+              "Stellar public key (StrKey): starts with G and is 56 chars using [A-Z2-7]",
+          },
+          {
+            name: "includePnl",
+            in: "query",
+            required: false,
+            schema: { type: "boolean", default: false },
+            description:
+              "When true, computes and includes realized/unrealized PnL per position and in the response summary.",
           },
         ],
         responses: {
           "200": {
             description: "Wallet positions",
+            content: {
+              "application/json": {
+                schema: {
+                  $ref: "#/components/schemas/WalletPositionsResponse",
+                },
+              },
+            },
           },
         },
       },
@@ -359,6 +377,50 @@ export const openApiSpec = {
           },
           requestId: {
             type: "string",
+          },
+        },
+      },
+      WalletExposureRow: {
+        type: "object",
+        properties: {
+          marketId: { type: "string" },
+          marketQuestion: { type: "string" },
+          yesShares: { type: "number" },
+          noShares: { type: "number" },
+          netExposure: { type: "number" },
+          lockedCollateral: { type: "string" },
+          isSettled: { type: "boolean" },
+          updatedAt: { type: "string", format: "date-time" },
+          pnlRealized: {
+            type: ["string", "null"],
+            description: "Present only when includePnl=true.",
+          },
+          pnlUnrealized: {
+            type: ["string", "null"],
+            description: "Present only when includePnl=true.",
+          },
+        },
+      },
+      WalletPositionsResponse: {
+        type: "object",
+        properties: {
+          wallet: { type: "string" },
+          exposures: {
+            type: "array",
+            items: { $ref: "#/components/schemas/WalletExposureRow" },
+          },
+          count: { type: "number" },
+          pnlRealized: {
+            type: "string",
+            description: "Present only when includePnl=true.",
+          },
+          pnlUnrealized: {
+            type: "string",
+            description: "Present only when includePnl=true.",
+          },
+          pnlTotal: {
+            type: "string",
+            description: "Present only when includePnl=true.",
           },
         },
       },

@@ -157,3 +157,39 @@ Maps provider alias strings to canonical `OracleSource` enum values.
 | `alias`            | `String`       | Unique alias string        |
 | `canonical_source` | `OracleSource` | Canonical enum value       |
 | `created_at`       | `DateTime`     | Auto-set on insert         |
+
+## API Response DTOs
+
+### `GET /v1/wallets/:wallet/positions`
+
+This is the single canonical endpoint for wallet position data — it replaces
+the deprecated `/positions/user/:address` alias (see
+[docs/api-versioning.md](api-versioning.md)). PnL is opt-in via
+`?includePnl=true`; pricing requires an extra order-book query per market, so
+it's skipped by default.
+
+`WalletExposureRow`:
+
+| Field              | Type                 | Notes                                |
+| ------------------ | -------------------- | ------------------------------------ |
+| `marketId`         | `string`             |                                      |
+| `marketQuestion`   | `string`             |                                      |
+| `yesShares`        | `number`             |                                      |
+| `noShares`         | `number`             |                                      |
+| `netExposure`      | `number`             | `yesShares - noShares`               |
+| `lockedCollateral` | `string`             |                                      |
+| `isSettled`        | `boolean`            |                                      |
+| `updatedAt`        | `string` (date-time) |                                      |
+| `pnlRealized`      | `string \| null`     | Only present when `includePnl=true`. |
+| `pnlUnrealized`    | `string \| null`     | Only present when `includePnl=true`. |
+
+`WalletPositionsResponse`:
+
+| Field           | Type                  | Notes                                |
+| --------------- | --------------------- | ------------------------------------ |
+| `wallet`        | `string`              |                                      |
+| `exposures`     | `WalletExposureRow[]` |                                      |
+| `count`         | `number`              |                                      |
+| `pnlRealized`   | `string`              | Only present when `includePnl=true`. |
+| `pnlUnrealized` | `string`              | Only present when `includePnl=true`. |
+| `pnlTotal`      | `string`              | Only present when `includePnl=true`. |
