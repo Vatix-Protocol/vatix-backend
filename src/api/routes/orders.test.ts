@@ -38,6 +38,15 @@ vi.mock("../../matching/matching-service.js", () => ({
   matchingService: mockMatchingService,
 }));
 
+// Bypasses signature verification so route tests stay focused on business
+// logic. Signature-specific behaviour is covered in stellarAuth.test.ts.
+vi.mock("../middleware/stellarAuth.js", () => ({
+  verifyStellarSignature: vi.fn(
+    (_req: unknown, _reply: unknown, done: () => void) => done()
+  ),
+  buildSignableMessage: vi.fn(),
+}));
+
 describe("GET /trades/user/:address", () => {
   let app: FastifyInstance;
   const validAddress =
