@@ -157,6 +157,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: GetMarketParams }>(
     "/markets/:id/orderbook",
     {
+      onRequest: [heavyReadLimiter],
       schema: {
         params: {
           type: "object",
