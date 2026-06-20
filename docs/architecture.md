@@ -77,7 +77,7 @@ Workers consume queue entries and perform background tasks such as trade settlem
 - [ ] **Oracle multi-provider strategy**: `fallback-adapter.ts` exists but the failover policy (timeout, retry count) is not finalised.
 - [ ] **Monorepo build tooling**: Services currently share `tsconfig.json` at the root. Evaluate per-package tsconfigs as the repo grows.
 - [ ] **Authentication**: Admin routes use a static key guard (`adminGuard.ts`). A proper auth layer is needed before public launch.
-- [ ] **Workers deployment**: No Dockerfile or process manager config exists for Workers yet.
+- [x] **Workers deployment**: resolved — the root [`Dockerfile`](../Dockerfile) defines `finalization-worker` and `oracle-worker` build targets, and [`docker-compose.yml`](../docker-compose.yml) runs them under the `workers` profile. No standalone process manager is used; each container runs a single process and relies on Docker/Kubernetes restart policies. See [docs/docker-compose.md](docker-compose.md).
 
 ## Assumptions
 
