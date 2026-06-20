@@ -139,6 +139,73 @@ const start = async () => {
       { nodeEnv: config.nodeEnv, port },
       `Server running at http://localhost:${port}`
     );
+
+    // Graceful shutdown handling
+    const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
+    let isShuttingDown = false;
+
+    const gracefulShutdown = async (signal: string) => {
+      if (isShuttingDown) {
+        return;
+      }
+      isShuttingDown = true;
+
+      server.log.info(
+        {
+          signal,
+          component: "api-server",
+          status: "initiated",
+        },
+        "API server shutdown initiated"
+      );
+
+      // Set hard timeout to force exit if shutdown hangs
+      const timeoutHandle = setTimeout(() => {
+        server.log.error(
+          {
+            signal,
+            component: "api-server",
+            timeoutMs: SHUTDOWN_TIMEOUT_MS,
+          },
+          "Shutdown timeout exceeded, forcing exit"
+        );
+        process.exit(1);
+      }, SHUTDOWN_TIMEOUT_MS);
+
+      try {
+        // Close server — stops accepting new connections, drains in-flight requests
+        await server.close();
+        clearTimeout(timeoutHandle);
+
+        server.log.info(
+          {
+            signal,
+            component: "api-server",
+            status: "complete",
+            exitCode: 0,
+          },
+          "API server shutdown complete"
+        );
+        process.exit(0);
+      } catch (error) {
+        clearTimeout(timeoutHandle);
+        server.log.error(
+          {
+            signal,
+            component: "api-server",
+            status: "failed",
+            exitCode: 1,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "API server shutdown failed"
+        );
+        process.exit(1);
+      }
+    };
+
+    // Register signal handlers for graceful shutdown
+    process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+    process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
   } catch (err) {
     server.log.error(err);
     process.exit(1);
