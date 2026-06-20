@@ -432,10 +432,17 @@ void bootstrap().catch((error) => {
 - Set container `stopSignal` to SIGTERM if needed
 - Verify shutdown completes within timeout
 
+The root [`Dockerfile`](../Dockerfile) sets this for every process target
+(`api`, `indexer`, `finalization-worker`, `oracle-worker`):
+
 ```dockerfile
 # In Dockerfile
 STOPSIGNAL SIGTERM
 ```
+
+Each entrypoint runs directly as PID 1 (no shell wrapper), so the signal
+reaches the process's `SIGTERM` handler immediately — see
+[docs/docker-compose.md](docker-compose.md) for how to run these containers.
 
 ### Kubernetes
 
