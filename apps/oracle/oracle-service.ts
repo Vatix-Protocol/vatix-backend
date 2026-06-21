@@ -12,7 +12,7 @@ import type {
   ProviderResult,
   ResolutionRequest,
 } from "./provider-adapter.js";
-import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
+import { DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
 import { withRetry, RetryConfig, isRetryableError } from "./retry-utils.js";
 import type { ILogger } from "../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "./submission-queue.js";
@@ -67,6 +67,20 @@ export interface OracleMetrics {
  * Oracle service for market resolution.
  * Uses primary adapter by default, switches to fallback on primary failure.
  * Optionally enqueues successful resolutions for on-chain submission.
+ *
+ * ## Failover policy
+ *
+ * 1. The primary adapter is called first, with up to `retryConfig.maxRetries`
+ *    retries using exponential back-off (see retry-utils.ts).
+ * 2. If the primary fails with a **retryable** (transient) error after all
+ *    retries, and `enableFallback` is true, the fallback adapter is tried once.
+ *    Retryable errors: network failures, 5xx responses, timeouts.
+ *    Non-retryable errors (4xx client errors, invalid responses) skip
+ *    the fallback and are re-thrown immediately.
+ * 3. If the fallback adapter also fails, an error is thrown that aggregates
+ *    both failure messages.
+ * 4. Both adapters enqueue a successful resolution via `submissionQueue` or
+ *    `enqueueCallback` when configured.
  */
 export class OracleService {
   private primaryAdapter: ProviderAdapter;
@@ -88,12 +102,14 @@ export class OracleService {
   constructor(config: OracleServiceConfig) {
     this.primaryAdapter = config.primaryAdapter;
     this.fallbackAdapter = config.fallbackAdapter;
-    this.logger = config.logger ?? {
+    const noOpLogger: ILogger = {
       debug: () => {},
       info: () => {},
       warn: () => {},
       error: () => {},
+      child: () => noOpLogger,
     };
+    this.logger = config.logger ?? noOpLogger;
     this.submissionQueue = config.submissionQueue;
     this.enqueueCallback = config.enqueueCallback;
     this.config = {

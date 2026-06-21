@@ -39,12 +39,23 @@ async function poll(): Promise<void> {
 
   const primaryBaseUrl =
     process.env.ORACLE_PRIMARY_URL ?? "http://localhost:9001";
-  const fallbackBaseUrl =
-    process.env.ORACLE_FALLBACK_URL ?? "http://localhost:9002";
+
+  // Support a comma-separated list of fallback URLs for the provider chain.
+  // Falls back to the single ORACLE_FALLBACK_URL for backward compatibility.
+  const fallbackUrls = process.env.ORACLE_FALLBACK_URLS
+    ? process.env.ORACLE_FALLBACK_URLS.split(",")
+        .map((u) => u.trim())
+        .filter(Boolean)
+    : [process.env.ORACLE_FALLBACK_URL ?? "http://localhost:9002"];
 
   const oracleService = new OracleService({
     primaryAdapter: new PrimaryAdapter({ baseUrl: primaryBaseUrl }),
-    fallbackAdapter: new FallbackAdapter({ baseUrl: fallbackBaseUrl }),
+    fallbackAdapter: new FallbackAdapter({
+      providers: fallbackUrls.map((url, i) => ({
+        url,
+        source: `fallback-${i + 1}`,
+      })),
+    }),
     logger,
     enableFallback: true,
   });
