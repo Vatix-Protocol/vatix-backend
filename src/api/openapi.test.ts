@@ -1,15 +1,31 @@
-import { describe, it, expect, afterEach } from "vitest";
-import Fastify, { type FastifyInstance } from "fastify";
-import { openApiSpec, openApiStubHandler } from "./openapi.js";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import type { FastifyInstance } from "fastify";
+import { openApiSpec } from "./openapi.js";
 
-describe("OpenAPI Stub", () => {
-  let server: FastifyInstance | undefined;
+vi.hoisted(() => {
+  process.env.DATABASE_URL =
+    process.env.DATABASE_URL ||
+    "postgresql://postgres:postgres@localhost:5433/vatix";
+});
 
-  afterEach(async () => {
-    await server?.close();
-    server = undefined;
-  });
+const { buildServer } = await import("../index.js");
 
+const EXPECTED_V1_ROUTES = [
+  { method: "GET", path: "/v1/health" },
+  { method: "GET", path: "/v1/ready" },
+  { method: "GET", path: "/v1/markets" },
+  { method: "GET", path: "/v1/markets/:id" },
+  { method: "GET", path: "/v1/markets/:id/orderbook" },
+  { method: "GET", path: "/v1/orders/user/:address" },
+  { method: "GET", path: "/v1/trades/user/:address" },
+  { method: "POST", path: "/v1/orders" },
+  { method: "GET", path: "/v1/wallets/:wallet/positions" },
+  { method: "GET", path: "/v1/admin/markets" },
+  { method: "PATCH", path: "/v1/admin/markets/:id/status" },
+  { method: "GET", path: "/v1/openapi.json" },
+] as const;
+
+describe("OpenAPI specification", () => {
   it("exports a valid OpenAPI spec object", () => {
     expect(openApiSpec).toBeDefined();
     expect(typeof openApiSpec).toBe("object");
@@ -95,32 +111,78 @@ describe("OpenAPI Stub", () => {
     expect(openApiSpec.components).toHaveProperty("schemas");
     expect(openApiSpec.components?.schemas).toHaveProperty("Error");
   });
+});
 
-  it("returns 400 when required field is missing", async () => {
-    server = Fastify({ logger: false });
-    server.post("/stub", openApiStubHandler);
+describe("OpenAPI contract", () => {
+  let server: FastifyInstance;
 
-    const res = await server.inject({
-      method: "POST",
-      url: "/stub",
-      payload: {},
-    });
-
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body)).toEqual({ error: "name is required" });
+  beforeAll(async () => {
+    server = buildServer({ logger: false, registerTestRoutes: false });
+    await server.ready();
   });
 
-  it("returns 200 on valid input", async () => {
-    server = Fastify({ logger: false });
-    server.post("/stub", openApiStubHandler);
+  afterAll(async () => {
+    await server.close();
+  });
 
-    const res = await server.inject({
-      method: "POST",
-      url: "/stub",
-      payload: { name: "test" },
-    });
+  it("all expected routes are registered on the server", () => {
+    for (const { method, path } of EXPECTED_V1_ROUTES) {
+      const exists = server.hasRoute({
+        method: method as "GET" | "POST" | "PATCH",
+        url: path,
+      });
+      expect(
+        exists,
+        `Expected route ${method} ${path} is not registered on the server`
+      ).toBe(true);
+    }
+  });
 
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({ ok: true });
+  it("all expected routes are documented in the OpenAPI spec", () => {
+    for (const { method, path } of EXPECTED_V1_ROUTES) {
+      if (path === "/v1/openapi.json") continue;
+      const specPath = path.replace(/:(\w+)/g, "{$1}");
+      const pathItem = (openApiSpec.paths as Record<string, unknown>)[specPath];
+      expect(
+        pathItem,
+        `Route ${method} ${path} is missing from spec paths`
+      ).toBeDefined();
+      expect(
+        (pathItem as Record<string, unknown>)[method.toLowerCase()],
+        `Spec path ${specPath} is missing method ${method.toLowerCase()}`
+      ).toBeDefined();
+    }
+  });
+
+  it("all documented spec paths have corresponding registered routes", () => {
+    for (const [path, pathItem] of Object.entries(openApiSpec.paths)) {
+      if (path === "/v1/openapi.json") continue;
+      const fastifyPath = path.replace(/\{(\w+)\}/g, ":$1");
+      const methods = Object.keys(pathItem as Record<string, unknown>);
+      for (const method of methods) {
+        const exists = server.hasRoute({
+          method: method.toUpperCase() as "GET" | "POST" | "PATCH",
+          url: fastifyPath,
+        });
+        expect(
+          exists,
+          `Spec documents ${method.toUpperCase()} ${path} but no route is registered`
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("no undocumented spec paths beyond expected routes", () => {
+    const specPaths = Object.keys(openApiSpec.paths).filter(
+      (p) => p !== "/v1/openapi.json"
+    );
+    for (const specPath of specPaths) {
+      const fastifyPath = specPath.replace(/\{(\w+)\}/g, ":$1");
+      const found = EXPECTED_V1_ROUTES.some((r) => r.path === fastifyPath);
+      expect(
+        found,
+        `Spec path ${specPath} has no matching entry in expected routes`
+      ).toBe(true);
+    }
   });
 });
