@@ -69,6 +69,34 @@ export class ResolutionParseError extends Error {
   }
 }
 
+// ─── Collateral deposit types ────────────────────────────────────────────────
+
+/**
+ * Contract event: collateral_deposited
+ * Payload: Vec [ account: ScvString, market_id: ScvU32, amount: ScvI128 ]
+ */
+export interface NormalizedCollateralDeposit {
+  eventId: string;
+  ledger: number;
+  ledgerClosedAt: string;
+  contractId: string;
+  account: string;
+  /** u32 cast to string for DB compatibility */
+  marketId: string;
+  amountRaw: bigint;
+}
+
+export class CollateralDepositedParseError extends Error {
+  constructor(
+    message: string,
+    public readonly eventId: string,
+    public readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = "CollateralDepositedParseError";
+  }
+}
+
 // ─── Fetcher types ───────────────────────────────────────────────────────────
 
 export interface LedgerWindow {

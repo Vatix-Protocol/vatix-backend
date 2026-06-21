@@ -1,7 +1,8 @@
-import type { NormalizedTrade, NormalizedResolution } from "./types.js";
+import type { NormalizedTrade, NormalizedResolution, NormalizedCollateralDeposit } from "./types.js";
 import type {
   PersistedTrade,
   PersistedResolution,
+  PersistedCollateralDeposit,
   DuplicateEventLogger,
 } from "./idempotency.js";
 import { insertIfNew } from "./idempotency.js";
@@ -11,7 +12,8 @@ import type { PrismaClient } from "../../../src/generated/prisma/client/index.js
 
 export type BatchRecord =
   | { kind: "trade"; data: PersistedTrade }
-  | { kind: "resolution"; data: PersistedResolution };
+  | { kind: "resolution"; data: PersistedResolution }
+  | { kind: "collateral_deposited"; data: PersistedCollateralDeposit };
 
 export interface BatchWriteError {
   record: BatchRecord;
@@ -94,8 +96,8 @@ export class PrismaBatchWriter implements BatchWriter {
       "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
     >,
     record: BatchRecord,
-    persisted: PersistedTrade | PersistedResolution
-  ): Promise<PersistedTrade | PersistedResolution | null> {
+    persisted: PersistedTrade | PersistedResolution | PersistedCollateralDeposit
+  ): Promise<PersistedTrade | PersistedResolution | PersistedCollateralDeposit | null> {
     const existing = await tx.indexerProcessedEvent.findUnique({
       where: { idempotencyKey: persisted.idempotencyKey },
     });
@@ -130,7 +132,7 @@ export class PrismaBatchWriter implements BatchWriter {
         },
       });
       // TODO: update UserPosition shares/collateral when position events are parsed.
-    } else {
+    } else if (record.kind === "resolution") {
       const resolution = persisted as PersistedResolution;
       await tx.resolutionCandidate.create({
         data: {
@@ -145,6 +147,16 @@ export class PrismaBatchWriter implements BatchWriter {
           idempotencyKey: resolution.idempotencyKey,
         },
       });
+    } else {
+      // collateral_deposited — logged for audit; position accounting handled by a worker.
+      const deposit = persisted as PersistedCollateralDeposit;
+      this.logger?.debug("collateral_deposited event recorded", {
+        eventId: deposit.eventId,
+        account: deposit.account,
+        marketId: deposit.marketId,
+        amountRaw: deposit.amountRaw.toString(),
+        ledger: deposit.ledger,
+      });
     }
 
     return persisted;
@@ -152,4 +164,4 @@ export class PrismaBatchWriter implements BatchWriter {
 }
 
 /** @deprecated Use PersistedTrade in BatchRecord after withIdempotencyKey(). */
-export type { NormalizedTrade, NormalizedResolution };
+export type { NormalizedTrade, NormalizedResolution, NormalizedCollateralDeposit };

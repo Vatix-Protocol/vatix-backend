@@ -1,0 +1,191 @@
+{
+  "$schema": "vatix/indexer/event-fixtures/v1",
+  "description": "Canonical on-chain event test vectors for Vatix contract parsers. Each entry documents topic discriminator, payload shape, field types, and expected NormalizedXxx output.",
+  "events": {
+    "trade_executed": {
+      "discriminator": {
+        "topicIndex": 0,
+        "scvType": "ScvSymbol",
+        "value": "trade_executed",
+        "xdr": "AAAADwAAAA50cmFkZV9leGVjdXRlZAAA"
+      },
+      "payloadShape": "ScvMap",
+      "fields": {
+        "market_id":      "ScvSymbol → string",
+        "trader":         "ScvSymbol → string (Stellar account)",
+        "counterparty":   "ScvSymbol → string (Stellar account)",
+        "direction":      "ScvSymbol → 'buy' | 'sell'",
+        "outcome":        "ScvSymbol → 'YES' | 'NO'",
+        "price":          "ScvI128  → bigint (7 decimals, e.g. 5_000_000n = 0.5)",
+        "quantity":       "ScvI128  → bigint (integer shares)",
+        "buy_order_id":   "ScvSymbol → string",
+        "sell_order_id":  "ScvSymbol → string"
+      },
+      "vectors": [
+        {
+          "label": "buy YES at 0.5 qty=100",
+          "topicsXdr": ["AAAADwAAAA50cmFkZV9leGVjdXRlZAAA"],
+          "valueXdr": "AAAAEQAAAAEAAAAJAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC1hYmMAAAAAAA8AAAAGdHJhZGVyAAAAAAAPAAAACEdBQkMxMjM0AAAADwAAAAxjb3VudGVycGFydHkAAAAPAAAACEdYWVo1Njc4AAAADwAAAAlkaXJlY3Rpb24AAAAAAAAPAAAAA2J1eQAAAAAPAAAAB291dGNvbWUAAAAADwAAAANZRVMAAAAADwAAAAVwcmljZQAAAAAAAAoAAAAAAAAAAAAAAAAATEtAAAAADwAAAAhxdWFudGl0eQAAAAoAAAAAAAAAAAAAAAAAAABkAAAADwAAAAxidXlfb3JkZXJfaWQAAAAPAAAABWJ1eS0xAAAAAAAADwAAAA1zZWxsX29yZGVyX2lkAAAAAAAADwAAAAZzZWxsLTEAAA==",
+          "expectedNormalized": {
+            "marketId": "market-abc",
+            "traderAddress": "GABC1234",
+            "counterpartyAddress": "GXYZ5678",
+            "direction": "buy",
+            "outcome": "YES",
+            "priceRaw": "5000000",
+            "quantityRaw": "100",
+            "buyOrderId": "buy-1",
+            "sellOrderId": "sell-1"
+          }
+        },
+        {
+          "label": "sell NO at 0.5 qty=100",
+          "topicsXdr": ["AAAADwAAAA50cmFkZV9leGVjdXRlZAAA"],
+          "valueXdr": "AAAAEQAAAAEAAAAJAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC1hYmMAAAAAAA8AAAAGdHJhZGVyAAAAAAAPAAAACEdBQkMxMjM0AAAADwAAAAxjb3VudGVycGFydHkAAAAPAAAACEdYWVo1Njc4AAAADwAAAAlkaXJlY3Rpb24AAAAAAAAPAAAABHNlbGwAAAAPAAAAB291dGNvbWUAAAAADwAAAAJOTwAAAAAADwAAAAVwcmljZQAAAAAAAAoAAAAAAAAAAAAAAAAATEtAAAAADwAAAAhxdWFudGl0eQAAAAoAAAAAAAAAAAAAAAAAAABkAAAADwAAAAxidXlfb3JkZXJfaWQAAAAPAAAABWJ1eS0xAAAAAAAADwAAAA1zZWxsX29yZGVyX2lkAAAAAAAADwAAAAZzZWxsLTEAAA==",
+          "expectedNormalized": {
+            "direction": "sell",
+            "outcome": "NO",
+            "priceRaw": "5000000",
+            "quantityRaw": "100"
+          }
+        },
+        {
+          "label": "large i128 price/quantity (precision boundary)",
+          "topicsXdr": ["AAAADwAAAA50cmFkZV9leGVjdXRlZAAA"],
+          "valueXdr": "AAAAEQAAAAEAAAAJAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC1hYmMAAAAAAA8AAAAGdHJhZGVyAAAAAAAPAAAACEdBQkMxMjM0AAAADwAAAAxjb3VudGVycGFydHkAAAAPAAAACEdYWVo1Njc4AAAADwAAAAlkaXJlY3Rpb24AAAAAAAAPAAAAA2J1eQAAAAAPAAAAB291dGNvbWUAAAAADwAAAANZRVMAAAAADwAAAAVwcmljZQAAAAAAAAoAAAAAAAAAAAAjhvJvwP//AAAADwAAAAhxdWFudGl0eQAAAAoAAAAAAAAAAAAAAOjUpRAAAAAADwAAAAxidXlfb3JkZXJfaWQAAAAPAAAABWJ1eS0xAAAAAAAADwAAAA1zZWxsX29yZGVyX2lkAAAAAAAADwAAAAZzZWxsLTEAAA==",
+          "expectedNormalized": {
+            "priceRaw": "9999999999999999",
+            "quantityRaw": "1000000000000"
+          }
+        }
+      ]
+    },
+
+    "collateral_deposited": {
+      "discriminator": {
+        "topicIndex": 0,
+        "scvType": "ScvSymbol",
+        "value": "collateral_deposited",
+        "note": "XDR generated at runtime via nativeToScVal('collateral_deposited', { type: 'symbol' }).toXDR('base64')"
+      },
+      "payloadShape": "ScvVec (3-tuple)",
+      "fields": {
+        "[0] account":    "ScvString → string (depositing Stellar account)",
+        "[1] market_id":  "ScvU32   → number → string (DB compat)",
+        "[2] amount":     "ScvI128  → bigint (base units)"
+      },
+      "vectors": [
+        {
+          "label": "deposit 500 XLM-equivalent into market 7",
+          "note": "Regenerate XDR: node -e \"const {nativeToScVal}=require('@stellar/stellar-sdk');console.log(nativeToScVal(['GACCOUNT1234',7,500000000n]).toXDR('base64'))\"",
+          "decodedNative": ["GACCOUNT1234", 7, "500000000"],
+          "expectedNormalized": {
+            "account": "GACCOUNT1234",
+            "marketId": "7",
+            "amountRaw": "500000000"
+          }
+        },
+        {
+          "label": "large i128 amount (precision boundary)",
+          "decodedNative": ["GACCOUNT1234", 1, "9999999999999999999"],
+          "expectedNormalized": {
+            "amountRaw": "9999999999999999999"
+          }
+        }
+      ]
+    },
+
+    "market_resolved": {
+      "discriminator": {
+        "topicIndex": 0,
+        "scvType": "ScvSymbol",
+        "value": "market_resolved",
+        "xdr": "AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA"
+      },
+      "payloadShape": "ScvVec (3-tuple) [canonical on-chain] | ScvMap [legacy]",
+      "fields": {
+        "tuple[0] market_id":   "ScvU32  → number → string",
+        "tuple[1] outcome":     "ScvBool → true='YES' / false='NO'",
+        "tuple[2] resolved_at": "ScvU64  → bigint (Unix timestamp, informational only)",
+        "map.market_id":  "ScvSymbol → string",
+        "map.outcome":    "ScvSymbol → 'YES' | 'NO'",
+        "map.oracle":     "ScvSymbol → string (Stellar oracle address; '' when tuple path)"
+      },
+      "vectors": [
+        {
+          "label": "tuple YES — market 42",
+          "topicsXdr": ["AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA"],
+          "decodedNative": [42, true, "1700000000"],
+          "expectedNormalized": {
+            "marketId": "42",
+            "outcome": "YES",
+            "oracleAddress": ""
+          }
+        },
+        {
+          "label": "tuple NO — market 7",
+          "decodedNative": [7, false, "99"],
+          "expectedNormalized": {
+            "marketId": "7",
+            "outcome": "NO",
+            "oracleAddress": ""
+          }
+        },
+        {
+          "label": "ScvMap YES — legacy shape with oracle",
+          "topicsXdr": ["AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA"],
+          "valueXdr": "AAAAEQAAAAEAAAADAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC14eXoAAAAAAA8AAAAHb3V0Y29tZQAAAAAPAAAAA1lFUwAAAAAPAAAABm9yYWNsZQAAAAAADwAAAApHT1JBQ0xFMTIzAAA=",
+          "expectedNormalized": {
+            "marketId": "market-xyz",
+            "outcome": "YES",
+            "oracleAddress": "GORACLE123"
+          }
+        },
+        {
+          "label": "ScvMap NO — legacy shape with oracle",
+          "valueXdr": "AAAAEQAAAAEAAAADAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC14eXoAAAAAAA8AAAAHb3V0Y29tZQAAAAAPAAAAAk5PAAAAAAAPAAAABm9yYWNsZQAAAAAADwAAAApHT1JBQ0xFMTIzAAA=",
+          "expectedNormalized": {
+            "marketId": "market-xyz",
+            "outcome": "NO",
+            "oracleAddress": "GORACLE123"
+          }
+        }
+      ]
+    },
+
+    "market_created": {
+      "discriminator": {
+        "topicIndex": 0,
+        "scvType": "ScvSymbol",
+        "value": "market_created",
+        "xdr": "AAAADwAAAA5tYXJrZXRfY3JlYXRlZAAA"
+      },
+      "payloadShape": "pre-decoded JS object (market-created-parser.ts input path)",
+      "note": "market-created-parser.ts operates on a pre-decoded RawMarketCreatedEvent object, not raw XDR. Ingested via a separate path outside PollingIngestionLoop.",
+      "fields": {
+        "id":            "string — unique market identifier",
+        "question":      "string — prediction prompt",
+        "endTime":       "number (Unix seconds) | string (ISO-8601 or numeric string)",
+        "oracleAddress": "string — G-prefixed Stellar address, 56 chars",
+        "status":        "'ACTIVE' | 'RESOLVED' | 'CANCELLED' (default: 'ACTIVE')"
+      },
+      "vectors": [
+        {
+          "label": "valid active market",
+          "input": {
+            "id": "market-001",
+            "question": "Will BTC reach $100k by end of 2026?",
+            "endTime": 1893456000,
+            "oracleAddress": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "status": "ACTIVE"
+          },
+          "expectedNormalized": {
+            "id": "market-001",
+            "endTime": "2029-12-31T00:00:00.000Z",
+            "status": "ACTIVE"
+          }
+        }
+      ]
+    }
+  }
+}

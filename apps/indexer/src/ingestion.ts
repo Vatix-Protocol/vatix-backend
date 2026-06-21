@@ -5,8 +5,13 @@ import type { BatchWriter, BatchRecord } from "./batchWriter.js";
 import type { EventFetcher } from "./eventFetcher.js";
 import { parseTradeEvents } from "./tradeParser.js";
 import { parseResolutionEvents } from "./resolutionParser.js";
+import { parseCollateralDepositedEvents } from "./collateralDepositedParser.js";
 import { withIdempotencyKey } from "./idempotency.js";
-import { TradeParseError, ResolutionParseError } from "./types.js";
+import {
+  TradeParseError,
+  ResolutionParseError,
+  CollateralDepositedParseError,
+} from "./types.js";
 
 export interface IngestionLoop {
   start(initialCursor: string | null): Promise<void>;
@@ -193,6 +198,8 @@ export class PollingIngestionLoop implements IngestionLoop {
     const { trades, errors: tradeErrors } = parseTradeEvents(events);
     const { resolutions, errors: resolutionErrors } =
       parseResolutionEvents(events);
+    const { deposits, errors: depositErrors } =
+      parseCollateralDepositedEvents(events);
 
     for (const error of tradeErrors) {
       this.logger.warn("Trade parse error — skipping event", {
@@ -210,6 +217,14 @@ export class PollingIngestionLoop implements IngestionLoop {
       });
     }
 
+    for (const error of depositErrors) {
+      this.logger.warn("Collateral deposit parse error — skipping event", {
+        eventId: error.eventId,
+        error: error.message,
+        parseErrorType: CollateralDepositedParseError.name,
+      });
+    }
+
     const records: BatchRecord[] = [
       ...trades.map(
         (trade): BatchRecord => ({
@@ -223,6 +238,12 @@ export class PollingIngestionLoop implements IngestionLoop {
           data: withIdempotencyKey(resolution),
         })
       ),
+      ...deposits.map(
+        (deposit): BatchRecord => ({
+          kind: "collateral_deposited",
+          data: withIdempotencyKey(deposit),
+        })
+      ),
     ];
 
     const writeResult = await this.deps.batchWriter.write(records);
@@ -233,6 +254,7 @@ export class PollingIngestionLoop implements IngestionLoop {
       eventsFetched: events.length,
       tradesParsed: trades.length,
       resolutionsParsed: resolutions.length,
+      collateralDepositsParsed: deposits.length,
       written: writeResult.written,
       skipped: writeResult.skipped,
       writeErrors: writeResult.errors.length,
