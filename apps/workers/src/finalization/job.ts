@@ -1,5 +1,9 @@
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
+import type {
+  FinalizationJobResult,
+  FinalizationCandidateResult,
+} from "./types.js";
 
 /**
  * Configuration for a single FinalizationJob run.
@@ -38,7 +42,7 @@ export class FinalizationJob {
     this.challengeWindowSeconds = config.challengeWindowSeconds;
   }
 
-  async run(): Promise<void> {
+  async run(): Promise<FinalizationJobResult> {
     if (
       !Number.isFinite(this.challengeWindowSeconds) ||
       this.challengeWindowSeconds < 0
@@ -48,6 +52,7 @@ export class FinalizationJob {
       );
     }
 
+    const startedAt = new Date();
     const windowCutoff = new Date(
       Date.now() - this.challengeWindowSeconds * 1000
     );
@@ -77,12 +82,24 @@ export class FinalizationJob {
       this.logger.error("Finalization job failed to query candidates", {
         error: error instanceof Error ? error.message : String(error),
       });
-      return;
+      const completedAt = new Date();
+      return {
+        totalCandidates: 0,
+        finalizedCount: 0,
+        skippedCount: 0,
+        erroredCount: 0,
+        candidates: [],
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs: completedAt.getTime() - startedAt.getTime(),
+      };
     }
 
     this.logger.info("Finalization job selected candidates", {
       count: candidates.length,
     });
+
+    const results: FinalizationCandidateResult[] = [];
 
     for (const candidate of candidates) {
       this.logger.info("Finalization candidate eligible", {
@@ -92,10 +109,95 @@ export class FinalizationJob {
         source: candidate.source,
         createdAt: candidate.createdAt.toISOString(),
       });
+
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          const now = new Date();
+
+          await tx.resolution.create({
+            data: {
+              marketId: candidate.marketId,
+              outcome: candidate.proposedOutcome,
+              finalizedAt: now,
+              provenance: candidate.source,
+            },
+          });
+
+          await tx.market.update({
+            where: { id: candidate.marketId },
+            data: {
+              status: "RESOLVED",
+              outcome: candidate.proposedOutcome,
+              resolutionTime: now,
+            },
+          });
+
+          await tx.resolutionCandidate.update({
+            where: { id: candidate.id },
+            data: { status: "ACCEPTED" },
+          });
+
+          await tx.userPosition.updateMany({
+            where: { marketId: candidate.marketId },
+            data: { isSettled: true },
+          });
+        });
+
+        results.push({
+          candidateId: candidate.id,
+          marketId: candidate.marketId,
+          proposedOutcome: candidate.proposedOutcome,
+          status: "finalized",
+        });
+
+        this.logger.info("Finalization candidate finalized", {
+          candidateId: candidate.id,
+          marketId: candidate.marketId,
+          proposedOutcome: candidate.proposedOutcome,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+
+        results.push({
+          candidateId: candidate.id,
+          marketId: candidate.marketId,
+          proposedOutcome: candidate.proposedOutcome,
+          status: "errored",
+          error: message,
+        });
+
+        this.logger.error("Finalization candidate failed", {
+          candidateId: candidate.id,
+          marketId: candidate.marketId,
+          proposedOutcome: candidate.proposedOutcome,
+          error: message,
+        });
+      }
     }
+
+    const completedAt = new Date();
+    const finalizedCount = results.filter(
+      (r) => r.status === "finalized"
+    ).length;
+    const erroredCount = results.filter((r) => r.status === "errored").length;
+    const skippedCount = results.filter((r) => r.status === "skipped").length;
 
     this.logger.info("Finalization job complete", {
       eligible: candidates.length,
+      finalized: finalizedCount,
+      errored: erroredCount,
+      skipped: skippedCount,
     });
+
+    return {
+      totalCandidates: candidates.length,
+      finalizedCount,
+      skippedCount,
+      erroredCount,
+      candidates: results,
+      startedAt: startedAt.toISOString(),
+      completedAt: completedAt.toISOString(),
+      durationMs: completedAt.getTime() - startedAt.getTime(),
+    };
   }
 }
