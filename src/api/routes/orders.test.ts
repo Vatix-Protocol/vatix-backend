@@ -150,6 +150,7 @@ describe("GET /trades/user/:address", () => {
       2,
       1,
       undefined,
+      undefined,
       undefined
     );
   });
@@ -178,7 +179,8 @@ describe("GET /trades/user/:address", () => {
       1,
       20,
       Date.parse(from),
-      Date.parse(to)
+      Date.parse(to),
+      undefined
     );
   });
 

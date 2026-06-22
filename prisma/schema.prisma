@@ -230,6 +230,30 @@ model IndexerProcessedEvent {
   @@map("indexer_processed_events")
 }
 
+/// CLOB-engine trade records. Written atomically with order fills; tradeId is
+/// the source-of-truth idempotency key preventing duplicate writes on retry.
+model Trade {
+  id             String   @id @default(uuid())
+  tradeId        String   @unique @map("trade_id") @db.VarChar(256)
+  marketId       String   @map("market_id")
+  outcome        String   @db.VarChar(8)
+  buyerAddress   String   @map("buyer_address") @db.VarChar(56)
+  sellerAddress  String   @map("seller_address") @db.VarChar(56)
+  buyOrderId     String   @map("buy_order_id")
+  sellOrderId    String   @map("sell_order_id")
+  price          Decimal  @db.Decimal(10, 8)
+  quantity       Int
+  tradedAt       DateTime @map("traded_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([marketId])
+  @@index([buyerAddress])
+  @@index([sellerAddress])
+  @@index([buyerAddress, tradedAt(sort: Desc)])
+  @@index([sellerAddress, tradedAt(sort: Desc)])
+  @@map("trades")
+}
+
 /// On-chain trade events. Order rows are API/CLOB-owned (uuid PK); chain trades
 /// are stored here keyed by idempotencyKey until fill reconciliation exists.
 model IndexedTrade {
