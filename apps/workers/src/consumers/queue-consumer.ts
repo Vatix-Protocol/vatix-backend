@@ -8,7 +8,7 @@
  * @module apps/workers/src/consumers/queue-consumer
  */
 
-import type { ILogger } from "../../../packages/shared/src/logger.js";
+import type { ILogger } from "../../../../packages/shared/src/logger.js";
 
 /** Shape of a single job pulled from the queue. */
 export interface QueueJob {

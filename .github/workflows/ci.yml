@@ -185,6 +185,9 @@ jobs:
       - name: Check TypeScript (apps + packages)
         run: pnpm tsc --noEmit -p apps/tsconfig.json
 
+      - name: Check TypeScript (packages)
+        run: pnpm tsc --noEmit -p packages/tsconfig.json
+
   build:
     name: Build
     runs-on: ubuntu-latest

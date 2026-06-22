@@ -4,7 +4,7 @@ import type { EventFetcher } from "./eventFetcher.js";
 import type { BatchWriter } from "./batchWriter.js";
 import type { CursorStorageClient } from "./storage.js";
 import type { InternalIndexerMetricsService } from "./metrics.js";
-import type { ILogger } from "../../packages/shared/src/logger.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { RawChainEvent } from "./types.js";
 import { nativeToScVal } from "@stellar/stellar-sdk";
 
@@ -61,6 +61,13 @@ function makeLogger(): ILogger {
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
+    child: vi.fn().mockReturnValue({
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      child: vi.fn(),
+    }),
   };
 }
 

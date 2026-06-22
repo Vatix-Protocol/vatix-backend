@@ -200,7 +200,7 @@ export class PrimaryAdapter implements ProviderAdapter {
     };
   }
 
-  private getHeaders(): HeadersInit {
+  private getHeaders(): Record<string, string> {
     return {
       Accept: "application/json",
       ...(this.config.apiKey

@@ -1,4 +1,4 @@
-import type { ILogger } from "../../packages/shared/src/logger.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { CursorStorageClient } from "./storage.js";
 import type { InternalIndexerMetricsService } from "./metrics.js";
 import type { BatchWriter, BatchRecord } from "./batchWriter.js";

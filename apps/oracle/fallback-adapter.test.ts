@@ -1,17 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { FallbackAdapter, FallbackProviderError } from "./fallback-adapter.js";
+import type { FallbackAdapterConfig } from "./fallback-adapter.js";
 
 const PROVIDER_URL = "https://fallback.example.com";
 
-function makeAdapter(
-  overrides: Parameters<typeof FallbackAdapter>[0] = { providers: [] }
-) {
+function makeAdapter(overrides: Partial<FallbackAdapterConfig> = {}) {
   return new FallbackAdapter({
     providers: [
       { url: PROVIDER_URL, source: "fallback-1", apiKey: "test-key" },
     ],
     ...overrides,
-  });
+  } as FallbackAdapterConfig);
 }
 
 function okResponse(body: object, status = 200) {

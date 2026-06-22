@@ -7,7 +7,7 @@
  * @module apps/workers/src/oracle/submission-worker
  */
 
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import {
   verifyResolutionReport,
@@ -208,20 +208,17 @@ export class SubmissionWorker {
       // Upsert ResolutionCandidate
       await this.prisma.resolutionCandidate.upsert({
         where: {
-          marketId_operatorAddress: {
-            marketId,
-            operatorAddress: request.oracleAddress,
-          },
+          idempotencyKey: `${marketId}:${request.oracleAddress}`,
         },
         create: {
           marketId,
           proposedOutcome: outcome,
           source: request.oracleAddress,
           operatorAddress: request.oracleAddress,
+          idempotencyKey: `${marketId}:${request.oracleAddress}`,
         },
         update: {
           proposedOutcome: outcome,
-          updatedAt: new Date(),
         },
       });
 
@@ -249,9 +246,7 @@ export class SubmissionWorker {
     try {
       await this.prisma.oracleReport.updateMany({
         where: { marketId: request.marketId },
-        data: {
-          updatedAt: new Date(),
-        },
+        data: {},
       });
     } catch (error) {
       this.logger.warn("Failed to update attempt count", {
@@ -274,9 +269,7 @@ export class SubmissionWorker {
     try {
       await this.prisma.oracleReport.updateMany({
         where: { marketId: request.marketId },
-        data: {
-          updatedAt: new Date(),
-        },
+        data: {},
       });
 
       this.logger.error("Oracle submission marked as failed", {

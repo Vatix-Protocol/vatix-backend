@@ -1,4 +1,4 @@
-import type { ILogger } from "../../../packages/shared/src/logger.js";
+import type { ILogger } from "../../../../packages/shared/src/logger.js";
 
 export interface DeadLetterMessage {
   id: string;

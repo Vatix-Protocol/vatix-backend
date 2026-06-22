@@ -13,15 +13,6 @@
     "noEmit": true,
     "baseUrl": ".."
   },
-  "include": [
-    "../apps/**/*.ts",
-    "../packages/**/*.ts",
-    "../src/config.ts",
-    "../src/services/prisma.ts",
-    "../src/services/redis.ts",
-    "../src/types/index.ts",
-    "../src/types/docker-compose.ts",
-    "../src/generated/**/*"
-  ],
+  "include": ["../packages/**/*.ts"],
   "exclude": ["../node_modules", "../dist"]
 }

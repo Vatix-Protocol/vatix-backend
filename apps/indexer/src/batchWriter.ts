@@ -6,7 +6,7 @@ import type {
 } from "./idempotency.js";
 import { insertIfNew } from "./idempotency.js";
 import { getPrismaClient } from "../../../src/services/prisma.js";
-import type { ILogger } from "../../packages/shared/src/logger.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client/index.js";
 
 export type BatchRecord =

@@ -108,7 +108,9 @@ async function pollMessages(
 }
 
 async function bootstrap(): Promise<void> {
-  const logLevel = process.env.LOG_LEVEL ?? "info";
+  const logLevel = (process.env.LOG_LEVEL ?? "info") as Parameters<
+    typeof createLogger
+  >[0];
   const logger = createLogger(logLevel);
   const streamKey = STREAM_KEY();
   const consumerName = `settlement-consumer-${process.pid}`;
