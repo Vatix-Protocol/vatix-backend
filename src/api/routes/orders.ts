@@ -191,7 +191,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           page,
           limit,
           fromMs,
-          toMs
+          toMs,
+          marketId
         );
 
       return {

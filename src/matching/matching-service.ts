@@ -206,6 +206,26 @@ class MatchingService {
             });
           }
 
+          // Persist trades as source of truth (idempotent on trade.id)
+          for (const trade of matchResult.trades) {
+            await tx.trade.upsert({
+              where: { tradeId: trade.id },
+              create: {
+                tradeId: trade.id,
+                marketId: trade.marketId,
+                outcome: trade.outcome,
+                buyerAddress: trade.buyerAddress,
+                sellerAddress: trade.sellerAddress,
+                buyOrderId: trade.buyOrderId,
+                sellOrderId: trade.sellOrderId,
+                price: trade.price.toString(),
+                quantity: trade.quantity,
+                tradedAt: new Date(trade.timestamp),
+              },
+              update: {},
+            });
+          }
+
           // Update positions
           for (const delta of matchResult.positionDeltas) {
             await tx.userPosition.upsert({
