@@ -20,6 +20,14 @@ export interface PlaceOrderResult {
   filledQuantity: number;
 }
 
+/** Number of markets hydrated at startup. Used as a health metric. */
+let hydratedMarketsCount = 0;
+
+/** Returns how many markets were hydrated on cold start. */
+export function getHydratedMarketsCount(): number {
+  return hydratedMarketsCount;
+}
+
 class MatchingService {
   private books: Map<string, OrderBook> = new Map();
   private locks: Map<string, Promise<void>> = new Map();
@@ -88,6 +96,52 @@ class MatchingService {
   private invalidateBook(marketId: string, outcome: Outcome): void {
     const bookKey = this.getBookKey(marketId, outcome);
     this.books.delete(bookKey);
+  }
+
+  /**
+   * Hydrate order books for all active markets on cold start.
+   * Loads OPEN/PARTIALLY_FILLED orders into in-memory books so the matching
+   * engine is ready before the first request arrives, eliminating the
+   * race window where restart leaves books empty against open DB orders.
+   *
+   * Configurable via WARM_MARKETS_ON_STARTUP env var (default: true).
+   * Set WARM_MARKETS_ON_STARTUP=false to skip (e.g. in tests).
+   */
+  async hydrateAllActiveMarkets(): Promise<void> {
+    if (process.env.WARM_MARKETS_ON_STARTUP === "false") return;
+
+    const prisma = getPrismaClient();
+
+    const markets = await prisma.market.findMany({
+      where: { status: "ACTIVE" },
+      select: { id: true },
+    });
+
+    const outcomes: Outcome[] = ["YES", "NO"];
+    let count = 0;
+
+    await Promise.all(
+      markets.flatMap((m) =>
+        outcomes.map(async (outcome) => {
+          await this.hydrateBook(m.id, outcome);
+          count++;
+        })
+      )
+    );
+
+    hydratedMarketsCount = markets.length;
+    console.info(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: "info",
+        component: "matching-service",
+        message: "Order books hydrated",
+        markets: markets.length,
+        books: count,
+        metric: "orderbook.hydrated_markets",
+        value: markets.length,
+      })
+    );
   }
 
   private async getOrHydrateBook(

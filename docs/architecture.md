@@ -73,7 +73,7 @@ Workers consume queue entries and perform background tasks such as trade settlem
 
 ## Open Decisions
 
-- [ ] **Queue technology**: Redis (BullMQ) is assumed for Workers but not yet implemented. Evaluate whether a managed queue (SQS, etc.) is preferable before first production deploy.
+- [x] **Queue technology**: Resolved — BullMQ selected. See [docs/adr/001-queue-technology.md](adr/001-queue-technology.md). Settlement and oracle submission queues migrated to BullMQ Workers with unified retry/backoff/DLQ config.
 - [ ] **Oracle multi-provider strategy**: `fallback-adapter.ts` exists but the failover policy (timeout, retry count) is not finalised.
 - [ ] **Monorepo build tooling**: Services currently share `tsconfig.json` at the root. Evaluate per-package tsconfigs as the repo grows.
 - [ ] **Authentication**: Admin routes use a static key guard (`adminGuard.ts`). A proper auth layer is needed before public launch.

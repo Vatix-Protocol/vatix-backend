@@ -133,6 +133,12 @@ const start = async () => {
     // Initialize signing service BEFORE starting server
     signingService.initialize();
 
+    // Hydrate in-memory order books from Postgres on cold start (#449).
+    // This eliminates the race window where a restart leaves books empty
+    // while open orders still exist in the database.
+    const { matchingService } = await import("./matching/matching-service.js");
+    await matchingService.hydrateAllActiveMarkets();
+
     const port = config.port;
     await server.listen({ port, host: "0.0.0.0" });
     server.log.info(
