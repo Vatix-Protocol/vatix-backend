@@ -12,7 +12,6 @@ export type { LogLevel, ILogger } from "./logger.js";
 export type {
   Env,
   NodeEnv,
-  LogLevel,
   BaseConfig,
   IndexerConfig,
   FinalizationConfig,

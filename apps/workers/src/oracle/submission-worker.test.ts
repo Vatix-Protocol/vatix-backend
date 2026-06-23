@@ -37,6 +37,13 @@ const mockLogger = {
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
+  child: vi.fn().mockReturnValue({
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn(),
+  }),
 };
 
 const createTestSubmission = (): QueuedSubmission => ({
@@ -50,6 +57,10 @@ const createTestSubmission = (): QueuedSubmission => ({
     source: "Chainlink",
     signature: "dGVzdF9zaWduYXR1cmU=", // base64 encoded
     publicKey: "GTEST123456789",
+    confidence: 0.9,
+    confidenceMetadata: { score: 0.9, method: "test" },
+    sourceMetadata: { provider: "Chainlink" },
+    timestamp: new Date().toISOString(),
   },
   status: "pending",
   enqueuedAt: new Date().toISOString(),

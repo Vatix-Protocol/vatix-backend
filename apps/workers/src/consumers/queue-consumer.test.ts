@@ -5,7 +5,7 @@ import {
   type QueueConsumerConfig,
   type JobHandler,
 } from "./queue-consumer.js";
-import type { ILogger } from "../../../packages/shared/src/logger.js";
+import type { ILogger } from "../../../../packages/shared/src/logger.js";
 
 function makeLogger(): ILogger {
   return {

@@ -70,7 +70,7 @@ export class SettlementWorker {
   }
 
   private async handleJob(job: QueueJob): Promise<void> {
-    const payload = job.payload as SettlementJobPayload;
+    const payload = job.payload as unknown as SettlementJobPayload;
     const { tradeId } = payload;
 
     const idempotencyKey = `settlement:processed:${tradeId}`;

@@ -191,9 +191,11 @@ describe("SubmissionQueue", () => {
 
   it("throws when enqueueing an invalid item", () => {
     const mockLogger = {
+      debug: () => {},
       info: () => {},
       warn: () => {},
       error: () => {},
+      child: () => mockLogger,
     };
 
     const queue = new SubmissionQueue(mockLogger);

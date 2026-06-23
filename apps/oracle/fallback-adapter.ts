@@ -230,7 +230,7 @@ export class FallbackAdapter implements ProviderAdapter {
     };
   }
 
-  private getHeaders(provider: FallbackProviderConfig): HeadersInit {
+  private getHeaders(provider: FallbackProviderConfig): Record<string, string> {
     return {
       Accept: "application/json",
       ...(provider.apiKey
