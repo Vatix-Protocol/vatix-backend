@@ -70,8 +70,18 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   // Register request logger (before routes so every request is captured)
   server.register(requestLogger);
 
-  // Apply rate limiting globally
-  server.addHook("onRequest", rateLimiter);
+  // Apply rate limiting globally, but exclude readiness/health probes
+  // K8s readiness probes (GET /v1/ready) must not be rate-limited or
+  // blocked by authentication so the cluster can determine service health
+  server.addHook("onRequest", (request, reply, done) => {
+    const isHealthProbe =
+      request.url === "/v1/ready" || request.url === "/v1/health";
+    if (isHealthProbe) {
+      done();
+    } else {
+      rateLimiter(request, reply, done);
+    }
+  });
 
   // Register API routes under /v1
   server.register(
@@ -127,7 +137,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 }
 
 const start = async () => {
-  const server = buildServer();
+  // Disable test routes in production
+  const registerTestRoutes = config.nodeEnv !== "production";
+  const server = buildServer({ registerTestRoutes });
 
   try {
     // Initialize signing service BEFORE starting server
