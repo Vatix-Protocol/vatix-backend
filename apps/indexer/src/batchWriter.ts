@@ -148,14 +148,17 @@ export class PrismaBatchWriter implements BatchWriter {
         },
       });
     } else {
-      // collateral_deposited — logged for audit; position accounting handled by a worker.
       const deposit = persisted as PersistedCollateralDeposit;
-      this.logger?.debug("collateral_deposited event recorded", {
-        eventId: deposit.eventId,
-        account: deposit.account,
-        marketId: deposit.marketId,
-        amountRaw: deposit.amountRaw.toString(),
-        ledger: deposit.ledger,
+      await (tx as any).collateralDeposit.create({
+        data: {
+          idempotencyKey: deposit.idempotencyKey,
+          eventId: deposit.eventId,
+          ledger: deposit.ledger,
+          contractId: deposit.contractId,
+          account: deposit.account,
+          marketId: deposit.marketId,
+          amountRaw: deposit.amountRaw.toString(),
+        },
       });
     }
 
