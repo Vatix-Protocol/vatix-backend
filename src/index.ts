@@ -104,6 +104,34 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
   registerDeprecatedAliases(server);
 
+  // Serve interactive API documentation at /docs using Swagger UI (CDN-hosted).
+  // The spec is loaded from /v1/openapi.json at runtime so it stays in sync.
+  server.get("/docs", async (_request, reply) => {
+    const html = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vatix API Docs</title>
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+      SwaggerUIBundle({
+        url: "/v1/openapi.json",
+        dom_id: "#swagger-ui",
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+        layout: "BaseLayout",
+        deepLinking: true,
+      });
+    </script>
+  </body>
+</html>`;
+    return reply.type("text/html").send(html);
+  });
+
   if (options.registerTestRoutes !== false) {
     // Test routes for error handling
     server.get("/test/validation-error", async () => {

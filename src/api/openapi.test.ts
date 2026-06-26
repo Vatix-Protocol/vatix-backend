@@ -22,7 +22,8 @@ const { buildServer } = await import("../index.js");
  */
 const ROUTES_NOT_IN_SPEC = [
   { method: "GET", path: "/v1/openapi.json" },
-  // Internal metrics/diagnostics routes can be added here
+  // /docs serves Swagger UI HTML — it's a UI endpoint, not an API resource
+  { method: "GET", path: "/docs" },
 ] as const;
 
 describe("OpenAPI specification", () => {
