@@ -4,6 +4,7 @@ import type {
   NormalizedTrade,
   NormalizedResolution,
   NormalizedCollateralDeposit,
+  NormalizedMarketCreated,
 } from "./types.js";
 
 /**
@@ -100,6 +101,11 @@ export interface PersistedCollateralDeposit extends NormalizedCollateralDeposit 
   idempotencyKey: string;
 }
 
+/** A NormalizedMarketCreated stamped with its idempotency key, ready for storage. */
+export interface PersistedMarketCreated extends NormalizedMarketCreated {
+  idempotencyKey: string;
+}
+
 export function withIdempotencyKey(trade: NormalizedTrade): PersistedTrade;
 export function withIdempotencyKey(
   resolution: NormalizedResolution
@@ -108,8 +114,11 @@ export function withIdempotencyKey(
   deposit: NormalizedCollateralDeposit
 ): PersistedCollateralDeposit;
 export function withIdempotencyKey(
-  record: NormalizedTrade | NormalizedResolution | NormalizedCollateralDeposit
-): PersistedTrade | PersistedResolution | PersistedCollateralDeposit {
+  market: NormalizedMarketCreated
+): PersistedMarketCreated;
+export function withIdempotencyKey(
+  record: NormalizedTrade | NormalizedResolution | NormalizedCollateralDeposit | NormalizedMarketCreated
+): PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated {
   const { key } = generateIdempotencyKey({
     id: record.eventId,
     contractId: record.contractId,
