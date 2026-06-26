@@ -112,6 +112,24 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  settlement-worker:
+    build:
+      context: .
+      target: settlement-worker
+    container_name: vatix-settlement-worker
+    profiles: ["app", "workers", "settlement-worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vatix
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   # One-off migration runner — not part of any long-running profile.
   # Usage: docker compose --profile tools run --rm migrate
   migrate:
