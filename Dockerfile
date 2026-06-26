@@ -15,6 +15,7 @@
 #   docker build --target indexer -t vatix-indexer .
 #   docker build --target finalization-worker -t vatix-finalization-worker .
 #   docker build --target oracle-worker -t vatix-oracle-worker .
+#   docker build --target settlement-worker -t vatix-settlement-worker .
 
 ARG NODE_VERSION=22-bookworm-slim
 
@@ -101,3 +102,9 @@ CMD ["node_modules/.bin/tsx", "apps/workers/src/finalization/main.ts"]
 # ---------------------------------------------------------------------------
 FROM runtime AS oracle-worker
 CMD ["node_modules/.bin/tsx", "apps/workers/src/oracle/main.ts"]
+
+# ---------------------------------------------------------------------------
+# settlement-worker — Redis-stream settlement queue consumer
+# ---------------------------------------------------------------------------
+FROM runtime AS settlement-worker
+CMD ["node_modules/.bin/tsx", "apps/workers/src/settlement/consumer.ts"]
