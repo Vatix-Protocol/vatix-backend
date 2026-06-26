@@ -36,10 +36,31 @@ async function bootstrap(): Promise<void> {
     logger,
   });
 
+  const rpcUrl = process.env.STELLAR_RPC_URL;
+  const contractId =
+    process.env.MARKET_CONTRACT_ID ?? process.env.INDEXER_CONTRACT_ID;
+  const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE;
+  const signerSecret = process.env.ORACLE_SECRET_KEY;
+
+  const stellar =
+    rpcUrl && contractId && networkPassphrase && signerSecret
+      ? { rpcUrl, contractId, networkPassphrase, signerSecret }
+      : undefined;
+
+  if (!stellar) {
+    logger.warn(
+      "Oracle Stellar config incomplete — resolve_market calls disabled. " +
+        "Set STELLAR_RPC_URL, MARKET_CONTRACT_ID, SOROBAN_NETWORK_PASSPHRASE, " +
+        "and ORACLE_SECRET_KEY to enable on-chain submission.",
+      { component: "oracle-worker" }
+    );
+  }
+
   const worker = new SubmissionWorker(queue, prisma, {
     submissionMaxRetries: config.submissionMaxRetries,
     consumerName: `oracle-worker-${Date.now()}`,
     logger,
+    stellar,
   });
 
   // Initialize the queue (idempotent)
