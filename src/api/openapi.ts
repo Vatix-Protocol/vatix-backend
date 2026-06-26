@@ -279,6 +279,53 @@ export const openApiSpec = {
         },
       },
     },
+    "/v1/wallets/{wallet}/positions/{marketId}": {
+      get: {
+        summary: "Single market position",
+        description:
+          "Retrieve the position exposure for a wallet in a specific market. Returns 404 if no position exists.",
+        tags: ["Positions"],
+        parameters: [
+          {
+            name: "wallet",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description:
+              "Stellar public key (StrKey): starts with G and is 56 chars using [A-Z2-7]",
+          },
+          {
+            name: "marketId",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description: "Market ID to fetch position for",
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Single market position",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    wallet: { type: "string" },
+                    marketId: { type: "string" },
+                    position: {
+                      $ref: "#/components/schemas/WalletExposureRow",
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "404": {
+            description: "No position found for the given wallet and market",
+          },
+        },
+      },
+    },
     "/v1/admin/markets": {
       get: {
         summary: "Admin market listing",
