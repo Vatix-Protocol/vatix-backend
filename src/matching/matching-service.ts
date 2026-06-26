@@ -280,8 +280,24 @@ class MatchingService {
             });
           }
 
+          // Build collateral cost-basis deltas: buyer pays price*qty, seller receives it
+          const collateralDeltaMap = new Map<string, number>();
+          for (const trade of matchResult.trades) {
+            const cost = trade.price * trade.quantity;
+            collateralDeltaMap.set(
+              trade.buyerAddress,
+              (collateralDeltaMap.get(trade.buyerAddress) ?? 0) + cost
+            );
+            collateralDeltaMap.set(
+              trade.sellerAddress,
+              (collateralDeltaMap.get(trade.sellerAddress) ?? 0) - cost
+            );
+          }
+
           // Update positions
           for (const delta of matchResult.positionDeltas) {
+            const collateralDelta =
+              collateralDeltaMap.get(delta.userAddress) ?? 0;
             await tx.userPosition.upsert({
               where: {
                 marketId_userAddress: {
@@ -294,6 +310,7 @@ class MatchingService {
                 userAddress: delta.userAddress,
                 yesShares: delta.yesSharesDelta,
                 noShares: delta.noSharesDelta,
+                lockedCollateral: collateralDelta,
               },
               update: {
                 yesShares: {
@@ -301,6 +318,9 @@ class MatchingService {
                 },
                 noShares: {
                   increment: delta.noSharesDelta,
+                },
+                lockedCollateral: {
+                  increment: collateralDelta,
                 },
               },
             });
