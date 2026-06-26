@@ -2,7 +2,10 @@ import "dotenv/config";
 import { redis } from "../../../../src/services/redis.js";
 import { createLogger } from "../../../indexer/src/logger.js";
 import { disconnectPrisma } from "../../../../src/services/prisma.js";
-import { SettlementWorker } from "./settlement-worker.js";
+import {
+  SettlementWorker,
+  type SettlementStellarConfig,
+} from "./settlement-worker.js";
 import type { QueueJob } from "../consumers/queue-consumer.js";
 
 const STREAM_KEY = (): string => {
@@ -123,10 +126,30 @@ async function bootstrap(): Promise<void> {
 
   await initConsumerGroup(streamKey, logger);
 
+  const rpcUrl = process.env.STELLAR_RPC_URL;
+  const contractId = process.env.SETTLEMENT_CONTRACT_ID;
+  const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE;
+  const signerSecret = process.env.STELLAR_SECRET_KEY;
+
+  const stellar: SettlementStellarConfig | undefined =
+    rpcUrl && contractId && networkPassphrase && signerSecret
+      ? { rpcUrl, contractId, networkPassphrase, signerSecret }
+      : undefined;
+
+  if (!stellar) {
+    logger.warn(
+      "Stellar config incomplete — on-chain settlement disabled. " +
+        "Set STELLAR_RPC_URL, SETTLEMENT_CONTRACT_ID, SOROBAN_NETWORK_PASSPHRASE, " +
+        "and STELLAR_SECRET_KEY to enable.",
+      { component: "settlement-worker" }
+    );
+  }
+
   const worker = new SettlementWorker(redis, logger, {
     maxAttempts: MAX_ATTEMPTS,
     processingTimeoutMs: PROCESSING_TIMEOUT_MS,
     idempotencyTtlSeconds: IDEMPOTENCY_TTL_SECONDS,
+    stellar,
   });
 
   await pollMessages(streamKey, consumerName, worker, attemptTracker, logger);
