@@ -3,6 +3,7 @@ import type {
   PersistedTrade,
   PersistedResolution,
   PersistedCollateralDeposit,
+  PersistedMarketCreated,
   DuplicateEventLogger,
 } from "./idempotency.js";
 import { insertIfNew } from "./idempotency.js";
@@ -13,7 +14,8 @@ import type { PrismaClient } from "../../../src/generated/prisma/client/index.js
 export type BatchRecord =
   | { kind: "trade"; data: PersistedTrade }
   | { kind: "resolution"; data: PersistedResolution }
-  | { kind: "collateral_deposited"; data: PersistedCollateralDeposit };
+  | { kind: "collateral_deposited"; data: PersistedCollateralDeposit }
+  | { kind: "market_created"; data: PersistedMarketCreated };
 
 export interface BatchWriteError {
   record: BatchRecord;
@@ -60,7 +62,7 @@ export class PrismaBatchWriter implements BatchWriter {
         try {
           const result = await insertIfNew(
             record.data,
-            async (persisted) => this.persistRecord(tx, record, persisted),
+            async (persisted) => this.persistRecord(tx, record, persisted as PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated),
             { logger: duplicateLogger }
           );
 
@@ -96,8 +98,8 @@ export class PrismaBatchWriter implements BatchWriter {
       "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
     >,
     record: BatchRecord,
-    persisted: PersistedTrade | PersistedResolution | PersistedCollateralDeposit
-  ): Promise<PersistedTrade | PersistedResolution | PersistedCollateralDeposit | null> {
+    persisted: PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated
+  ): Promise<PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated | null> {
     const existing = await tx.indexerProcessedEvent.findUnique({
       where: { idempotencyKey: persisted.idempotencyKey },
     });
@@ -147,7 +149,7 @@ export class PrismaBatchWriter implements BatchWriter {
           idempotencyKey: resolution.idempotencyKey,
         },
       });
-    } else {
+    } else if (record.kind === "collateral_deposited") {
       // collateral_deposited — logged for audit; position accounting handled by a worker.
       const deposit = persisted as PersistedCollateralDeposit;
       this.logger?.debug("collateral_deposited event recorded", {
@@ -156,6 +158,24 @@ export class PrismaBatchWriter implements BatchWriter {
         marketId: deposit.marketId,
         amountRaw: deposit.amountRaw.toString(),
         ledger: deposit.ledger,
+      });
+    } else {
+      const market = persisted as PersistedMarketCreated;
+      await tx.market.upsert({
+        where: { id: market.marketId },
+        create: {
+          id: market.marketId,
+          question: market.question,
+          endTime: new Date(market.endTime),
+          oracleAddress: market.oracleAddress,
+          status: market.status,
+        },
+        update: {
+          question: market.question,
+          endTime: new Date(market.endTime),
+          oracleAddress: market.oracleAddress,
+          status: market.status,
+        },
       });
     }
 
