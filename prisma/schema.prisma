@@ -286,3 +286,24 @@ model OracleSourceAlias {
   @@index([canonicalSource])
   @@map("oracle_source_aliases")
 }
+
+/// Durable audit log of on-chain collateral_deposited events.
+/// Written atomically with IndexerProcessedEvent; amountRaw stored as text
+/// to preserve i128 precision. Position reconciliation reads this table.
+model CollateralDeposit {
+  id             String   @id @default(uuid())
+  idempotencyKey String   @unique @map("idempotency_key") @db.VarChar(64)
+  eventId        String   @map("event_id")
+  ledger         Int
+  contractId     String   @map("contract_id")
+  account        String   @db.VarChar(56)
+  marketId       String   @map("market_id")
+  amountRaw      String   @map("amount_raw")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([account])
+  @@index([marketId])
+  @@index([account, marketId])
+  @@index([ledger])
+  @@map("collateral_deposits")
+}
