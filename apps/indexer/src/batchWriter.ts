@@ -133,7 +133,7 @@ export class PrismaBatchWriter implements BatchWriter {
           sellOrderId: trade.sellOrderId,
         },
       });
-      // TODO: update UserPosition shares/collateral when position events are parsed.
+      await this.reconcileTradeIntoPositions(tx, trade);
     } else if (record.kind === "resolution") {
       const resolution = persisted as PersistedResolution;
       await tx.resolutionCandidate.create({
@@ -180,6 +180,74 @@ export class PrismaBatchWriter implements BatchWriter {
     }
 
     return persisted;
+  }
+}
+
+  /**
+   * Upsert UserPosition rows for both sides of an indexed trade.
+   * Silently skips if the market doesn't exist yet in Postgres (FK violation),
+   * ensuring a missing market row never blocks trade ingestion.
+   */
+  private async reconcileTradeIntoPositions(
+    tx: Omit<
+      PrismaClient,
+      "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
+    >,
+    trade: PersistedTrade
+  ): Promise<void> {
+    const quantity = Number(trade.quantityRaw);
+    if (!Number.isFinite(quantity) || quantity <= 0) return;
+
+    const traderYesDelta =
+      trade.outcome === "YES" ? (trade.direction === "buy" ? quantity : -quantity) : 0;
+    const traderNoDelta =
+      trade.outcome === "NO" ? (trade.direction === "buy" ? quantity : -quantity) : 0;
+
+    try {
+      await tx.userPosition.upsert({
+        where: {
+          marketId_userAddress: {
+            marketId: trade.marketId,
+            userAddress: trade.traderAddress,
+          },
+        },
+        create: {
+          marketId: trade.marketId,
+          userAddress: trade.traderAddress,
+          yesShares: Math.max(0, traderYesDelta),
+          noShares: Math.max(0, traderNoDelta),
+        },
+        update: {
+          yesShares: { increment: traderYesDelta },
+          noShares: { increment: traderNoDelta },
+        },
+      });
+
+      await tx.userPosition.upsert({
+        where: {
+          marketId_userAddress: {
+            marketId: trade.marketId,
+            userAddress: trade.counterpartyAddress,
+          },
+        },
+        create: {
+          marketId: trade.marketId,
+          userAddress: trade.counterpartyAddress,
+          yesShares: Math.max(0, -traderYesDelta),
+          noShares: Math.max(0, -traderNoDelta),
+        },
+        update: {
+          yesShares: { increment: -traderYesDelta },
+          noShares: { increment: -traderNoDelta },
+        },
+      });
+    } catch (err) {
+      this.logger?.warn("Skipping position reconciliation for indexed trade", {
+        idempotencyKey: trade.idempotencyKey,
+        marketId: trade.marketId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 
