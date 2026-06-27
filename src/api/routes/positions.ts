@@ -4,7 +4,7 @@ import {
   STELLAR_PUBLIC_KEY_REGEX,
   validateUserAddress,
 } from "../../matching/validation.js";
-import { ValidationError } from "../middleware/errors.js";
+import { NotFoundError, ValidationError } from "../middleware/errors.js";
 import { heavyReadLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
 
@@ -315,6 +315,85 @@ export default async function positionsRouter(server: FastifyInstance) {
       }
 
       success(reply, response);
+    }
+  );
+
+  server.get<{
+    Params: { wallet: string; marketId: string };
+  }>(
+    "/wallets/:wallet/positions/:marketId",
+    {
+      onRequest: [heavyReadLimiter],
+      schema: {
+        params: {
+          type: "object",
+          required: ["wallet", "marketId"],
+          properties: {
+            wallet: {
+              type: "string",
+              pattern: STELLAR_PUBLIC_KEY_REGEX.source,
+              description:
+                "Stellar public key (StrKey): starts with G and is 56 chars using [A-Z2-7]",
+            },
+            marketId: {
+              type: "string",
+              description: "Market ID to fetch position for",
+            },
+          },
+        },
+      },
+    },
+    async (
+      request: FastifyRequest<{
+        Params: { wallet: string; marketId: string };
+      }>,
+      reply: FastifyReply
+    ) => {
+      const { wallet, marketId } = request.params;
+      const prisma = getPrismaClient();
+
+      const addressError = validateUserAddress(wallet);
+      if (addressError) {
+        throw new ValidationError(addressError);
+      }
+
+      const position = await prisma.userPosition.findFirst({
+        where: { userAddress: wallet, marketId },
+        include: {
+          market: {
+            select: {
+              id: true,
+              question: true,
+              outcome: true,
+              status: true,
+            },
+          },
+        },
+      });
+
+      if (!position) {
+        throw new NotFoundError(
+          `No position found for wallet in market ${marketId}`
+        );
+      }
+
+      const market = position.market as any;
+      const lockedCollateral = position.lockedCollateral.toString();
+
+      const exposure: WalletExposureRow = {
+        marketId: market.id,
+        marketQuestion: market.question,
+        yesShares: position.yesShares,
+        noShares: position.noShares,
+        netExposure: position.yesShares - position.noShares,
+        lockedCollateral,
+        isSettled: position.isSettled,
+        updatedAt: position.updatedAt,
+      };
+
+      request.log.info({ wallet, marketId }, "wallet market position fetched");
+
+      success(reply, { wallet, marketId, position: exposure });
     }
   );
 }
