@@ -97,6 +97,40 @@ export class CollateralDepositedParseError extends Error {
   }
 }
 
+// ─── Market created types ────────────────────────────────────────────────────
+
+export type MarketCreatedStatus = "ACTIVE" | "RESOLVED" | "CANCELLED";
+
+/**
+ * Normalized record produced from a market_created chain event.
+ * The marketId is the on-chain identifier and is expected to match Market.id.
+ */
+export interface NormalizedMarketCreated {
+  eventId: string;
+  ledger: number;
+  ledgerClosedAt: string;
+  contractId: string;
+  /** On-chain market identifier — used as Market.id in Postgres. */
+  marketId: string;
+  question: string;
+  /** ISO-8601 timestamp when the market closes. */
+  endTime: string;
+  /** Stellar oracle address (56-char base32). */
+  oracleAddress: string;
+  status: MarketCreatedStatus;
+}
+
+export class MarketCreatedParseError extends Error {
+  constructor(
+    message: string,
+    public readonly eventId: string,
+    public readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = "MarketCreatedParseError";
+  }
+}
+
 // ─── Fetcher types ───────────────────────────────────────────────────────────
 
 export interface LedgerWindow {

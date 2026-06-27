@@ -3,6 +3,7 @@ import type {
   PersistedTrade,
   PersistedResolution,
   PersistedCollateralDeposit,
+  PersistedMarketCreated,
   DuplicateEventLogger,
 } from "./idempotency.js";
 import { insertIfNew } from "./idempotency.js";
@@ -13,7 +14,8 @@ import type { PrismaClient } from "../../../src/generated/prisma/client/index.js
 export type BatchRecord =
   | { kind: "trade"; data: PersistedTrade }
   | { kind: "resolution"; data: PersistedResolution }
-  | { kind: "collateral_deposited"; data: PersistedCollateralDeposit };
+  | { kind: "collateral_deposited"; data: PersistedCollateralDeposit }
+  | { kind: "market_created"; data: PersistedMarketCreated };
 
 export interface BatchWriteError {
   record: BatchRecord;
@@ -60,7 +62,7 @@ export class PrismaBatchWriter implements BatchWriter {
         try {
           const result = await insertIfNew(
             record.data,
-            async (persisted) => this.persistRecord(tx, record, persisted),
+            async (persisted) => this.persistRecord(tx, record, persisted as PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated),
             { logger: duplicateLogger }
           );
 
@@ -96,8 +98,8 @@ export class PrismaBatchWriter implements BatchWriter {
       "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
     >,
     record: BatchRecord,
-    persisted: PersistedTrade | PersistedResolution | PersistedCollateralDeposit
-  ): Promise<PersistedTrade | PersistedResolution | PersistedCollateralDeposit | null> {
+    persisted: PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated
+  ): Promise<PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated | null> {
     const existing = await tx.indexerProcessedEvent.findUnique({
       where: { idempotencyKey: persisted.idempotencyKey },
     });
@@ -131,7 +133,7 @@ export class PrismaBatchWriter implements BatchWriter {
           sellOrderId: trade.sellOrderId,
         },
       });
-      // TODO: update UserPosition shares/collateral when position events are parsed.
+      await this.reconcileTradeIntoPositions(tx, trade);
     } else if (record.kind === "resolution") {
       const resolution = persisted as PersistedResolution;
       await tx.resolutionCandidate.create({
@@ -147,7 +149,8 @@ export class PrismaBatchWriter implements BatchWriter {
           idempotencyKey: resolution.idempotencyKey,
         },
       });
-    } else {
+    } else if (record.kind === "collateral_deposited") {
+      // collateral_deposited — logged for audit; position accounting handled by a worker.
       const deposit = persisted as PersistedCollateralDeposit;
       await (tx as any).collateralDeposit.create({
         data: {
@@ -160,9 +163,95 @@ export class PrismaBatchWriter implements BatchWriter {
           amountRaw: deposit.amountRaw.toString(),
         },
       });
+    } else {
+      const market = persisted as PersistedMarketCreated;
+      await tx.market.upsert({
+        where: { id: market.marketId },
+        create: {
+          id: market.marketId,
+          question: market.question,
+          endTime: new Date(market.endTime),
+          oracleAddress: market.oracleAddress,
+          status: market.status,
+        },
+        update: {
+          question: market.question,
+          endTime: new Date(market.endTime),
+          oracleAddress: market.oracleAddress,
+          status: market.status,
+        },
+      });
     }
 
     return persisted;
+  }
+}
+
+  /**
+   * Upsert UserPosition rows for both sides of an indexed trade.
+   * Silently skips if the market doesn't exist yet in Postgres (FK violation),
+   * ensuring a missing market row never blocks trade ingestion.
+   */
+  private async reconcileTradeIntoPositions(
+    tx: Omit<
+      PrismaClient,
+      "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
+    >,
+    trade: PersistedTrade
+  ): Promise<void> {
+    const quantity = Number(trade.quantityRaw);
+    if (!Number.isFinite(quantity) || quantity <= 0) return;
+
+    const traderYesDelta =
+      trade.outcome === "YES" ? (trade.direction === "buy" ? quantity : -quantity) : 0;
+    const traderNoDelta =
+      trade.outcome === "NO" ? (trade.direction === "buy" ? quantity : -quantity) : 0;
+
+    try {
+      await tx.userPosition.upsert({
+        where: {
+          marketId_userAddress: {
+            marketId: trade.marketId,
+            userAddress: trade.traderAddress,
+          },
+        },
+        create: {
+          marketId: trade.marketId,
+          userAddress: trade.traderAddress,
+          yesShares: Math.max(0, traderYesDelta),
+          noShares: Math.max(0, traderNoDelta),
+        },
+        update: {
+          yesShares: { increment: traderYesDelta },
+          noShares: { increment: traderNoDelta },
+        },
+      });
+
+      await tx.userPosition.upsert({
+        where: {
+          marketId_userAddress: {
+            marketId: trade.marketId,
+            userAddress: trade.counterpartyAddress,
+          },
+        },
+        create: {
+          marketId: trade.marketId,
+          userAddress: trade.counterpartyAddress,
+          yesShares: Math.max(0, -traderYesDelta),
+          noShares: Math.max(0, -traderNoDelta),
+        },
+        update: {
+          yesShares: { increment: -traderYesDelta },
+          noShares: { increment: -traderNoDelta },
+        },
+      });
+    } catch (err) {
+      this.logger?.warn("Skipping position reconciliation for indexed trade", {
+        idempotencyKey: trade.idempotencyKey,
+        marketId: trade.marketId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 

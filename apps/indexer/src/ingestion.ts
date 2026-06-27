@@ -6,11 +6,13 @@ import type { EventFetcher } from "./eventFetcher.js";
 import { parseTradeEvents } from "./tradeParser.js";
 import { parseResolutionEvents } from "./resolutionParser.js";
 import { parseCollateralDepositedEvents } from "./collateralDepositedParser.js";
+import { parseMarketCreatedEvents } from "./marketCreatedParser.js";
 import { withIdempotencyKey } from "./idempotency.js";
 import {
   TradeParseError,
   ResolutionParseError,
   CollateralDepositedParseError,
+  MarketCreatedParseError,
 } from "./types.js";
 
 export interface IngestionLoop {
@@ -200,6 +202,7 @@ export class PollingIngestionLoop implements IngestionLoop {
       parseResolutionEvents(events);
     const { deposits, errors: depositErrors } =
       parseCollateralDepositedEvents(events);
+    const { markets, errors: marketErrors } = parseMarketCreatedEvents(events);
 
     for (const error of tradeErrors) {
       this.logger.warn("Trade parse error — skipping event", {
@@ -225,7 +228,21 @@ export class PollingIngestionLoop implements IngestionLoop {
       });
     }
 
+    for (const error of marketErrors) {
+      this.logger.warn("Market created parse error — skipping event", {
+        eventId: error.eventId,
+        error: error.message,
+        parseErrorType: MarketCreatedParseError.name,
+      });
+    }
+
     const records: BatchRecord[] = [
+      ...markets.map(
+        (market): BatchRecord => ({
+          kind: "market_created",
+          data: withIdempotencyKey(market),
+        })
+      ),
       ...trades.map(
         (trade): BatchRecord => ({
           kind: "trade",
@@ -252,6 +269,7 @@ export class PollingIngestionLoop implements IngestionLoop {
       startLedger,
       endLedger,
       eventsFetched: events.length,
+      marketsParsed: markets.length,
       tradesParsed: trades.length,
       resolutionsParsed: resolutions.length,
       collateralDepositsParsed: deposits.length,
