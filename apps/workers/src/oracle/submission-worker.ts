@@ -215,7 +215,7 @@ export class SubmissionWorker {
 
     const args: xdr.ScVal[] = [
       nativeToScVal(report.payload.marketId, { type: "string" }),
-      nativeToScVal(report.payload.outcome === true, { type: "bool" }),
+      nativeToScVal(report.payload.outcome, { type: "bool" }),
       nativeToScVal(Buffer.from(report.signature, "base64"), { type: "bytes" }),
       nativeToScVal(report.publicKey, { type: "address" }),
     ];
