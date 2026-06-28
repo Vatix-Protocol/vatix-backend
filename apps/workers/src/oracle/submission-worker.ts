@@ -129,7 +129,7 @@ export class SubmissionWorker {
         };
 
         await this.updateAttempt(updated);
-        await this.queue.nack(updated);
+        await this.queue.nack(updated, this.consumerName);
       } else {
         this.logger.error(
           "Oracle submission processing failed, max attempts exceeded",
