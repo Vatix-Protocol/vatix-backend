@@ -14,3 +14,4 @@ export {
   ValidationResult,
   OrderValidationError,
 } from "./validation.js";
+export { default as positionsRouter } from "../api/routes/positions.js";
