@@ -39,23 +39,21 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
   }
 
   async saveCursor(cursor: string): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
-      await tx.indexerCursor.upsert({
-        where: {
-          networkId_cursorKey: {
-            networkId: this.networkId,
-            cursorKey: this.cursorKey,
-          },
-        },
-        create: {
+    await this.prisma.indexerCursor.upsert({
+      where: {
+        networkId_cursorKey: {
           networkId: this.networkId,
           cursorKey: this.cursorKey,
-          cursorValue: cursor,
         },
-        update: {
-          cursorValue: cursor,
-        },
-      });
+      },
+      create: {
+        networkId: this.networkId,
+        cursorKey: this.cursorKey,
+        cursorValue: cursor,
+      },
+      update: {
+        cursorValue: cursor,
+      },
     });
     this.logger?.info("Indexer cursor saved", {
       event: "indexer.cursor.saved",

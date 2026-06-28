@@ -185,7 +185,6 @@ export class PrismaBatchWriter implements BatchWriter {
 
     return persisted;
   }
-}
 
   /**
    * Upsert UserPosition rows for both sides of an indexed trade.
