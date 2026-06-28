@@ -24,10 +24,16 @@ export interface AuditLogEntry {
  * - Automatic expiration (MAXLEN)
  */
 export class AuditService {
-  private readonly streamPrefix = "audit:market:";
-  private readonly globalStream = "audit:trades:global";
+  private readonly streamPrefix: string;
+  private readonly globalStream: string;
   private readonly maxLogEntries = 100000; // ~30 days at 1 trade/min
   private readonly approximateTrimming = true;
+
+  constructor() {
+    const keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
+    this.streamPrefix = `${keyPrefix}audit:market:`;
+    this.globalStream = `${keyPrefix}audit:trades:global`;
+  }
 
   /**
    * Log a trade execution to audit stream

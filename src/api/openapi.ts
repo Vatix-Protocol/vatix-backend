@@ -56,9 +56,43 @@ export const openApiSpec = {
         responses: {
           "200": {
             description: "Service is ready",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    ready: { type: "boolean", example: true },
+                    dependencies: {
+                      type: "object",
+                      properties: {
+                        database: { $ref: "#/components/schemas/DependencyResult" },
+                        indexFreshness: { $ref: "#/components/schemas/DependencyResult" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
           "503": {
             description: "Service is not ready",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    ready: { type: "boolean", example: false },
+                    dependencies: {
+                      type: "object",
+                      properties: {
+                        database: { $ref: "#/components/schemas/DependencyResult" },
+                        indexFreshness: { $ref: "#/components/schemas/DependencyResult" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -395,6 +429,19 @@ export const openApiSpec = {
           },
           requestId: {
             type: "string",
+          },
+        },
+      },
+      DependencyResult: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["ok", "error", "stale"],
+          },
+          error: {
+            type: "string",
+            nullable: true,
           },
         },
       },
