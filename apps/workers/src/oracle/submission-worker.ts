@@ -129,7 +129,7 @@ export class SubmissionWorker {
         };
 
         await this.updateAttempt(updated);
-        await this.queue.nack(updated);
+        await this.queue.nack(updated, this.consumerName);
       } else {
         this.logger.error(
           "Oracle submission processing failed, max attempts exceeded",
@@ -215,7 +215,7 @@ export class SubmissionWorker {
 
     const args: xdr.ScVal[] = [
       nativeToScVal(report.payload.marketId, { type: "string" }),
-      nativeToScVal(report.payload.outcome === true, { type: "bool" }),
+      nativeToScVal(report.payload.outcome, { type: "bool" }),
       nativeToScVal(Buffer.from(report.signature, "base64"), { type: "bytes" }),
       nativeToScVal(report.publicKey, { type: "address" }),
     ];
@@ -336,7 +336,9 @@ export class SubmissionWorker {
     try {
       await this.prisma.oracleReport.updateMany({
         where: { marketId: request.marketId },
-        data: {},
+        data: {
+          confidence: Math.max(0, 1.0 - submission.attempts * 0.2),
+        },
       });
     } catch (error) {
       this.logger.warn("Failed to update attempt count", {
@@ -359,7 +361,15 @@ export class SubmissionWorker {
     try {
       await this.prisma.oracleReport.updateMany({
         where: { marketId: request.marketId },
-        data: {},
+        data: { candidateResolution: null },
+      });
+
+      await this.prisma.resolutionCandidate.updateMany({
+        where: {
+          marketId: request.marketId,
+          source: request.oracleAddress,
+        },
+        data: { status: "REJECTED" },
       });
 
       this.logger.error("Oracle submission marked as failed", {

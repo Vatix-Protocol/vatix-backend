@@ -223,11 +223,11 @@ export class RedisSubmissionQueue {
   /**
    * Negative acknowledge (nack) — makes the message visible again for retry.
    */
-  async nack(submission: QueuedSubmission): Promise<void> {
+  async nack(submission: QueuedSubmission, consumerName: string): Promise<void> {
     await this.redisClient.xclaim(
       STREAM_KEY,
       CONSUMER_GROUP,
-      "nack-worker",
+      consumerName,
       0, // Min idle time 0 = claim immediately
       submission.streamId
     );
@@ -237,6 +237,7 @@ export class RedisSubmissionQueue {
       marketId: submission.request.marketId,
       streamId: submission.streamId,
       attempts: submission.attempts,
+      consumerName,
     });
   }
 }
