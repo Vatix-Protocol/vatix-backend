@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
-import { ValidationError } from "../middleware/errors.js";
+import { ValidationError, NotFoundError } from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
 import { auditService } from "../../services/audit.js";
 import { matchingService } from "../../matching/matching-service.js";
@@ -12,6 +12,7 @@ import {
 import { heavyReadLimiter, writeLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
 import { verifyStellarSignature } from "../middleware/stellarAuth.js";
+import { computeTradeHash } from "../../services/trade-receipt.js";
 
 export interface GetUserOrdersParams {
   address: string;
@@ -431,6 +432,69 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         await matchingService.placeOrder(orderInput);
 
       reply.status(201).send({ order, trades, filledQuantity });
+    }
+  );
+
+  fastify.get<{ Params: { tradeId: string } }>(
+    "/trades/:tradeId/receipt",
+    {
+      onRequest: [heavyReadLimiter],
+      schema: {
+        params: {
+          type: "object",
+          required: ["tradeId"],
+          properties: {
+            tradeId: {
+              type: "string",
+              description: "The trade's unique business key (tradeId field)",
+            },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Params: { tradeId: string } }>) => {
+      const { tradeId } = request.params;
+      const prisma = getPrismaClient();
+
+      const trade = await prisma.trade.findUnique({
+        where: { tradeId },
+      });
+
+      if (!trade) {
+        throw new NotFoundError(`Trade not found: ${tradeId}`);
+      }
+
+      const hash = computeTradeHash({
+        buyerAddress: trade.buyerAddress,
+        sellerAddress: trade.sellerAddress,
+        marketId: trade.marketId,
+        outcome: trade.outcome,
+        quantity: trade.quantity,
+        price: Number(trade.price),
+        timestamp: trade.tradedAt.getTime(),
+      });
+
+      console.info(
+        JSON.stringify({
+          event: "trade_receipt",
+          tradeId: trade.tradeId,
+          receiptHash: hash,
+          marketId: trade.marketId,
+          ts: new Date().toISOString(),
+        })
+      );
+
+      return {
+        tradeId: trade.tradeId,
+        receiptHash: hash,
+        marketId: trade.marketId,
+        outcome: trade.outcome,
+        buyerAddress: trade.buyerAddress,
+        sellerAddress: trade.sellerAddress,
+        quantity: trade.quantity,
+        price: trade.price.toString(),
+        tradedAt: trade.tradedAt.toISOString(),
+      };
     }
   );
 }

@@ -7,6 +7,7 @@ import {
 import { NotFoundError, ValidationError } from "../middleware/errors.js";
 import { heavyReadLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
+import { computeConcentrationScore } from "../../services/concentration.js";
 
 interface WalletExposureRow {
   marketId: string;
@@ -394,6 +395,77 @@ export default async function positionsRouter(server: FastifyInstance) {
       request.log.info({ wallet, marketId }, "wallet market position fetched");
 
       success(reply, { wallet, marketId, position: exposure });
+    }
+  );
+
+  server.get<{
+    Params: { wallet: string };
+  }>(
+    "/wallets/:wallet/concentration",
+    {
+      onRequest: [heavyReadLimiter],
+      schema: {
+        params: {
+          type: "object",
+          required: ["wallet"],
+          properties: {
+            wallet: {
+              type: "string",
+              pattern: STELLAR_PUBLIC_KEY_REGEX.source,
+              description: "Stellar public key",
+            },
+          },
+        },
+      },
+    },
+    async (
+      request: FastifyRequest<{ Params: { wallet: string } }>,
+      reply: FastifyReply
+    ) => {
+      const { wallet } = request.params;
+      const prisma = getPrismaClient();
+
+      const addressError = validateUserAddress(wallet);
+      if (addressError) {
+        throw new ValidationError(addressError);
+      }
+
+      const threshold = Number(
+        process.env.HIGH_CONCENTRATION_THRESHOLD ?? 2500
+      );
+
+      const positions = await prisma.userPosition.findMany({
+        where: { userAddress: wallet, isSettled: false },
+        select: { marketId: true, yesShares: true, noShares: true },
+      });
+
+      const result = computeConcentrationScore(positions, threshold);
+
+      if (result.isHighConcentration) {
+        console.warn(
+          JSON.stringify({
+            event: "high_concentration_warning",
+            wallet,
+            score: result.score,
+            threshold: result.threshold,
+            ts: new Date().toISOString(),
+          })
+        );
+      }
+
+      request.log.info(
+        { wallet, score: result.score, isHighConcentration: result.isHighConcentration },
+        "concentration score computed"
+      );
+
+      success(reply, {
+        wallet,
+        concentrationScore: result.score,
+        isHighConcentration: result.isHighConcentration,
+        threshold: result.threshold,
+        totalExposure: result.totalExposure,
+        positions: result.positions,
+      });
     }
   );
 }
