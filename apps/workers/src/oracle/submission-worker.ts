@@ -336,7 +336,9 @@ export class SubmissionWorker {
     try {
       await this.prisma.oracleReport.updateMany({
         where: { marketId: request.marketId },
-        data: {},
+        data: {
+          confidence: Math.max(0, 1.0 - submission.attempts * 0.2),
+        },
       });
     } catch (error) {
       this.logger.warn("Failed to update attempt count", {
@@ -359,7 +361,15 @@ export class SubmissionWorker {
     try {
       await this.prisma.oracleReport.updateMany({
         where: { marketId: request.marketId },
-        data: {},
+        data: { candidateResolution: null },
+      });
+
+      await this.prisma.resolutionCandidate.updateMany({
+        where: {
+          marketId: request.marketId,
+          source: request.oracleAddress,
+        },
+        data: { status: "REJECTED" },
       });
 
       this.logger.error("Oracle submission marked as failed", {
