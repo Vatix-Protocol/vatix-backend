@@ -17,7 +17,23 @@ export interface ChainConfig {
   horizonUrl: string;
 }
 
+export interface IngestionLoopConfig {
+  ingestionIntervalMs: number;
+  ledgerWindowSize: number;
+  checkpointFlushEveryBatches: number;
+  contractId: string;
+}
+
 export interface IndexerAppConfig extends SharedIndexerConfig, ChainConfig {}
+
+export function pickIngestionLoopConfig(cfg: IndexerAppConfig): IngestionLoopConfig {
+  return {
+    ingestionIntervalMs: cfg.ingestionIntervalMs,
+    ledgerWindowSize: cfg.ledgerWindowSize,
+    checkpointFlushEveryBatches: cfg.checkpointFlushEveryBatches,
+    contractId: cfg.contractId,
+  };
+}
 
 export function loadChainConfig(env: Env = process.env): ChainConfig {
   const passphrase = env["SOROBAN_NETWORK_PASSPHRASE"];
