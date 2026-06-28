@@ -20,7 +20,10 @@ import { registerDeprecatedAliases } from "./api/routes/legacy.js";
 import { openApiSpec } from "./api/openapi.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
-import { requestIdMiddleware } from "./api/middleware/requestId.js";
+import {
+  makeGenReqId,
+  requestIdMiddleware,
+} from "./api/middleware/requestId.js";
 import { config } from "./config.js";
 import { corsPlugin } from "./api/middleware/cors.js";
 
@@ -54,7 +57,12 @@ function createDefaultReadyDeps(): Parameters<typeof readyRoute>[0] {
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const server: FastifyInstance = Fastify({
     logger: options.logger ?? true,
-    genReqId: () => crypto.randomUUID(), // Generate unique request IDs
+    // Name the auto-bound pino field "requestId" so every request.log.*
+    // call carries it — not just the ones in requestLogger.
+    requestIdLogLabel: "requestId",
+    // Accept a valid incoming UUID from x-request-id before pino creates the
+    // child logger, so the binding is correct from the very first log entry.
+    genReqId: makeGenReqId(),
     bodyLimit,
   });
 
