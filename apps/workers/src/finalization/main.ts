@@ -21,8 +21,40 @@ async function bootstrap(): Promise<void> {
     challengeWindowSeconds: config.challengeWindowSeconds,
   });
 
-  await job.run();
-  const timer = setInterval(() => void job.run(), config.intervalMs);
+  let isPollInProgress = false;
+
+  const poll = async (): Promise<void> => {
+    if (isPollInProgress) {
+      logger.warn("Skipping finalization poll because a previous poll is active", {
+        intervalMs: config.intervalMs,
+        component: "finalization-worker",
+      });
+      return;
+    }
+
+    isPollInProgress = true;
+
+    try {
+      const result = await job.run();
+      logger.info("Finalization worker poll complete", {
+        component: "finalization-worker",
+        totalCandidates: result.totalCandidates,
+        finalizedCount: result.finalizedCount,
+        erroredCount: result.erroredCount,
+        skippedCount: result.skippedCount,
+      });
+    } catch (error) {
+      logger.error("Finalization worker poll failed", {
+        component: "finalization-worker",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      isPollInProgress = false;
+    }
+  };
+
+  await poll();
+  const timer = setInterval(() => void poll(), config.intervalMs);
 
   const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
   const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
