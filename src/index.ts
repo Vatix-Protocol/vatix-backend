@@ -211,6 +211,12 @@ const start = async () => {
       try {
         // Close server — stops accepting new connections, drains in-flight requests
         await server.close();
+
+        // Gracefully disconnect database and redis
+        const { disconnectPrisma } = await import("./services/prisma.js");
+        const { redis } = await import("./services/redis.js");
+        await Promise.allSettled([disconnectPrisma(), redis.disconnect()]);
+
         clearTimeout(timeoutHandle);
 
         server.log.info(

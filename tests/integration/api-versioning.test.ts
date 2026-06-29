@@ -41,9 +41,36 @@ vi.mock("../../src/services/prisma.js", () => {
       order: {
         groupBy: async () => [],
         findMany: async () => [],
+        count: async () => 0,
+      },
+      trade: {
+        findMany: async () => [],
+        count: async () => 0,
+      },
+      collateralDeposit: {
+        findMany: async () => [],
+        count: async () => 0,
       },
       userPosition: {
         findMany: async () => [],
+        findFirst: async () => ({
+          userAddress: "G" + "A".repeat(55),
+          marketId: "api-versioning-market-id",
+          outcome: "YES",
+          quantity: 10,
+          averagePrice: 0.5,
+          yesShares: 10,
+          noShares: 0,
+          lockedCollateral: 1000,
+          isSettled: false,
+          updatedAt: new Date(),
+          market: {
+            id: "api-versioning-market-id",
+            question: "API versioning market",
+            outcome: null,
+            status: "ACTIVE",
+          },
+        }),
       },
     }),
   };
@@ -204,7 +231,7 @@ describe("Integration Tests: API versioning", () => {
       {
         method: "GET",
         url: `/v1/wallets/${wallet}/positions/${marketId}`,
-        expected: [200, 404],
+        expected: [200],
       },
       { method: "GET", url: "/v1/admin/markets", expected: [401] },
       {
