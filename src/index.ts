@@ -187,10 +187,32 @@ const start = async () => {
     );
 
     // Graceful shutdown handling
+    const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+    type ShutdownSignal = (typeof VALID_SHUTDOWN_SIGNALS)[number];
+
     const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
     let isShuttingDown = false;
 
-    const gracefulShutdown = async (signal: string) => {
+    const shutdown = async (signal: ShutdownSignal) => {
+      if (
+        typeof signal !== "string" ||
+        signal.trim() === "" ||
+        !VALID_SHUTDOWN_SIGNALS.includes(
+          signal as (typeof VALID_SHUTDOWN_SIGNALS)[number]
+        )
+      ) {
+        server.log.warn(
+          {
+            signal,
+            statusCode: 400,
+            component: "api-server",
+            validSignals: [...VALID_SHUTDOWN_SIGNALS],
+          },
+          "Graceful shutdown called with invalid signal"
+        );
+        return;
+      }
+
       if (isShuttingDown) {
         return;
       }
@@ -250,8 +272,9 @@ const start = async () => {
     };
 
     // Register signal handlers for graceful shutdown
-    process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
-    process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
+    process.on("SIGTERM", () => void shutdown("SIGTERM"));
+    process.on("SIGINT", () => void shutdown("SIGINT"));
+    process.on("SIGHUP", () => void shutdown("SIGHUP"));
   } catch (err) {
     server.log.error(err);
     process.exit(1);
