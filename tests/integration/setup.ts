@@ -1,5 +1,6 @@
 import { execFileSync } from "child_process";
 import { Client } from "pg";
+import { GenericContainer, type StartedTestContainer } from "testcontainers";
 
 const TEST_DB_NAME = "vatix_integration_test";
 const BASE_URL =
@@ -7,8 +8,18 @@ const BASE_URL =
   "postgresql://postgres:postgres@localhost:5433";
 const TEST_DB_URL = `${BASE_URL}/${TEST_DB_NAME}`;
 
+let redisContainer: StartedTestContainer | undefined;
+
 export async function setup() {
-  process.env.REDIS_URL ??= "redis://localhost:6379";
+  // Start Redis via Testcontainers unless an external URL is already set
+  if (!process.env.REDIS_URL) {
+    redisContainer = await new GenericContainer("redis:7-alpine")
+      .withExposedPorts(6379)
+      .start();
+    const redisHost = redisContainer.getHost();
+    const redisPort = redisContainer.getMappedPort(6379);
+    process.env.REDIS_URL = `redis://${redisHost}:${redisPort}`;
+  }
 
   // Create isolated test database
   const client = new Client({ connectionString: `${BASE_URL}/postgres` });
@@ -39,4 +50,7 @@ export async function teardown() {
   );
   await client.query(`DROP DATABASE IF EXISTS ${TEST_DB_NAME}`);
   await client.end();
+
+  // Stop the Redis container if we started one
+  await redisContainer?.stop();
 }

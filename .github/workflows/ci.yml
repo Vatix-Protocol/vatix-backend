@@ -90,8 +90,8 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
 
-      - name: Run unit tests
-        run: pnpm test:run
+      - name: Run unit tests with coverage thresholds
+        run: pnpm test:unit:coverage
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
           REDIS_URL: redis://localhost:6379

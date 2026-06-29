@@ -29,7 +29,8 @@
     "prisma:validate": "tsx scripts/validate-migrations.ts",
     "prisma:reset": "prisma migrate reset",
     "prisma:deploy": "prisma migrate deploy",
-    "test:run": "vitest run",
+    "test:run": "vitest run --config vitest.unit.config.ts",
+    "test:unit:coverage": "vitest run --config vitest.unit.config.ts --coverage",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "prepare": "husky install",
     "generate:keypair": "tsx scripts/generate-keypair.ts",
@@ -72,6 +73,7 @@
     "prettier": "^3.8.1",
     "prisma": "^7.2.0",
     "typescript": "^5.9.3",
+    "testcontainers": "^10.13.2",
     "vitest": "^4.0.17"
   },
   "lint-staged": {
