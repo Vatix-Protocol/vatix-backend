@@ -10,7 +10,7 @@ Node.js • TypeScript • Fastify • PostgreSQL • Prisma • Redis • Stell
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - pnpm 8+
 - Docker & Docker Compose
 
@@ -164,8 +164,9 @@ See [docs/runbooks/incident-runbook.md](docs/runbooks/incident-runbook.md) for t
 
 Key endpoints with comprehensive test coverage:
 
-- `GET /v1/markets` - Market listing with pagination and filtering
-- `GET /v1/positions/:wallet` - Wallet position data with PnL calculations
+- `GET /markets` - Market listing with pagination and filtering
+- `GET /wallets/:wallet/positions` - Wallet position data with PnL calculations
+- `GET /v1/health` - Health check with version and dependency status
 
 ## License
 
