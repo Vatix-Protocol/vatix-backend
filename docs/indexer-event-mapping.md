@@ -10,7 +10,7 @@ Test vectors: [`apps/indexer/fixtures/contract-event-vectors.json`](../apps/inde
 
 | Event topic            | Payload shape         | Parser                          | Normalized type                  | DB table(s)                        |
 |------------------------|-----------------------|---------------------------------|----------------------------------|------------------------------------|
-| `trade_executed`       | ScvMap (9 fields)     | `tradeParser.ts`                | `NormalizedTrade`                | `IndexedTrade`                     |
+| `trade_executed_event` | ScvMap (9 fields)     | `tradeParser.ts`                | `NormalizedTrade`                | `IndexedTrade`                     |
 | `collateral_deposited` | ScvVec 3-tuple        | `collateralDepositedParser.ts`  | `NormalizedCollateralDeposit`    | logged only (no table yet — see §4)|
 | `market_resolved`      | ScvVec 3-tuple or ScvMap | `resolutionParser.ts`        | `NormalizedResolution`           | `ResolutionCandidate`              |
 | `market_created`       | pre-decoded JS object | `market-created-parser.ts`      | `MarketCreatedEvent`             | ingested outside `PollingIngestionLoop` |
@@ -21,7 +21,9 @@ All four events share the same topic encoding: **topic[0] = ScvSymbol** carrying
 
 ## 1. `trade_executed`
 
-**Topic XDR:** `AAAADwAAAA50cmFkZV9leGVjdXRlZAAA`
+**Topic XDR:** `AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA==` (`trade_executed_event`)
+
+> The contract does not yet publish this event — trades are currently matched off-chain by the CLOB (see the `Trade`/`IndexedTrade` Prisma models). `tradeParser.ts` anticipates the eventual on-chain event using the same topic-naming convention every other event in `contracts/market/src/events.rs` follows: Soroban's `#[contractevent]` macro snake-cases the struct name including its `Event` suffix (e.g. `MarketCreatedEvent` → `market_created_event`).
 
 **Payload:** ScvMap with keys:
 
@@ -111,7 +113,7 @@ PollingIngestionLoop.ingestFromCursor()
              ▼
         PrismaBatchWriter.write()
              │
-             ├── IndexedTrade              (trade_executed)
+             ├── IndexedTrade              (trade_executed_event)
              ├── ResolutionCandidate       (market_resolved)
              └── logger.debug only         (collateral_deposited — pending table)
 ```
