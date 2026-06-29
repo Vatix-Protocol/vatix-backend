@@ -152,6 +152,11 @@ describe("Integration Tests: API versioning", () => {
         url: `/v1/wallets/${wallet}/positions`,
         expected: [200],
       },
+      {
+        method: "GET",
+        url: `/v1/wallets/${wallet}/positions/${marketId}`,
+        expected: [200, 404],
+      },
       { method: "GET", url: "/v1/admin/markets", expected: [401] },
       {
         method: "PATCH",
