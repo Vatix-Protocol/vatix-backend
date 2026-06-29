@@ -25,8 +25,14 @@ import { openApiSpec } from "../../src/api/openapi.js";
  */
 function resolvePathParams(openApiPath: string): string {
   return openApiPath
-    .replace(/\{wallet\}/g, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
-    .replace(/\{address\}/g, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
+    .replace(
+      /\{wallet\}/g,
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+    )
+    .replace(
+      /\{address\}/g,
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+    )
     .replace(/\{id\}/g, "00000000-0000-0000-0000-000000000000");
 }
 
@@ -75,7 +81,10 @@ describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", ()
 
       // We allow any status code except 404 (route not found).
       // 200, 201, 400, 401, 403, 422, 503 all mean the route exists.
-      expect(res.statusCode, `${method.toUpperCase()} ${url} returned 404`).not.toBe(404);
+      expect(
+        res.statusCode,
+        `${method.toUpperCase()} ${url} returned 404`
+      ).not.toBe(404);
     }
   );
 });

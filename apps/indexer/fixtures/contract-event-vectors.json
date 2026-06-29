@@ -11,15 +11,15 @@
       },
       "payloadShape": "ScvMap",
       "fields": {
-        "market_id":      "ScvSymbol → string",
-        "trader":         "ScvSymbol → string (Stellar account)",
-        "counterparty":   "ScvSymbol → string (Stellar account)",
-        "direction":      "ScvSymbol → 'buy' | 'sell'",
-        "outcome":        "ScvSymbol → 'YES' | 'NO'",
-        "price":          "ScvI128  → bigint (7 decimals, e.g. 5_000_000n = 0.5)",
-        "quantity":       "ScvI128  → bigint (integer shares)",
-        "buy_order_id":   "ScvSymbol → string",
-        "sell_order_id":  "ScvSymbol → string"
+        "market_id": "ScvSymbol → string",
+        "trader": "ScvSymbol → string (Stellar account)",
+        "counterparty": "ScvSymbol → string (Stellar account)",
+        "direction": "ScvSymbol → 'buy' | 'sell'",
+        "outcome": "ScvSymbol → 'YES' | 'NO'",
+        "price": "ScvI128  → bigint (7 decimals, e.g. 5_000_000n = 0.5)",
+        "quantity": "ScvI128  → bigint (integer shares)",
+        "buy_order_id": "ScvSymbol → string",
+        "sell_order_id": "ScvSymbol → string"
       },
       "vectors": [
         {
@@ -70,9 +70,9 @@
       },
       "payloadShape": "ScvVec (3-tuple)",
       "fields": {
-        "[0] account":    "ScvString → string (depositing Stellar account)",
-        "[1] market_id":  "ScvU32   → number → string (DB compat)",
-        "[2] amount":     "ScvI128  → bigint (base units)"
+        "[0] account": "ScvString → string (depositing Stellar account)",
+        "[1] market_id": "ScvU32   → number → string (DB compat)",
+        "[2] amount": "ScvI128  → bigint (base units)"
       },
       "vectors": [
         {
@@ -104,12 +104,12 @@
       },
       "payloadShape": "ScvVec (3-tuple) [canonical on-chain] | ScvMap [legacy]",
       "fields": {
-        "tuple[0] market_id":   "ScvU32  → number → string",
-        "tuple[1] outcome":     "ScvBool → true='YES' / false='NO'",
+        "tuple[0] market_id": "ScvU32  → number → string",
+        "tuple[1] outcome": "ScvBool → true='YES' / false='NO'",
         "tuple[2] resolved_at": "ScvU64  → bigint (Unix timestamp, informational only)",
-        "map.market_id":  "ScvSymbol → string",
-        "map.outcome":    "ScvSymbol → 'YES' | 'NO'",
-        "map.oracle":     "ScvSymbol → string (Stellar oracle address; '' when tuple path)"
+        "map.market_id": "ScvSymbol → string",
+        "map.outcome": "ScvSymbol → 'YES' | 'NO'",
+        "map.oracle": "ScvSymbol → string (Stellar oracle address; '' when tuple path)"
       },
       "vectors": [
         {
@@ -163,11 +163,11 @@
       "payloadShape": "pre-decoded JS object (market-created-parser.ts input path)",
       "note": "market-created-parser.ts operates on a pre-decoded RawMarketCreatedEvent object, not raw XDR. Ingested via a separate path outside PollingIngestionLoop.",
       "fields": {
-        "id":            "string — unique market identifier",
-        "question":      "string — prediction prompt",
-        "endTime":       "number (Unix seconds) | string (ISO-8601 or numeric string)",
+        "id": "string — unique market identifier",
+        "question": "string — prediction prompt",
+        "endTime": "number (Unix seconds) | string (ISO-8601 or numeric string)",
         "oracleAddress": "string — G-prefixed Stellar address, 56 chars",
-        "status":        "'ACTIVE' | 'RESOLVED' | 'CANCELLED' (default: 'ACTIVE')"
+        "status": "'ACTIVE' | 'RESOLVED' | 'CANCELLED' (default: 'ACTIVE')"
       },
       "vectors": [
         {
