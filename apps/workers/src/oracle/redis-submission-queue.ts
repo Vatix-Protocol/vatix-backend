@@ -76,7 +76,8 @@ export class RedisSubmissionQueue {
   }
 
   /**
-   * Check if a submission is already queued (deduplication).
+   * Check if a submission with this exact payload is already queued
+   * (content-based dedup — e.g. retried bursts of an identical result).
    */
   private async isAlreadyQueued(
     marketId: string,
@@ -103,9 +104,48 @@ export class RedisSubmissionQueue {
     );
   }
 
+  private marketLockKey(marketId: string): string {
+    return `oracle:inflight:${marketId}`;
+  }
+
+  /**
+   * Check whether a market already has a submission in the active pipeline
+   * (enqueued but not yet acknowledged), regardless of payload content.
+   * Prevents two concurrent poll cycles from racing two different oracle
+   * resolutions onto the same market — market-level dedupe, independent of
+   * the content-hash dedupe above.
+   */
+  private async hasInFlightSubmission(marketId: string): Promise<boolean> {
+    return (await this.redisClient.exists(this.marketLockKey(marketId))) > 0;
+  }
+
+  /**
+   * Mark a market as having an in-flight submission. Shares the dedup TTL
+   * so a crashed worker can't wedge a market's lock forever.
+   */
+  private async markMarketInFlight(
+    marketId: string,
+    streamId: string
+  ): Promise<void> {
+    await this.redisClient.set(
+      this.marketLockKey(marketId),
+      streamId,
+      "EX",
+      this.deduplicationTtlSeconds
+    );
+  }
+
+  /**
+   * Release a market's in-flight lock so a future resolution can be queued.
+   */
+  private async clearInFlightSubmission(marketId: string): Promise<void> {
+    await this.redisClient.del(this.marketLockKey(marketId));
+  }
+
   /**
    * Enqueue a submission to the Redis stream.
-   * Returns false if already queued (deduplication).
+   * Returns false if a duplicate payload is already queued, or if the
+   * market already has a different submission in flight (market dedupe).
    */
   async enqueue(item: SubmissionQueueItem): Promise<boolean> {
     const payloadHash = this.computePayloadHash(item.result);
@@ -121,6 +161,15 @@ export class RedisSubmissionQueue {
       return false;
     }
 
+    const hasInFlightSubmission = await this.hasInFlightSubmission(marketId);
+    if (hasInFlightSubmission) {
+      this.logger.info(
+        "Market already has an in-flight submission, skipping duplicate",
+        { marketId, id: item.id }
+      );
+      return false;
+    }
+
     const streamId = await this.redisClient.xadd(
       STREAM_KEY,
       "*",
@@ -133,6 +182,7 @@ export class RedisSubmissionQueue {
     );
 
     await this.markAsQueued(marketId, payloadHash, streamId);
+    await this.markMarketInFlight(marketId, streamId);
 
     this.logger.info("Oracle submission queued", {
       id: item.id,
@@ -212,6 +262,7 @@ export class RedisSubmissionQueue {
       CONSUMER_GROUP,
       submission.streamId
     );
+    await this.clearInFlightSubmission(submission.request.marketId);
 
     this.logger.info("Acknowledged oracle submission", {
       id: submission.id,
