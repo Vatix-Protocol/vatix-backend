@@ -8,14 +8,14 @@ Test vectors: [`apps/indexer/fixtures/contract-event-vectors.json`](../apps/inde
 
 ## Event table
 
-| Event topic            | Payload shape         | Parser                          | Normalized type                  | DB table(s)                        |
-|------------------------|-----------------------|---------------------------------|----------------------------------|------------------------------------|
-| `trade_executed`       | ScvMap (9 fields)     | `tradeParser.ts`                | `NormalizedTrade`                | `IndexedTrade`                     |
-| `collateral_deposited` | ScvVec 3-tuple        | `collateralDepositedParser.ts`  | `NormalizedCollateralDeposit`    | logged only (no table yet — see §4)|
-| `market_resolved`      | ScvVec 3-tuple or ScvMap | `resolutionParser.ts`        | `NormalizedResolution`           | `ResolutionCandidate`              |
-| `market_created`       | pre-decoded JS object | `market-created-parser.ts`      | `MarketCreatedEvent`             | ingested outside `PollingIngestionLoop` |
+| Event topic               | Payload shape            | Parser                          | Normalized type                  | DB table(s)                        |
+|----------------------------|--------------------------|---------------------------------|----------------------------------|------------------------------------|
+| `trade_executed_event`     | ScvMap (9 fields)        | `tradeParser.ts`                | `NormalizedTrade`                | `IndexedTrade`                     |
+| `collateral_deposited_event` | ScvVec 3-tuple          | `collateralDepositedParser.ts`  | `NormalizedCollateralDeposit`    | logged only (no table yet — see §4)|
+| `market_resolved_event`    | topic[1]=u32 market_id, ScvMap{outcome, resolved_at} | `resolutionParser.ts` | `NormalizedResolution`     | `ResolutionCandidate`              |
+| `market_created_event`     | topic[1]=u32 market_id, ScvMap{question, end_time} | `marketCreatedParser.ts` | `NormalizedMarketCreated` | `Market` (via `PollingIngestionLoop`) |
 
-All four events share the same topic encoding: **topic[0] = ScvSymbol** carrying the event name string.
+All events share the same topic encoding: **topic[0] = ScvSymbol** carrying the event name. Soroban's `#[contractevent]` macro derives that symbol from the event struct name including its literal `Event` suffix (e.g. `MarketCreatedEvent` → `market_created_event`) — see `contracts/market/src/events.rs`.
 
 ---
 
@@ -77,19 +77,21 @@ All four events share the same topic encoding: **topic[0] = ScvSymbol** carrying
 
 ## 4. `market_created`
 
-**Topic XDR:** `AAAADwAAAA5tYXJrZXRfY3JlYXRlZAAA`
+**Topic XDR:** `AAAADwAAABRtYXJrZXRfY3JlYXRlZF9ldmVudA==` (`market_created_event`)
 
-**Parser input:** Pre-decoded `RawMarketCreatedEvent` JS object — not raw XDR. This event is ingested via a path **outside** `PollingIngestionLoop` (e.g. a webhook or separate RPC subscription).
+**Parser input:** Raw chain event (`RawChainEvent`), parsed by `apps/indexer/src/marketCreatedParser.ts` and run inside `PollingIngestionLoop` alongside the other three event types.
 
-| Field           | Type                        | Notes                                       |
-|-----------------|-----------------------------|---------------------------------------------|
-| `id`            | `string`                    | Required                                    |
-| `question`      | `string`                    | Required, non-empty                         |
-| `endTime`       | `number \| string`          | Unix seconds or ISO-8601; normalized to ISO |
-| `oracleAddress` | `string`                    | G-prefixed, 56 chars; trimmed               |
-| `status`        | `"ACTIVE" \| "RESOLVED" \| "CANCELLED"` | Default `"ACTIVE"`            |
+| Source            | ScvType  | Native type | Notes                                              |
+|--------------------|----------|-------------|-----------------------------------------------------|
+| `topics[1]`         | ScvU32   | `number`    | `market_id`, cast to string                         |
+| `value.question`    | ScvString| `string`    | Required, non-empty                                 |
+| `value.end_time`    | ScvU64   | `bigint`    | Unix seconds; normalized to ISO-8601                 |
 
-**DB write:** Caller-determined; parser returns `ParseResult<MarketCreatedEvent>` and does not write directly.
+The contract does not publish `oracle_address` or `status` on this event (the oracle pubkey is stored on-chain but not republished here). `oracleAddress` is set to `""` pending reconciliation and `status` defaults to `"ACTIVE"`, matching every market's state immediately after creation.
+
+**DB write:** `Market` row via `PrismaBatchWriter`, same idempotency/cursor path as the other three event kinds.
+
+> `apps/indexer/market-created-parser.ts` (note the hyphenated filename — a separate module) is a lower-level, pre-decoded-object validator (`RawMarketCreatedEvent` → `ParseResult<MarketCreatedEvent>`) intended for a future off-chain/webhook creation path. It is not used by `PollingIngestionLoop` and is unrelated to the on-chain parser described above.
 
 ---
 
@@ -101,6 +103,7 @@ Stellar RPC
     ▼
 PollingIngestionLoop.ingestFromCursor()
     │
+    ├── parseMarketCreatedEvents()     → NormalizedMarketCreated[]
     ├── parseTradeEvents()            → NormalizedTrade[]
     ├── parseResolutionEvents()       → NormalizedResolution[]
     └── parseCollateralDepositedEvents() → NormalizedCollateralDeposit[]
@@ -111,9 +114,10 @@ PollingIngestionLoop.ingestFromCursor()
              ▼
         PrismaBatchWriter.write()
              │
-             ├── IndexedTrade              (trade_executed)
-             ├── ResolutionCandidate       (market_resolved)
-             └── logger.debug only         (collateral_deposited — pending table)
+             ├── Market                    (market_created_event)
+             ├── IndexedTrade              (trade_executed_event)
+             ├── ResolutionCandidate       (market_resolved_event)
+             └── logger.debug only         (collateral_deposited_event — pending table)
 ```
 
 Events with unrecognised topic symbols are silently skipped by each parser's `isXxxEvent` guard. Parse errors are collected per-event and logged as `warn` without dropping the rest of the batch.
