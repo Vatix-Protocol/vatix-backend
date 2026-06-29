@@ -19,6 +19,18 @@
 export type NodeEnv = "development" | "test" | "production";
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
+/**
+ * Thrown when an environment variable fails validation.
+ * statusCode 400 signals that the caller supplied an invalid value.
+ */
+export class ConfigValidationError extends Error {
+  readonly statusCode = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = "ConfigValidationError";
+  }
+}
+
 const ACCEPTED_NODE_ENVS: NodeEnv[] = ["development", "test", "production"];
 const ACCEPTED_LOG_LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 
@@ -40,7 +52,9 @@ const processEnv: Env =
 function requireString(name: string, env: Env): string {
   const raw = env[name];
   if (!raw || raw.trim() === "") {
-    throw new Error(`Missing required environment variable: ${name}`);
+    throw new ConfigValidationError(
+      `Missing required environment variable: ${name}`
+    );
   }
   return raw.trim();
 }
@@ -58,16 +72,18 @@ function requirePositiveInt(
   const raw = env[name];
   if (raw === undefined || raw === "") {
     if (options.fallback !== undefined) return options.fallback;
-    throw new Error(`Missing required environment variable: ${name}`);
+    throw new ConfigValidationError(
+      `Missing required environment variable: ${name}`
+    );
   }
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 1) {
-    throw new Error(
+    throw new ConfigValidationError(
       `${name} must be a positive integer, got: ${JSON.stringify(raw)}`
     );
   }
   if (options.max !== undefined && value > options.max) {
-    throw new Error(
+    throw new ConfigValidationError(
       `${name} must be <= ${options.max}, got: ${JSON.stringify(raw)}`
     );
   }
@@ -83,7 +99,7 @@ function requireNonNegativeNumber(
   if (raw === undefined || raw === "") return fallback;
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0) {
-    throw new Error(
+    throw new ConfigValidationError(
       `${name} must be a non-negative number, got: ${JSON.stringify(raw)}`
     );
   }
@@ -100,7 +116,7 @@ function requireMinNumber(
   if (raw === undefined || raw === "") return fallback;
   const value = Number(raw);
   if (!Number.isFinite(value) || value < min) {
-    throw new Error(
+    throw new ConfigValidationError(
       `${name} must be a number >= ${min}, got: ${JSON.stringify(raw)}`
     );
   }
@@ -110,7 +126,7 @@ function requireMinNumber(
 function loadNodeEnv(env: Env): NodeEnv {
   const raw = env["NODE_ENV"] ?? "development";
   if (!ACCEPTED_NODE_ENVS.includes(raw as NodeEnv)) {
-    throw new Error(
+    throw new ConfigValidationError(
       `NODE_ENV must be one of ${ACCEPTED_NODE_ENVS.join(" | ")}, got: ${JSON.stringify(raw)}`
     );
   }
@@ -124,7 +140,7 @@ function loadLogLevel(
 ): LogLevel {
   const raw = (env[name] ?? fallback) as LogLevel;
   if (!ACCEPTED_LOG_LEVELS.includes(raw)) {
-    throw new Error(
+    throw new ConfigValidationError(
       `${name} must be one of ${ACCEPTED_LOG_LEVELS.join("|")}, got: ${JSON.stringify(raw)}`
     );
   }
@@ -143,23 +159,25 @@ function loadUrl(name: string, env: Env, allowedProtocols: string[]): string {
     | (new (input: string) => { protocol: string; hostname: string })
     | undefined;
   if (!URLCtor) {
-    throw new Error("URL constructor is not available in this environment");
+    throw new ConfigValidationError(
+      "URL constructor is not available in this environment"
+    );
   }
   let parsed: { protocol: string; hostname: string };
   try {
     parsed = new URLCtor(raw);
   } catch {
-    throw new Error(
+    throw new ConfigValidationError(
       `${name} is not a valid URL (expected format: ${allowedProtocols[0]}//host/path)`
     );
   }
   if (!allowedProtocols.includes(parsed.protocol)) {
-    throw new Error(
+    throw new ConfigValidationError(
       `${name} must use one of [${allowedProtocols.join(", ")}], got: ${JSON.stringify(parsed.protocol)}`
     );
   }
   if (!parsed.hostname) {
-    throw new Error(`${name} must include a hostname`);
+    throw new ConfigValidationError(`${name} must include a hostname`);
   }
   return raw;
 }
@@ -296,7 +314,11 @@ export function loadBaseConfig(env: Env = processEnv): BaseConfig {
 export interface IndexerConfig {
   nodeEnv: NodeEnv;
   stellarRpcUrl: string;
+  /** Soroban contract ID whose events the indexer ingests. */
+  contractId: string;
   ingestionIntervalMs: number;
+  /** Max ledgers to scan per ingestion tick. */
+  ledgerWindowSize: number;
   networkId: string;
   cursorKey: string;
   checkpointFlushEveryBatches: number;
@@ -308,16 +330,33 @@ export interface IndexerConfig {
  *
  * @param env - Defaults to process.env. Pass a custom object in tests.
  */
+function loadIndexerContractId(env: Env): string {
+  const contractId =
+    env["INDEXER_CONTRACT_ID"]?.trim() ||
+    env["MARKET_CONTRACT_ID"]?.trim() ||
+    "";
+  if (contractId === "") {
+    throw new ConfigValidationError(
+      "Missing required environment variable: INDEXER_CONTRACT_ID (or MARKET_CONTRACT_ID)"
+    );
+  }
+  return contractId;
+}
+
 export function loadIndexerConfig(env: Env = processEnv): IndexerConfig {
   return {
     nodeEnv: loadNodeEnv(env),
     stellarRpcUrl: loadUrl("STELLAR_RPC_URL", env, ["https:", "http:"]),
+    contractId: loadIndexerContractId(env),
     ingestionIntervalMs: requireMinNumber(
       "INDEXER_INGESTION_INTERVAL_MS",
       env,
       100,
       5_000
     ),
+    ledgerWindowSize: requirePositiveInt("INDEXER_LEDGER_WINDOW_SIZE", env, {
+      fallback: 100,
+    }),
     networkId: optionalString("INDEXER_NETWORK_ID", "mainnet", env),
     cursorKey: optionalString("INDEXER_CURSOR_KEY", "ingestion", env),
     checkpointFlushEveryBatches: requirePositiveInt(
@@ -355,5 +394,49 @@ export function loadFinalizationConfig(
       3600
     ),
     logLevel: loadLogLevel("FINALIZATION_LOG_LEVEL", env, "info"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Oracle worker config
+// ---------------------------------------------------------------------------
+
+export interface OracleWorkerConfig {
+  submissionPollIntervalMs: number;
+  submissionMaxRetries: number;
+  submissionVisibilityTimeoutMs: number;
+  logLevel: LogLevel;
+  redisUrl: string;
+  databaseUrl: string;
+}
+
+/**
+ * Loads and validates oracle worker config.
+ *
+ * @param env - Defaults to process.env. Pass a custom object in tests.
+ */
+export function loadOracleWorkerConfig(
+  env: Env = processEnv
+): OracleWorkerConfig {
+  return {
+    submissionPollIntervalMs: requireMinNumber(
+      "ORACLE_SUBMISSION_POLL_INTERVAL_MS",
+      env,
+      1000,
+      5_000
+    ),
+    submissionMaxRetries: requirePositiveInt(
+      "ORACLE_SUBMISSION_MAX_RETRIES",
+      env,
+      { fallback: 3 }
+    ),
+    submissionVisibilityTimeoutMs: requirePositiveInt(
+      "ORACLE_SUBMISSION_VISIBILITY_TIMEOUT_MS",
+      env,
+      { fallback: 300_000 }
+    ),
+    logLevel: loadLogLevel("ORACLE_SUBMISSION_LOG_LEVEL", env, "info"),
+    redisUrl: loadUrl("REDIS_URL", env, ["redis:", "rediss:"]),
+    databaseUrl: loadUrl("DATABASE_URL", env, ["postgresql:", "postgres:"]),
   };
 }

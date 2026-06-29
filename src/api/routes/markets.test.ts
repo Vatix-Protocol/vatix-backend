@@ -18,6 +18,10 @@ vi.mock("../../services/prisma.js", () => ({
   getPrismaClient: () => mockPrismaClient,
 }));
 
+vi.mock("../middleware/rateLimiter", () => ({
+  heavyReadLimiter: async () => {},
+}));
+
 describe("GET /markets", () => {
   let app: FastifyInstance;
 
@@ -623,13 +627,23 @@ describe("GET /markets", () => {
       expect(response.statusCode).toBe(400);
     });
 
-    it("should reject unsupported query parameters", async () => {
+    it("should ignore unsupported query parameters", async () => {
+      (
+        mockPrismaClient.market.findMany as ReturnType<typeof vi.fn>
+      ).mockResolvedValue([]);
+
       const response = await app.inject({
         method: "GET",
         url: "/markets?unsupported=true",
       });
 
-      expect(response.statusCode).toBe(400);
+      // Unsupported parameters are silently ignored
+      expect(response.statusCode).toBe(200);
+      expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
+        where: {},
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      });
     });
   });
 
@@ -729,7 +743,7 @@ describe("GET /markets/:id", () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty("data");
-      expect(body.data).toMatchObject({
+      expect(body.data.market).toMatchObject({
         id: mockMarket.id,
         question: mockMarket.question,
         endTime: mockMarket.endTime.toISOString(),

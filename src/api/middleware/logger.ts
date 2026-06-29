@@ -78,13 +78,18 @@ async function logger(fastify: FastifyInstance) {
         (request.headers["x-user-address"] as string | undefined) ||
         (request.headers["x-address"] as string | undefined);
 
+      const safeUserAddress =
+        userAddress !== undefined && /^G[A-Z2-7]{55}$/.test(userAddress)
+          ? userAddress
+          : undefined;
+
       request.log.info(
         {
           type: "request",
           requestId: request.id,
           method: request.method,
           path: request.url,
-          ...(userAddress ? { userAddress } : {}),
+          ...(safeUserAddress ? { userAddress: safeUserAddress } : {}),
         },
         "incoming request"
       );

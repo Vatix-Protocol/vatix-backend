@@ -36,3 +36,33 @@ export interface DockerComposeConfig {
   volumes?: Record<string, Record<string, DockerComposeScalar>>;
   networks?: Record<string, Record<string, DockerComposeScalar>>;
 }
+
+/**
+ * Validates a DockerComposeConfig object.
+ * Throws a plain Error with statusCode 400 on invalid input.
+ */
+export function validateDockerComposeConfig(
+  config: unknown
+): DockerComposeConfig {
+  if (config === null || typeof config !== "object") {
+    const err = new Error("Invalid docker-compose config: must be an object");
+    (err as NodeJS.ErrnoException & { statusCode: number }).statusCode = 400;
+    throw err;
+  }
+
+  const obj = config as Record<string, unknown>;
+
+  if (
+    obj["services"] === null ||
+    typeof obj["services"] !== "object" ||
+    Array.isArray(obj["services"])
+  ) {
+    const err = new Error(
+      "Invalid docker-compose config: 'services' must be an object"
+    );
+    (err as NodeJS.ErrnoException & { statusCode: number }).statusCode = 400;
+    throw err;
+  }
+
+  return config as DockerComposeConfig;
+}

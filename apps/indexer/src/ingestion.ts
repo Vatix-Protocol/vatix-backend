@@ -1,10 +1,30 @@
-import type { Logger } from "./logger.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { CursorStorageClient } from "./storage.js";
 import type { InternalIndexerMetricsService } from "./metrics.js";
+import type { BatchWriter, BatchRecord } from "./batchWriter.js";
+import type { EventFetcher } from "./eventFetcher.js";
+import { parseTradeEvents } from "./tradeParser.js";
+import { parseResolutionEvents } from "./resolutionParser.js";
+import { parseCollateralDepositedEvents } from "./collateralDepositedParser.js";
+import { parseMarketCreatedEvents } from "./marketCreatedParser.js";
+import { withIdempotencyKey } from "./idempotency.js";
+import {
+  TradeParseError,
+  ResolutionParseError,
+  CollateralDepositedParseError,
+  MarketCreatedParseError,
+} from "./types.js";
 
 export interface IngestionLoop {
   start(initialCursor: string | null): Promise<void>;
   stop(): Promise<void>;
+}
+
+export interface IngestionDependencies {
+  eventFetcher: EventFetcher;
+  batchWriter: BatchWriter;
+  contractId: string;
+  ledgerWindowSize: number;
 }
 
 interface IngestionBatchResult {
@@ -24,11 +44,12 @@ export class PollingIngestionLoop implements IngestionLoop {
   private lastHeartbeatLedgerSequence: number | null = null;
 
   constructor(
-    private readonly logger: Logger,
+    private readonly logger: ILogger,
     private readonly storage: CursorStorageClient,
     private readonly metrics: InternalIndexerMetricsService,
     private readonly intervalMs: number,
-    private readonly checkpointFlushEveryBatches: number
+    private readonly checkpointFlushEveryBatches: number,
+    private readonly deps: IngestionDependencies
   ) {}
 
   async start(initialCursor: string | null): Promise<void> {
@@ -42,6 +63,8 @@ export class PollingIngestionLoop implements IngestionLoop {
       startCursor: initialCursor,
       intervalMs: this.intervalMs,
       checkpointFlushEveryBatches: this.checkpointFlushEveryBatches,
+      ledgerWindowSize: this.deps.ledgerWindowSize,
+      contractId: this.deps.contractId,
     });
 
     await this.tick();
@@ -134,6 +157,7 @@ export class PollingIngestionLoop implements IngestionLoop {
         : null;
 
     this.logger.info("Indexer heartbeat", {
+      event: "indexer.heartbeat",
       cursor: this.cursor,
       latestIndexedLedgerSequence,
       batchesProcessed: this.batchesSinceLastHeartbeat,
@@ -150,17 +174,113 @@ export class PollingIngestionLoop implements IngestionLoop {
   ): Promise<IngestionBatchResult> {
     this.logger.debug("Running ingestion tick", { cursor: currentCursor });
 
-    // Placeholder for source ingestion. Simulate successful batch progression.
     const currentSequence = currentCursor ? Number(currentCursor) : 0;
     const safeCurrentSequence =
       Number.isFinite(currentSequence) && currentSequence >= 0
         ? currentSequence
         : 0;
-    const nextSequence = safeCurrentSequence + 1;
+    const startLedger = safeCurrentSequence + 1;
+    const provisionalEnd = startLedger + this.deps.ledgerWindowSize - 1;
+
+    const { events, latestLedger } =
+      await this.deps.eventFetcher.fetchByLedgerWindow({
+        startLedger,
+        endLedger: provisionalEnd,
+      });
+
+    if (startLedger > latestLedger) {
+      return {
+        nextCursor: currentCursor ?? String(safeCurrentSequence),
+        lastIndexedLedgerSequence: safeCurrentSequence,
+      };
+    }
+
+    const endLedger = Math.min(provisionalEnd, latestLedger);
+
+    const { trades, errors: tradeErrors } = parseTradeEvents(events);
+    const { resolutions, errors: resolutionErrors } =
+      parseResolutionEvents(events);
+    const { deposits, errors: depositErrors } =
+      parseCollateralDepositedEvents(events);
+    const { markets, errors: marketErrors } = parseMarketCreatedEvents(events);
+
+    for (const error of tradeErrors) {
+      this.logger.warn("Trade parse error — skipping event", {
+        eventId: error.eventId,
+        error: error.message,
+        parseErrorType: TradeParseError.name,
+      });
+    }
+
+    for (const error of resolutionErrors) {
+      this.logger.warn("Resolution parse error — skipping event", {
+        eventId: error.eventId,
+        error: error.message,
+        parseErrorType: ResolutionParseError.name,
+      });
+    }
+
+    for (const error of depositErrors) {
+      this.logger.warn("Collateral deposit parse error — skipping event", {
+        eventId: error.eventId,
+        error: error.message,
+        parseErrorType: CollateralDepositedParseError.name,
+      });
+    }
+
+    for (const error of marketErrors) {
+      this.logger.warn("Market created parse error — skipping event", {
+        eventId: error.eventId,
+        error: error.message,
+        parseErrorType: MarketCreatedParseError.name,
+      });
+    }
+
+    const records: BatchRecord[] = [
+      ...markets.map(
+        (market): BatchRecord => ({
+          kind: "market_created",
+          data: withIdempotencyKey(market),
+        })
+      ),
+      ...trades.map(
+        (trade): BatchRecord => ({
+          kind: "trade",
+          data: withIdempotencyKey(trade),
+        })
+      ),
+      ...resolutions.map(
+        (resolution): BatchRecord => ({
+          kind: "resolution",
+          data: withIdempotencyKey(resolution),
+        })
+      ),
+      ...deposits.map(
+        (deposit): BatchRecord => ({
+          kind: "collateral_deposited",
+          data: withIdempotencyKey(deposit),
+        })
+      ),
+    ];
+
+    const writeResult = await this.deps.batchWriter.write(records);
+
+    this.logger.debug("Ingestion batch complete", {
+      startLedger,
+      endLedger,
+      eventsFetched: events.length,
+      marketsParsed: markets.length,
+      tradesParsed: trades.length,
+      resolutionsParsed: resolutions.length,
+      collateralDepositsParsed: deposits.length,
+      written: writeResult.written,
+      skipped: writeResult.skipped,
+      writeErrors: writeResult.errors.length,
+    });
 
     return {
-      nextCursor: String(nextSequence),
-      lastIndexedLedgerSequence: nextSequence,
+      nextCursor: String(endLedger),
+      lastIndexedLedgerSequence: endLedger,
     };
   }
 }

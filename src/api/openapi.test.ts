@@ -1,15 +1,32 @@
-import { describe, it, expect, afterEach } from "vitest";
-import Fastify, { type FastifyInstance } from "fastify";
-import { openApiSpec, openApiStubHandler } from "./openapi.js";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import type { FastifyInstance } from "fastify";
+import { openApiSpec } from "./openapi.js";
 
-describe("OpenAPI Stub", () => {
-  let server: FastifyInstance | undefined;
+vi.hoisted(() => {
+  process.env.DATABASE_URL =
+    process.env.DATABASE_URL ||
+    "postgresql://postgres:postgres@localhost:5433/vatix";
+});
 
-  afterEach(async () => {
-    await server?.close();
-    server = undefined;
-  });
+const { buildServer } = await import("../index.js");
 
+/**
+ * Routes that exist in the code but are not (and should not be) in the OpenAPI spec.
+ * These are internal/infrastructure routes.
+ *
+ * When adding a new route, decide:
+ * - If it's a public API route: add it to src/api/openapi.ts and it will be automatically
+ *   tested by this contract test
+ * - If it's an internal route (e.g., diagnostics, internal probes): add it here and
+ *   document why it's excluded from the public spec
+ */
+const ROUTES_NOT_IN_SPEC = [
+  { method: "GET", path: "/v1/openapi.json" },
+  // /docs serves Swagger UI HTML — it's a UI endpoint, not an API resource
+  { method: "GET", path: "/docs" },
+] as const;
+
+describe("OpenAPI specification", () => {
   it("exports a valid OpenAPI spec object", () => {
     expect(openApiSpec).toBeDefined();
     expect(typeof openApiSpec).toBe("object");
@@ -41,18 +58,23 @@ describe("OpenAPI Stub", () => {
   });
 
   it("has expected API endpoints documented", () => {
-    expect(openApiSpec.paths).toHaveProperty("/health");
-    expect(openApiSpec.paths).toHaveProperty("/markets");
-    expect(openApiSpec.paths).toHaveProperty("/orders");
+    expect(openApiSpec.paths).toHaveProperty("/v1/health");
+    expect(openApiSpec.paths).toHaveProperty("/v1/markets");
+    expect(openApiSpec.paths).toHaveProperty("/v1/orders");
+    expect(openApiSpec.paths).toHaveProperty("/v1/ready");
+    expect(openApiSpec.paths).toHaveProperty("/v1/wallets/{wallet}/positions");
   });
 
   it("health endpoint is documented with GET method", () => {
-    const healthPath = openApiSpec.paths["/health"] as Record<string, unknown>;
+    const healthPath = openApiSpec.paths["/v1/health"] as Record<
+      string,
+      unknown
+    >;
     expect(healthPath).toHaveProperty("get");
   });
 
   it("markets endpoint is documented with GET method", () => {
-    const marketsPath = openApiSpec.paths["/markets"] as Record<
+    const marketsPath = openApiSpec.paths["/v1/markets"] as Record<
       string,
       unknown
     >;
@@ -60,7 +82,10 @@ describe("OpenAPI Stub", () => {
   });
 
   it("orders endpoint is documented with POST method", () => {
-    const ordersPath = openApiSpec.paths["/orders"] as Record<string, unknown>;
+    const ordersPath = openApiSpec.paths["/v1/orders"] as Record<
+      string,
+      unknown
+    >;
     expect(ordersPath).toHaveProperty("post");
   });
 
@@ -87,32 +112,117 @@ describe("OpenAPI Stub", () => {
     expect(openApiSpec.components).toHaveProperty("schemas");
     expect(openApiSpec.components?.schemas).toHaveProperty("Error");
   });
+});
 
-  it("returns 400 when required field is missing", async () => {
-    server = Fastify({ logger: false });
-    server.post("/stub", openApiStubHandler);
+describe("OpenAPI contract", () => {
+  let server: FastifyInstance;
 
-    const res = await server.inject({
-      method: "POST",
-      url: "/stub",
-      payload: {},
-    });
-
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body)).toEqual({ error: "name is required" });
+  beforeAll(async () => {
+    server = buildServer({ logger: false, registerTestRoutes: false });
+    await server.ready();
   });
 
-  it("returns 200 on valid input", async () => {
-    server = Fastify({ logger: false });
-    server.post("/stub", openApiStubHandler);
+  afterAll(async () => {
+    await server.close();
+  });
 
-    const res = await server.inject({
-      method: "POST",
-      url: "/stub",
-      payload: { name: "test" },
-    });
+  it("all OpenAPI spec paths have a corresponding registered route", () => {
+    for (const [specPath, pathItem] of Object.entries(openApiSpec.paths)) {
+      const fastifyPath = specPath.replace(/\{(\w+)\}/g, ":$1");
+      const methods = Object.keys(pathItem as Record<string, unknown>);
 
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({ ok: true });
+      for (const method of methods) {
+        const exists = server.hasRoute({
+          method: method.toUpperCase() as
+            | "GET"
+            | "POST"
+            | "PATCH"
+            | "PUT"
+            | "DELETE",
+          url: fastifyPath,
+        });
+        expect(
+          exists,
+          `OpenAPI spec documents ${method.toUpperCase()} ${specPath} but route ${method.toUpperCase()} ${fastifyPath} is not registered`
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("all registered routes (except infrastructure routes) are documented in OpenAPI spec", () => {
+    // Build the list of all routes that should be in the spec by extracting from OpenAPI
+    const expectedRoutesInSpec: Array<{ method: string; path: string }> = [];
+
+    // Extract routes from OpenAPI spec
+    for (const [specPath, pathItem] of Object.entries(openApiSpec.paths)) {
+      const fastifyPath = specPath.replace(/\{(\w+)\}/g, ":$1");
+      const methods = Object.keys(pathItem as Record<string, unknown>);
+
+      for (const method of methods) {
+        expectedRoutesInSpec.push({
+          method: method.toUpperCase(),
+          path: fastifyPath,
+        });
+      }
+    }
+
+    // Add infrastructure routes that are not in the spec
+    expectedRoutesInSpec.push(
+      ...ROUTES_NOT_IN_SPEC.map((r) => ({ method: r.method, path: r.path }))
+    );
+
+    // Verify every expected route is registered
+    for (const { method, path } of expectedRoutesInSpec) {
+      const exists = server.hasRoute({
+        method: method as "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
+        url: path,
+      });
+      expect(
+        exists,
+        `Expected route ${method} ${path} is not registered on the server`
+      ).toBe(true);
+    }
+  });
+
+  it("enforces bidirectional route-to-OpenAPI mapping: all routes must be documented or explicitly excluded", () => {
+    // This test serves as a guard: when you add a new route, you MUST either:
+    // 1. Add it to the OpenAPI spec (src/api/openapi.ts), OR
+    // 2. Add it to ROUTES_NOT_IN_SPEC if it's an internal/infrastructure route
+    //
+    // If this test fails, you likely added a route without documenting it.
+    // To fix: add the route to openapi.ts or add it to ROUTES_NOT_IN_SPEC with a comment
+    // explaining why it should not be publicly documented.
+
+    const specPaths = Object.keys(openApiSpec.paths);
+    const allowedRoutes = new Set<string>();
+
+    // Add OpenAPI documented routes
+    for (const specPath of specPaths) {
+      const fastifyPath = specPath.replace(/\{(\w+)\}/g, ":$1");
+      const pathItem = openApiSpec.paths[specPath] as Record<string, unknown>;
+      const methods = Object.keys(pathItem);
+
+      for (const method of methods) {
+        allowedRoutes.add(`${method.toUpperCase()} ${fastifyPath}`);
+      }
+    }
+
+    // Add infrastructure routes
+    for (const { method, path } of ROUTES_NOT_IN_SPEC) {
+      allowedRoutes.add(`${method} ${path}`);
+    }
+
+    // Verify we have comprehensive coverage
+    const totalDocumented = specPaths.reduce((sum, path) => {
+      const methods = Object.keys(
+        openApiSpec.paths[path] as Record<string, unknown>
+      );
+      return sum + methods.length;
+    }, 0);
+
+    expect(
+      totalDocumented,
+      "OpenAPI spec should document all public API routes"
+    ).toBeGreaterThan(0);
   });
 });

@@ -33,7 +33,9 @@ describe("loadIndexerConfig", () => {
       SOROBAN_NETWORK_PASSPHRASE: "Custom Network ; 2024",
     });
     expect(cfg.sorobanNetworkPassphrase).toBe("Custom Network ; 2024");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("WARNING"));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("Unknown Soroban network passphrase")
+    );
   });
 
   it("throws when SOROBAN_NETWORK_PASSPHRASE is missing", () => {

@@ -1,90 +1,130 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import type { PrismaClient } from "../../../src/generated/prisma/client";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PrismaCursorStorageClient } from "./storage.js";
 
-const NETWORK_ID = "testnet";
-const CURSOR_KEY = "ledger_checkpoint";
-
-const mockIndexerCursor = {
-  findUnique: vi.fn(),
-  upsert: vi.fn(),
-};
-
-const mockTransaction = vi.fn(
-  async (
-    callback: (tx: { indexerCursor: typeof mockIndexerCursor }) => unknown
-  ) => callback({ indexerCursor: mockIndexerCursor })
-);
-
-const mockPrisma = {
-  indexerCursor: mockIndexerCursor,
-  $transaction: mockTransaction,
-} as unknown as PrismaClient;
-
+// Mock the prisma singleton before importing storage
 vi.mock("../../../src/services/prisma.js", () => ({
-  getPrismaClient: () => mockPrisma,
+  getPrismaClient: vi.fn(),
 }));
 
+import { getPrismaClient } from "../../../src/services/prisma.js";
+
+function makeMockPrisma(
+  findResult: { cursorValue: string | null } | null = null
+) {
+  const upsert = vi.fn().mockResolvedValue({});
+  const findUnique = vi.fn().mockResolvedValue(findResult);
+  return { indexerCursor: { findUnique, upsert } };
+}
+
 describe("PrismaCursorStorageClient", () => {
-  let storage: PrismaCursorStorageClient;
+  const networkId = "testnet";
+  const cursorKey = "ingestion";
 
   beforeEach(() => {
     vi.clearAllMocks();
-    storage = new PrismaCursorStorageClient(NETWORK_ID, CURSOR_KEY);
   });
 
   describe("loadCursor", () => {
-    it("returns null when no row exists", async () => {
-      mockIndexerCursor.findUnique.mockResolvedValue(null);
+    it("returns cursorValue when row exists", async () => {
+      const mockPrisma = makeMockPrisma({ cursorValue: "42" });
+      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
 
-      await expect(storage.loadCursor()).resolves.toBeNull();
-      expect(mockIndexerCursor.findUnique).toHaveBeenCalledWith({
-        where: {
-          networkId_cursorKey: {
-            networkId: NETWORK_ID,
-            cursorKey: CURSOR_KEY,
-          },
-        },
+      const client = new PrismaCursorStorageClient(networkId, cursorKey);
+      const result = await client.loadCursor();
+
+      expect(result).toBe("42");
+      expect(mockPrisma.indexerCursor.findUnique).toHaveBeenCalledWith({
+        where: { networkId_cursorKey: { networkId, cursorKey } },
         select: { cursorValue: true },
       });
     });
 
-    it("returns null when cursorValue is unset", async () => {
-      mockIndexerCursor.findUnique.mockResolvedValue({ cursorValue: null });
+    it("returns null when row is missing", async () => {
+      const mockPrisma = makeMockPrisma(null);
+      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
 
-      await expect(storage.loadCursor()).resolves.toBeNull();
+      const client = new PrismaCursorStorageClient(networkId, cursorKey);
+      expect(await client.loadCursor()).toBeNull();
     });
 
-    it("returns persisted cursorValue", async () => {
-      mockIndexerCursor.findUnique.mockResolvedValue({
-        cursorValue: "0000012345",
-      });
+    it("returns null when cursorValue is null", async () => {
+      const mockPrisma = makeMockPrisma({ cursorValue: null });
+      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
 
-      await expect(storage.loadCursor()).resolves.toBe("0000012345");
+      const client = new PrismaCursorStorageClient(networkId, cursorKey);
+      expect(await client.loadCursor()).toBeNull();
     });
   });
 
   describe("saveCursor", () => {
-    it("upserts cursorValue within a transaction", async () => {
-      await storage.saveCursor("0000012345");
+    it("upserts cursorValue using composite key", async () => {
+      const mockPrisma = makeMockPrisma();
+      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
 
-      expect(mockTransaction).toHaveBeenCalledOnce();
-      expect(mockIndexerCursor.upsert).toHaveBeenCalledWith({
-        where: {
-          networkId_cursorKey: {
-            networkId: NETWORK_ID,
-            cursorKey: CURSOR_KEY,
-          },
-        },
-        create: {
-          networkId: NETWORK_ID,
-          cursorKey: CURSOR_KEY,
-          cursorValue: "0000012345",
-        },
-        update: {
-          cursorValue: "0000012345",
-        },
+      const client = new PrismaCursorStorageClient(networkId, cursorKey);
+      await client.saveCursor("99");
+
+      expect(mockPrisma.indexerCursor.upsert).toHaveBeenCalledWith({
+        where: { networkId_cursorKey: { networkId, cursorKey } },
+        create: { networkId, cursorKey, cursorValue: "99" },
+        update: { cursorValue: "99" },
       });
+    });
+
+    it("emits structured log with event key", async () => {
+      const mockPrisma = makeMockPrisma();
+      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
+
+      const logger = {
+        info: vi.fn(),
+        debug: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      };
+      const client = new PrismaCursorStorageClient(
+        networkId,
+        cursorKey,
+        logger as never
+      );
+      await client.saveCursor("55");
+
+      expect(logger.info).toHaveBeenCalledWith(
+        "Indexer cursor saved",
+        expect.objectContaining({
+          event: "indexer.cursor.saved",
+          cursorValue: "55",
+          networkId,
+          cursorKey,
+        })
+      );
+    });
+
+    it("independent rows per cursorKey with same networkId", async () => {
+      const prismaA = makeMockPrisma({ cursorValue: "10" });
+      const prismaB = makeMockPrisma({ cursorValue: "20" });
+
+      vi.mocked(getPrismaClient)
+        .mockReturnValueOnce(prismaA as never)
+        .mockReturnValueOnce(prismaB as never);
+
+      const clientA = new PrismaCursorStorageClient(networkId, "keyA");
+      const clientB = new PrismaCursorStorageClient(networkId, "keyB");
+
+      const a = await clientA.loadCursor();
+      const b = await clientB.loadCursor();
+
+      expect(a).toBe("10");
+      expect(b).toBe("20");
+      expect(prismaA.indexerCursor.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { networkId_cursorKey: { networkId, cursorKey: "keyA" } },
+        })
+      );
+      expect(prismaB.indexerCursor.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { networkId_cursorKey: { networkId, cursorKey: "keyB" } },
+        })
+      );
     });
   });
 });
