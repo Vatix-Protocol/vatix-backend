@@ -22,11 +22,11 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
         },
       },
       select: {
-        cursor: true,
+        cursorValue: true,
       },
     });
 
-    return row?.cursor ?? null;
+    return row?.cursorValue ?? null;
   }
 
   async saveCursor(cursor: string): Promise<void> {
@@ -41,10 +41,10 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
         create: {
           networkId: this.networkId,
           cursorKey: this.cursorKey,
-          cursor,
+          cursorValue: cursor,
         },
         update: {
-          cursor,
+          cursorValue: cursor,
         },
       });
     });
