@@ -6,7 +6,7 @@ import type {
   PersistedMarketCreated,
   DuplicateEventLogger,
 } from "./idempotency.js";
-import { insertIfNew } from "./idempotency.js";
+import { insertAllIfNew, insertIfNew } from "./idempotency.js";
 import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client/index.js";
@@ -58,11 +58,47 @@ export class PrismaBatchWriter implements BatchWriter {
       : undefined;
 
     await this.prisma.$transaction(async (tx) => {
-      for (const record of records) {
+      const keyedRecords = records.map((record) => ({
+        ...record,
+        idempotencyKey: record.data.idempotencyKey,
+      }));
+      const recordByKey = new Map(
+        records.map((record) => [record.data.idempotencyKey, record])
+      );
+
+      const deduped = await insertAllIfNew(
+        keyedRecords,
+        async (record) => {
+          const existing = await tx.indexerProcessedEvent.findUnique({
+            where: { idempotencyKey: record.idempotencyKey },
+          });
+
+          return existing ? null : record;
+        },
+        { logger: duplicateLogger }
+      );
+
+      skipped += deduped.duplicateCount;
+
+      for (const dedupedRecord of deduped.inserted) {
+        const record = recordByKey.get(dedupedRecord.idempotencyKey);
+        if (!record) {
+          continue;
+        }
+
         try {
           const result = await insertIfNew(
             record.data,
-            async (persisted) => this.persistRecord(tx, record, persisted as PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated),
+            async (persisted) =>
+              this.persistRecord(
+                tx,
+                record,
+                persisted as
+                  | PersistedTrade
+                  | PersistedResolution
+                  | PersistedCollateralDeposit
+                  | PersistedMarketCreated
+              ),
             { logger: duplicateLogger }
           );
 
