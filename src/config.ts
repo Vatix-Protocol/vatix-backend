@@ -117,6 +117,19 @@ function loadOraclePollIntervalMs(): number {
   return value;
 }
 
+function requireString(name: string): string {
+  const raw = process.env[name];
+  if (!raw || raw.trim() === "") {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return raw.trim();
+}
+
+// Validate ADMIN_TOKEN at startup (except in test environment)
+if (process.env.NODE_ENV !== "test") {
+  requireString("ADMIN_TOKEN");
+}
+
 export const config = {
   /**
    * Current runtime environment. Constrained to development | test | production.
@@ -136,6 +149,13 @@ export const config = {
    * Never logged in full to avoid leaking credentials.
    */
   databaseUrl: loadDatabaseUrl(),
+  /**
+   * Admin bearer token for protected admin endpoints.
+   * Configured via ADMIN_TOKEN.
+   */
+  get adminToken(): string {
+    return process.env.ADMIN_TOKEN || "";
+  },
   /**
    * Duration of the oracle resolution challenge window in seconds.
    * Must be a positive integer. All window boundary calculations use UTC.

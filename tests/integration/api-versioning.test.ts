@@ -1,8 +1,53 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  vi,
+} from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildServer } from "../../src/index.js";
 import { testUtils } from "../setup.js";
 import { openApiSpec } from "../../src/api/openapi.js";
+
+// Mock the prisma service
+vi.mock("../../src/services/prisma.js", () => {
+  return {
+    getPrismaClient: () => ({
+      $queryRaw: async () => {},
+      indexerCursor: {
+        findFirst: async () => ({
+          networkId: "testnet",
+          cursorKey: "ingestion",
+          cursorValue: "123456",
+          updatedAt: new Date(),
+        }),
+      },
+      market: {
+        findMany: async () => [],
+        findUnique: async () => ({
+          id: "api-versioning-market-id",
+          question: "API versioning market",
+          endTime: new Date(),
+          oracleAddress: "G" + "A".repeat(55),
+          status: "ACTIVE",
+          outcome: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }),
+      },
+      order: {
+        groupBy: async () => [],
+        findMany: async () => [],
+      },
+      userPosition: {
+        findMany: async () => [],
+      },
+    }),
+  };
+});
 
 const wallet = testUtils.generateStellarAddress("GUSER");
 
@@ -11,6 +56,10 @@ describe("Integration Tests: API versioning", () => {
   let marketId: string;
 
   beforeAll(async () => {
+    vi.spyOn(testUtils, "createTestMarket").mockResolvedValue({
+      id: "api-versioning-market-id",
+    } as any);
+
     app = buildServer({
       logger: false,
       registerTestRoutes: false,
@@ -90,7 +139,7 @@ describe("Integration Tests: API versioning", () => {
       `/v1/wallets/${wallet}/positions?marketId=${marketId}`
     );
     expect(response.headers.deprecation).toBe("true");
-    expect(response.headers.sunset).toBe("2027-01-01T00:00:00Z");
+    expect(response.headers.sunset).toBe("2026-09-27T00:00:00Z");
     expect(response.headers.link).toBe(
       `</v1/wallets/${wallet}/positions?marketId=${marketId}>; rel="alternate"`
     );
@@ -151,6 +200,11 @@ describe("Integration Tests: API versioning", () => {
         method: "GET",
         url: `/v1/wallets/${wallet}/positions`,
         expected: [200],
+      },
+      {
+        method: "GET",
+        url: `/v1/wallets/${wallet}/positions/${marketId}`,
+        expected: [200, 404],
       },
       { method: "GET", url: "/v1/admin/markets", expected: [401] },
       {

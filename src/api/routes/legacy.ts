@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
-const DEPRECATION_DATE = "2027-01-01T00:00:00Z";
+const DEPRECATION_DATE = "2026-09-27T00:00:00Z";
 const DEPRECATION_SUNSET_MS = Date.parse(DEPRECATION_DATE);
 const DEPRECATION_HEADERS = {
   Deprecation: "true",
@@ -104,8 +104,10 @@ export function registerDeprecatedAliases(fastify: FastifyInstance) {
           "Deprecated API path used"
         );
 
+        const status = route.url === "/readiness" ? 301 : 308;
+
         reply
-          .status(308)
+          .status(status)
           .header("Location", canonical)
           .header("Link", `<${canonical}>; rel="alternate"`)
           .header("Deprecation", DEPRECATION_HEADERS.Deprecation)

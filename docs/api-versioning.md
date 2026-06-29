@@ -9,26 +9,26 @@ GET /v1/health
 ```
 
 Non-versioned paths (e.g. `GET /health`) are supported as compatibility redirects to the canonical versioned path.
-The server responds with `308 Permanent Redirect` and includes `Location`, `Deprecation`, `Sunset`, and `Link` headers until `2027-01-01T00:00:00Z`.
+The server responds with `308 Permanent Redirect` and includes `Location`, `Deprecation`, `Sunset`, and `Link` headers until `2026-09-27T00:00:00Z`.
 Deprecated path usage is logged with `{ event: "api.deprecated_path", path, clientIp }`.
 After the sunset timestamp, unversioned paths return `404`.
 
 ## Public Route Table
 
-| Method | Canonical path                  | Legacy alias                | Notes                           |
-| ------ | ------------------------------- | --------------------------- | ------------------------------- |
-| GET    | `/v1/health`                    | `/health`                   | Liveness and health summary     |
-| GET    | `/v1/ready`                     | `/ready`, `/readiness`      | Readiness checks                |
-| GET    | `/v1/markets`                   | `/markets`                  | Market listing                  |
-| GET    | `/v1/markets/:id`               | `/markets/:id`              | Market details                  |
-| GET    | `/v1/markets/:id/orderbook`     | `/markets/:id/orderbook`    | Market orderbook                |
-| POST   | `/v1/orders`                    | `/orders`                   | Create order                    |
-| GET    | `/v1/orders/user/:address`      | `/orders/user/:address`     | Wallet order history            |
-| GET    | `/v1/trades/user/:address`      | `/trades/user/:address`     | Wallet trade history            |
-| GET    | `/v1/wallets/:wallet/positions` | `/positions/user/:address`  | Canonical wallet positions path |
-| GET    | `/v1/admin/markets`             | `/admin/markets`            | Requires API key and admin auth |
-| PATCH  | `/v1/admin/markets/:id/status`  | `/admin/markets/:id/status` | Requires API key and admin auth |
-| GET    | `/v1/openapi.json`              | none                        | OpenAPI specification           |
+| Method | Canonical path                  | Legacy alias                       | Notes                           |
+| ------ | ------------------------------- | ---------------------------------- | ------------------------------- |
+| GET    | `/v1/health`                    | `/health` (308)                    | Liveness and health summary     |
+| GET    | `/v1/ready`                     | `/ready` (308), `/readiness` (301) | Readiness checks                |
+| GET    | `/v1/markets`                   | `/markets` (308)                   | Market listing                  |
+| GET    | `/v1/markets/:id`               | `/markets/:id` (308)               | Market details                  |
+| GET    | `/v1/markets/:id/orderbook`     | `/markets/:id/orderbook` (308)     | Market orderbook                |
+| POST   | `/v1/orders`                    | `/orders` (308)                    | Create order                    |
+| GET    | `/v1/orders/user/:address`      | `/orders/user/:address` (308)      | Wallet order history            |
+| GET    | `/v1/trades/user/:address`      | `/trades/user/:address` (308)      | Wallet trade history            |
+| GET    | `/v1/wallets/:wallet/positions` | `/positions/user/:address` (308)   | Canonical wallet positions path |
+| GET    | `/v1/admin/markets`             | `/admin/markets` (308)             | Requires API key and admin auth |
+| PATCH  | `/v1/admin/markets/:id/status`  | `/admin/markets/:id/status` (308)  | Requires API key and admin auth |
+| GET    | `/v1/openapi.json`              | none                               | OpenAPI specification           |
 
 ## Adding New Routes
 

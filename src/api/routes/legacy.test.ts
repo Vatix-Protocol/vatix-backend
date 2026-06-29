@@ -22,7 +22,7 @@ describe("Legacy alias redirects", () => {
     expect(response.statusCode).toBe(308);
     expect(response.headers.location).toBe("/v1/health");
     expect(response.headers.deprecation).toBe("true");
-    expect(response.headers.sunset).toBe("2027-01-01T00:00:00Z");
+    expect(response.headers.sunset).toBe("2026-09-27T00:00:00Z");
     expect(response.headers.link).toBe('</v1/health>; rel="alternate"');
   });
 
@@ -52,7 +52,7 @@ describe("Legacy alias redirects", () => {
 
   it("returns 404 for legacy aliases after the sunset date", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2027-01-01T00:00:00Z"));
+    vi.setSystemTime(new Date("2026-09-27T00:00:00Z"));
 
     const response = await app.inject({ method: "GET", url: "/markets" });
 

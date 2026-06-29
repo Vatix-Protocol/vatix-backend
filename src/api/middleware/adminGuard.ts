@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { unauthorized, forbidden } from "./responses.js";
+import { config } from "../../config.js";
 
 const Roles = { ADMIN: "admin" } as const;
 
@@ -10,7 +11,7 @@ export function requireAdmin(
   reply: FastifyReply,
   done: () => void
 ): void {
-  const adminToken = process.env.ADMIN_TOKEN;
+  const adminToken = config.adminToken;
   const authHeader = request.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
