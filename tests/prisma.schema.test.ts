@@ -24,11 +24,13 @@ describe("Prisma Schema", () => {
 
     expect(prisma.market).toBeDefined();
     expect(prisma.order).toBeDefined();
+    expect(prisma.trade).toBeDefined();
     expect(prisma.userPosition).toBeDefined();
     expect(prisma.position).toBeDefined();
     expect(prisma.indexerCursor).toBeDefined();
     expect(prisma.indexerProcessedEvent).toBeDefined();
     expect(prisma.indexedTrade).toBeDefined();
+    expect(prisma.collateralDeposit).toBeDefined();
   });
 
   it("should define the expected schema models", () => {
@@ -42,9 +44,11 @@ describe("Prisma Schema", () => {
       "Position",
       "IndexerCursor",
       "IndexerProcessedEvent",
+      "Trade",
       "IndexedTrade",
       "OracleSourceAlias",
+      "CollateralDeposit",
     ]);
-    expect(modelNames).toHaveLength(11);
+    expect(modelNames).toHaveLength(13);
   });
 });

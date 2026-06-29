@@ -3,6 +3,8 @@ import { auditService } from "./audit";
 import { redis } from "./redis";
 import type { Trade } from "../matching/engine";
 
+const keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
+
 describe("Audit Service", () => {
   const testMarketId = "test-market-123";
   const testTrade: Trade = {
@@ -21,8 +23,8 @@ describe("Audit Service", () => {
   beforeEach(async () => {
     // Clean up test streams
     try {
-      await redis.del(`audit:market:${testMarketId}`);
-      await redis.del("audit:trades:global");
+      await redis.del(`${keyPrefix}audit:market:${testMarketId}`);
+      await redis.del(`${keyPrefix}audit:trades:global`);
     } catch (error) {
       // Streams might not exist
     }
