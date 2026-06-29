@@ -9,8 +9,9 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../../src/index.js";
-import { openApiSpec } from "../../src/api/openapi.js";
+
+type BuildServer = typeof import("../../src/index.js").buildServer;
+type OpenApiSpec = typeof import("../../src/api/openapi.js").openApiSpec;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -25,9 +26,16 @@ import { openApiSpec } from "../../src/api/openapi.js";
  */
 function resolvePathParams(openApiPath: string): string {
   return openApiPath
-    .replace(/\{wallet\}/g, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
-    .replace(/\{address\}/g, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
-    .replace(/\{id\}/g, "00000000-0000-0000-0000-000000000000");
+    .replace(
+      /\{wallet\}/g,
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+    )
+    .replace(
+      /\{address\}/g,
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+    )
+    .replace(/\{id\}/g, "00000000-0000-0000-0000-000000000000")
+    .replace(/\{marketId\}/g, "market-00000000000000000000000000000000");
 }
 
 /** Pick the first HTTP method listed for a path in the spec. */
@@ -42,12 +50,19 @@ function firstMethod(pathItem: Record<string, unknown>): string {
 
 describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", () => {
   let app: FastifyInstance;
+  let buildServer: BuildServer;
+  let openApiSpec: OpenApiSpec;
 
   beforeAll(async () => {
     // Build the full server with test routes disabled to keep it clean.
     // logger: false keeps test output quiet.
     process.env.API_KEY ??= "test-api-key";
     process.env.ADMIN_TOKEN ??= "test-admin-token";
+    process.env.DATABASE_URL ??=
+      "postgresql://postgres:postgres@localhost:5432/vatix_test";
+
+    ({ buildServer } = await import("../../src/index.js"));
+    ({ openApiSpec } = await import("../../src/api/openapi.js"));
 
     app = buildServer({ logger: false, registerTestRoutes: false });
     await app.ready();
@@ -57,25 +72,37 @@ describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", ()
     await app.close();
   });
 
-  const paths = Object.entries(
-    openApiSpec.paths as Record<string, Record<string, unknown>>
-  );
-
   it("openApiSpec.paths is non-empty", () => {
+    const paths = Object.entries(
+      openApiSpec.paths as Record<string, Record<string, unknown>>
+    );
     expect(paths.length).toBeGreaterThan(0);
   });
 
-  it.each(paths)(
-    "path %s is registered in Fastify (returns non-404)",
-    async (openApiPath, pathItem) => {
+  it("every path is registered in Fastify (returns non-route-404)", async () => {
+    const paths = Object.entries(
+      openApiSpec.paths as Record<string, Record<string, unknown>>
+    );
+
+    for (const [openApiPath, pathItem] of paths) {
       const method = firstMethod(pathItem);
       const url = resolvePathParams(openApiPath);
 
       const res = await app.inject({ method: method.toUpperCase(), url });
 
-      // We allow any status code except 404 (route not found).
-      // 200, 201, 400, 401, 403, 422, 503 all mean the route exists.
-      expect(res.statusCode, `${method.toUpperCase()} ${url} returned 404`).not.toBe(404);
+      if (res.statusCode !== 404) {
+        expect(res.statusCode).not.toBe(404);
+        continue;
+      }
+
+      // A 404 can be either route-not-found (contract drift) or domain/resource-not-found.
+      // Only fail when Fastify's global not-found handler is hit.
+      const body = JSON.parse(res.body) as { error?: string; message?: string };
+      const message = String(body.error ?? body.message ?? "");
+      expect(
+        message,
+        `${method.toUpperCase()} ${url} resolved to route-not-found`
+      ).not.toMatch(/^Route\s+/);
     }
-  );
+  });
 });

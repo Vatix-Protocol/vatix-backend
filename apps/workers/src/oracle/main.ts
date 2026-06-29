@@ -166,7 +166,12 @@ async function bootstrap(): Promise<void> {
       }
 
       if (stellarConfig) {
-        await submitOnChain(report, request.oracleAddress, stellarConfig, logger);
+        await submitOnChain(
+          report,
+          request.oracleAddress,
+          stellarConfig,
+          logger
+        );
       } else {
         logger.warn(
           "No Stellar config — resolve_market call skipped (off-chain only)",

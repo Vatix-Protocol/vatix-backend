@@ -57,17 +57,25 @@ export function parseMarketCreatedChainEvent(
     );
   }
 
-  if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
+  if (
+    typeof decoded !== "object" ||
+    decoded === null ||
+    Array.isArray(decoded)
+  ) {
     throw new MarketCreatedParseError("Event value is not an ScvMap", event.id);
   }
 
   const map = decoded as Record<string, unknown>;
 
   const rawEvent = {
-    id: typeof map.market_id === "string" ? map.market_id : String(map.market_id ?? ""),
+    id:
+      typeof map.market_id === "string"
+        ? map.market_id
+        : String(map.market_id ?? ""),
     question: typeof map.question === "string" ? map.question : undefined,
     endTime: normalizeEndTime(map.end_time),
-    oracleAddress: typeof map.oracle_address === "string" ? map.oracle_address : undefined,
+    oracleAddress:
+      typeof map.oracle_address === "string" ? map.oracle_address : undefined,
     status: typeof map.status === "string" ? map.status : undefined,
   };
 

@@ -65,8 +65,12 @@ export const openApiSpec = {
                     dependencies: {
                       type: "object",
                       properties: {
-                        database: { $ref: "#/components/schemas/DependencyResult" },
-                        indexFreshness: { $ref: "#/components/schemas/DependencyResult" },
+                        database: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
+                        indexFreshness: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
                       },
                     },
                   },
@@ -85,8 +89,12 @@ export const openApiSpec = {
                     dependencies: {
                       type: "object",
                       properties: {
-                        database: { $ref: "#/components/schemas/DependencyResult" },
-                        indexFreshness: { $ref: "#/components/schemas/DependencyResult" },
+                        database: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
+                        indexFreshness: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
                       },
                     },
                   },

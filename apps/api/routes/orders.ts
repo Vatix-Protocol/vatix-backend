@@ -31,10 +31,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         },
       },
     },
-    async (
-      request: FastifyRequest<{ Querystring: GetOrdersQuery }>,
-      reply
-    ) => {
+    async (request: FastifyRequest<{ Querystring: GetOrdersQuery }>, reply) => {
       const { status, page = 1, limit = 20 } = request.query;
       const where = status ? { status } : {};
       const skip = (page - 1) * limit;

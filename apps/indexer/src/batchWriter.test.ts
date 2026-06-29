@@ -97,6 +97,7 @@ describe("PrismaBatchWriter", () => {
     const persisted = withIdempotencyKey(TRADE);
     tx.indexerProcessedEvent.findUnique
       .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ idempotencyKey: persisted.idempotencyKey });
     mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
 

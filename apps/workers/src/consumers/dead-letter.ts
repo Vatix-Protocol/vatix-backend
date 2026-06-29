@@ -8,8 +8,7 @@ export interface DeadLetterMessage {
   reason: string;
 }
 
-const DEAD_LETTER_STREAM_PREFIX =
-  process.env.REDIS_KEY_PREFIX ?? "vatix:";
+const DEAD_LETTER_STREAM_PREFIX = process.env.REDIS_KEY_PREFIX ?? "vatix:";
 
 export async function logDeadLetter(
   logger: ILogger,
@@ -19,13 +18,15 @@ export async function logDeadLetter(
   const stream = `${DEAD_LETTER_STREAM_PREFIX}dead-letter:${message.queue}`;
 
   try {
-    await (redis as unknown as {
-      xadd: (
-        streamKey: string,
-        id: string,
-        ...fields: string[]
-      ) => Promise<string>;
-    }).xadd(
+    await (
+      redis as unknown as {
+        xadd: (
+          streamKey: string,
+          id: string,
+          ...fields: string[]
+        ) => Promise<string>;
+      }
+    ).xadd(
       stream,
       "*",
       "messageId",
@@ -59,8 +60,7 @@ export async function logDeadLetter(
       payloadType: typeof message.payload,
       timestamp,
       persisted: false,
-      persistenceError:
-        error instanceof Error ? error.message : String(error),
+      persistenceError: error instanceof Error ? error.message : String(error),
     });
   }
 }

@@ -25,10 +25,13 @@ async function bootstrap(): Promise<void> {
 
   const poll = async (): Promise<void> => {
     if (isPollInProgress) {
-      logger.warn("Skipping finalization poll because a previous poll is active", {
-        intervalMs: config.intervalMs,
-        component: "finalization-worker",
-      });
+      logger.warn(
+        "Skipping finalization poll because a previous poll is active",
+        {
+          intervalMs: config.intervalMs,
+          component: "finalization-worker",
+        }
+      );
       return;
     }
 
