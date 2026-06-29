@@ -326,11 +326,14 @@ export interface IndexerConfig {
 }
 
 /**
- * Loads and validates indexer-specific config.
+ * Resolves the Soroban contract ID the indexer should ingest.
+ * `INDEXER_CONTRACT_ID` takes precedence over the legacy `MARKET_CONTRACT_ID`
+ * alias. Exported so other services (e.g. the oracle worker) resolve the
+ * contract ID the same way instead of re-implementing this precedence.
  *
  * @param env - Defaults to process.env. Pass a custom object in tests.
  */
-function loadIndexerContractId(env: Env): string {
+export function loadIndexerContractId(env: Env): string {
   const contractId =
     env["INDEXER_CONTRACT_ID"]?.trim() ||
     env["MARKET_CONTRACT_ID"]?.trim() ||
