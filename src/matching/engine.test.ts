@@ -339,6 +339,29 @@ describe("matchOrder", () => {
       expect(result.trades.length).toBe(2);
       expect(result.remainingOrder?.quantity).toBe(50);
     });
+
+    it("should invoke the trade fill hook for each executed match", () => {
+      orderBook.addOrder(createBookOrder("sell-1", "ask", 0.45, 30, 1000));
+      orderBook.addOrder(createBookOrder("sell-2", "ask", 0.48, 40, 2000));
+
+      const onTradeFilled = vi.fn();
+      const buyOrder = createMatchingOrder("buy-1", "BUY", 0.5, 100);
+
+      const result = matchOrder(buyOrder, orderBook, {
+        onTradeFilled,
+      });
+
+      expect(result.trades.length).toBe(2);
+      expect(onTradeFilled).toHaveBeenCalledTimes(2);
+      expect(onTradeFilled).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ sellOrderId: "sell-1" })
+      );
+      expect(onTradeFilled).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ sellOrderId: "sell-2" })
+      );
+    });
   });
 
   describe("Order Book Integrity", () => {

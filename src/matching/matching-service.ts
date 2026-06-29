@@ -192,7 +192,12 @@ class MatchingService {
         timestamp,
       };
 
-      const matchResult = matchOrder(takerOrder, book);
+      const auditWrites: Promise<string | null>[] = [];
+      const matchResult = matchOrder(takerOrder, book, {
+        onTradeFilled: (trade) => {
+          auditWrites.push(auditService.logOrderMatch(trade));
+        },
+      });
 
       let takerFilledQuantity =
         input.quantity - (matchResult.remainingOrder?.quantity ?? 0);
@@ -346,12 +351,8 @@ class MatchingService {
         });
       }
 
-      // 2. Log trades to audit (fire-and-forget)
-      for (const trade of matchResult.trades) {
-        auditService.logOrderMatch(trade).catch((error) => {
-          console.error("Failed to log trade to audit:", error);
-        });
-      }
+      // 2. Log trades to audit before returning control to the caller
+      await Promise.all(auditWrites);
 
       // 3. Enqueue settlement jobs (fire-and-forget)
       for (const trade of matchResult.trades) {
