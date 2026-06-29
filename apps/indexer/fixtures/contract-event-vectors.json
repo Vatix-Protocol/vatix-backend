@@ -99,22 +99,46 @@
       "discriminator": {
         "topicIndex": 0,
         "scvType": "ScvSymbol",
-        "value": "market_resolved",
-        "xdr": "AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA"
+        "value": "market_resolved_event",
+        "xdr": "AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=",
+        "note": "Soroban's #[contractevent] macro snake_cases the struct name including its 'Event' suffix — see contracts/market/src/events.rs."
       },
-      "payloadShape": "ScvVec (3-tuple) [canonical on-chain] | ScvMap [legacy]",
+      "payloadShape": "topic[1]=ScvU32 market_id, value=ScvMap{outcome, resolved_at} [real on-chain] | ScvVec 3-tuple [legacy] | ScvMap [legacy]",
       "fields": {
-        "tuple[0] market_id":   "ScvU32  → number → string",
-        "tuple[1] outcome":     "ScvBool → true='YES' / false='NO'",
-        "tuple[2] resolved_at": "ScvU64  → bigint (Unix timestamp, informational only)",
-        "map.market_id":  "ScvSymbol → string",
-        "map.outcome":    "ScvSymbol → 'YES' | 'NO'",
-        "map.oracle":     "ScvSymbol → string (Stellar oracle address; '' when tuple path)"
+        "topic[1] market_id":   "ScvU32  → number → string",
+        "value.outcome":        "ScvBool → true='YES' / false='NO'",
+        "value.resolved_at":    "ScvU64  → bigint (Unix timestamp; decoded but not yet persisted)",
+        "legacy tuple[0] market_id":   "ScvU32  → number → string",
+        "legacy tuple[1] outcome":     "ScvBool → true='YES' / false='NO'",
+        "legacy tuple[2] resolved_at": "ScvU64  → bigint (informational only)",
+        "legacy map.market_id":  "ScvSymbol → string",
+        "legacy map.outcome":    "ScvSymbol → 'YES' | 'NO'",
+        "legacy map.oracle":     "ScvSymbol → string (Stellar oracle address)"
       },
       "vectors": [
         {
-          "label": "tuple YES — market 42",
-          "topicsXdr": ["AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA"],
+          "label": "real on-chain shape YES — market 42",
+          "topicsXdr": ["AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=", "AAAAAwAAACo="],
+          "valueXdr": "AAAAEQAAAAEAAAACAAAADwAAAAdvdXRjb21lAAAAAAAAAAABAAAADwAAAAtyZXNvbHZlZF9hdAAAAAAFAAAAAGVT8QA=",
+          "expectedNormalized": {
+            "marketId": "42",
+            "outcome": "YES",
+            "oracleAddress": ""
+          }
+        },
+        {
+          "label": "real on-chain shape NO — market 7",
+          "topicsXdr": ["AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=", "AAAAAwAAAAc="],
+          "valueXdr": "AAAAEQAAAAEAAAACAAAADwAAAAdvdXRjb21lAAAAAAAAAAAAAAAADwAAAAtyZXNvbHZlZF9hdAAAAAAFAAAAAGS7WoA=",
+          "expectedNormalized": {
+            "marketId": "7",
+            "outcome": "NO",
+            "oracleAddress": ""
+          }
+        },
+        {
+          "label": "legacy tuple YES — market 42",
+          "topicsXdr": ["AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA="],
           "decodedNative": [42, true, "1700000000"],
           "expectedNormalized": {
             "marketId": "42",
@@ -123,30 +147,12 @@
           }
         },
         {
-          "label": "tuple NO — market 7",
-          "decodedNative": [7, false, "99"],
-          "expectedNormalized": {
-            "marketId": "7",
-            "outcome": "NO",
-            "oracleAddress": ""
-          }
-        },
-        {
-          "label": "ScvMap YES — legacy shape with oracle",
-          "topicsXdr": ["AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA"],
+          "label": "legacy ScvMap YES — shape with oracle",
+          "topicsXdr": ["AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA="],
           "valueXdr": "AAAAEQAAAAEAAAADAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC14eXoAAAAAAA8AAAAHb3V0Y29tZQAAAAAPAAAAA1lFUwAAAAAPAAAABm9yYWNsZQAAAAAADwAAAApHT1JBQ0xFMTIzAAA=",
           "expectedNormalized": {
             "marketId": "market-xyz",
             "outcome": "YES",
-            "oracleAddress": "GORACLE123"
-          }
-        },
-        {
-          "label": "ScvMap NO — legacy shape with oracle",
-          "valueXdr": "AAAAEQAAAAEAAAADAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC14eXoAAAAAAA8AAAAHb3V0Y29tZQAAAAAPAAAAAk5PAAAAAAAPAAAABm9yYWNsZQAAAAAADwAAAApHT1JBQ0xFMTIzAAA=",
-          "expectedNormalized": {
-            "marketId": "market-xyz",
-            "outcome": "NO",
             "oracleAddress": "GORACLE123"
           }
         }

@@ -12,7 +12,7 @@ Test vectors: [`apps/indexer/fixtures/contract-event-vectors.json`](../apps/inde
 |------------------------|-----------------------|---------------------------------|----------------------------------|------------------------------------|
 | `trade_executed`       | ScvMap (9 fields)     | `tradeParser.ts`                | `NormalizedTrade`                | `IndexedTrade`                     |
 | `collateral_deposited` | ScvVec 3-tuple        | `collateralDepositedParser.ts`  | `NormalizedCollateralDeposit`    | logged only (no table yet — see §4)|
-| `market_resolved`      | ScvVec 3-tuple or ScvMap | `resolutionParser.ts`        | `NormalizedResolution`           | `ResolutionCandidate`              |
+| `market_resolved_event` | topic[1]=u32 market_id, ScvMap{outcome, resolved_at} (or legacy ScvVec/ScvMap) | `resolutionParser.ts` | `NormalizedResolution` | `ResolutionCandidate`     |
 | `market_created`       | pre-decoded JS object | `market-created-parser.ts`      | `MarketCreatedEvent`             | ingested outside `PollingIngestionLoop` |
 
 All four events share the same topic encoding: **topic[0] = ScvSymbol** carrying the event name string.
@@ -57,19 +57,21 @@ All four events share the same topic encoding: **topic[0] = ScvSymbol** carrying
 
 ## 3. `market_resolved`
 
-**Topic XDR:** `AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA`
+**Topic XDR:** `AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=` (`market_resolved_event`)
 
-**Payload — canonical (on-chain tuple):** ScvVec 3-tuple:
+**Payload — real on-chain shape:** `MarketResolvedEvent` (`contracts/market/src/events.rs`) publishes `market_id` as `topics[1]` and `{ outcome, resolved_at }` as the value:
 
-| Index | ScvType  | Native type | Notes                                    |
-|-------|----------|-------------|------------------------------------------|
-| `[0]` | ScvU32   | `number`    | Market identifier, cast to string        |
-| `[1]` | ScvBool  | `boolean`   | `true` → `"YES"`, `false` → `"NO"`      |
-| `[2]` | ScvU64   | `bigint`    | Unix timestamp of resolution (informational) |
+| Source            | ScvType  | Native type | Notes                                    |
+|--------------------|----------|-------------|-------------------------------------------|
+| `topics[1]`         | ScvU32   | `number`    | `market_id`, cast to string               |
+| `value.outcome`     | ScvBool  | `boolean`   | `true` → `"YES"`, `false` → `"NO"`        |
+| `value.resolved_at` | ScvU64   | `bigint`    | Unix timestamp of resolution (decoded but not yet persisted — no DB column exists) |
 
-`oracleAddress` is set to `""` for tuple payloads. `batchWriter` substitutes the Stellar null account (`GAAAAAA…AWHF`) when writing to `ResolutionCandidate.operatorAddress`.
+The contract does not publish an oracle address on this event, so `oracleAddress` is `""`. `batchWriter` substitutes the Stellar null account (`GAAAAAA…AWHF`) when writing to `ResolutionCandidate.operatorAddress`.
 
-**Payload — legacy (ScvMap):** Keys `market_id` (ScvSymbol), `outcome` (ScvSymbol `"YES"`/`"NO"`), `oracle` (ScvSymbol). `oracle` is required on this path; its absence throws `ResolutionParseError`.
+**Payload — legacy ScvVec 3-tuple:** `[market_id: u32, outcome: bool, resolved_at: u64]` all inside the value (no second topic). Same field semantics as above; `oracleAddress` is also `""`.
+
+**Payload — legacy ScvMap:** Keys `market_id` (ScvSymbol), `outcome` (ScvSymbol `"YES"`/`"NO"`), `oracle` (ScvSymbol), all inside the value. `oracle` is required on this path; its absence throws `ResolutionParseError`.
 
 **DB write:** `ResolutionCandidate` row with `status = "PROPOSED"`, `source = "chain:market_resolved:{contractId}"`.
 
@@ -112,7 +114,7 @@ PollingIngestionLoop.ingestFromCursor()
         PrismaBatchWriter.write()
              │
              ├── IndexedTrade              (trade_executed)
-             ├── ResolutionCandidate       (market_resolved)
+             ├── ResolutionCandidate       (market_resolved_event)
              └── logger.debug only         (collateral_deposited — pending table)
 ```
 
