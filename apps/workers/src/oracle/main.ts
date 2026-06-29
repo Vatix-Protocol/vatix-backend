@@ -47,7 +47,7 @@ async function submitOnChain(
   oracleAddress: string,
   stellar: OracleStellarConfig,
   logger: ReturnType<typeof createLogger>
-): Promise<void> {
+): Promise<string> {
   const { rpcUrl, contractId, networkPassphrase, signerSecret } = stellar;
 
   logger.debug("Invoking resolve_market on-chain", {
@@ -102,7 +102,7 @@ async function submitOnChain(
         hash: sendResult.hash,
         ledger: txStatus.ledger,
       });
-      return;
+      return sendResult.hash;
     }
     if (txStatus.status === StellarRpc.Api.GetTransactionStatus.FAILED) {
       throw new Error(
@@ -146,7 +146,7 @@ async function bootstrap(): Promise<void> {
   });
 
   const bullWorker = createOracleSubmissionWorker(
-    async (item: SubmissionQueueItem) => {
+    async (item: SubmissionQueueItem, attemptsMade: number) => {
       const { request, result } = item;
 
       const report: SignedResolutionReport = {
@@ -165,8 +165,14 @@ async function bootstrap(): Promise<void> {
         );
       }
 
+      let txHash: string | undefined;
       if (stellarConfig) {
-        await submitOnChain(report, request.oracleAddress, stellarConfig, logger);
+        txHash = await submitOnChain(
+          report,
+          request.oracleAddress,
+          stellarConfig,
+          logger
+        );
       } else {
         logger.warn(
           "No Stellar config — resolve_market call skipped (off-chain only)",
@@ -185,6 +191,9 @@ async function bootstrap(): Promise<void> {
           confidence: 1.0,
           marketId: request.marketId,
           candidateResolution: result.outcome,
+          status: txHash ? "CONFIRMED" : "PENDING",
+          attempts: attemptsMade + 1,
+          txHash,
           createdAt: new Date(report.payload.timestamp),
         },
       });

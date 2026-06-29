@@ -103,6 +103,69 @@ describe("SubmissionWorker", () => {
       );
     });
 
+    it("persists status, attempts, and tx hash on success", async () => {
+      const submission = createTestSubmission();
+      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
+      mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
+        id: "candidate-1",
+      });
+      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
+
+      await worker.processSubmission(submission);
+
+      expect(mockPrisma.oracleReport.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          status: "CONFIRMED",
+          attempts: submission.attempts + 1,
+          txHash: undefined,
+        }),
+      });
+    });
+
+    it("persists SUBMITTED status and attempt count when retrying", async () => {
+      const submission = createTestSubmission();
+      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
+      mockQueue.nack.mockResolvedValueOnce(undefined);
+
+      await expect(
+        worker.processSubmission({
+          ...submission,
+          result: { ...submission.result, signature: "" },
+        })
+      ).rejects.toThrow();
+
+      expect(mockPrisma.oracleReport.updateMany).toHaveBeenCalledWith({
+        where: { marketId: submission.request.marketId },
+        data: expect.objectContaining({
+          status: "SUBMITTED",
+          attempts: submission.attempts + 1,
+        }),
+      });
+    });
+
+    it("persists FAILED status when max attempts are exceeded", async () => {
+      const submission = createTestSubmission();
+      submission.attempts = 2;
+
+      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
+      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
+
+      await expect(
+        worker.processSubmission({
+          ...submission,
+          result: { ...submission.result, signature: "" },
+        })
+      ).rejects.toThrow();
+
+      expect(mockPrisma.oracleReport.updateMany).toHaveBeenCalledWith({
+        where: { marketId: submission.request.marketId },
+        data: expect.objectContaining({
+          status: "FAILED",
+          attempts: 3,
+        }),
+      });
+    });
+
     it("should retry on first failure", async () => {
       const submission = createTestSubmission();
       const error = new Error("Network error");

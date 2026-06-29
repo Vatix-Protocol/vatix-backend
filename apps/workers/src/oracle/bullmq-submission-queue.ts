@@ -80,13 +80,13 @@ export class BullMQSubmissionQueue {
  * on-chain submission and DB persistence.
  */
 export function createOracleSubmissionWorker(
-  handler: (item: SubmissionQueueItem) => Promise<void>,
+  handler: (item: SubmissionQueueItem, attemptsMade: number) => Promise<void>,
   logger: ILogger
 ): Worker<SubmissionQueueItem> {
   const worker = new Worker<SubmissionQueueItem>(
     QUEUE_NAME,
     async (job: Job<SubmissionQueueItem>) => {
-      await handler(job.data);
+      await handler(job.data, job.attemptsMade);
     },
     {
       connection: redisConnectionFromEnv(),
