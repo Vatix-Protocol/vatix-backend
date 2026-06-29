@@ -29,6 +29,12 @@ export class NotFoundError extends AppError {
   }
 }
 
+export class MarketNotFoundError extends AppError {
+  constructor(marketId: string) {
+    super(`Market with ID ${marketId} not found`, 404, "market_not_found");
+  }
+}
+
 export class UnauthorizedError extends AppError {
   constructor(message: string = "Unauthorized") {
     super(message, 401, "unauthorized");

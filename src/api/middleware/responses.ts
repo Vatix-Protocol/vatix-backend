@@ -24,7 +24,11 @@ export interface SuccessResponse<T> {
   timestamp: string;
 }
 
-export function success<T>(reply: FastifyReply, data: T, statusCode = 200): void {
+export function success<T>(
+  reply: FastifyReply,
+  data: T,
+  statusCode = 200
+): void {
   const body: SuccessResponse<T> = {
     success: true,
     data,
@@ -34,7 +38,10 @@ export function success<T>(reply: FastifyReply, data: T, statusCode = 200): void
   reply.status(statusCode).send(body);
 }
 
-export function unauthorized(reply: FastifyReply, message = "Unauthorized"): void {
+export function unauthorized(
+  reply: FastifyReply,
+  message = "Unauthorized"
+): void {
   const body: AuthErrorResponse = {
     error: message,
     code: "UNAUTHORIZED",

@@ -25,17 +25,17 @@ export function errorHandler(
   const logContext = {
     requestId: request.id,
     method: request.method,
-    url: request.url,
+    path: request.url,
     statusCode,
-    error: error.message,
+    message: error.message,
     // Always include stack in logs for server errors regardless of environment
     ...(isServerError && { stack: error.stack }),
   };
 
   if (isClientError) {
-    request.log.warn(logContext, "Client error");
+    request.log.warn(logContext, "Client request error");
   } else if (isServerError) {
-    request.log.error(logContext, "Server error");
+    request.log.error(logContext, "Unhandled request error");
   }
 
   // Build error response — hide internals in production
@@ -45,17 +45,26 @@ export function errorHandler(
   }
 
   const envelope: ErrorEnvelope = {
-    code,
-    message,
+    code:
+      error instanceof AppError
+        ? error.code
+        : statusCode >= 500
+          ? "internal_error"
+          : String(statusCode),
+    message: errorMessage,
+    error: errorMessage,
     statusCode,
+    requestId: request.id,
     // Include stack trace in response body only outside production
     ...(!isProduction() && isServerError && { stack: error.stack }),
   };
 
   // Attach field-level details as metadata for ValidationError
   if (error instanceof ValidationError && error.fields) {
-    envelope.metadata = { fields: error.fields };
+    (envelope as ErrorEnvelope & { metadata?: unknown }).metadata = {
+      fields: error.fields,
+    };
   }
 
-  reply.status(statusCode).send(response);
+  reply.status(statusCode).send(envelope);
 }
