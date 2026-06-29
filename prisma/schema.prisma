@@ -72,7 +72,6 @@ model Market {
 
   orders               Order[]
   positions            UserPosition[]
-  positionSnapshots    Position[]
   oracleReports        OracleReport[]
   resolutionCandidates ResolutionCandidate[]
   resolutions          Resolution[]
@@ -189,24 +188,6 @@ model Resolution {
   @@map("resolutions")
 }
 
-model Position {
-  id            String   @id @default(uuid())
-  walletAddress String   @map("wallet_address") @db.VarChar(56)
-  marketId      String   @map("market_id")
-  outcome       Outcome?
-  quantity      Int      @default(0)
-  valuation     Decimal  @default(0) @map("valuation") @db.Decimal(20, 8)
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
-
-  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
-
-  @@unique([walletAddress, marketId, outcome], map: "positions_wallet_market_outcome_key")
-  @@index([walletAddress])
-  @@index([marketId])
-  @@map("positions")
-}
-
 model IndexerCursor {
   networkId   String   @map("network_id")
   cursorKey   String   @map("cursor_key")
@@ -233,18 +214,18 @@ model IndexerProcessedEvent {
 /// CLOB-engine trade records. Written atomically with order fills; tradeId is
 /// the source-of-truth idempotency key preventing duplicate writes on retry.
 model Trade {
-  id             String   @id @default(uuid())
-  tradeId        String   @unique @map("trade_id") @db.VarChar(256)
-  marketId       String   @map("market_id")
-  outcome        Outcome
-  buyerAddress   String   @map("buyer_address") @db.VarChar(56)
-  sellerAddress  String   @map("seller_address") @db.VarChar(56)
-  buyOrderId     String   @map("buy_order_id")
-  sellOrderId    String   @map("sell_order_id")
-  price          Decimal  @db.Decimal(10, 8)
-  quantity       Int
-  tradedAt       DateTime @map("traded_at")
-  createdAt      DateTime @default(now()) @map("created_at")
+  id            String   @id @default(uuid())
+  tradeId       String   @unique @map("trade_id") @db.VarChar(256)
+  marketId      String   @map("market_id")
+  outcome       Outcome
+  buyerAddress  String   @map("buyer_address") @db.VarChar(56)
+  sellerAddress String   @map("seller_address") @db.VarChar(56)
+  buyOrderId    String   @map("buy_order_id")
+  sellOrderId   String   @map("sell_order_id")
+  price         Decimal  @db.Decimal(10, 8)
+  quantity      Int
+  tradedAt      DateTime @map("traded_at")
+  createdAt     DateTime @default(now()) @map("created_at")
 
   @@index([marketId])
   @@index([buyerAddress])
