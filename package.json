@@ -31,6 +31,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "test:run": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:matching": "vitest run src/matching",
+    "matching:test": "vitest run src/matching",
     "prepare": "husky install",
     "generate:keypair": "tsx scripts/generate-keypair.ts",
     "format": "prettier --write .",

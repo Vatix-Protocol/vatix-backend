@@ -219,4 +219,41 @@ describe("PollingIngestionLoop", () => {
     expect(storage.saveCursor).toHaveBeenCalledTimes(1);
     expect(storage.saveCursor).toHaveBeenCalledWith("200");
   });
+
+  it("graceful shutdown: stop() awaits active tick and flushes cursor", async () => {
+    let tickResolve: (val: any) => void = () => {};
+    const tickPromise = new Promise((resolve) => {
+      tickResolve = resolve;
+    });
+
+    vi.mocked(eventFetcher.fetchByLedgerWindow).mockImplementation(async () => {
+      await tickPromise;
+      return {
+        events: [],
+        latestLedger: 300,
+      };
+    });
+
+    const loop = createLoop(2);
+    (loop as unknown as { cursor: string | null }).cursor = "10";
+
+    const tickCall = (loop as unknown as { tick(): Promise<void> }).tick();
+    const stopCall = loop.stop();
+
+    let stopResolved = false;
+    stopCall.then(() => {
+      stopResolved = true;
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(stopResolved).toBe(false);
+
+    tickResolve(null);
+
+    await tickCall;
+    await stopCall;
+
+    expect(stopResolved).toBe(true);
+    expect(storage.saveCursor).toHaveBeenCalledWith("110");
+  });
 });

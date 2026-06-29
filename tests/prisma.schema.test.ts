@@ -42,9 +42,11 @@ describe("Prisma Schema", () => {
       "Position",
       "IndexerCursor",
       "IndexerProcessedEvent",
+      "Trade",
       "IndexedTrade",
       "OracleSourceAlias",
+      "CollateralDeposit",
     ]);
-    expect(modelNames).toHaveLength(11);
+    expect(modelNames).toHaveLength(13);
   });
 });

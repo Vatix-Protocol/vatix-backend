@@ -38,6 +38,7 @@ export class PollingIngestionLoop implements IngestionLoop {
   private timer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private isTickInProgress = false;
+  private activeTickPromise: Promise<void> | null = null;
   private cursor: string | null = null;
   private successfulBatchesSinceLastCheckpoint = 0;
   private batchesSinceLastHeartbeat = 0;
@@ -85,6 +86,13 @@ export class PollingIngestionLoop implements IngestionLoop {
       this.heartbeatTimer = null;
     }
 
+    if (this.activeTickPromise) {
+      this.logger.info(
+        "Waiting for active ingestion tick to complete before stop..."
+      );
+      await this.activeTickPromise;
+    }
+
     await this.flushCheckpoint(true);
 
     this.logger.info("Indexer ingestion loop stopped", {
@@ -103,25 +111,29 @@ export class PollingIngestionLoop implements IngestionLoop {
     }
 
     this.isTickInProgress = true;
-
-    try {
-      const batchResult = await this.ingestFromCursor(this.cursor);
-      if (batchResult.nextCursor && batchResult.nextCursor !== this.cursor) {
-        this.cursor = batchResult.nextCursor;
-        this.metrics.setLatestIndexedLedgerSequence(
-          batchResult.lastIndexedLedgerSequence
-        );
-        this.successfulBatchesSinceLastCheckpoint += 1;
-        this.batchesSinceLastHeartbeat += 1;
-        await this.flushCheckpoint(false);
+    this.activeTickPromise = (async () => {
+      try {
+        const batchResult = await this.ingestFromCursor(this.cursor);
+        if (batchResult.nextCursor && batchResult.nextCursor !== this.cursor) {
+          this.cursor = batchResult.nextCursor;
+          this.metrics.setLatestIndexedLedgerSequence(
+            batchResult.lastIndexedLedgerSequence
+          );
+          this.successfulBatchesSinceLastCheckpoint += 1;
+          this.batchesSinceLastHeartbeat += 1;
+          await this.flushCheckpoint(false);
+        }
+      } catch (error) {
+        this.logger.error("Ingestion tick failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        this.isTickInProgress = false;
+        this.activeTickPromise = null;
       }
-    } catch (error) {
-      this.logger.error("Ingestion tick failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      this.isTickInProgress = false;
-    }
+    })();
+
+    await this.activeTickPromise;
   }
 
   private async flushCheckpoint(force: boolean): Promise<void> {
