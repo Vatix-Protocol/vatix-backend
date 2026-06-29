@@ -1,6 +1,7 @@
 import {
   loadIndexerConfig as loadSharedIndexerConfig,
   type IndexerConfig as SharedIndexerConfig,
+  ConfigValidationError,
 } from "../../../packages/shared/src/config.js";
 
 export type { SharedIndexerConfig };
@@ -26,7 +27,9 @@ export interface IngestionLoopConfig {
 
 export interface IndexerAppConfig extends SharedIndexerConfig, ChainConfig {}
 
-export function pickIngestionLoopConfig(cfg: IndexerAppConfig): IngestionLoopConfig {
+export function pickIngestionLoopConfig(
+  cfg: IndexerAppConfig
+): IngestionLoopConfig {
   return {
     ingestionIntervalMs: cfg.ingestionIntervalMs,
     ledgerWindowSize: cfg.ledgerWindowSize,
@@ -39,7 +42,7 @@ export function loadChainConfig(env: Env = process.env): ChainConfig {
   const passphrase = env["SOROBAN_NETWORK_PASSPHRASE"];
 
   if (!passphrase || passphrase.trim() === "") {
-    throw new Error(
+    throw new ConfigValidationError(
       "Missing required environment variable: SOROBAN_NETWORK_PASSPHRASE"
     );
   }
