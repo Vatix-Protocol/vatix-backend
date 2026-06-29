@@ -7,10 +7,18 @@
  *
  * CI gate: runs on every PR touching src/api/routes/** or src/api/openapi.ts.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { buildServer } from "../../src/index.js";
 import { openApiSpec } from "../../src/api/openapi.js";
+import { testUtils } from "../setup.js";
+
+vi.hoisted(() => {
+  process.env.DATABASE_URL =
+    process.env.DATABASE_URL ||
+    "postgresql://postgres:postgres@localhost:5433/vatix";
+});
+
+const { buildServer } = await import("../../src/index.js");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -19,21 +27,17 @@ import { openApiSpec } from "../../src/api/openapi.js";
 /**
  * Convert an OpenAPI path template to a testable URL by substituting path
  * parameters with valid placeholder values.
- *
- * e.g. /v1/markets/{id} → /v1/markets/test-id
- *      /v1/wallets/{wallet}/positions → /v1/wallets/GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF/positions
  */
-function resolvePathParams(openApiPath: string): string {
+function resolvePathParams(
+  openApiPath: string,
+  marketId: string,
+  wallet: string
+): string {
   return openApiPath
-    .replace(
-      /\{wallet\}/g,
-      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
-    )
-    .replace(
-      /\{address\}/g,
-      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
-    )
-    .replace(/\{id\}/g, "00000000-0000-0000-0000-000000000000");
+    .replace(/\{wallet\}/g, wallet)
+    .replace(/\{address\}/g, wallet)
+    .replace(/\{marketId\}/g, marketId)
+    .replace(/\{id\}/g, marketId);
 }
 
 /** Pick the first HTTP method listed for a path in the spec. */
@@ -48,12 +52,18 @@ function firstMethod(pathItem: Record<string, unknown>): string {
 
 describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", () => {
   let app: FastifyInstance;
+  let marketId: string;
+  const wallet = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
   beforeAll(async () => {
-    // Build the full server with test routes disabled to keep it clean.
-    // logger: false keeps test output quiet.
     process.env.API_KEY ??= "test-api-key";
     process.env.ADMIN_TOKEN ??= "test-admin-token";
+
+    const market = await testUtils.createTestMarket({
+      question: "OpenAPI contract market",
+      status: "ACTIVE",
+    });
+    marketId = market.id;
 
     app = buildServer({ logger: false, registerTestRoutes: false });
     await app.ready();
@@ -75,7 +85,7 @@ describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", ()
     "path %s is registered in Fastify (returns non-404)",
     async (openApiPath, pathItem) => {
       const method = firstMethod(pathItem);
-      const url = resolvePathParams(openApiPath);
+      const url = resolvePathParams(openApiPath, marketId, wallet);
 
       const res = await app.inject({ method: method.toUpperCase(), url });
 

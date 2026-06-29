@@ -268,7 +268,7 @@ describe("RedisSubmissionQueue", () => {
         visibilityExpiresAt: Date.now() + 5000,
       };
 
-      await queue.nack(item);
+      await queue.nack(item, "nack-worker");
 
       expect(mockClient.xclaim).toHaveBeenCalledWith(
         "oracle:submissions",
