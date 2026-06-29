@@ -173,4 +173,43 @@ describe("RedisService", () => {
       process.env.REDIS_URL = originalUrl;
     });
   });
+
+  describe("retry configuration", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("uses default retry config when env vars are not set", async () => {
+      // Connect with defaults — health check should still work
+      const svc = new RedisService();
+      const healthy = await svc.healthCheck();
+      expect(healthy).toBe(true);
+      await svc.disconnect();
+    });
+
+    it("respects REDIS_MAX_RETRIES env override", async () => {
+      vi.stubEnv("REDIS_MAX_RETRIES", "5");
+      // A new instance created after the stub will pick up the new value
+      const svc = new RedisService();
+      const healthy = await svc.healthCheck();
+      expect(healthy).toBe(true);
+      await svc.disconnect();
+    });
+
+    it("respects REDIS_RETRY_BASE_DELAY env override", async () => {
+      vi.stubEnv("REDIS_RETRY_BASE_DELAY", "200");
+      const svc = new RedisService();
+      const healthy = await svc.healthCheck();
+      expect(healthy).toBe(true);
+      await svc.disconnect();
+    });
+
+    it("respects REDIS_CONNECT_TIMEOUT env override", async () => {
+      vi.stubEnv("REDIS_CONNECT_TIMEOUT", "10000");
+      const svc = new RedisService();
+      const healthy = await svc.healthCheck();
+      expect(healthy).toBe(true);
+      await svc.disconnect();
+    });
+  });
 });

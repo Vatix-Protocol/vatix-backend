@@ -1,8 +1,35 @@
 import Redis from "ioredis";
 
 const ORDER_BOOK_TTL = 60; // seconds
-const MAX_RETRIES = 3;
-const BASE_RETRY_DELAY = 100; // ms
+
+/**
+ * Redis connection retry defaults.
+ * Override via environment variables:
+ *   REDIS_MAX_RETRIES        — max retry attempts before giving up (default: 3)
+ *   REDIS_RETRY_BASE_DELAY   — base delay in ms for exponential backoff (default: 100)
+ *   REDIS_RETRY_MAX_DELAY    — cap on retry delay in ms (default: 2000)
+ *   REDIS_CONNECT_TIMEOUT    — socket connect timeout in ms (default: 5000)
+ */
+function loadRetryConfig(): {
+  maxRetries: number;
+  baseDelay: number;
+  maxDelay: number;
+  connectTimeout: number;
+} {
+  function parsePositiveInt(name: string, fallback: number): number {
+    const raw = process.env[name];
+    if (!raw || raw.trim() === "") return fallback;
+    const value = Number(raw);
+    return Number.isInteger(value) && value > 0 ? value : fallback;
+  }
+
+  return {
+    maxRetries: parsePositiveInt("REDIS_MAX_RETRIES", 3),
+    baseDelay: parsePositiveInt("REDIS_RETRY_BASE_DELAY", 100),
+    maxDelay: parsePositiveInt("REDIS_RETRY_MAX_DELAY", 2000),
+    connectTimeout: parsePositiveInt("REDIS_CONNECT_TIMEOUT", 5000),
+  };
+}
 
 /**
  * Order book data structure for caching
@@ -45,20 +72,21 @@ class RedisService {
         throw new Error("REDIS_URL environment variable is not set");
       }
 
+      const { maxRetries, baseDelay, maxDelay, connectTimeout } =
+        loadRetryConfig();
+
       this.client = new Redis(redisUrl, {
-        maxRetriesPerRequest: MAX_RETRIES,
+        maxRetriesPerRequest: maxRetries,
+        connectTimeout,
         retryStrategy: (times: number) => {
-          if (times > MAX_RETRIES) {
+          if (times > maxRetries) {
             console.error(
-              { service: "redis", maxRetries: MAX_RETRIES },
+              { service: "redis", maxRetries },
               "Redis max retries exceeded, giving up"
             );
             return null; // stop retrying
           }
-          const delay = Math.min(
-            BASE_RETRY_DELAY * Math.pow(2, times - 1),
-            2000
-          );
+          const delay = Math.min(baseDelay * Math.pow(2, times - 1), maxDelay);
           console.warn(
             { service: "redis", attempt: times, delayMs: delay },
             "Redis connection retry scheduled"

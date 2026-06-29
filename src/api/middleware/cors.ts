@@ -26,18 +26,36 @@ export interface CorsConfig {
  *
  * Examples:
  *   CORS_ALLOWED_ORIGINS=https://app.vatix.io,https://staging.vatix.io
+ *
+ * In production, every configured origin MUST use the https:// scheme.
+ * HTTP origins in production are rejected at startup to prevent accidental
+ * mixed-content or insecure cross-origin access.
  */
 function getAllowedOrigins(): string[] {
   const raw = process.env.CORS_ALLOWED_ORIGINS;
+  const isProduction = process.env.NODE_ENV === "production";
+
   if (raw && raw.trim() !== "") {
-    return raw
+    const origins = raw
       .split(",")
       .map((o) => o.trim())
       .filter(Boolean);
+
+    if (isProduction) {
+      const insecure = origins.filter((o) => !o.startsWith("https://"));
+      if (insecure.length > 0) {
+        throw new Error(
+          `CORS misconfiguration: all origins must use https:// in production. ` +
+            `Insecure origin(s): ${insecure.join(", ")}`
+        );
+      }
+    }
+
+    return origins;
   }
 
   // Restrictive defaults
-  if (process.env.NODE_ENV === "production") {
+  if (isProduction) {
     return []; // No cross-origin access unless explicitly configured
   }
 

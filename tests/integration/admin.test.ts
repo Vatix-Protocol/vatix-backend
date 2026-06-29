@@ -88,6 +88,50 @@ describe("Admin routes — auth guard matrix", () => {
     });
     expect(res.statusCode).toBe(403);
   });
+
+  // ── PATCH route also requires both guards ───────────────────────────────
+
+  it("PATCH returns 401 when no auth headers are present", async () => {
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/v1/admin/markets/some-id/status",
+      payload: { status: "CANCELLED" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("PATCH returns 401 when only x-api-key is provided", async () => {
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/v1/admin/markets/some-id/status",
+      headers: { "x-api-key": API_KEY },
+      payload: { status: "CANCELLED" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("PATCH returns 401 when only Bearer token is provided", async () => {
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/v1/admin/markets/some-id/status",
+      headers: { authorization: `Bearer ${ADMIN_TOKEN}` },
+      payload: { status: "CANCELLED" },
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("PATCH returns 403 for a wrong admin token", async () => {
+    const res = await app.inject({
+      method: "PATCH",
+      url: "/v1/admin/markets/some-id/status",
+      headers: {
+        "x-api-key": API_KEY,
+        authorization: "Bearer wrong-token",
+      },
+      payload: { status: "CANCELLED" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
 });
 
 describe("GET /v1/admin/markets", () => {

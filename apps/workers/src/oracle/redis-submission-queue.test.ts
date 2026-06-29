@@ -42,6 +42,8 @@ describe("RedisSubmissionQueue", () => {
       redisClient: mockClient,
       visibilityTimeoutMs: 5000,
       logger: mockLogger,
+      // Explicit prefix so tests are deterministic and independent of env
+      keyPrefix: "test:",
     });
     vi.clearAllMocks();
   });
@@ -54,7 +56,7 @@ describe("RedisSubmissionQueue", () => {
 
       expect(mockClient.xgroup).toHaveBeenCalledWith(
         "CREATE",
-        "oracle:submissions",
+        "test:oracle:submissions",
         "oracle-worker",
         "$",
         { MKSTREAM: true }
@@ -82,6 +84,45 @@ describe("RedisSubmissionQueue", () => {
       mockClient.xgroup.mockRejectedValueOnce(new Error("Redis error"));
 
       await expect(queue.initialize()).rejects.toThrow("Redis error");
+    });
+
+    it("should use REDIS_KEY_PREFIX env var when no keyPrefix is provided in config", async () => {
+      vi.stubEnv("REDIS_KEY_PREFIX", "myenv:");
+      const envQueue = new RedisSubmissionQueue({
+        redisClient: mockClient,
+        visibilityTimeoutMs: 5000,
+        logger: mockLogger,
+        // keyPrefix intentionally omitted — should pick up REDIS_KEY_PREFIX
+      });
+      mockClient.xgroup.mockResolvedValueOnce(undefined);
+      await envQueue.initialize();
+      expect(mockClient.xgroup).toHaveBeenCalledWith(
+        "CREATE",
+        "myenv:oracle:submissions",
+        "oracle-worker",
+        "$",
+        { MKSTREAM: true }
+      );
+      vi.unstubAllEnvs();
+    });
+
+    it("should fall back to vatix: prefix when REDIS_KEY_PREFIX is not set", async () => {
+      vi.stubEnv("REDIS_KEY_PREFIX", "");
+      const noEnvQueue = new RedisSubmissionQueue({
+        redisClient: mockClient,
+        visibilityTimeoutMs: 5000,
+        logger: mockLogger,
+      });
+      mockClient.xgroup.mockResolvedValueOnce(undefined);
+      await noEnvQueue.initialize();
+      expect(mockClient.xgroup).toHaveBeenCalledWith(
+        "CREATE",
+        "vatix:oracle:submissions",
+        "oracle-worker",
+        "$",
+        { MKSTREAM: true }
+      );
+      vi.unstubAllEnvs();
     });
   });
 
@@ -116,7 +157,7 @@ describe("RedisSubmissionQueue", () => {
 
       expect(result).toBe(true);
       expect(mockClient.xadd).toHaveBeenCalledWith(
-        "oracle:submissions",
+        "test:oracle:submissions",
         "*",
         "payload",
         expect.any(String),
@@ -233,7 +274,7 @@ describe("RedisSubmissionQueue", () => {
       await queue.acknowledge(item);
 
       expect(mockClient.xack).toHaveBeenCalledWith(
-        "oracle:submissions",
+        "test:oracle:submissions",
         "oracle-worker",
         "1-0"
       );
@@ -268,10 +309,10 @@ describe("RedisSubmissionQueue", () => {
         visibilityExpiresAt: Date.now() + 5000,
       };
 
-      await queue.nack(item);
+      await queue.nack(item, "nack-worker");
 
       expect(mockClient.xclaim).toHaveBeenCalledWith(
-        "oracle:submissions",
+        "test:oracle:submissions",
         "oracle-worker",
         "nack-worker",
         0,
