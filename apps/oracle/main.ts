@@ -20,14 +20,14 @@ import { OracleService } from "./oracle-service.js";
 import { PrimaryAdapter } from "./primary-adapter.js";
 import { FallbackAdapter } from "./fallback-adapter.js";
 import { signResolutionReport } from "./signature-helper.js";
-import { RedisSubmissionQueue } from "../workers/src/oracle/redis-submission-queue.js";
+import { BullMQSubmissionQueue } from "../workers/src/oracle/bullmq-submission-queue.js";
 import type { ResolutionRequest } from "./provider-adapter.js";
 import type {
   ShutdownHandler,
   ShutdownSignal,
 } from "../workers/src/finalization/types.js";
 
-async function poll(): Promise<void> {
+async function poll(queue: BullMQSubmissionQueue): Promise<void> {
   const config = loadOracleConfig();
   const logger = createLogger(config.logLevel);
   const prisma = getPrismaClient();
@@ -59,14 +59,6 @@ async function poll(): Promise<void> {
     logger,
     enableFallback: true,
   });
-
-  const queue = new RedisSubmissionQueue({
-    redisClient: redis,
-    visibilityTimeoutMs: 300_000,
-    logger,
-  });
-
-  await queue.initialize();
 
   // Fetch all ACTIVE markets that have an oracle address
   const markets = await prisma.market.findMany({
@@ -142,11 +134,13 @@ async function bootstrap(): Promise<void> {
 
   logger.info("Oracle starting", { pollIntervalMs: config.pollIntervalMs });
 
+  const queue = new BullMQSubmissionQueue(logger);
+
   // Run immediately, then on interval
-  await poll();
+  await poll(queue);
   const timer = setInterval(
     () =>
-      void poll().catch((err) => {
+      void poll(queue).catch((err) => {
         logger.error("Poll cycle failed", {
           error: err instanceof Error ? err.message : String(err),
         });
@@ -165,6 +159,7 @@ async function bootstrap(): Promise<void> {
     clearInterval(timer);
 
     try {
+      await queue.close();
       await disconnectPrisma();
       await redis.disconnect();
       logger.info("Oracle shutdown complete", { signal });
