@@ -180,8 +180,27 @@ export const openApiSpec = {
     "/v1/orders": {
       post: {
         summary: "Create an order",
-        description: "Submit a new order to the prediction market",
+        description:
+          "Submit a new order to the prediction market. Requires Stellar wallet ownership proof via Ed25519 signature headers.",
         tags: ["Orders"],
+        parameters: [
+          {
+            name: "x-signature",
+            in: "header",
+            required: true,
+            description:
+              "Base64-encoded Ed25519 signature of the canonical request body JSON (keys sorted alphabetically) combined with x-timestamp, signed by the private key of userAddress.",
+            schema: { type: "string" },
+          },
+          {
+            name: "x-timestamp",
+            in: "header",
+            required: true,
+            description:
+              "Unix timestamp in milliseconds (string). Must be within ±5 minutes of server time to prevent replay attacks.",
+            schema: { type: "string" },
+          },
+        ],
         requestBody: {
           required: true,
           content: {
@@ -230,7 +249,11 @@ export const openApiSpec = {
             description: "Order created",
           },
           "400": {
-            description: "Invalid request",
+            description: "Invalid request body or market not active",
+          },
+          "401": {
+            description:
+              "Missing, expired, or invalid x-signature / x-timestamp headers",
           },
         },
       },

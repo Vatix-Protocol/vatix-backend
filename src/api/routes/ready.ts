@@ -42,6 +42,7 @@ export interface ReadyResponse {
   ready: boolean;
   dependencies: {
     database: DependencyResult;
+    redis: DependencyResult;
     indexFreshness: DependencyResult;
   };
 }
@@ -51,8 +52,10 @@ export interface ReadyResponse {
  * in tests without touching real infrastructure.
  */
 export interface ReadyDeps {
-  /** Returns true if the database is reachable. Throws on failure. */
+  /** Throws if the database is unreachable. */
   checkDatabase(): Promise<void>;
+  /** Throws if the Redis instance is unreachable. */
+  checkRedis(): Promise<void>;
   /**
    * Returns the timestamp (ms since epoch) of the most recent indexed
    * event, or null if no events have been indexed yet.
@@ -71,17 +74,22 @@ export function readyRoute(deps: ReadyDeps) {
     fastify.get("/ready", async (_request, reply) => {
       const now = deps.now ? deps.now() : Date.now();
 
-      const [dbResult, indexResult] = await Promise.all([
+      const [dbResult, redisResult, indexResult] = await Promise.all([
         checkDb(deps),
+        checkRedis(deps),
         checkIndexFreshness(deps, now),
       ]);
 
-      const ready = dbResult.status === "ok" && indexResult.status === "ok";
+      const ready =
+        dbResult.status === "ok" &&
+        redisResult.status === "ok" &&
+        indexResult.status === "ok";
 
       const body: ReadyResponse = {
         ready,
         dependencies: {
           database: dbResult,
+          redis: redisResult,
           indexFreshness: indexResult,
         },
       };
@@ -94,6 +102,18 @@ export function readyRoute(deps: ReadyDeps) {
 async function checkDb(deps: ReadyDeps): Promise<DependencyResult> {
   try {
     await deps.checkDatabase();
+    return { status: "ok" };
+  } catch (err) {
+    return {
+      status: "error",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function checkRedis(deps: ReadyDeps): Promise<DependencyResult> {
+  try {
+    await deps.checkRedis();
     return { status: "ok" };
   } catch (err) {
     return {

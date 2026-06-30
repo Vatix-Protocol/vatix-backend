@@ -23,6 +23,7 @@ import { requestLogger } from "./api/middleware/logger.js";
 import { requestIdMiddleware } from "./api/middleware/requestId.js";
 import { config } from "./config.js";
 import { corsPlugin } from "./api/middleware/cors.js";
+import { redis } from "./services/redis.js";
 
 // Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
 // Oversized requests are rejected with 413 Request Entity Too Large.
@@ -39,6 +40,10 @@ function createDefaultReadyDeps(): Parameters<typeof readyRoute>[0] {
     checkDatabase: async () => {
       const prisma = getPrismaClient();
       await prisma.$queryRaw`SELECT 1`;
+    },
+    checkRedis: async () => {
+      const ok = await redis.healthCheck();
+      if (!ok) throw new Error("Redis PING did not return PONG");
     },
     getLastIndexedAt: async () => {
       const prisma = getPrismaClient();
@@ -86,6 +91,18 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   // Register API routes under /v1
   server.register(
     async (v1) => {
+      // Guard: any plugin within this scope must not hardcode a /v1 prefix on
+      // its own routes — the parent scope already adds it, which would produce
+      // double-prefixed paths like /v1/v1/markets.
+      v1.addHook("onRoute", (routeOptions) => {
+        if (routeOptions.url.startsWith("/v1")) {
+          throw new Error(
+            `Plugin registered route "${routeOptions.url}" with a /v1 prefix ` +
+              `inside the /v1-scoped block — remove the prefix from the plugin.`
+          );
+        }
+      });
+
       await v1.register(marketsRoutes);
       await v1.register(ordersRoutes);
       await v1.register(positionsRouter);
