@@ -30,6 +30,7 @@ describe("Prisma Schema", () => {
     expect(prisma.indexerCursor).toBeDefined();
     expect(prisma.indexerProcessedEvent).toBeDefined();
     expect(prisma.indexedTrade).toBeDefined();
+    expect(prisma.trade).toBeDefined();
     expect(prisma.collateralDeposit).toBeDefined();
   });
 

@@ -8,6 +8,7 @@ import {
   type MatchingOrder,
   type Trade,
 } from "./engine.js";
+import { Mutex } from "./mutex.js";
 import { auditService } from "../services/audit.js";
 import { settlementQueue } from "../services/settlement-queue.js";
 import { redis } from "../services/redis.js";
@@ -30,28 +31,19 @@ export function getHydratedMarketsCount(): number {
 
 class MatchingService {
   private books: Map<string, OrderBook> = new Map();
-  private locks: Map<string, Promise<void>> = new Map();
+  private mutexes: Map<string, Mutex> = new Map();
 
   private getBookKey(marketId: string, outcome: Outcome): string {
     return `${marketId}:${outcome}`;
   }
 
-  private async serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.locks.get(key) ?? Promise.resolve();
-    let release!: () => void;
-    const next = new Promise<void>((r) => {
-      release = r;
-    });
-    this.locks.set(key, next);
-
-    try {
-      return await prev.then(() => fn());
-    } finally {
-      release();
-      if (this.locks.get(key) === next) {
-        this.locks.delete(key);
-      }
+  private getOrCreateMutex(key: string): Mutex {
+    let mutex = this.mutexes.get(key);
+    if (!mutex) {
+      mutex = new Mutex();
+      this.mutexes.set(key, mutex);
     }
+    return mutex;
   }
 
   private async hydrateBook(
@@ -161,7 +153,7 @@ class MatchingService {
   async placeOrder(input: OrderInput): Promise<PlaceOrderResult> {
     const bookKey = this.getBookKey(input.marketId, input.outcome);
 
-    return this.serialize(bookKey, async () => {
+    return this.getOrCreateMutex(bookKey).run(async () => {
       const prisma = getPrismaClient();
       const book = await this.getOrHydrateBook(input.marketId, input.outcome);
 

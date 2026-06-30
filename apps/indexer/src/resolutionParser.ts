@@ -6,7 +6,13 @@ import type {
 } from "./types.js";
 import { ResolutionParseError } from "./types.js";
 
-const RESOLUTION_EVENT_TOPIC = "market_resolved";
+/**
+ * Soroban's #[contractevent] macro derives the topic symbol by snake_casing
+ * the event struct name, including its literal "Event" suffix — so
+ * MarketResolvedEvent (contracts/market/src/events.rs) publishes under
+ * "market_resolved_event", not "market_resolved".
+ */
+const RESOLUTION_EVENT_TOPIC = "market_resolved_event";
 
 function decodeScVal(xdrBase64: string): unknown {
   const val = xdr.ScVal.fromXDR(xdrBase64, "base64");
@@ -52,12 +58,30 @@ interface ResolutionPayload {
   oracleAddress: string;
 }
 
+function marketIdFromTopic(topicsXdr: string[], eventId: string): string {
+  if (topicsXdr.length < 2) {
+    throw new ResolutionParseError("Missing market_id topic", eventId);
+  }
+  try {
+    return String(decodeScVal(topicsXdr[1]));
+  } catch (err) {
+    throw new ResolutionParseError(
+      "Failed to decode market_id topic XDR",
+      eventId,
+      err
+    );
+  }
+}
+
 /**
- * Supports both legacy ScvMap payloads ({ market_id, outcome, oracle })
- * and the on-chain tuple (market_id: u32, outcome: bool, resolved_at: u64).
+ * Supports three payload shapes:
+ *   - Real on-chain (topics[1]=market_id: u32, value=ScvMap{outcome, resolved_at})
+ *   - Legacy ScvVec tuple (value=[market_id, outcome, resolved_at])
+ *   - Legacy ScvMap (value={ market_id, outcome, oracle })
  */
 function parseResolutionPayload(
   decoded: unknown,
+  topicsXdr: string[],
   eventId: string
 ): ResolutionPayload {
   if (Array.isArray(decoded)) {
@@ -75,11 +99,7 @@ function parseResolutionPayload(
     };
   }
 
-  if (
-    typeof decoded !== "object" ||
-    decoded === null ||
-    Array.isArray(decoded)
-  ) {
+  if (typeof decoded !== "object" || decoded === null) {
     throw new ResolutionParseError(
       "Event value is not an ScvMap or tuple",
       eventId
@@ -88,19 +108,32 @@ function parseResolutionPayload(
 
   const map = decoded as Record<string, unknown>;
 
+  if ("market_id" in map) {
+    // Legacy ScvMap payload: market_id, outcome, and oracle all in the value.
+    const oracleAddress = map.oracle != null ? String(map.oracle) : "";
+    if (oracleAddress === "") {
+      throw new ResolutionParseError('Missing field "oracle"', eventId);
+    }
+    return {
+      marketId: String(field(map, "market_id", eventId)),
+      outcome: toResolutionOutcome(field(map, "outcome", eventId), eventId),
+      oracleAddress,
+    };
+  }
+
+  // Real on-chain shape: MarketResolvedEvent { #[topic] market_id: u32,
+  // outcome: bool, resolved_at: u64 }. market_id arrives via topics[1], not
+  // the value map. The contract does not publish an oracle address on this
+  // event, so oracleAddress is left empty pending reconciliation.
   return {
-    marketId: String(field(map, "market_id", eventId)),
+    marketId: marketIdFromTopic(topicsXdr, eventId),
     outcome: toResolutionOutcome(field(map, "outcome", eventId), eventId),
-    oracleAddress: map.oracle != null ? String(map.oracle) : "",
+    oracleAddress: "",
   };
 }
 
 /**
  * Parse a single RawChainEvent into a NormalizedResolution.
- *
- * Contract event value may be:
- *   - ScvMap: market_id, outcome (YES/NO), oracle
- *   - Tuple:  (market_id: u32, outcome: bool, resolved_at: u64)
  *
  * @throws ResolutionParseError if the event is not a resolution event or payload is malformed
  */
@@ -125,11 +158,7 @@ export function parseResolutionEvent(
     );
   }
 
-  const payload = parseResolutionPayload(decoded, event.id);
-
-  if (payload.oracleAddress === "" && !Array.isArray(decoded)) {
-    throw new ResolutionParseError('Missing field "oracle"', event.id);
-  }
+  const payload = parseResolutionPayload(decoded, event.topicsXdr, event.id);
 
   return {
     eventId: event.id,

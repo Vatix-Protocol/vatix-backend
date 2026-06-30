@@ -58,9 +58,16 @@ const mockOrderGroupBy = [
 const mockPrisma = {
   userPosition: {
     findMany: vi.fn().mockResolvedValue(mockPositions),
+    findFirst: vi.fn(),
   },
   order: {
     groupBy: vi.fn().mockResolvedValue(mockOrderGroupBy),
+  },
+  trade: {
+    findMany: vi.fn().mockResolvedValue([]),
+  },
+  indexedTrade: {
+    findMany: vi.fn().mockResolvedValue([]),
   },
   $disconnect: vi.fn(),
 };

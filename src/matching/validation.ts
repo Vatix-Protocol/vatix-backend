@@ -92,9 +92,30 @@ export function validateOutcome(outcome: unknown): string | null {
 }
 
 /**
+ * Minimum tick size for order prices.
+ * All prices must be exact multiples of this value (e.g. 0.01, 0.50, 0.99).
+ */
+export const TICK_SIZE = 0.01;
+
+/**
+ * Validates that a price aligns to the minimum tick size.
+ * Uses rounded integer arithmetic to avoid IEEE-754 floating-point drift.
+ *
+ * @param price - A number already confirmed to be in (0, 1).
+ */
+export function validateTickSize(price: number): string | null {
+  const ticks = Math.round(price / TICK_SIZE);
+  if (Math.abs(ticks * TICK_SIZE - price) > 1e-9) {
+    return `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`;
+  }
+  return null;
+}
+
+/**
  * Validates price
  * - Must be a number
  * - Must be > 0 and < 1 (exclusive range)
+ * - Must be aligned to TICK_SIZE increments
  */
 export function validatePrice(price: unknown): string | null {
   if (price === null || price === undefined) {
@@ -109,7 +130,7 @@ export function validatePrice(price: unknown): string | null {
     return "Price must be between 0 and 1 (exclusive)";
   }
 
-  return null;
+  return validateTickSize(price);
 }
 
 /**

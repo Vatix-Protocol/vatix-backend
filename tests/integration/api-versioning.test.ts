@@ -16,6 +16,7 @@ describe("Integration Tests: API versioning", () => {
       registerTestRoutes: false,
       readyDeps: {
         checkDatabase: async () => {},
+        checkRedis: async () => {},
         getLastIndexedAt: async () => Date.now(),
       },
     });
@@ -155,7 +156,7 @@ describe("Integration Tests: API versioning", () => {
       {
         method: "GET",
         url: `/v1/wallets/${wallet}/positions/${marketId}`,
-        expected: [200, 404],
+        expected: [200],
       },
       { method: "GET", url: "/v1/admin/markets", expected: [401] },
       {
