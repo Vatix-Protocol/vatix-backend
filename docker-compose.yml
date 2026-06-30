@@ -1,9 +1,20 @@
 version: "3.8"
 
+# Profiles let you run just the data layer (the historical default — start
+# infra, then `pnpm dev` on the host) or the fully containerized stack.
+#
+#   docker compose up -d                       # postgres + redis only
+#   docker compose --profile app up -d --build # postgres + redis + every process
+#   docker compose --profile api up -d --build # postgres + redis + api only
+#
+# See docs/docker-compose.md for the full walkthrough.
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: vatix-postgres
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -12,14 +23,128 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
     container_name: vatix-redis
+    stop_signal: SIGTERM
+    stop_grace_period: 10s
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      target: api
+    container_name: vatix-backend
+    profiles: ["app", "api"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vatix
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  indexer:
+    build:
+      context: .
+      target: indexer
+    container_name: vatix-indexer
+    profiles: ["app", "indexer"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vatix
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  finalization-worker:
+    build:
+      context: .
+      target: finalization-worker
+    container_name: vatix-finalization-worker
+    profiles: ["app", "workers", "finalization-worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vatix
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  oracle-worker:
+    build:
+      context: .
+      target: oracle-worker
+    container_name: vatix-oracle-worker
+    profiles: ["app", "workers", "oracle-worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vatix
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  settlement-worker:
+    build:
+      context: .
+      target: settlement-worker
+    container_name: vatix-settlement-worker
+    profiles: ["app", "workers", "settlement-worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vatix
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-off migration runner — not part of any long-running profile.
+  # Usage: docker compose --profile tools run --rm migrate
+  migrate:
+    build:
+      context: .
+      target: migrate
+    container_name: vatix-migrate
+    profiles: ["tools", "migrate"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vatix
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   postgres_data:

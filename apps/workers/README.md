@@ -6,10 +6,10 @@ Workers handle tasks that must run outside the HTTP request lifecycle: settlemen
 
 ## Scope
 
-| Concern | Description |
-|---|---|
+| Concern             | Description                                                               |
+| ------------------- | ------------------------------------------------------------------------- |
 | **Queue consumers** | Process jobs pushed to Redis by the API or Oracle (e.g. trade settlement) |
-| **Scheduled jobs** | Cron-style tasks such as market expiry sweeps and position reconciliation |
+| **Scheduled jobs**  | Cron-style tasks such as market expiry sweeps and position reconciliation |
 
 ## Status
 

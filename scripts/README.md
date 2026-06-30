@@ -23,10 +23,10 @@ Scripts that require environment variables will fail fast with a clear error if 
 
 ## Available Scripts
 
-| Script | pnpm alias | Purpose |
-|---|---|---|
-| `generate-keypair.ts` | `pnpm generate:keypair` | Generate a Stellar keypair for oracle signing |
-| `validate-migrations.ts` | `pnpm prisma:validate` | Validate Prisma migration files against the schema |
+| Script                   | pnpm alias              | Purpose                                            |
+| ------------------------ | ----------------------- | -------------------------------------------------- |
+| `generate-keypair.ts`    | `pnpm generate:keypair` | Generate a Stellar keypair for oracle signing      |
+| `validate-migrations.ts` | `pnpm prisma:validate`  | Validate Prisma migration files against the schema |
 
 ## Adding a Script
 

@@ -1,4 +1,5 @@
 import { redis } from "./redis.js";
+import { getPrismaClient } from "./prisma.js";
 import type { Trade } from "../matching/engine.js";
 
 /**
@@ -23,10 +24,16 @@ export interface AuditLogEntry {
  * - Automatic expiration (MAXLEN)
  */
 export class AuditService {
-  private readonly streamPrefix = "audit:market:";
-  private readonly globalStream = "audit:trades:global";
+  private readonly streamPrefix: string;
+  private readonly globalStream: string;
   private readonly maxLogEntries = 100000; // ~30 days at 1 trade/min
   private readonly approximateTrimming = true;
+
+  constructor() {
+    const keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
+    this.streamPrefix = `${keyPrefix}audit:market:`;
+    this.globalStream = `${keyPrefix}audit:trades:global`;
+  }
 
   /**
    * Log a trade execution to audit stream
@@ -189,8 +196,8 @@ export class AuditService {
   }
 
   /**
-   * Get paginated trade history for a wallet address across all markets.
-   * Ordering is deterministic and latest-first based on Redis stream IDs.
+   * Get paginated trade history for a wallet address from Postgres (durable).
+   * Redis audit stream is still written asynchronously for real-time consumers.
    */
   async getWalletTradeHistory(
     wallet: string,
@@ -206,37 +213,54 @@ export class AuditService {
     page: number;
     limit: number;
   }> {
-    const startId =
-      toMs !== undefined ? `${toMs}-${Number.MAX_SAFE_INTEGER}` : "+";
-    const endId = fromMs !== undefined ? `${fromMs}-0` : "-";
+    const prisma = getPrismaClient();
 
-    // Redis stream range query (xrevrange) uses stream IDs efficiently for time windows.
-    const entries = await redis.xrevrange(this.globalStream, startId, endId);
-    if (entries.length === 0) {
-      return {
-        trades: [],
-        total: 0,
-        hasNext: false,
-        page,
-        limit,
-      };
-    }
-
-    const walletTrades = entries
-      .map(([id, fields]) => this.parseStreamEntry(id, fields))
-      .filter(
-        (entry) =>
-          (entry.trade.buyerAddress === wallet || entry.trade.sellerAddress === wallet) &&
-          (marketId === undefined || entry.trade.marketId === marketId)
-      );
+    const where = {
+      OR: [{ buyerAddress: wallet }, { sellerAddress: wallet }],
+      ...(marketId ? { marketId } : {}),
+      ...(fromMs !== undefined || toMs !== undefined
+        ? {
+            tradedAt: {
+              ...(fromMs !== undefined ? { gte: new Date(fromMs) } : {}),
+              ...(toMs !== undefined ? { lte: new Date(toMs) } : {}),
+            },
+          }
+        : {}),
+    };
 
     const skip = (page - 1) * limit;
-    const trades = walletTrades.slice(skip, skip + limit);
+
+    const [rows, total] = await Promise.all([
+      prisma.trade.findMany({
+        where,
+        orderBy: { tradedAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.trade.count({ where }),
+    ]);
+
+    const trades: AuditLogEntry[] = rows.map((row) => ({
+      id: row.id,
+      trade: {
+        id: row.tradeId,
+        marketId: row.marketId,
+        outcome: row.outcome as "YES" | "NO",
+        buyerAddress: row.buyerAddress,
+        sellerAddress: row.sellerAddress,
+        buyOrderId: row.buyOrderId,
+        sellOrderId: row.sellOrderId,
+        price: Number(row.price),
+        quantity: row.quantity,
+        timestamp: row.tradedAt.getTime(),
+      },
+      loggedAt: row.createdAt.toISOString(),
+    }));
 
     return {
       trades,
-      total: walletTrades.length,
-      hasNext: skip + trades.length < walletTrades.length,
+      total,
+      hasNext: skip + rows.length < total,
       page,
       limit,
     };

@@ -7,10 +7,18 @@ describe("Auth response helpers", () => {
 
   beforeEach(() => {
     server = Fastify({ logger: false });
-    server.get("/test-401", async (_, reply) => { unauthorized(reply); });
-    server.get("/test-401-msg", async (_, reply) => { unauthorized(reply, "Token expired"); });
-    server.get("/test-403", async (_, reply) => { forbidden(reply); });
-    server.get("/test-403-msg", async (_, reply) => { forbidden(reply, "Admin only"); });
+    server.get("/test-401", async (_, reply) => {
+      unauthorized(reply);
+    });
+    server.get("/test-401-msg", async (_, reply) => {
+      unauthorized(reply, "Token expired");
+    });
+    server.get("/test-403", async (_, reply) => {
+      forbidden(reply);
+    });
+    server.get("/test-403-msg", async (_, reply) => {
+      forbidden(reply, "Admin only");
+    });
     server.get("/test-200", async (_, reply) => {
       success(reply, { message: "ok" });
     });
