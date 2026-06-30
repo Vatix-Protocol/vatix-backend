@@ -3,6 +3,21 @@ import Redis from "ioredis";
 const ORDER_BOOK_TTL = 60; // seconds
 
 /**
+ * Reads REDIS_KEY_PREFIX from the environment (default: "vatix:").
+ * All Redis keys produced by RedisService are namespaced under this prefix so
+ * that multiple environments (dev/staging/prod) can safely share a single Redis
+ * instance without key collisions.
+ *
+ * Override via environment variable:
+ *   REDIS_KEY_PREFIX  — key namespace prefix (default: "vatix:")
+ */
+function loadKeyPrefix(): string {
+  const raw = process.env.REDIS_KEY_PREFIX;
+  if (raw !== undefined && raw !== null) return raw; // allow empty string (no prefix)
+  return "vatix:";
+}
+
+/**
  * Redis connection retry defaults.
  * Override via environment variables:
  *   REDIS_MAX_RETRIES        — max retry attempts before giving up (default: 3)
@@ -48,6 +63,29 @@ class RedisService {
   private client: Redis | null = null;
   private isConnecting = false;
   private retryCount = 0;
+  /**
+   * Key prefix applied to all keys managed by this service.
+   * Loaded once at construction from REDIS_KEY_PREFIX (default: "vatix:").
+   * Callers that build their own stream keys should prepend this prefix so all
+   * keys live in the same namespace.
+   */
+  readonly keyPrefix: string;
+
+  constructor() {
+    this.keyPrefix = loadKeyPrefix();
+  }
+
+  /**
+   * Returns a key string with the configured key prefix applied.
+   * Use this helper when building stream keys or other Redis keys outside the
+   * service so they are consistently namespaced.
+   *
+   * @param key - Bare key without prefix (e.g. "settlement-trades")
+   * @returns Prefixed key (e.g. "vatix:settlement-trades")
+   */
+  prefixed(key: string): string {
+    return `${this.keyPrefix}${key}`;
+  }
 
   /**
    * Get Redis client instance, creating if necessary
@@ -191,7 +229,7 @@ class RedisService {
    * Build order book cache key
    */
   private buildOrderBookKey(marketId: string, outcome: string): string {
-    return `orderbook:${marketId}:${outcome}`;
+    return `${this.keyPrefix}orderbook:${marketId}:${outcome}`;
   }
 
   /**
@@ -236,10 +274,10 @@ class RedisService {
   }
 
   /**
-   * Clear all order books for a market (matches pattern orderbook:{marketId}:*)
+   * Clear all order books for a market (matches pattern {prefix}orderbook:{marketId}:*)
    */
   async clearOrderBook(marketId: string): Promise<void> {
-    const pattern = `orderbook:${marketId}:*`;
+    const pattern = `${this.keyPrefix}orderbook:${marketId}:*`;
     try {
       const keys = await this.getClient().keys(pattern);
       if (keys.length > 0) {
