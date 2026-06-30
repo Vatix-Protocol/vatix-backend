@@ -18,6 +18,7 @@ just the data layer (for host-run development) or the fully containerized stack.
 | `indexer`             | `app`, `indexer`                        | `vatix-indexer`             | Stellar event indexer               |
 | `finalization-worker` | `app`, `workers`, `finalization-worker` | `vatix-finalization-worker` | Resolution finalization loop        |
 | `oracle-worker`       | `app`, `workers`, `oracle-worker`       | `vatix-oracle-worker`       | Oracle submission queue consumer    |
+| `settlement-worker`   | `app`, `workers`, `settlement-worker`   | `vatix-settlement-worker`   | Trade settlement queue consumer     |
 | `migrate`             | `tools`, `migrate`                      | `vatix-migrate`             | One-off `prisma migrate deploy` job |
 
 Container names match the ones referenced in

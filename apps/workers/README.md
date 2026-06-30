@@ -12,37 +12,41 @@ expiry processing, and any other async work enqueued by the API or Oracle.
 | **Queue consumers** | Process jobs pushed to Redis / BullMQ by the API or Oracle (e.g. trade settlement) |
 | **Scheduled jobs**  | Cron-style tasks such as market expiry sweeps and position reconciliation          |
 
-## Workers
+## Implemented Workers
 
-### Settlement consumer (`src/settlement/consumer.ts`)
+### Finalization Worker
 
-Consumes trade-settlement jobs from a BullMQ queue backed by Redis. Each job carries a
-`SettlementJobPayload` and, when Stellar credentials are present, submits a `settle_trade`
-transaction to the on-chain contract.
+Polls for `ResolutionCandidate` rows that have passed the challenge window and promotes them to a settled `Resolution`.
 
-**Required environment variables**
+| Config env var | Default | Description |
+|---|---|---|
+| `FINALIZATION_INTERVAL_MS` | `60000` | How often the job runs (ms). Minimum 1000. |
+| `FINALIZATION_CHALLENGE_WINDOW_SECONDS` | `3600` | How long (seconds) a candidate must be in `PROPOSED` status before it can be finalized. |
+| `FINALIZATION_LOG_LEVEL` | `info` | Log verbosity: `debug` \| `info` \| `warn` \| `error`. |
 
-| Variable                     | Description                                      | Required for on-chain |
-| ---------------------------- | ------------------------------------------------ | --------------------- |
-| `REDIS_URL`                  | Redis connection string (e.g. `redis://…`)       | Yes                   |
-| `SETTLEMENT_QUEUE_NAME`      | BullMQ queue name (default: `settlement-trades`) | No                    |
-| `REDIS_KEY_PREFIX`           | Key namespace prefix (default: `vatix:`)         | No                    |
-| `STELLAR_RPC_URL`            | Soroban RPC endpoint                             | Yes                   |
-| `SETTLEMENT_CONTRACT_ID`     | Deployed contract address                        | Yes                   |
-| `SOROBAN_NETWORK_PASSPHRASE` | Network passphrase for signing                   | Yes                   |
-| `STELLAR_SECRET_KEY`         | Signer keypair secret                            | Yes                   |
-| `LOG_LEVEL`                  | Pino log level (default: `info`)                 | No                    |
+#### Queue Consumer Pattern
 
-If the four Stellar variables are absent the worker still runs and processes jobs but logs a
-warning and skips the on-chain call (off-chain only mode, useful for local development).
+The finalization worker uses a **poll-based** approach: it queries the database on each tick for candidates that satisfy the challenge window cutoff. Future workers for real-time settlement will instead subscribe to Redis Streams produced by the API after order matching.
 
-### Finalization worker (`src/finalization/`)
+```
+API (order match) ──xadd──▶ Redis Stream ──xreadgroup──▶ Worker consumer
+                                                              │
+                                                         writes result
+                                                              │
+                                                        PostgreSQL
+```
 
-Sweeps markets whose `endTime` has passed and triggers resolution finalization.
+## Structure
 
-### Oracle worker (`src/oracle/`)
-
-Relays oracle price submissions to the Soroban contract via a BullMQ submission queue.
+```
+apps/workers/
+├── src/
+│   └── finalization/
+│       ├── config.ts    # Env-based config loader
+│       ├── job.ts       # FinalizationJob class
+│       └── main.ts      # Entry point / bootstrap
+└── README.md
+```
 
 ## Running
 
@@ -59,40 +63,15 @@ pnpm workers:settlement:dev
 ### With Docker Compose
 
 ```bash
-# Settlement consumer only
-docker compose --profile settlement-worker up -d --build
+# Development (hot reload)
+pnpm workers:finalization:dev
 
-# All workers
-docker compose --profile workers up -d --build
-
-# Full stack (API + indexer + all workers)
-docker compose --profile app up -d --build
-```
-
-## Structure
-
-```
-apps/workers/
-├── src/
-│   ├── consumers/        # Shared queue consumer helpers
-│   │   ├── dead-letter.ts
-│   │   └── queue-consumer.ts
-│   ├── finalization/     # Market expiry / finalization loop
-│   ├── oracle/           # Oracle submission queue consumer
-│   ├── settlement/       # Trade settlement consumer (BullMQ)
-│   │   ├── bullmq-consumer.ts
-│   │   ├── consumer.ts          ← entrypoint
-│   │   └── settlement-worker.ts
-│   ├── routes/
-│   │   └── ready.ts      # /ready health-check route
-│   └── shared/
-│       └── queue-config.ts
-└── README.md
+# Production
+pnpm workers:finalization:start
 ```
 
 ## Adding a Worker
 
-1. Create a consumer in `src/<name>/` following the pattern in `src/settlement/`.
-2. Add a pnpm script in the root `package.json` (`workers:<name>` and `workers:<name>:dev`).
-3. Add a Docker stage in `Dockerfile` and a service in `docker-compose.yml`.
-4. Document the queue name, payload shape, and required env vars in this README.
+1. Create a consumer in `src/consumers/<name>.ts` or a scheduler in `src/schedulers/<name>.ts`
+2. Register it in `src/index.ts`
+3. Document the queue name, payload shape, and env config in this README

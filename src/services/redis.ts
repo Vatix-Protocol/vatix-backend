@@ -251,6 +251,7 @@ class RedisService {
     if (this.client) {
       await this.client.quit();
       this.client = null;
+      this.retryCount = 0;
       console.info({ service: "redis" }, "Redis disconnected gracefully");
     }
   }
