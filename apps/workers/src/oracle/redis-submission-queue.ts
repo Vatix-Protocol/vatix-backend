@@ -11,14 +11,32 @@ import { createHash } from "crypto";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
 
-const STREAM_KEY = "oracle:submissions";
+const STREAM_BASENAME = "oracle:submissions";
 const CONSUMER_GROUP = "oracle-worker";
+
+/**
+ * Build the prefixed stream key from the environment.
+ * Reads REDIS_KEY_PREFIX (default "vatix:") at construction time so the
+ * prefix is consistent for the lifetime of a RedisSubmissionQueue instance.
+ */
+function buildStreamKey(prefix?: string): string {
+  const envPrefix = process.env.REDIS_KEY_PREFIX;
+  // Use explicit config prefix first, then env var, then default.
+  // Treat empty strings as absent.
+  const keyPrefix =
+    (prefix !== undefined && prefix !== "" ? prefix : undefined) ??
+    (envPrefix !== undefined && envPrefix !== "" ? envPrefix : undefined) ??
+    "vatix:";
+  return `${keyPrefix}${STREAM_BASENAME}`;
+}
 
 export interface RedisSubmissionQueueConfig {
   redisClient: any;
   visibilityTimeoutMs: number;
   deduplicationTtlSeconds?: number;
   logger: ILogger;
+  /** Optional key prefix override. Falls back to REDIS_KEY_PREFIX env var (default: "vatix:"). */
+  keyPrefix?: string;
 }
 
 export interface QueuedSubmission extends SubmissionQueueItem {
@@ -34,12 +52,15 @@ export class RedisSubmissionQueue {
   private visibilityTimeoutMs: number;
   private deduplicationTtlSeconds: number;
   private logger: ILogger;
+  /** Fully-qualified Redis stream key (prefix + base name). */
+  private streamKey: string;
 
   constructor(config: RedisSubmissionQueueConfig) {
     this.redisClient = config.redisClient;
     this.visibilityTimeoutMs = config.visibilityTimeoutMs;
     this.deduplicationTtlSeconds = config.deduplicationTtlSeconds ?? 86400;
     this.logger = config.logger;
+    this.streamKey = buildStreamKey(config.keyPrefix);
   }
 
   /**
@@ -47,18 +68,24 @@ export class RedisSubmissionQueue {
    */
   async initialize(): Promise<void> {
     try {
-      await this.redisClient.xgroup("CREATE", STREAM_KEY, CONSUMER_GROUP, "$", {
-        MKSTREAM: true,
-      });
+      await this.redisClient.xgroup(
+        "CREATE",
+        this.streamKey,
+        CONSUMER_GROUP,
+        "$",
+        {
+          MKSTREAM: true,
+        }
+      );
       this.logger.info("Oracle submission queue initialized", {
-        stream: STREAM_KEY,
+        stream: this.streamKey,
         group: CONSUMER_GROUP,
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes("BUSYGROUP")) {
         this.logger.info("Consumer group already exists", {
-          stream: STREAM_KEY,
+          stream: this.streamKey,
           group: CONSUMER_GROUP,
         });
       } else {
@@ -171,7 +198,7 @@ export class RedisSubmissionQueue {
     }
 
     const streamId = await this.redisClient.xadd(
-      STREAM_KEY,
+      this.streamKey,
       "*",
       "payload",
       JSON.stringify(item),
@@ -206,7 +233,7 @@ export class RedisSubmissionQueue {
     const messages = await this.redisClient.xreadgroup(
       CONSUMER_GROUP,
       consumerName,
-      STREAM_KEY,
+      this.streamKey,
       ">",
       { COUNT: 1, BLOCK: maxWaitMs }
     );
@@ -258,7 +285,7 @@ export class RedisSubmissionQueue {
    */
   async acknowledge(submission: QueuedSubmission): Promise<void> {
     await this.redisClient.xack(
-      STREAM_KEY,
+      this.streamKey,
       CONSUMER_GROUP,
       submission.streamId
     );
@@ -279,7 +306,7 @@ export class RedisSubmissionQueue {
     consumerName: string
   ): Promise<void> {
     await this.redisClient.xclaim(
-      STREAM_KEY,
+      this.streamKey,
       CONSUMER_GROUP,
       consumerName,
       0, // Min idle time 0 = claim immediately

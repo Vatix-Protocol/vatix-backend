@@ -188,6 +188,10 @@ Must be a positive integer, optionally within a bounded range.
 | `FINALIZATION_CHALLENGE_WINDOW_SECONDS`  | 0    | —       | `3600`  |
 | `INDEXER_INGESTION_INTERVAL_MS`          | 100  | —       | `5000`  |
 | `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | 1    | —       | `10`    |
+| `REDIS_MAX_RETRIES`                      | 1    | —       | `3`     |
+| `REDIS_RETRY_BASE_DELAY`                 | 1    | —       | `100`   |
+| `REDIS_RETRY_MAX_DELAY`                  | 1    | —       | `2000`  |
+| `REDIS_CONNECT_TIMEOUT`                  | 1    | —       | `5000`  |
 
 **Error example:**
 
@@ -219,6 +223,27 @@ CORS_ALLOWED_ORIGINS=https://app.vatix.io,https://staging.vatix.io
 In production, if this variable is not set, **no cross-origin requests are
 allowed**. In development and test the local dev server origins are permitted
 by default.
+
+**Production HTTPS enforcement:** when `NODE_ENV=production`, every origin in
+`CORS_ALLOWED_ORIGINS` must use the `https://` scheme. An `http://` or
+scheme-less origin causes a startup error:
+
+```
+CORS misconfiguration: all origins must use https:// in production.
+Insecure origin(s): http://app.vatix.io
+```
+
+### Redis connection retry
+
+The Redis client retries on connection failure using exponential backoff. All
+values are optional — the defaults are safe for most deployments.
+
+| Variable                 | Description                                             | Default |
+| ------------------------ | ------------------------------------------------------- | ------- |
+| `REDIS_MAX_RETRIES`      | Max reconnect attempts before the client gives up       | `3`     |
+| `REDIS_RETRY_BASE_DELAY` | Delay (ms) before the first retry; doubles each attempt | `100`   |
+| `REDIS_RETRY_MAX_DELAY`  | Upper cap (ms) on retry delay                           | `2000`  |
+| `REDIS_CONNECT_TIMEOUT`  | Socket connect timeout (ms)                             | `5000`  |
 
 ---
 
