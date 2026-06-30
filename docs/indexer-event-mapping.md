@@ -15,7 +15,7 @@ Test vectors: [`apps/indexer/fixtures/contract-event-vectors.json`](../apps/inde
 | `market_resolved`      | ScvVec 3-tuple or ScvMap | `resolutionParser.ts`        | `NormalizedResolution`           | `ResolutionCandidate`              |
 | `market_created`       | pre-decoded JS object | `market-created-parser.ts`      | `MarketCreatedEvent`             | `Market` (ingested outside `PollingIngestionLoop`) |
 
-All four events share the same topic encoding: **topic[0] = ScvSymbol** carrying the event name string.
+All events share the same topic encoding: **topic[0] = ScvSymbol** carrying the event name. Soroban's `#[contractevent]` macro derives that symbol from the event struct name including its literal `Event` suffix (e.g. `MarketCreatedEvent` → `market_created_event`) — see `contracts/market/src/events.rs`.
 
 ---
 
@@ -77,9 +77,9 @@ All four events share the same topic encoding: **topic[0] = ScvSymbol** carrying
 
 ## 4. `market_created`
 
-**Topic XDR:** `AAAADwAAAA5tYXJrZXRfY3JlYXRlZAAA`
+**Topic XDR:** `AAAADwAAABRtYXJrZXRfY3JlYXRlZF9ldmVudA==` (`market_created_event`)
 
-**Parser input:** Pre-decoded `RawMarketCreatedEvent` JS object — not raw XDR. This event is ingested via a path **outside** `PollingIngestionLoop` (e.g. a webhook or separate RPC subscription).
+**Parser input:** Raw chain event (`RawChainEvent`), parsed by `apps/indexer/src/marketCreatedParser.ts` and run inside `PollingIngestionLoop` alongside the other three event types.
 
 | Field           | Type                                    | Notes                                       |
 | --------------- | --------------------------------------- | ------------------------------------------- |
@@ -101,6 +101,7 @@ Stellar RPC
     ▼
 PollingIngestionLoop.ingestFromCursor()
     │
+    ├── parseMarketCreatedEvents()     → NormalizedMarketCreated[]
     ├── parseTradeEvents()            → NormalizedTrade[]
     ├── parseResolutionEvents()       → NormalizedResolution[]
     └── parseCollateralDepositedEvents() → NormalizedCollateralDeposit[]

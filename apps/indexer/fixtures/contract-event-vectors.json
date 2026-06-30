@@ -157,11 +157,12 @@
       "discriminator": {
         "topicIndex": 0,
         "scvType": "ScvSymbol",
-        "value": "market_created",
-        "xdr": "AAAADwAAAA5tYXJrZXRfY3JlYXRlZAAA"
+        "value": "market_created_event",
+        "xdr": "AAAADwAAABRtYXJrZXRfY3JlYXRlZF9ldmVudA==",
+        "note": "Soroban's #[contractevent] macro snake_cases the struct name including its 'Event' suffix — see contracts/market/src/events.rs."
       },
-      "payloadShape": "pre-decoded JS object (market-created-parser.ts input path)",
-      "note": "market-created-parser.ts operates on a pre-decoded RawMarketCreatedEvent object, not raw XDR. Ingested via a separate path outside PollingIngestionLoop.",
+      "payloadShape": "topic[1]=ScvU32 market_id, value=ScvMap{question, end_time}",
+      "note": "Parsed by apps/indexer/src/marketCreatedParser.ts from raw XDR, run inside PollingIngestionLoop alongside the other event kinds. The contract does not publish oracle_address or status on this event.",
       "fields": {
         "id": "string — unique market identifier",
         "question": "string — prediction prompt",
@@ -171,17 +172,14 @@
       },
       "vectors": [
         {
-          "label": "valid active market",
-          "input": {
-            "id": "market-001",
-            "question": "Will BTC reach $100k by end of 2026?",
-            "endTime": 1893456000,
-            "oracleAddress": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "status": "ACTIVE"
-          },
+          "label": "market 42 created",
+          "topicsXdr": ["AAAADwAAABRtYXJrZXRfY3JlYXRlZF9ldmVudA==", "AAAAAwAAACo="],
+          "valueXdr": "AAAAEQAAAAEAAAACAAAADwAAAAhxdWVzdGlvbgAAAA4AAAATV2lsbCBCVEMgaGl0ICQxMDBrPwAAAAAPAAAACGVuZF90aW1lAAAABQAAAABJlgLS",
           "expectedNormalized": {
-            "id": "market-001",
-            "endTime": "2029-12-31T00:00:00.000Z",
+            "marketId": "42",
+            "question": "Will BTC hit $100k?",
+            "endTime": "2009-02-13T23:31:30.000Z",
+            "oracleAddress": "",
             "status": "ACTIVE"
           }
         }
