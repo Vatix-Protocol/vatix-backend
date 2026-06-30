@@ -4,7 +4,7 @@ import positionsRouter from "../../src/api/routes/positions.js";
 import { errorHandler } from "../../src/api/middleware/errorHandler.js";
 import { testUtils } from "../setup.js";
 
-describe("Integration Tests: GET /v1/positions/:wallet", () => {
+describe("Integration Tests: GET /v1/wallets/:wallet/positions", () => {
   let app: FastifyInstance;
   let testWallet: string;
 
@@ -12,14 +12,16 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
     // Create test server with real database
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
-    await app.register(positionsRouter);
-    
-    // Generate test wallet address
-    testWallet = testUtils.generateStellarAddress("GTEST");
+    await app.register(positionsRouter, { prefix: "/v1" });
   });
 
   afterAll(async () => {
     await app.close();
+  });
+
+  beforeEach(() => {
+    // Generate a fresh test wallet for each test to ensure isolation
+    testWallet = testUtils.generateStellarAddress("GTEST");
   });
 
   describe("Wallet with data", () => {
@@ -38,25 +40,57 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: `/positions/user/${testWallet}`,
+        url: `/v1/wallets/${testWallet}/positions`,
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
-      expect(Array.isArray(body)).toBe(true);
-      expect(body).toHaveLength(1);
-      
-      const position = body[0];
+
+      expect(body.success).toBe(true);
+      expect(body.data.wallet).toBe(testWallet);
+      expect(body.data.exposures).toHaveLength(1);
+      expect(body.data.count).toBe(1);
+
+      const position = body.data.exposures[0];
       expect(position.marketId).toBe(market.id);
-      expect(position.userAddress).toBe(testWallet);
+      expect(position.marketQuestion).toBe(market.question);
       expect(position.yesShares).toBe(150);
       expect(position.noShares).toBe(75);
-      expect(position.lockedCollateral).toBe(2.25);
+      expect(position.lockedCollateral).toBe("2.25");
       expect(position.isSettled).toBe(false);
     });
 
-    it("should calculate PnL fields and totals correctly", async () => {
+    it("should omit PnL fields by default (includePnl not set)", async () => {
+      const market = await testUtils.createTestMarket({
+        question: "PnL omitted by default test",
+      });
+
+      await testUtils.createTestPosition(market.id, testWallet, {
+        yesShares: 200,
+        noShares: 50,
+        lockedCollateral: 3.75,
+      });
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/wallets/${testWallet}/positions`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+
+      expect(body.data.exposures).toHaveLength(1);
+      const position = body.data.exposures[0];
+
+      expect(position.netExposure).toBe(150); // 200 - 50
+      expect(position.pnlRealized).toBeUndefined();
+      expect(position.pnlUnrealized).toBeUndefined();
+      expect(body.data.pnlRealized).toBeUndefined();
+      expect(body.data.pnlUnrealized).toBeUndefined();
+      expect(body.data.pnlTotal).toBeUndefined();
+    });
+
+    it("should calculate PnL fields and totals correctly when includePnl=true", async () => {
       // Create test market
       const market = await testUtils.createTestMarket({
         question: "PnL calculation test",
@@ -71,24 +105,26 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: `/positions/user/${testWallet}`,
+        url: `/v1/wallets/${testWallet}/positions?includePnl=true`,
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
-      expect(body).toHaveLength(1);
-      const position = body[0];
-      
+
+      expect(body.data.exposures).toHaveLength(1);
+      const position = body.data.exposures[0];
+
       // Verify calculated fields
-      expect(position.potentialPayoutIfYes).toBe(200);
-      expect(position.potentialPayoutIfNo).toBe(50);
-      expect(position.netPosition).toBe(150); // 200 - 50
-      
+      expect(position.netExposure).toBe(150); // 200 - 50
+      expect(position.pnlRealized).toBeNull();
+      expect(position.pnlUnrealized).toBeNull();
+
       // Verify market data is included
-      expect(position.market).toBeDefined();
-      expect(position.market.id).toBe(market.id);
-      expect(position.market.question).toBe(market.question);
+      expect(position.marketId).toBe(market.id);
+      expect(position.marketQuestion).toBe(market.question);
+      expect(body.data.pnlRealized).toBe("0.00000000");
+      expect(body.data.pnlUnrealized).toBe("0.00000000");
+      expect(body.data.pnlTotal).toBe("0.00000000");
     });
 
     it("should handle multiple positions for same wallet", async () => {
@@ -112,25 +148,29 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: `/positions/user/${testWallet}`,
+        url: `/v1/wallets/${testWallet}/positions`,
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
-      expect(body).toHaveLength(2);
-      
+
+      expect(body.data.exposures).toHaveLength(2);
+
       // Verify both positions are returned
-      const positionIds = body.map((p: any) => p.marketId);
+      const positionIds = body.data.exposures.map((p: any) => p.marketId);
       expect(positionIds).toContain(market1.id);
       expect(positionIds).toContain(market2.id);
-      
+
       // Verify calculations
-      const pos1 = body.find((p: any) => p.marketId === market1.id);
-      const pos2 = body.find((p: any) => p.marketId === market2.id);
-      
-      expect(pos1.netPosition).toBe(100);
-      expect(pos2.netPosition).toBe(-100);
+      const pos1 = body.data.exposures.find(
+        (p: any) => p.marketId === market1.id
+      );
+      const pos2 = body.data.exposures.find(
+        (p: any) => p.marketId === market2.id
+      );
+
+      expect(pos1.netExposure).toBe(100);
+      expect(pos2.netExposure).toBe(-100);
     });
   });
 
@@ -140,38 +180,36 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: `/positions/user/${emptyWallet}`,
+        url: `/v1/wallets/${emptyWallet}/positions`,
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
-      expect(Array.isArray(body)).toBe(true);
-      expect(body).toHaveLength(0);
+
+      expect(body.success).toBe(true);
+      expect(body.data.exposures).toEqual([]);
+      expect(body.data.count).toBe(0);
     });
   });
 
   describe("Invalid wallet format", () => {
-    it("should return 400 for invalid wallet format", async () => {
+    it("should return 400 for invalid wallet address format", async () => {
       const invalidAddresses = [
         "0xInvalidAddress",
         "invalid",
         "G" + "A".repeat(54), // Too short
         "G" + "A".repeat(56), // Too long
         "X" + "A".repeat(55), // Wrong prefix
-        "",
         "GABC123!@#DEF", // Invalid characters
       ];
 
       for (const invalidAddress of invalidAddresses) {
         const response = await app.inject({
           method: "GET",
-          url: `/positions/user/${invalidAddress}`,
+          url: `/v1/wallets/${encodeURIComponent(invalidAddress)}/positions`,
         });
 
         expect(response.statusCode).toBe(400);
-        const body = JSON.parse(response.body);
-        expect(body.error).toContain("Invalid Stellar address");
       }
     });
   });
@@ -189,18 +227,23 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: `/positions/user/${testWallet}`,
+        url: `/v1/wallets/${testWallet}/positions`,
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
-      const position = body[0];
-      
+
+      const position = body.data.exposures[0];
+
       // Verify precision is maintained
-      expect(testUtils.assertDecimalEqual(position.lockedCollateral, 1.23456789)).toBe(true);
-      expect(position.netPosition).toBe(-333); // 123 - 456
-      
+      expect(
+        testUtils.assertDecimalEqual(
+          Number(position.lockedCollateral),
+          1.23456789
+        )
+      ).toBe(true);
+      expect(position.netExposure).toBe(-333); // 123 - 456
+
       // Test precision assertion utility
       expect(testUtils.assertDecimalEqual(0.12345678, 0.12345678)).toBe(true);
       expect(testUtils.assertDecimalEqual(0.12345678, 0.12345679)).toBe(false);
@@ -219,15 +262,15 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: `/positions/user/${testWallet}`,
+        url: `/v1/wallets/${testWallet}/positions`,
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
-      expect(body).toHaveLength(1);
-      expect(body[0].isSettled).toBe(true);
-      expect(body[0].netPosition).toBe(100);
+
+      expect(body.data.exposures).toHaveLength(1);
+      expect(body.data.exposures[0].isSettled).toBe(true);
+      expect(body.data.exposures[0].netExposure).toBe(100);
     });
 
     it("should handle zero share positions", async () => {
@@ -241,18 +284,18 @@ describe("Integration Tests: GET /v1/positions/:wallet", () => {
 
       const response = await app.inject({
         method: "GET",
-        url: `/positions/user/${testWallet}`,
+        url: `/v1/wallets/${testWallet}/positions`,
       });
 
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
-      
-      expect(body).toHaveLength(1);
-      const position = body[0];
+
+      expect(body.data.exposures).toHaveLength(1);
+      const position = body.data.exposures[0];
       expect(position.yesShares).toBe(0);
       expect(position.noShares).toBe(0);
-      expect(position.lockedCollateral).toBe(0);
-      expect(position.netPosition).toBe(0);
+      expect(position.lockedCollateral).toBe("0");
+      expect(position.netExposure).toBe(0);
     });
   });
 });

@@ -1,5 +1,6 @@
 import type {
   Market,
+  Order as PrismaOrder,
   UserPosition,
   MarketStatus,
   OrderSide,
@@ -10,6 +11,7 @@ import type {
 
 export type {
   Market,
+  PrismaOrder,
   UserPosition,
   MarketStatus,
   OrderSide,
@@ -17,6 +19,13 @@ export type {
   Outcome,
   Prisma,
 };
+
+export type {
+  DockerComposeConfig,
+  DockerComposePort,
+  DockerComposeService,
+  DockerComposeVolume,
+} from "./docker-compose.js";
 
 export type Order = {
   id: string;
@@ -113,7 +122,9 @@ export interface ApiResponse<T> {
   data?: T;
   /** Error message (present on failure) */
   error?: string;
-  /** ISO timestamp of the response */
+  /** UUID v4 for per-request traceability */
+  requestId: string;
+  /** ISO-8601 UTC timestamp of when the response was produced */
   timestamp: string;
 }
 

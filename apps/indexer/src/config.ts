@@ -1,57 +1,79 @@
-export interface IndexerConfig {
-  ingestionIntervalMs: number;
-  networkId: string;
-  cursorKey: string;
-  checkpointFlushEveryBatches: number;
-  logLevel: "debug" | "info" | "warn" | "error";
+import {
+  loadIndexerConfig as loadSharedIndexerConfig,
+  type IndexerConfig as SharedIndexerConfig,
+} from "../../../packages/shared/src/config.js";
+
+export type { SharedIndexerConfig };
+
+export const KNOWN_PASSPHRASES = {
+  testnet: "Test SDF Network ; September 2015",
+  mainnet: "Public Global Stellar Network ; September 2015",
+} as const;
+
+type Env = Record<string, string | undefined>;
+
+export interface ChainConfig {
+  sorobanNetworkPassphrase: string;
+  horizonUrl: string;
 }
 
-const DEFAULT_INGESTION_INTERVAL_MS = 5_000;
-const DEFAULT_NETWORK_ID = "mainnet";
-const DEFAULT_CURSOR_KEY = "ingestion";
-const DEFAULT_CHECKPOINT_FLUSH_EVERY_BATCHES = 10;
-const DEFAULT_LOG_LEVEL: IndexerConfig["logLevel"] = "info";
+export interface IngestionLoopConfig {
+  ingestionIntervalMs: number;
+  ledgerWindowSize: number;
+  checkpointFlushEveryBatches: number;
+  contractId: string;
+}
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): IndexerConfig {
-  const ingestionIntervalMs = Number(
-    env.INDEXER_INGESTION_INTERVAL_MS ?? DEFAULT_INGESTION_INTERVAL_MS
-  );
+export interface IndexerAppConfig extends SharedIndexerConfig, ChainConfig {}
 
-  if (!Number.isFinite(ingestionIntervalMs) || ingestionIntervalMs < 100) {
-    throw new Error("INDEXER_INGESTION_INTERVAL_MS must be a number >= 100");
-  }
-
-  const logLevel = (env.INDEXER_LOG_LEVEL ?? DEFAULT_LOG_LEVEL) as IndexerConfig["logLevel"];
-  if (!["debug", "info", "warn", "error"].includes(logLevel)) {
-    throw new Error("INDEXER_LOG_LEVEL must be one of debug|info|warn|error");
-  }
-
-  const networkId = (env.INDEXER_NETWORK_ID ?? DEFAULT_NETWORK_ID).trim();
-  if (!networkId) {
-    throw new Error("INDEXER_NETWORK_ID must be a non-empty string");
-  }
-
-  const cursorKey = (env.INDEXER_CURSOR_KEY ?? DEFAULT_CURSOR_KEY).trim();
-  if (!cursorKey) {
-    throw new Error("INDEXER_CURSOR_KEY must be a non-empty string");
-  }
-
-  const checkpointFlushEveryBatches = Number(
-    env.INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES ??
-      DEFAULT_CHECKPOINT_FLUSH_EVERY_BATCHES
-  );
-  if (
-    !Number.isInteger(checkpointFlushEveryBatches) ||
-    checkpointFlushEveryBatches < 1
-  ) {
-    throw new Error("INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES must be an integer >= 1");
-  }
-
+export function pickIngestionLoopConfig(cfg: IndexerAppConfig): IngestionLoopConfig {
   return {
-    ingestionIntervalMs,
-    networkId,
-    cursorKey,
-    checkpointFlushEveryBatches,
-    logLevel,
+    ingestionIntervalMs: cfg.ingestionIntervalMs,
+    ledgerWindowSize: cfg.ledgerWindowSize,
+    checkpointFlushEveryBatches: cfg.checkpointFlushEveryBatches,
+    contractId: cfg.contractId,
   };
+}
+
+export function loadChainConfig(env: Env = process.env): ChainConfig {
+  const passphrase = env["SOROBAN_NETWORK_PASSPHRASE"];
+
+  if (!passphrase || passphrase.trim() === "") {
+    throw new Error(
+      "Missing required environment variable: SOROBAN_NETWORK_PASSPHRASE"
+    );
+  }
+
+  const known = Object.values(KNOWN_PASSPHRASES) as string[];
+  if (!known.includes(passphrase)) {
+    process.stderr.write(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: "warn",
+        message: "Unknown Soroban network passphrase",
+        passphrase,
+      }) + "\n"
+    );
+  }
+
+  const horizonUrl =
+    env["STELLAR_HORIZON_URL"] ??
+    (passphrase === KNOWN_PASSPHRASES.mainnet
+      ? "https://horizon.stellar.org"
+      : "https://horizon-testnet.stellar.org");
+
+  return { sorobanNetworkPassphrase: passphrase, horizonUrl };
+}
+
+/** Unified indexer bootstrap config (shared env + chain parser env). */
+export function loadConfig(env: Env = process.env): IndexerAppConfig {
+  return {
+    ...loadSharedIndexerConfig(env),
+    ...loadChainConfig(env),
+  };
+}
+
+/** @deprecated Use loadChainConfig — kept for existing tests. */
+export function loadIndexerConfig(env: Env = process.env): ChainConfig {
+  return loadChainConfig(env);
 }

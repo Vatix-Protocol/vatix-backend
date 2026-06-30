@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { nativeToScVal } from "@stellar/stellar-sdk";
 import {
   parseResolutionEvent,
   parseResolutionEvents,
@@ -46,6 +47,23 @@ function makeEvent(overrides: Partial<RawChainEvent> = {}): RawChainEvent {
 // ─── parseResolutionEvent ────────────────────────────────────────────────────
 
 describe("parseResolutionEvent", () => {
+  it("parses on-chain tuple payload (market_id, outcome, resolved_at)", () => {
+    const tupleXdr = nativeToScVal([42, true, 1_700_000_000n]).toXDR("base64");
+    const r = parseResolutionEvent(
+      makeEvent({ valueXdr: tupleXdr, id: "evt-tuple" })
+    );
+
+    expect(r.marketId).toBe("42");
+    expect(r.outcome).toBe("YES");
+    expect(r.oracleAddress).toBe("");
+  });
+
+  it("parses tuple NO outcome as boolean false", () => {
+    const tupleXdr = nativeToScVal([7, false, 99n]).toXDR("base64");
+    const r = parseResolutionEvent(makeEvent({ valueXdr: tupleXdr }));
+    expect(r.outcome).toBe("NO");
+  });
+
   it("parses a YES resolution correctly", () => {
     const r = parseResolutionEvent(makeEvent());
 

@@ -7,10 +7,18 @@ describe("Auth response helpers", () => {
 
   beforeEach(() => {
     server = Fastify({ logger: false });
-    server.get("/test-401", async (_, reply) => { unauthorized(reply); });
-    server.get("/test-401-msg", async (_, reply) => { unauthorized(reply, "Token expired"); });
-    server.get("/test-403", async (_, reply) => { forbidden(reply); });
-    server.get("/test-403-msg", async (_, reply) => { forbidden(reply, "Admin only"); });
+    server.get("/test-401", async (_, reply) => {
+      unauthorized(reply);
+    });
+    server.get("/test-401-msg", async (_, reply) => {
+      unauthorized(reply, "Token expired");
+    });
+    server.get("/test-403", async (_, reply) => {
+      forbidden(reply);
+    });
+    server.get("/test-403-msg", async (_, reply) => {
+      forbidden(reply, "Admin only");
+    });
     server.get("/test-200", async (_, reply) => {
       success(reply, { message: "ok" });
     });
@@ -56,9 +64,13 @@ describe("Auth response helpers", () => {
     const res = await server.inject({ method: "GET", url: "/test-200" });
     const body = JSON.parse(res.body);
     expect(res.statusCode).toBe(200);
-    expect(body).toEqual({
-      success: true,
-      data: { message: "ok" },
-    });
+    expect(body.success).toBe(true);
+    expect(body.data).toEqual({ message: "ok" });
+    expect(typeof body.requestId).toBe("string");
+    expect(body.requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
+    expect(typeof body.timestamp).toBe("string");
+    expect(() => new Date(body.timestamp)).not.toThrow();
   });
 });

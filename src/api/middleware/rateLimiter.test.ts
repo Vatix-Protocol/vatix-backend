@@ -4,6 +4,8 @@ import {
   rateLimiter,
   heavyReadLimiter,
   writeLimiter,
+  adminLimiter,
+  clearRateLimitStores,
 } from "./rateLimiter.js";
 
 // ---------------------------------------------------------------------------
@@ -39,6 +41,7 @@ describe("rateLimiter (global)", () => {
   let server: FastifyInstance;
 
   beforeEach(() => {
+    clearRateLimitStores();
     vi.stubEnv("RATE_LIMIT_MAX", "5");
     vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
     server = buildServer(rateLimiter);
@@ -47,6 +50,7 @@ describe("rateLimiter (global)", () => {
   afterEach(async () => {
     await server.close();
     vi.unstubAllEnvs();
+    clearRateLimitStores();
   });
 
   it("allows requests under the limit", async () => {
@@ -93,6 +97,7 @@ describe("rateLimiter (global)", () => {
 describe("heavyReadLimiter", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    clearRateLimitStores();
   });
 
   it("allows requests under the heavy limit", async () => {
@@ -112,11 +117,9 @@ describe("heavyReadLimiter", () => {
     vi.stubEnv("RATE_LIMIT_MAX", "100");
 
     const s = Fastify({ logger: false });
-    s.get(
-      "/markets",
-      { onRequest: [heavyReadLimiter] },
-      async () => ({ ok: true })
-    );
+    s.get("/markets", { onRequest: [heavyReadLimiter] }, async () => ({
+      ok: true,
+    }));
 
     await exhaust(s, 3, "GET", "/markets");
     const res = await s.inject({ method: "GET", url: "/markets" });
@@ -159,6 +162,7 @@ describe("heavyReadLimiter", () => {
 describe("writeLimiter", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    clearRateLimitStores();
   });
 
   it("allows requests under the write limit", async () => {
@@ -176,11 +180,9 @@ describe("writeLimiter", () => {
     vi.stubEnv("RATE_LIMIT_WRITE_WINDOW_MS", "60000");
 
     const s = Fastify({ logger: false });
-    s.post(
-      "/orders",
-      { onRequest: [writeLimiter] },
-      async () => ({ ok: true })
-    );
+    s.post("/orders", { onRequest: [writeLimiter] }, async () => ({
+      ok: true,
+    }));
 
     await exhaust(s, 2, "POST", "/orders");
     const res = await s.inject({ method: "POST", url: "/orders" });
@@ -217,12 +219,225 @@ describe("writeLimiter", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Quota-visibility headers (RateLimit-Limit / Remaining / Reset)
+// ---------------------------------------------------------------------------
+
+describe("quota headers", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    clearRateLimitStores();
+  });
+
+  it("sets RateLimit-Limit to the configured maximum", async () => {
+    vi.stubEnv("RATE_LIMIT_MAX", "10");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
+
+    const s = buildServer(rateLimiter);
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    expect(res.headers["ratelimit-limit"]).toBe("10");
+    await s.close();
+  });
+
+  it("sets RateLimit-Remaining to max-1 on the first request", async () => {
+    vi.stubEnv("RATE_LIMIT_MAX", "10");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
+
+    const s = buildServer(rateLimiter);
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    expect(res.headers["ratelimit-remaining"]).toBe("9");
+    await s.close();
+  });
+
+  it("decrements RateLimit-Remaining on each successive request", async () => {
+    vi.stubEnv("RATE_LIMIT_MAX", "5");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
+
+    const s = buildServer(rateLimiter);
+    await s.inject({ method: "GET", url: "/test" }); // remaining → 4
+    await s.inject({ method: "GET", url: "/test" }); // remaining → 3
+    const res = await s.inject({ method: "GET", url: "/test" }); // remaining → 2
+
+    expect(res.headers["ratelimit-remaining"]).toBe("2");
+    await s.close();
+  });
+
+  it("sets RateLimit-Remaining to 0 (not negative) on a 429", async () => {
+    vi.stubEnv("RATE_LIMIT_MAX", "2");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
+
+    const s = buildServer(rateLimiter);
+    await exhaust(s, 2);
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.headers["ratelimit-remaining"]).toBe("0");
+    await s.close();
+  });
+
+  it("sets RateLimit-Reset to a Unix timestamp in the future", async () => {
+    vi.stubEnv("RATE_LIMIT_MAX", "10");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
+
+    const before = Math.floor(Date.now() / 1000);
+    const s = buildServer(rateLimiter);
+    const res = await s.inject({ method: "GET", url: "/test" });
+    const after = Math.ceil(Date.now() / 1000) + 60;
+
+    const reset = Number(res.headers["ratelimit-reset"]);
+    expect(reset).toBeGreaterThanOrEqual(before);
+    expect(reset).toBeLessThanOrEqual(after);
+    await s.close();
+  });
+
+  it("includes quota headers on 429 responses", async () => {
+    vi.stubEnv("RATE_LIMIT_MAX", "1");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
+
+    const s = buildServer(rateLimiter);
+    await s.inject({ method: "GET", url: "/test" });
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.headers["ratelimit-limit"]).toBeDefined();
+    expect(res.headers["ratelimit-remaining"]).toBe("0");
+    expect(res.headers["ratelimit-reset"]).toBeDefined();
+    await s.close();
+  });
+
+  it("heavy limiter exposes its own lower limit in headers", async () => {
+    vi.stubEnv("RATE_LIMIT_HEAVY_MAX", "20");
+    vi.stubEnv("RATE_LIMIT_HEAVY_WINDOW_MS", "60000");
+
+    const s = buildServer(heavyReadLimiter);
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    expect(res.headers["ratelimit-limit"]).toBe("20");
+    expect(res.headers["ratelimit-remaining"]).toBe("19");
+    await s.close();
+  });
+
+  it("write limiter exposes its own lower limit in headers", async () => {
+    vi.stubEnv("RATE_LIMIT_WRITE_MAX", "10");
+    vi.stubEnv("RATE_LIMIT_WRITE_WINDOW_MS", "60000");
+
+    const s = buildServer(writeLimiter);
+    const res = await s.inject({ method: "POST", url: "/test" });
+
+    expect(res.headers["ratelimit-limit"]).toBe("10");
+    expect(res.headers["ratelimit-remaining"]).toBe("9");
+    await s.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Admin rate limiter
+// ---------------------------------------------------------------------------
+
+describe("adminLimiter", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    clearRateLimitStores();
+  });
+
+  it("allows requests under the admin limit", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "5");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+
+    const s = buildServer(adminLimiter);
+    const res = await s.inject({ method: "GET", url: "/test" });
+    expect(res.statusCode).toBe(200);
+    await s.close();
+  });
+
+  it("returns 429 when admin limit is exceeded", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "2");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+
+    const s = Fastify({ logger: false });
+    s.get("/admin/markets", { onRequest: [adminLimiter] }, async () => ({
+      ok: true,
+    }));
+
+    await exhaust(s, 2, "GET", "/admin/markets");
+    const res = await s.inject({ method: "GET", url: "/admin/markets" });
+
+    expect(res.statusCode).toBe(429);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("RATE_LIMITED");
+    expect(body.retryAfter).toBeGreaterThan(0);
+    await s.close();
+  });
+
+  it("returns 429 with Retry-After header on admin overflow", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "1");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+
+    const s = buildServer(adminLimiter);
+    await s.inject({ method: "GET", url: "/test" });
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.headers["retry-after"]).toBeDefined();
+    await s.close();
+  });
+
+  it("uses RATE_LIMIT_ADMIN_MAX env var", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "3");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+
+    const s = buildServer(adminLimiter);
+    await exhaust(s, 3, "GET");
+    const res = await s.inject({ method: "GET", url: "/test" });
+    expect(res.statusCode).toBe(429);
+    await s.close();
+  });
+
+  it("exposes its own limit in quota headers", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "30");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+
+    const s = buildServer(adminLimiter);
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    expect(res.headers["ratelimit-limit"]).toBe("30");
+    expect(res.headers["ratelimit-remaining"]).toBe("29");
+    await s.close();
+  });
+
+  it("admin counter is isolated from global counter", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "1");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+    vi.stubEnv("RATE_LIMIT_MAX", "100");
+
+    const s = Fastify({ logger: false });
+    s.get("/admin/markets", { onRequest: [adminLimiter] }, async () => ({
+      ok: true,
+    }));
+    s.get("/markets", { onRequest: [rateLimiter] }, async () => ({ ok: true }));
+
+    // Exhaust admin tier
+    await s.inject({ method: "GET", url: "/admin/markets" });
+    const adminRes = await s.inject({ method: "GET", url: "/admin/markets" });
+    expect(adminRes.statusCode).toBe(429);
+
+    // Global tier should be unaffected
+    const globalRes = await s.inject({ method: "GET", url: "/markets" });
+    expect(globalRes.statusCode).toBe(200);
+
+    await s.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tier isolation — heavy and write counters are independent of global
 // ---------------------------------------------------------------------------
 
 describe("tier isolation", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+    clearRateLimitStores();
   });
 
   it("heavy-read counter does not affect global counter", async () => {
@@ -232,11 +447,9 @@ describe("tier isolation", () => {
 
     const s = Fastify({ logger: false });
     // /heavy uses heavyReadLimiter; /light uses global rateLimiter
-    s.get(
-      "/heavy",
-      { onRequest: [heavyReadLimiter] },
-      async () => ({ ok: true })
-    );
+    s.get("/heavy", { onRequest: [heavyReadLimiter] }, async () => ({
+      ok: true,
+    }));
     s.get("/light", { onRequest: [rateLimiter] }, async () => ({ ok: true }));
 
     // Exhaust the heavy tier
@@ -258,16 +471,12 @@ describe("tier isolation", () => {
     vi.stubEnv("RATE_LIMIT_HEAVY_WINDOW_MS", "60000");
 
     const s = Fastify({ logger: false });
-    s.post(
-      "/orders",
-      { onRequest: [writeLimiter] },
-      async () => ({ ok: true })
-    );
-    s.get(
-      "/markets",
-      { onRequest: [heavyReadLimiter] },
-      async () => ({ ok: true })
-    );
+    s.post("/orders", { onRequest: [writeLimiter] }, async () => ({
+      ok: true,
+    }));
+    s.get("/markets", { onRequest: [heavyReadLimiter] }, async () => ({
+      ok: true,
+    }));
 
     // Exhaust write tier
     await s.inject({ method: "POST", url: "/orders" });

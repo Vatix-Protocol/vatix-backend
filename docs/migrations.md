@@ -48,6 +48,7 @@ pnpm prisma:migrate -- --name add_new_feature
 ```
 
 This will:
+
 1. Compare schema changes with current database state
 2. Generate migration SQL in `prisma/migrations/`
 3. Apply the migration to the database
@@ -149,12 +150,25 @@ The CI pipeline includes migration checks:
 
 ### Migration Validation
 
-To check if migrations are in sync with schema:
+The project ships a dedicated validation script at [`scripts/validate-migrations.ts`](../scripts/validate-migrations.ts), run via:
 
 ```bash
-# This will fail if schema and migrations don't match
-npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma
+pnpm prisma:validate
 ```
+
+#### What it checks
+
+| Check                   | Description                                                               |
+| ----------------------- | ------------------------------------------------------------------------- |
+| Migration files present | Fails if `prisma/migrations/` contains no directories                     |
+| SQL readability         | Fails if any `migration.sql` cannot be read                               |
+| Dangerous operations    | Warns on `DROP TABLE`, `DROP COLUMN`, `DROP INDEX`, or bare `DELETE FROM` |
+| Schema sync             | Runs `prisma migrate diff` and fails if schema and migrations diverge     |
+| Client generation       | Runs `prisma generate` and fails if the Prisma client cannot be built     |
+
+Exit code `0` means all checks passed; exit code `1` means at least one error was found. Warnings are printed but do not cause failure.
+
+The script is executed in the GitHub Actions workflow before migrations are deployed, ensuring no schema drift is introduced by a pull request.
 
 ## Common Migration Scenarios
 
@@ -164,7 +178,7 @@ npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamode
 model NewTable {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
-  
+
   @@map("new_tables")
 }
 ```
@@ -183,7 +197,7 @@ model Market {
 ```prisma
 model Market {
   // ... existing fields
-  
+
   @@index([status, endTime])
 }
 ```
@@ -201,6 +215,7 @@ model Market {
 ### Common Issues
 
 1. **Migration lock stuck**
+
    ```bash
    rm prisma/migrations/migration_lock.toml
    ```
@@ -227,6 +242,7 @@ model Market {
 Prisma doesn't support automatic rollbacks. Manual rollback process:
 
 1. **Create rollback migration**
+
    ```bash
    npx prisma migrate dev --name rollback_feature_name
    ```

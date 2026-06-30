@@ -4,6 +4,7 @@ import { getPrismaClient } from "../../services/prisma.js";
 import { ValidationError } from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
 import { auditService } from "../../services/audit.js";
+import { matchingService } from "../../matching/matching-service.js";
 import {
   validateUserAddress,
   assertValidOrder,
@@ -76,26 +77,70 @@ function decodeCursor(cursor: string): CursorPayload {
 // Route interfaces
 // ---------------------------------------------------------------------------
 
-interface GetUserOrdersParams {
+export interface GetUserOrdersParams {
   address: string;
 }
 
-interface GetUserOrdersQuery {
+export interface GetUserOrdersQuery {
   status?: OrderStatus;
   cursor?: string;
   limit?: number;
 }
 
-interface GetWalletTradesQuery {
+export interface GetWalletTradesQuery {
   page?: number;
   limit?: number;
   from?: string;
   to?: string;
+  marketId?: string;
 }
 
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
+
+export interface OrderResponse {
+  id: string;
+  marketId: string;
+  userAddress: string;
+  side: OrderSide;
+  outcome: Outcome;
+  price: string;
+  quantity: number;
+  filledQuantity: number;
+  status: OrderStatus;
+  createdAt: Date;
+}
+
+export interface OrderListResponse {
+  orders: OrderResponse[];
+  total: number;
+  hasNext: boolean;
+  page: number;
+  limit: number;
+}
+
+export interface TradeEntry {
+  id: string;
+  marketId: string;
+  outcome: Outcome;
+  buyerAddress: string;
+  sellerAddress: string;
+  buyOrderId: string;
+  sellOrderId: string;
+  price: number;
+  quantity: number;
+  timestamp: number;
+  loggedAt: string;
+}
+
+export interface TradeListResponse {
+  trades: TradeEntry[];
+  total: number;
+  hasNext: boolean;
+  page: number;
+  limit: number;
+}
 
 export async function ordersRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
@@ -107,6 +152,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
   }>(
     "/trades/user/:address",
     {
+      onRequest: [heavyReadLimiter],
       schema: {
         params: {
           type: "object",
@@ -139,6 +185,10 @@ export async function ordersRoutes(fastify: FastifyInstance) {
               description:
                 "Inclusive UTC end timestamp (ISO-8601), e.g. 2026-04-27T23:59:59.999Z",
             },
+            marketId: {
+              type: "string",
+              description: "Filter trades by market identifier",
+            },
           },
         },
       },
@@ -150,7 +200,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       }>
     ) => {
       const { address } = request.params;
-      const { page = 1, limit = 20, from, to } = request.query;
+      const { page = 1, limit = 20, from, to, marketId } = request.query;
 
       const addressError = validateUserAddress(address);
       if (addressError) {
@@ -281,7 +331,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       request: FastifyRequest<{
         Params: GetUserOrdersParams;
         Querystring: GetUserOrdersQuery;
-      }>
+      }>,
+      reply
     ) => {
       const { address } = request.params;
       const { status, cursor, limit = 20 } = request.query;
@@ -344,7 +395,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         nextCursor,
         hasNext,
         limit,
-      };
+      });
     }
   );
 
@@ -355,6 +406,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
     "/orders",
     {
       onRequest: [writeLimiter],
+      preHandler: [verifyStellarSignature],
       schema: {
         body: {
           type: "object",
@@ -407,6 +459,25 @@ export async function ordersRoutes(fastify: FastifyInstance) {
                   createdAt: { type: "string" },
                 },
               },
+              trades: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    marketId: { type: "string" },
+                    outcome: { type: "string" },
+                    buyerAddress: { type: "string" },
+                    sellerAddress: { type: "string" },
+                    buyOrderId: { type: "string" },
+                    sellOrderId: { type: "string" },
+                    price: { type: "number" },
+                    quantity: { type: "number" },
+                    timestamp: { type: "number" },
+                  },
+                },
+              },
+              filledQuantity: { type: "number" },
             },
           },
         },
@@ -455,8 +526,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       // TODO: Add to matching engine
       // await matchingEngine.addOrder(order);
 
-      reply.code(201);
-      return { order };
+      reply.status(201).send({ order, trades, filledQuantity });
     }
   );
 }

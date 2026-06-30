@@ -3,6 +3,8 @@ import type {
   RawChainEvent,
   NormalizedTrade,
   NormalizedResolution,
+  NormalizedCollateralDeposit,
+  NormalizedMarketCreated,
 } from "./types.js";
 
 /**
@@ -94,13 +96,29 @@ export interface PersistedResolution extends NormalizedResolution {
   idempotencyKey: string;
 }
 
+/** A NormalizedCollateralDeposit stamped with its idempotency key, ready for storage. */
+export interface PersistedCollateralDeposit extends NormalizedCollateralDeposit {
+  idempotencyKey: string;
+}
+
+/** A NormalizedMarketCreated stamped with its idempotency key, ready for storage. */
+export interface PersistedMarketCreated extends NormalizedMarketCreated {
+  idempotencyKey: string;
+}
+
 export function withIdempotencyKey(trade: NormalizedTrade): PersistedTrade;
 export function withIdempotencyKey(
   resolution: NormalizedResolution
 ): PersistedResolution;
 export function withIdempotencyKey(
-  record: NormalizedTrade | NormalizedResolution
-): PersistedTrade | PersistedResolution {
+  deposit: NormalizedCollateralDeposit
+): PersistedCollateralDeposit;
+export function withIdempotencyKey(
+  market: NormalizedMarketCreated
+): PersistedMarketCreated;
+export function withIdempotencyKey(
+  record: NormalizedTrade | NormalizedResolution | NormalizedCollateralDeposit | NormalizedMarketCreated
+): PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated {
   const { key } = generateIdempotencyKey({
     id: record.eventId,
     contractId: record.contractId,
@@ -113,6 +131,19 @@ export function withIdempotencyKey(
 export type InsertResult<T> =
   | { status: "inserted"; record: T }
   | { status: "duplicate"; key: string };
+
+export interface DuplicateEventLogger {
+  info(message: string, meta?: Record<string, unknown>): void;
+}
+
+export interface InsertIfNewOptions {
+  logger?: DuplicateEventLogger;
+}
+
+export interface InsertBatchResult<T> {
+  inserted: T[];
+  duplicateCount: number;
+}
 
 /**
  * Attempt to insert a record using the provided upsert function.
@@ -136,11 +167,43 @@ export type InsertResult<T> =
  */
 export async function insertIfNew<T extends { idempotencyKey: string }>(
   record: T,
-  upsert: (record: T) => Promise<T | null | undefined>
+  upsert: (record: T) => Promise<T | null | undefined>,
+  options: InsertIfNewOptions = {}
 ): Promise<InsertResult<T>> {
   const result = await upsert(record);
   if (result == null) {
+    options.logger?.info("Skipping duplicate indexer event", {
+      idempotencyKey: record.idempotencyKey,
+      duplicateCount: 1,
+    });
     return { status: "duplicate", key: record.idempotencyKey };
   }
   return { status: "inserted", record: result };
+}
+
+export async function insertAllIfNew<T extends { idempotencyKey: string }>(
+  records: T[],
+  upsert: (record: T) => Promise<T | null | undefined>,
+  options: InsertIfNewOptions = {}
+): Promise<InsertBatchResult<T>> {
+  const inserted: T[] = [];
+  let duplicateCount = 0;
+
+  for (const record of records) {
+    const result = await insertIfNew(record, upsert, options);
+    if (result.status === "duplicate") {
+      duplicateCount++;
+      continue;
+    }
+
+    inserted.push(result.record);
+  }
+
+  if (duplicateCount > 0) {
+    options.logger?.info("Skipped duplicate indexer events", {
+      duplicateCount,
+    });
+  }
+
+  return { inserted, duplicateCount };
 }

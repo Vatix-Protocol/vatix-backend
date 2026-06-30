@@ -47,7 +47,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v2
@@ -76,13 +76,17 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
 
+      - name: Create shadow database
+        run: psql postgresql://postgres:postgres@localhost:5432/postgres -c "CREATE DATABASE vatix_shadow;"
+
       - name: Validate migrations
         run: pnpm prisma:validate
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix_shadow
 
       - name: Run migrations
-        run: pnpm prisma:migrate deploy
+        run: pnpm prisma:deploy
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
 
@@ -143,7 +147,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v2
@@ -175,8 +179,14 @@ jobs:
       - name: Check code formatting
         run: pnpm format:check
 
-      - name: Check TypeScript
+      - name: Check TypeScript (src)
         run: pnpm tsc --noEmit
+
+      - name: Check TypeScript (apps + packages)
+        run: pnpm tsc --noEmit -p apps/tsconfig.json
+
+      - name: Check TypeScript (packages)
+        run: pnpm tsc --noEmit -p packages/tsconfig.json
 
   build:
     name: Build
@@ -189,7 +199,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v2

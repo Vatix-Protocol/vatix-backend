@@ -1,8 +1,10 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { unauthorized, forbidden } from "./responses.js";
 
-// Minimal admin token auth: expects Authorization: Bearer <ADMIN_TOKEN>
-// ADMIN_TOKEN is set via environment variable
+const Roles = { ADMIN: "admin" } as const;
+
+// Enforces the ADMIN role. Expects Authorization: Bearer <ADMIN_TOKEN>.
+// ADMIN_TOKEN is set via environment variable.
 export function requireAdmin(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -19,7 +21,7 @@ export function requireAdmin(
   const token = authHeader.slice(7);
 
   if (!adminToken || token !== adminToken) {
-    forbidden(reply);
+    forbidden(reply, `Role '${Roles.ADMIN}' required`);
     return;
   }
 

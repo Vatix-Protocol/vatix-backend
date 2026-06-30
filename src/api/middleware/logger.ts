@@ -1,14 +1,58 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import fp from "fastify-plugin";
 
-// Headers that must never appear in logs (auth tokens, cookies, secrets).
-const SENSITIVE_HEADERS = new Set([
-  "authorization",
-  "cookie",
-  "set-cookie",
-  "x-api-key",
-  "x-auth-token",
-]);
+function isSensitiveKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  const SENSITIVE = new Set([
+    "password",
+    "secret",
+    "token",
+    "accesstoken",
+    "access_token",
+    "refreshtoken",
+    "refresh_token",
+    "apikey",
+    "api_key",
+    "x-api-key",
+    "authorization",
+    "auth",
+    "cookie",
+    "set-cookie",
+    "session",
+    "privatekey",
+    "private_key",
+    "secretkey",
+    "secret_key",
+    "signingkey",
+    "signing_key",
+    "mnemonic",
+    "seed",
+    "x-auth-token",
+    "x-user-token",
+  ]);
+  return SENSITIVE.has(lower);
+}
+
+/**
+ * Returns true when a header name is considered sensitive and must be
+ * excluded from log output. Combines a hard-coded set of well-known HTTP
+ * auth/cookie headers with the shared isSensitiveKey registry so that any
+ * newly registered sensitive key is automatically covered here too.
+ */
+function isSensitiveHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower === "authorization" ||
+    lower === "cookie" ||
+    lower === "set-cookie" ||
+    lower === "x-api-key" ||
+    lower === "x-auth-token" ||
+    isSensitiveKey(lower)
+  );
+}
+
+// Re-export for use in tests
+export { isSensitiveHeader };
 
 /**
  * Request logging middleware for Fastify.
@@ -22,29 +66,35 @@ const SENSITIVE_HEADERS = new Set([
  * All log objects are machine-parseable JSON (no free-form strings as values).
  */
 async function logger(fastify: FastifyInstance) {
-  // Propagate the generated request ID back to the caller.
-  fastify.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
-    reply.header("X-Request-ID", request.id);
-  });
-
   // Lightweight "incoming" entry — no body, no sensitive headers.
-  fastify.addHook("onRequest", async (request: FastifyRequest) => {
-    const userAddress =
-      (request.params as Record<string, string> | undefined)?.address ||
-      (request.headers["x-user-address"] as string | undefined) ||
-      (request.headers["x-address"] as string | undefined);
+  fastify.addHook(
+    "onRequest",
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      // Always echo request ID in response header
+      reply.header("x-request-id", request.id);
 
-    request.log.info(
-      {
-        type: "request",
-        requestId: request.id,
-        method: request.method,
-        path: request.url,
-        ...(userAddress ? { userAddress } : {}),
-      },
-      "incoming request"
-    );
-  });
+      const userAddress =
+        (request.params as Record<string, string> | undefined)?.address ||
+        (request.headers["x-user-address"] as string | undefined) ||
+        (request.headers["x-address"] as string | undefined);
+
+      const safeUserAddress =
+        userAddress !== undefined && /^G[A-Z2-7]{55}$/.test(userAddress)
+          ? userAddress
+          : undefined;
+
+      request.log.info(
+        {
+          type: "request",
+          requestId: request.id,
+          method: request.method,
+          path: request.url,
+          ...(safeUserAddress ? { userAddress: safeUserAddress } : {}),
+        },
+        "incoming request"
+      );
+    }
+  );
 
   // Full access-log entry emitted once the response is sent.
   fastify.addHook(

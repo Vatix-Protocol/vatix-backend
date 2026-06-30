@@ -1,11 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import { requireAdmin } from "../middleware/adminGuard.js";
+import { requireApiKey } from "../middleware/apiKeyAuth.js";
+import { adminLimiter } from "../middleware/rateLimiter.js";
 
 export async function adminRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
 
-  // All routes in this plugin require admin role
+  // All routes in this plugin require API key, admin role, and the admin rate limit tier.
+  fastify.addHook("onRequest", adminLimiter);
+  fastify.addHook("onRequest", requireApiKey);
   fastify.addHook("onRequest", requireAdmin);
 
   // GET /admin/markets - list all markets including cancelled

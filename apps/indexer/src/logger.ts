@@ -1,8 +1,11 @@
+import { redactMeta } from "../../../packages/shared/src/logRedactor.js";
+
 export interface Logger {
   debug(message: string, meta?: Record<string, unknown>): void;
   info(message: string, meta?: Record<string, unknown>): void;
   warn(message: string, meta?: Record<string, unknown>): void;
   error(message: string, meta?: Record<string, unknown>): void;
+  child(childPrefix: string): Logger;
 }
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -31,7 +34,8 @@ export function createLogger(level: LogLevel): Logger {
       level: logLevel,
       message,
     };
-    const payload = meta ? { ...base, ...meta } : base;
+    const safeMeta = redactMeta(meta);
+    const payload = safeMeta ? { ...base, ...safeMeta } : base;
     const line = JSON.stringify(payload);
 
     if (logLevel === "error") {
@@ -47,5 +51,6 @@ export function createLogger(level: LogLevel): Logger {
     info: (message, meta) => write("info", message, meta),
     warn: (message, meta) => write("warn", message, meta),
     error: (message, meta) => write("error", message, meta),
+    child: (_childPrefix: string) => createLogger(level),
   };
 }

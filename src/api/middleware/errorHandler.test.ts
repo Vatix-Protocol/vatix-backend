@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
 import { errorHandler } from "./errorHandler.js";
 import {
@@ -12,13 +12,7 @@ describe("Error Handler Middleware", () => {
   let server: FastifyInstance;
 
   beforeEach(async () => {
-    // Create a fresh Fastify instance for each test
-    server = Fastify({
-      logger: false, // Disable logging in tests
-      genReqId: () => "test-request-id",
-    });
-
-    // Register error handler
+    server = Fastify({ logger: false, genReqId: () => "test-request-id" });
     server.setErrorHandler(errorHandler);
   });
 
@@ -26,195 +20,126 @@ describe("Error Handler Middleware", () => {
     await server.close();
   });
 
+  // Helper
+  const inject = (throw_: () => never) => {
+    server.get("/test", async () => {
+      throw_();
+    });
+    return server.inject({ method: "GET", url: "/test" });
+  };
+
+  describe("envelope shape", () => {
+    it("has code, message, statusCode, requestId", async () => {
+      server.get("/test", async () => {
+        throw new NotFoundError("x");
+      });
+      const res = await server.inject({ method: "GET", url: "/test" });
+      const body = JSON.parse(res.body);
+      expect(body).toMatchObject({
+        code: "not_found",
+        message: "x",
+        statusCode: 404,
+        requestId: "test-request-id",
+      });
+    });
+
+    it("statusCode in body matches HTTP status", async () => {
+      server.get("/test", async () => {
+        throw new NotFoundError();
+      });
+      const res = await server.inject({ method: "GET", url: "/test" });
+      const body = JSON.parse(res.body);
+      expect(body.statusCode).toBe(res.statusCode);
+    });
+  });
+
   describe("ValidationError", () => {
-    it("should return 400 status code", async () => {
+    it("returns 400 with code validation_error", async () => {
       server.get("/test", async () => {
-        throw new ValidationError("Validation failed");
+        throw new ValidationError("bad input");
       });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(400);
+      const res = await server.inject({ method: "GET", url: "/test" });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).code).toBe("validation_error");
     });
 
-    it("should include field details in response", async () => {
-      const fields = {
-        email: "Invalid email format",
-        password: "Password too short",
-      };
-
+    it("puts fields inside metadata", async () => {
+      const fields = { email: "invalid" };
       server.get("/test", async () => {
-        throw new ValidationError("Validation failed", fields);
+        throw new ValidationError("bad", fields);
       });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.fields).toEqual(fields);
+      const res = await server.inject({ method: "GET", url: "/test" });
+      expect(JSON.parse(res.body).metadata).toEqual({ fields });
     });
 
-    it("should include error message in response", async () => {
+    it("omits metadata when no fields", async () => {
       server.get("/test", async () => {
-        throw new ValidationError("Invalid input data");
+        throw new ValidationError("bad");
       });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.error).toBe("Invalid input data");
+      const res = await server.inject({ method: "GET", url: "/test" });
+      expect(JSON.parse(res.body).metadata).toBeUndefined();
     });
   });
 
   describe("NotFoundError", () => {
-    it("should return 404 status code", async () => {
+    it("returns 404 with code not_found", async () => {
       server.get("/test", async () => {
-        throw new NotFoundError("Market not found");
+        throw new NotFoundError("gone");
       });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(404);
-    });
-
-    it("should include error message in response", async () => {
-      server.get("/test", async () => {
-        throw new NotFoundError("User not found");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.error).toBe("User not found");
+      const res = await server.inject({ method: "GET", url: "/test" });
+      expect(res.statusCode).toBe(404);
+      expect(JSON.parse(res.body).code).toBe("not_found");
     });
   });
 
   describe("UnauthorizedError", () => {
-    it("should return 401 status code", async () => {
+    it("returns 401 with code unauthorized", async () => {
       server.get("/test", async () => {
-        throw new UnauthorizedError("Invalid token");
+        throw new UnauthorizedError();
       });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(401);
-    });
-
-    it("should include error message in response", async () => {
-      server.get("/test", async () => {
-        throw new UnauthorizedError("Access denied");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.error).toBe("Access denied");
+      const res = await server.inject({ method: "GET", url: "/test" });
+      expect(res.statusCode).toBe(401);
+      expect(JSON.parse(res.body).code).toBe("unauthorized");
     });
   });
 
   describe("ForbiddenError", () => {
-    it("should return 403 status code", async () => {
-      server.get("/test", async () => {
-        throw new ForbiddenError("Access forbidden");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(403);
-    });
-
-    it("should include error message in response", async () => {
-      server.get("/test", async () => {
-        throw new ForbiddenError("Insufficient permissions");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.error).toBe("Insufficient permissions");
-    });
-
-    it("should use default message when none provided", async () => {
+    it("returns 403 with code forbidden", async () => {
       server.get("/test", async () => {
         throw new ForbiddenError();
       });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(response.statusCode).toBe(403);
-      expect(body.error).toBe("Forbidden");
+      const res = await server.inject({ method: "GET", url: "/test" });
+      expect(res.statusCode).toBe(403);
+      expect(JSON.parse(res.body).code).toBe("forbidden");
     });
   });
 
-  describe("Unknown Errors", () => {
-    it("should return 500 status code for generic errors", async () => {
+  describe("generic Error", () => {
+    it("returns 500 with code internal_error", async () => {
       server.get("/test", async () => {
-        throw new Error("Something went wrong");
+        throw new Error("boom");
       });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(500);
+      const res = await server.inject({ method: "GET", url: "/test" });
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body).code).toBe("internal_error");
     });
 
-    it("should include error message in development mode", async () => {
-      const originalEnv = process.env.NODE_ENV;
+    it("exposes message in development", async () => {
+      const orig = process.env.NODE_ENV;
       process.env.NODE_ENV = "development";
-
       server.get("/test", async () => {
-        throw new Error("Database connection failed");
+        throw new Error("db failed");
       });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.error).toBe("Database connection failed");
-
-      process.env.NODE_ENV = originalEnv;
+      const res = await server.inject({ method: "GET", url: "/test" });
+      expect(JSON.parse(res.body).message).toBe("db failed");
+      process.env.NODE_ENV = orig;
     });
 
-    it("should hide internal details in production mode", async () => {
-      const originalEnv = process.env.NODE_ENV;
+    it("hides message in production", async () => {
+      const orig = process.env.NODE_ENV;
       process.env.NODE_ENV = "production";
-
       server.get("/test", async () => {
-        throw new Error("Database connection failed");
+        throw new Error("db failed");
       });
 
       const response = await server.inject({

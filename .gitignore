@@ -22,5 +22,11 @@ yarn.lock
 # Test coverage
 coverage/
 
+# Temporary files
+/tmp/
+
 #Issues descriptions
 vrickish_issues.md
+
+# Local notes (personal planning docs — never committed)
+/notes/

@@ -3,21 +3,28 @@ import Fastify, { FastifyInstance } from "fastify";
 import { ordersRoutes } from "./orders.js";
 import { errorHandler } from "../middleware/errorHandler.js";
 import type { PrismaClient } from "../../generated/prisma/client";
+import { clearRateLimitStores } from "../middleware/rateLimiter.js";
 
-const mockAuditService = {
-  getWalletTradeHistory: vi.fn(),
-};
-
-const mockPrismaClient = {
-  order: {
-    findMany: vi.fn(),
-    count: vi.fn(),
-    create: vi.fn(),
-  },
-  market: {
-    findUnique: vi.fn(),
-  },
-} as unknown as PrismaClient;
+const { mockAuditService, mockPrismaClient, mockMatchingService } = vi.hoisted(
+  () => ({
+    mockAuditService: {
+      getWalletTradeHistory: vi.fn(),
+    },
+    mockPrismaClient: {
+      order: {
+        findMany: vi.fn(),
+        count: vi.fn(),
+        create: vi.fn(),
+      },
+      market: {
+        findUnique: vi.fn(),
+      },
+    } as unknown as PrismaClient,
+    mockMatchingService: {
+      placeOrder: vi.fn(),
+    },
+  })
+);
 
 vi.mock("../../services/prisma.js", () => ({
   getPrismaClient: () => mockPrismaClient,
@@ -27,12 +34,26 @@ vi.mock("../../services/audit.js", () => ({
   auditService: mockAuditService,
 }));
 
+vi.mock("../../matching/matching-service.js", () => ({
+  matchingService: mockMatchingService,
+}));
+
+// Bypasses signature verification so route tests stay focused on business
+// logic. Signature-specific behaviour is covered in stellarAuth.test.ts.
+vi.mock("../middleware/stellarAuth.js", () => ({
+  verifyStellarSignature: vi.fn(
+    (_req: unknown, _reply: unknown, done: () => void) => done()
+  ),
+  buildSignableMessage: vi.fn(),
+}));
+
 describe("GET /trades/user/:address", () => {
   let app: FastifyInstance;
   const validAddress =
     "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
 
   beforeEach(async () => {
+    clearRateLimitStores();
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
     await app.register(ordersRoutes);
@@ -41,6 +62,7 @@ describe("GET /trades/user/:address", () => {
 
   afterEach(async () => {
     await app.close();
+    clearRateLimitStores();
   });
 
   it("should return wallet trades latest-first with pagination metadata", async () => {
@@ -128,6 +150,7 @@ describe("GET /trades/user/:address", () => {
       2,
       1,
       undefined,
+      undefined,
       undefined
     );
   });
@@ -156,7 +179,8 @@ describe("GET /trades/user/:address", () => {
       1,
       20,
       Date.parse(from),
-      Date.parse(to)
+      Date.parse(to),
+      undefined
     );
   });
 
@@ -188,6 +212,7 @@ describe("GET /orders/user/:address", () => {
     "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
 
   beforeEach(async () => {
+    clearRateLimitStores();
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
     await app.register(ordersRoutes);
@@ -196,6 +221,7 @@ describe("GET /orders/user/:address", () => {
 
   afterEach(async () => {
     await app.close();
+    clearRateLimitStores();
   });
 
   it("should return user orders sorted by newest first with no next cursor", async () => {
@@ -388,6 +414,7 @@ describe("POST /orders", () => {
     "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
 
   beforeEach(async () => {
+    clearRateLimitStores();
     app = Fastify({ logger: false });
     app.setErrorHandler(errorHandler);
     await app.register(ordersRoutes);
@@ -408,6 +435,7 @@ describe("POST /orders", () => {
 
   afterEach(async () => {
     await app.close();
+    clearRateLimitStores();
   });
 
   const validMarket = {
@@ -438,9 +466,18 @@ describe("POST /orders", () => {
       createdAt: new Date(),
     };
 
+    // Mock market for validation
     (
-      mockPrismaClient.order.create as ReturnType<typeof vi.fn>
-    ).mockResolvedValue(createdOrder);
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(validMarket);
+
+    (
+      mockMatchingService.placeOrder as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      order: createdOrder,
+      trades: [],
+      filledQuantity: 0,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -455,6 +492,8 @@ describe("POST /orders", () => {
     expect(body.order.id).toBe("order-123");
     expect(body.order.side).toBe("BUY");
     expect(body.order.status).toBe("OPEN");
+    expect(body.trades).toEqual([]);
+    expect(body.filledQuantity).toBe(0);
   });
 
   it("should reject order with invalid Stellar address", async () => {
@@ -683,9 +722,32 @@ describe("POST /orders", () => {
     expect(response.statusCode).toBe(400);
   });
 
+  it("should reject invalid input before creating a Prisma order", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/orders",
+      payload: {
+        marketId: "market-1",
+        userAddress: validAddress,
+        side: "BUY",
+        outcome: "YES",
+        price: "not-a-number",
+        quantity: 100,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mockPrismaClient.order.create).not.toHaveBeenCalled();
+  });
+
   it("should handle database errors gracefully", async () => {
+    // Mock market for validation
     (
-      mockPrismaClient.order.create as ReturnType<typeof vi.fn>
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(validMarket);
+
+    (
+      mockMatchingService.placeOrder as ReturnType<typeof vi.fn>
     ).mockRejectedValue(new Error("Database error"));
 
     const response = await app.inject({

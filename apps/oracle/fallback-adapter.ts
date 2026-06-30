@@ -2,8 +2,9 @@
  * Secondary Fallback Provider Adapter
  *
  * Implements the same ProviderAdapter interface as the primary adapter.
- * Used when the primary provider fails or is unavailable.
- * Preserves source attribution in the final record.
+ * Accepts an ordered list of fallback provider URLs; the first one to
+ * return a valid response wins. Each provider is retried independently
+ * before the chain advances to the next entry.
  *
  * @module apps/oracle/fallback-adapter
  */
@@ -14,119 +15,234 @@ import type {
   ResolutionRequest,
 } from "./provider-adapter.js";
 import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
+import { withRetry, type RetryConfig } from "./retry-utils.js";
 
 /**
- * Fallback provider adapter configuration.
+ * Configuration for a single provider in the fallback chain.
  */
-export interface FallbackAdapterConfig {
-  /** Base URL for the fallback provider API */
-  baseUrl: string;
+export interface FallbackProviderConfig {
+  /** Base URL for the provider API */
+  url: string;
   /** API key for authentication */
   apiKey?: string;
-  /** Request timeout in milliseconds */
-  timeoutMs?: number;
-  /** Fallback source identifier */
+  /** Source identifier used in ProviderResult attribution */
   source?: string;
 }
 
 /**
+ * Fallback adapter configuration.
+ */
+export interface FallbackAdapterConfig {
+  /**
+   * Ordered list of fallback providers to try.
+   * The first provider that returns a valid response wins;
+   * providers are tried in array order.
+   */
+  providers: FallbackProviderConfig[];
+  /** Request timeout in milliseconds (applied per provider) */
+  timeoutMs?: number;
+  /** Retry configuration applied per provider before advancing the chain */
+  retryConfig?: Partial<RetryConfig>;
+  /** Optional fetch implementation — inject in tests to avoid real HTTP */
+  fetchFn?: typeof fetch;
+}
+
+export type FallbackProviderErrorType =
+  | "AUTHENTICATION"
+  | "INVALID_RESPONSE"
+  | "NOT_FOUND"
+  | "RATE_LIMIT"
+  | "TIMEOUT"
+  | "UPSTREAM"
+  | "ALL_PROVIDERS_FAILED";
+
+export class FallbackProviderError extends Error {
+  constructor(
+    public readonly type: FallbackProviderErrorType,
+    message: string,
+    public readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = "FallbackProviderError";
+  }
+}
+
+interface FallbackProviderResponse {
+  outcome: boolean;
+  confidence: number;
+  timestamp?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/**
  * Secondary fallback provider adapter.
- * Implements the same ProviderAdapter interface as PrimaryAdapter.
- * Used when the primary provider fails or is unavailable.
+ * Walks the provider chain in order, returning the first successful result.
  */
 export class FallbackAdapter implements ProviderAdapter {
-  private readonly source: string;
-  private config: FallbackAdapterConfig;
+  private readonly config: FallbackAdapterConfig;
+  private readonly fetchFn: typeof fetch;
 
   constructor(config: FallbackAdapterConfig) {
-    this.source = config.source ?? "fallback";
-    this.config = {
-      timeoutMs: DEFAULT_TIMEOUT_MS,
-      ...config,
-    };
+    if (!config.providers || config.providers.length === 0) {
+      throw new Error("FallbackAdapter requires at least one provider");
+    }
+    this.config = { timeoutMs: DEFAULT_TIMEOUT_MS, ...config };
+    this.fetchFn = config.fetchFn ?? fetch;
   }
 
   /**
-   * Resolve a market using the fallback provider.
-   *
-   * @param request - Resolution request parameters
-   * @returns Provider result with source attribution
+   * Resolve a market by walking the provider chain.
+   * Each provider is retried per retryConfig before advancing.
    */
   async resolve(request: ResolutionRequest): Promise<ProviderResult> {
     const timeoutMs =
       request.timeoutMs ?? this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const errors: Error[] = [];
 
-    const timedResult = await withTimeout<ProviderResult>(
-      async (signal) => {
-        // Simulate fetching from fallback provider
-        const response = await this.fetchFromProvider(request, signal);
-        return response;
-      },
-      {
-        timeoutMs,
-        errorMessage: `Fallback provider timed out after ${timeoutMs}ms`,
+    for (const provider of this.config.providers) {
+      const label = provider.source ?? provider.url;
+      try {
+        const timedResult = await withTimeout<ProviderResult>(
+          async (signal) =>
+            withRetry(
+              () => this.fetchFromProvider(provider, request, signal),
+              this.config.retryConfig
+            ),
+          {
+            timeoutMs,
+            errorMessage: `Fallback provider ${label} timed out after ${timeoutMs}ms`,
+          }
+        );
+
+        if (timedResult.timedOut) {
+          errors.push(
+            timedResult.error ??
+              new FallbackProviderError(
+                "TIMEOUT",
+                `Fallback provider ${label} timed out after ${timeoutMs}ms`
+              )
+          );
+          continue;
+        }
+
+        if (timedResult.error) {
+          errors.push(timedResult.error);
+          continue;
+        }
+
+        return timedResult.value!;
+      } catch (err) {
+        errors.push(err instanceof Error ? err : new Error(String(err)));
       }
-    );
-
-    if (timedResult.timedOut || timedResult.error) {
-      throw timedResult.error ?? new Error("Fallback provider request failed");
     }
 
-    return timedResult.value!;
+    throw new FallbackProviderError(
+      "ALL_PROVIDERS_FAILED",
+      `All fallback providers failed: ${errors.map((e) => e.message).join("; ")}`
+    );
   }
 
   /**
-   * Check if the fallback provider is healthy.
-   *
-   * @returns True if the provider is healthy
+   * Returns true if any provider in the chain responds healthy.
    */
   async healthCheck(): Promise<boolean> {
-    try {
-      const timedResult = await withTimeout<boolean>(
-        async () => {
-          // In production, this would ping the provider health endpoint
-          return true;
-        },
-        {
-          timeoutMs: 5_000,
-          errorMessage: "Fallback provider health check timed out",
-        }
-      );
+    for (const provider of this.config.providers) {
+      try {
+        const timedResult = await withTimeout<boolean>(
+          async (signal) => {
+            const response = await this.fetchFn(
+              new URL("/health", provider.url),
+              { headers: this.getHeaders(provider), signal }
+            );
+            return response.ok;
+          },
+          {
+            timeoutMs: 5_000,
+            errorMessage: "Fallback provider health check timed out",
+          }
+        );
 
-      return timedResult.value ?? false;
-    } catch {
-      return false;
+        if (timedResult.value === true) return true;
+      } catch {
+        // try next provider
+      }
     }
+    return false;
   }
 
-  /**
-   * Get the provider source identifier.
-   *
-   * @returns Source identifier (e.g., "fallback")
-   */
   getSource(): string {
-    return this.source;
+    return "fallback";
   }
 
-  /**
-   * Fetch resolution data from the fallback provider.
-   * Placeholder for actual HTTP request logic.
-   */
   private async fetchFromProvider(
-    _request: ResolutionRequest,
-    _signal: AbortSignal
+    provider: FallbackProviderConfig,
+    request: ResolutionRequest,
+    signal: AbortSignal
   ): Promise<ProviderResult> {
-    // In production, this would make an HTTP request to the fallback provider API
-    // For now, return a placeholder result
+    const url = new URL("/resolve", provider.url);
+    url.searchParams.set("marketId", request.marketId);
+    url.searchParams.set("oracleAddress", request.oracleAddress);
+
+    const response = await this.fetchFn(url, {
+      headers: this.getHeaders(provider),
+      signal,
+    });
+
+    if (!response.ok) {
+      throw new FallbackProviderError(
+        this.mapStatus(response.status),
+        `Fallback provider ${provider.source ?? provider.url} returned HTTP ${response.status}`
+      );
+    }
+
+    const payload =
+      (await response.json()) as Partial<FallbackProviderResponse>;
+
+    if (
+      typeof payload.outcome !== "boolean" ||
+      typeof payload.confidence !== "number" ||
+      payload.confidence < 0 ||
+      payload.confidence > 1
+    ) {
+      throw new FallbackProviderError(
+        "INVALID_RESPONSE",
+        `Fallback provider ${provider.source ?? provider.url} response is missing a valid outcome or confidence`
+      );
+    }
+
+    const source = provider.source ?? "fallback";
+
     return {
-      outcome: true,
-      confidence: 0.85,
-      source: this.source,
-      timestamp: new Date().toISOString(),
+      outcome: payload.outcome,
+      confidence: payload.confidence,
+      confidenceMetadata: {
+        score: payload.confidence,
+        method: "fallback-provider",
+      },
+      source,
+      sourceMetadata: { provider: source },
+      timestamp: payload.timestamp ?? new Date().toISOString(),
       metadata: {
-        provider: "fallback",
-        marketId: _request.marketId,
+        provider: source,
+        marketId: request.marketId,
+        ...payload.metadata,
       },
     };
+  }
+
+  private getHeaders(provider: FallbackProviderConfig): Record<string, string> {
+    return {
+      Accept: "application/json",
+      ...(provider.apiKey
+        ? { Authorization: `Bearer ${provider.apiKey}` }
+        : {}),
+    };
+  }
+
+  private mapStatus(status: number): FallbackProviderErrorType {
+    if (status === 401 || status === 403) return "AUTHENTICATION";
+    if (status === 404) return "NOT_FOUND";
+    if (status === 429) return "RATE_LIMIT";
+    return "UPSTREAM";
   }
 }

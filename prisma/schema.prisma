@@ -5,8 +5,9 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider = "prisma-client-js"
-  output   = "../src/generated/prisma/client"
+  provider        = "prisma-client-js"
+  output          = "../src/generated/prisma/client"
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
@@ -43,6 +44,21 @@ enum ResolutionCandidateStatus {
   REJECTED
 }
 
+enum ResolutionStatus {
+  ACTIVE
+  CORRECTED
+  OVERRIDDEN
+}
+
+enum OracleSource {
+  CHAINLINK
+  PYTH
+  UMA
+  API3
+  INTERNAL
+  MANUAL
+}
+
 model Market {
   id             String       @id @default(uuid())
   question       String
@@ -54,9 +70,12 @@ model Market {
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
 
-  orders        Order[]
-  positions     UserPosition[]
-  oracleReports OracleReport[]
+  orders               Order[]
+  positions            UserPosition[]
+  positionSnapshots    Position[]
+  oracleReports        OracleReport[]
+  resolutionCandidates ResolutionCandidate[]
+  resolutions          Resolution[]
 
   @@index([status])
   @@index([endTime])
@@ -88,13 +107,13 @@ model Order {
 }
 
 model OracleReport {
-  id                   String    @id @default(uuid())
-  source               String    @db.VarChar(256)
-  payloadHash          String    @map("payload_hash") @db.VarChar(64)
-  confidence           Decimal   @db.Decimal(5, 4)
-  marketId             String?   @map("market_id")
-  candidateResolution  Boolean?  @map("candidate_resolution")
-  createdAt            DateTime  @default(now()) @map("created_at")
+  id                  String   @id @default(uuid())
+  source              String   @db.VarChar(256)
+  payloadHash         String   @map("payload_hash") @db.VarChar(64)
+  confidence          Decimal  @db.Decimal(5, 4)
+  marketId            String?  @map("market_id")
+  candidateResolution Boolean? @map("candidate_resolution")
+  createdAt           DateTime @default(now()) @map("created_at")
 
   market Market? @relation(fields: [marketId], references: [id], onDelete: SetNull)
 
@@ -133,6 +152,7 @@ model ResolutionCandidate {
   /// where 0.0 = no confidence and 1.0 = full confidence. Null if not reported by the source.
   confidenceScore Decimal?                  @map("confidence_score") @db.Decimal(5, 4)
   operatorAddress String                    @map("operator_address") @db.VarChar(56)
+  idempotencyKey  String?                   @unique @map("idempotency_key") @db.VarChar(64)
   createdAt       DateTime                  @default(now()) @map("created_at")
   updatedAt       DateTime                  @default(now()) @updatedAt @map("updated_at")
 
@@ -141,5 +161,149 @@ model ResolutionCandidate {
   @@index([marketId])
   @@index([status])
   @@index([marketId, status])
+  @@index([source])
   @@map("resolution_candidates")
+}
+
+model Resolution {
+  id                         String           @id @default(uuid())
+  marketId                   String           @map("market_id")
+  outcome                    Boolean
+  finalizedAt                DateTime         @map("finalized_at")
+  provenance                 String
+  status                     ResolutionStatus @default(ACTIVE)
+  /// JSONB field tracking correction and override history
+  /// Example: { "corrected_at": "2026-04-28T00:00:00Z", "previous_outcome": false, "reason": "..." }
+  correctionOverrideMetadata Json?            @map("correction_override_metadata")
+  createdAt                  DateTime         @default(now()) @map("created_at")
+  updatedAt                  DateTime         @default(now()) @updatedAt @map("updated_at")
+
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade, map: "resolutions_market_id_fkey")
+
+  @@unique([marketId], map: "resolutions_market_id_active_idx", where: { status: "ACTIVE" })
+  @@index([marketId])
+  @@index([status])
+  @@index([finalizedAt])
+  @@index([marketId, status])
+  @@index([createdAt(sort: Desc)])
+  @@map("resolutions")
+}
+
+model Position {
+  id            String   @id @default(uuid())
+  walletAddress String   @map("wallet_address") @db.VarChar(56)
+  marketId      String   @map("market_id")
+  outcome       Outcome?
+  quantity      Int      @default(0)
+  valuation     Decimal  @default(0) @map("valuation") @db.Decimal(20, 8)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+
+  @@unique([walletAddress, marketId, outcome], map: "positions_wallet_market_outcome_key")
+  @@index([walletAddress])
+  @@index([marketId])
+  @@map("positions")
+}
+
+model IndexerCursor {
+  networkId   String   @map("network_id")
+  cursorKey   String   @map("cursor_key")
+  cursorValue String?  @map("cursor_value")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@id([networkId, cursorKey])
+  @@index([networkId])
+  @@map("indexer_cursors")
+}
+
+/// Dedupe ledger for replay-safe indexer ingestion.
+model IndexerProcessedEvent {
+  idempotencyKey String   @id @map("idempotency_key") @db.VarChar(64)
+  eventKind      String   @map("event_kind") @db.VarChar(32)
+  ledger         Int
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([ledger])
+  @@map("indexer_processed_events")
+}
+
+/// CLOB-engine trade records. Written atomically with order fills; tradeId is
+/// the source-of-truth idempotency key preventing duplicate writes on retry.
+model Trade {
+  id             String   @id @default(uuid())
+  tradeId        String   @unique @map("trade_id") @db.VarChar(256)
+  marketId       String   @map("market_id")
+  outcome        Outcome
+  buyerAddress   String   @map("buyer_address") @db.VarChar(56)
+  sellerAddress  String   @map("seller_address") @db.VarChar(56)
+  buyOrderId     String   @map("buy_order_id")
+  sellOrderId    String   @map("sell_order_id")
+  price          Decimal  @db.Decimal(10, 8)
+  quantity       Int
+  tradedAt       DateTime @map("traded_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([marketId])
+  @@index([buyerAddress])
+  @@index([sellerAddress])
+  @@index([buyerAddress, tradedAt(sort: Desc)])
+  @@index([sellerAddress, tradedAt(sort: Desc)])
+  @@map("trades")
+}
+
+/// On-chain trade events. Order rows are API/CLOB-owned (uuid PK); chain trades
+/// are stored here keyed by idempotencyKey until fill reconciliation exists.
+model IndexedTrade {
+  id                  String   @id @default(uuid())
+  idempotencyKey      String   @unique @map("idempotency_key") @db.VarChar(64)
+  eventId             String   @map("event_id")
+  ledger              Int
+  marketId            String   @map("market_id")
+  traderAddress       String   @map("trader_address") @db.VarChar(56)
+  counterpartyAddress String   @map("counterparty_address") @db.VarChar(56)
+  direction           String   @db.VarChar(8)
+  outcome             String   @db.VarChar(8)
+  priceRaw            String   @map("price_raw")
+  quantityRaw         String   @map("quantity_raw")
+  buyOrderId          String   @map("buy_order_id")
+  sellOrderId         String   @map("sell_order_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([marketId])
+  @@index([ledger])
+  @@map("indexed_trades")
+}
+
+model OracleSourceAlias {
+  id              Int          @id @default(autoincrement())
+  alias           String       @unique
+  canonicalSource OracleSource @map("canonical_source")
+  createdAt       DateTime     @default(now()) @map("created_at")
+
+  @@index([canonicalSource])
+  @@map("oracle_source_aliases")
+}
+
+/// Durable audit log of on-chain collateral_deposited events.
+/// Written atomically with IndexerProcessedEvent; amountRaw stored as text
+/// to preserve i128 precision. Position reconciliation reads this table.
+model CollateralDeposit {
+  id             String   @id @default(uuid())
+  idempotencyKey String   @unique @map("idempotency_key") @db.VarChar(64)
+  eventId        String   @map("event_id")
+  ledger         Int
+  contractId     String   @map("contract_id")
+  account        String   @db.VarChar(56)
+  marketId       String   @map("market_id")
+  amountRaw      String   @map("amount_raw")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([account])
+  @@index([marketId])
+  @@index([account, marketId])
+  @@index([ledger])
+  @@map("collateral_deposits")
 }
