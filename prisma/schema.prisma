@@ -59,6 +59,13 @@ enum OracleSource {
   MANUAL
 }
 
+enum OracleReportStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
 model Market {
   id             String       @id @default(uuid())
   question       String
@@ -107,19 +114,23 @@ model Order {
 }
 
 model OracleReport {
-  id                  String   @id @default(uuid())
-  source              String   @db.VarChar(256)
-  payloadHash         String   @map("payload_hash") @db.VarChar(64)
-  confidence          Decimal  @db.Decimal(5, 4)
-  marketId            String?  @map("market_id")
-  candidateResolution Boolean? @map("candidate_resolution")
-  createdAt           DateTime @default(now()) @map("created_at")
+  id                  String             @id @default(uuid())
+  source              String             @db.VarChar(256)
+  payloadHash         String             @map("payload_hash") @db.VarChar(64)
+  confidence          Decimal            @db.Decimal(5, 4)
+  marketId            String?            @map("market_id")
+  candidateResolution Boolean?           @map("candidate_resolution")
+  status              OracleReportStatus @default(PENDING)
+  attempts            Int                @default(0)
+  txHash              String?            @map("tx_hash") @db.VarChar(64)
+  createdAt           DateTime           @default(now()) @map("created_at")
 
   market Market? @relation(fields: [marketId], references: [id], onDelete: SetNull)
 
   @@index([marketId])
   @@index([source])
   @@index([createdAt])
+  @@index([status])
   @@map("oracle_reports")
 }
 
@@ -236,7 +247,7 @@ model Trade {
   id             String   @id @default(uuid())
   tradeId        String   @unique @map("trade_id") @db.VarChar(256)
   marketId       String   @map("market_id")
-  outcome        Outcome
+  outcome        String   @db.VarChar(8)
   buyerAddress   String   @map("buyer_address") @db.VarChar(56)
   sellerAddress  String   @map("seller_address") @db.VarChar(56)
   buyOrderId     String   @map("buy_order_id")

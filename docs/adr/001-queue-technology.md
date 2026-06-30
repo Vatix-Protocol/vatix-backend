@@ -36,6 +36,7 @@ BullMQ is a Node.js queue library built on Redis. It provides:
 - **BullMQ Board** optional UI for observability.
 
 Tradeoffs:
+
 - Adds `bullmq` dependency (well-maintained, MIT licence).
 - Jobs are stored as Redis hashes; slightly higher memory per job than raw streams.
 - Requires Redis ≥ 6.2 (already satisfied by the `redis:7-alpine` service in `docker-compose.yml`).
@@ -95,12 +96,13 @@ reached production; it can be revisited if operational requirements change.
 export const DEFAULT_JOB_OPTIONS = {
   attempts: 3,
   backoff: { type: "exponential", delay: 1_000 },
-  removeOnComplete: { count: 100 },   // keep last 100 completed jobs
-  removeOnFail: false,                 // keep ALL failed jobs as DLQ
+  removeOnComplete: { count: 100 }, // keep last 100 completed jobs
+  removeOnFail: false, // keep ALL failed jobs as DLQ
 } as const;
 ```
 
 Failed jobs (DLQ) are accessible via:
+
 ```ts
 const failed = await queue.getFailed();
 ```

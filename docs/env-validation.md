@@ -10,12 +10,34 @@ All Vatix services validate their environment **at boot time** — not lazily at
 the point of first use. A missing or malformed variable causes an immediate,
 descriptive startup failure rather than a silent bug at runtime.
 
-Two utilities work together:
+The **API server** validates its boot-time variables with a **Zod schema** in
+`src/env.ts` (`parseApiEnv()`), called from `src/config.ts` at module load and
+again in `src/index.ts` before the HTTP server binds.
+
+Two utilities work together for other services:
 
 | Utility                 | File                                | Purpose                        |
 | ----------------------- | ----------------------------------- | ------------------------------ |
+| `parseApiEnv()`         | `src/env.ts`                        | Zod schema for API boot env    |
 | `requireEnv()`          | `packages/shared/src/requireEnv.ts` | Fail-fast presence check       |
 | `loadBaseConfig()` etc. | `packages/shared/src/config.ts`     | Typed, validated config object |
+
+---
+
+## API boot validation (`parseApiEnv`)
+
+The HTTP API uses Zod to validate `NODE_ENV`, `PORT`, `DATABASE_URL`,
+`ORACLE_CHALLENGE_WINDOW_SECONDS`, and `ORACLE_POLL_INTERVAL_MS` before
+`buildServer()` runs. Invalid values throw with the same descriptive messages
+as the legacy manual validators.
+
+```ts
+import { parseApiEnv } from "./env.js";
+
+parseApiEnv(); // reads process.env; throws on first invalid field
+```
+
+See `src/env.test.ts` for coverage.
 
 ---
 
@@ -166,6 +188,10 @@ Must be a positive integer, optionally within a bounded range.
 | `FINALIZATION_CHALLENGE_WINDOW_SECONDS`  | 0    | —       | `3600`  |
 | `INDEXER_INGESTION_INTERVAL_MS`          | 100  | —       | `5000`  |
 | `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | 1    | —       | `10`    |
+| `REDIS_MAX_RETRIES`                      | 1    | —       | `3`     |
+| `REDIS_RETRY_BASE_DELAY`                 | 1    | —       | `100`   |
+| `REDIS_RETRY_MAX_DELAY`                  | 1    | —       | `2000`  |
+| `REDIS_CONNECT_TIMEOUT`                  | 1    | —       | `5000`  |
 
 **Error example:**
 
@@ -197,6 +223,27 @@ CORS_ALLOWED_ORIGINS=https://app.vatix.io,https://staging.vatix.io
 In production, if this variable is not set, **no cross-origin requests are
 allowed**. In development and test the local dev server origins are permitted
 by default.
+
+**Production HTTPS enforcement:** when `NODE_ENV=production`, every origin in
+`CORS_ALLOWED_ORIGINS` must use the `https://` scheme. An `http://` or
+scheme-less origin causes a startup error:
+
+```
+CORS misconfiguration: all origins must use https:// in production.
+Insecure origin(s): http://app.vatix.io
+```
+
+### Redis connection retry
+
+The Redis client retries on connection failure using exponential backoff. All
+values are optional — the defaults are safe for most deployments.
+
+| Variable                 | Description                                             | Default |
+| ------------------------ | ------------------------------------------------------- | ------- |
+| `REDIS_MAX_RETRIES`      | Max reconnect attempts before the client gives up       | `3`     |
+| `REDIS_RETRY_BASE_DELAY` | Delay (ms) before the first retry; doubles each attempt | `100`   |
+| `REDIS_RETRY_MAX_DELAY`  | Upper cap (ms) on retry delay                           | `2000`  |
+| `REDIS_CONNECT_TIMEOUT`  | Socket connect timeout (ms)                             | `5000`  |
 
 ---
 

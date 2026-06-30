@@ -1,8 +1,50 @@
 import Redis from "ioredis";
 
 const ORDER_BOOK_TTL = 60; // seconds
-const MAX_RETRIES = 3;
-const BASE_RETRY_DELAY = 100; // ms
+
+/**
+ * Reads REDIS_KEY_PREFIX from the environment (default: "vatix:").
+ * All Redis keys produced by RedisService are namespaced under this prefix so
+ * that multiple environments (dev/staging/prod) can safely share a single Redis
+ * instance without key collisions.
+ *
+ * Override via environment variable:
+ *   REDIS_KEY_PREFIX  — key namespace prefix (default: "vatix:")
+ */
+function loadKeyPrefix(): string {
+  const raw = process.env.REDIS_KEY_PREFIX;
+  if (raw !== undefined && raw !== null) return raw; // allow empty string (no prefix)
+  return "vatix:";
+}
+
+/**
+ * Redis connection retry defaults.
+ * Override via environment variables:
+ *   REDIS_MAX_RETRIES        — max retry attempts before giving up (default: 3)
+ *   REDIS_RETRY_BASE_DELAY   — base delay in ms for exponential backoff (default: 100)
+ *   REDIS_RETRY_MAX_DELAY    — cap on retry delay in ms (default: 2000)
+ *   REDIS_CONNECT_TIMEOUT    — socket connect timeout in ms (default: 5000)
+ */
+function loadRetryConfig(): {
+  maxRetries: number;
+  baseDelay: number;
+  maxDelay: number;
+  connectTimeout: number;
+} {
+  function parsePositiveInt(name: string, fallback: number): number {
+    const raw = process.env[name];
+    if (!raw || raw.trim() === "") return fallback;
+    const value = Number(raw);
+    return Number.isInteger(value) && value > 0 ? value : fallback;
+  }
+
+  return {
+    maxRetries: parsePositiveInt("REDIS_MAX_RETRIES", 3),
+    baseDelay: parsePositiveInt("REDIS_RETRY_BASE_DELAY", 100),
+    maxDelay: parsePositiveInt("REDIS_RETRY_MAX_DELAY", 2000),
+    connectTimeout: parsePositiveInt("REDIS_CONNECT_TIMEOUT", 5000),
+  };
+}
 
 /**
  * Order book data structure for caching
@@ -21,6 +63,29 @@ class RedisService {
   private client: Redis | null = null;
   private isConnecting = false;
   private retryCount = 0;
+  /**
+   * Key prefix applied to all keys managed by this service.
+   * Loaded once at construction from REDIS_KEY_PREFIX (default: "vatix:").
+   * Callers that build their own stream keys should prepend this prefix so all
+   * keys live in the same namespace.
+   */
+  readonly keyPrefix: string;
+
+  constructor() {
+    this.keyPrefix = loadKeyPrefix();
+  }
+
+  /**
+   * Returns a key string with the configured key prefix applied.
+   * Use this helper when building stream keys or other Redis keys outside the
+   * service so they are consistently namespaced.
+   *
+   * @param key - Bare key without prefix (e.g. "settlement-trades")
+   * @returns Prefixed key (e.g. "vatix:settlement-trades")
+   */
+  prefixed(key: string): string {
+    return `${this.keyPrefix}${key}`;
+  }
 
   /**
    * Get Redis client instance, creating if necessary
@@ -45,20 +110,21 @@ class RedisService {
         throw new Error("REDIS_URL environment variable is not set");
       }
 
+      const { maxRetries, baseDelay, maxDelay, connectTimeout } =
+        loadRetryConfig();
+
       this.client = new Redis(redisUrl, {
-        maxRetriesPerRequest: MAX_RETRIES,
+        maxRetriesPerRequest: maxRetries,
+        connectTimeout,
         retryStrategy: (times: number) => {
-          if (times > MAX_RETRIES) {
+          if (times > maxRetries) {
             console.error(
-              { service: "redis", maxRetries: MAX_RETRIES },
+              { service: "redis", maxRetries },
               "Redis max retries exceeded, giving up"
             );
             return null; // stop retrying
           }
-          const delay = Math.min(
-            BASE_RETRY_DELAY * Math.pow(2, times - 1),
-            2000
-          );
+          const delay = Math.min(baseDelay * Math.pow(2, times - 1), maxDelay);
           console.warn(
             { service: "redis", attempt: times, delayMs: delay },
             "Redis connection retry scheduled"
@@ -163,7 +229,7 @@ class RedisService {
    * Build order book cache key
    */
   private buildOrderBookKey(marketId: string, outcome: string): string {
-    return `orderbook:${marketId}:${outcome}`;
+    return `${this.keyPrefix}orderbook:${marketId}:${outcome}`;
   }
 
   /**
@@ -208,10 +274,10 @@ class RedisService {
   }
 
   /**
-   * Clear all order books for a market (matches pattern orderbook:{marketId}:*)
+   * Clear all order books for a market (matches pattern {prefix}orderbook:{marketId}:*)
    */
   async clearOrderBook(marketId: string): Promise<void> {
-    const pattern = `orderbook:${marketId}:*`;
+    const pattern = `${this.keyPrefix}orderbook:${marketId}:*`;
     try {
       const keys = await this.getClient().keys(pattern);
       if (keys.length > 0) {
@@ -251,6 +317,7 @@ class RedisService {
     if (this.client) {
       await this.client.quit();
       this.client = null;
+      this.retryCount = 0;
       console.info({ service: "redis" }, "Redis disconnected gracefully");
     }
   }

@@ -34,8 +34,8 @@ export function errorHandler(
   const isClientError = statusCode >= 400 && statusCode < 500;
   const isServerError = statusCode >= 500;
 
+  // requestId is auto-bound via requestIdLogLabel — no need to repeat it here.
   const logContext = {
-    requestId: request.id,
     method: request.method,
     path: request.url,
     statusCode,

@@ -165,6 +165,24 @@ const childLogger = logger.child("SubComponent");
 
 Returns a new `Logger` instance that inherits the parent's log level.
 
+## API Request Logger (Fastify Middleware)
+
+The HTTP API uses `requestLogger` (`src/api/middleware/logger.ts`) to emit
+machine-parseable structured logs for every request. Each request produces two
+entries:
+
+| Hook         | `type` field | Log level                             | Fields                                                             |
+| ------------ | ------------ | ------------------------------------- | ------------------------------------------------------------------ |
+| `onRequest`  | `request`    | `info`                                | `requestId`, `method`, `path`, optional `userAddress`              |
+| `onResponse` | `response`   | `info` / `warn` (4xx) / `error` (5xx) | `requestId`, `method`, `path`, `statusCode`, `durationMs` (number) |
+
+Rules enforced by the middleware and verified in CI:
+
+- Request and response bodies are **never** logged.
+- Sensitive headers (`Authorization`, `Cookie`, `x-api-key`, etc.) are **never** logged.
+- `durationMs` and `statusCode` are numeric — not stringified — for log aggregation.
+- Every response includes an `x-request-id` header matching `requestId` in the logs.
+
 ## Examples
 
 ### API Route Logging

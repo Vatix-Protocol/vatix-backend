@@ -17,18 +17,18 @@ describe("Dead Letter Log", () => {
       reason: "Max retries exceeded",
     };
 
-    logDeadLetter(mockLogger as any, message);
-
-    expect(mockLogger.error).toHaveBeenCalledOnce();
-    expect(mockLogger.error).toHaveBeenCalledWith(
-      "Job dead-lettered",
-      expect.objectContaining({
-        messageId: "msg-123",
-        queue: "settlement",
-        reason: "Max retries exceeded",
-        payloadType: "object",
-        timestamp: expect.any(String),
-      })
-    );
+    return logDeadLetter(mockLogger as any, message).then(() => {
+      expect(mockLogger.error).toHaveBeenCalledOnce();
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        "Job dead-lettered",
+        expect.objectContaining({
+          messageId: "msg-123",
+          queue: "settlement",
+          reason: "Max retries exceeded",
+          payloadType: "object",
+          timestamp: expect.any(String),
+        })
+      );
+    });
   });
 });
