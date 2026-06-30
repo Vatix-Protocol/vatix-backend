@@ -231,7 +231,7 @@ describe("Error Handler Middleware", () => {
   });
 
   describe("Response Format", () => {
-    it("should have consistent format with error, requestId, and statusCode", async () => {
+    it("should have consistent format with error, code, requestId, and statusCode", async () => {
       server.get("/test", async () => {
         throw new NotFoundError("Resource not found");
       });
@@ -243,11 +243,34 @@ describe("Error Handler Middleware", () => {
 
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty("error");
+      expect(body).toHaveProperty("code");
       expect(body).toHaveProperty("requestId");
       expect(body).toHaveProperty("statusCode");
       expect(typeof body.error).toBe("string");
+      expect(typeof body.code).toBe("string");
       expect(typeof body.requestId).toBe("string");
       expect(typeof body.statusCode).toBe("number");
+    });
+
+    it("should return correct code per error type", async () => {
+      const cases: [() => Error, string][] = [
+        [() => new ValidationError("bad"), "VALIDATION_ERROR"],
+        [() => new NotFoundError("nope"), "NOT_FOUND"],
+        [() => new UnauthorizedError("denied"), "UNAUTHORIZED"],
+        [() => new ForbiddenError("forbidden"), "FORBIDDEN"],
+        [() => new Error("boom"), "INTERNAL_ERROR"],
+      ];
+
+      for (const [makeError, expectedCode] of cases) {
+        server.get(`/test-${expectedCode}`, async () => {
+          throw makeError();
+        });
+        const res = await server.inject({
+          method: "GET",
+          url: `/test-${expectedCode}`,
+        });
+        expect(JSON.parse(res.body).code).toBe(expectedCode);
+      }
     });
 
     it("should include request ID in response", async () => {

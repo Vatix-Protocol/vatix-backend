@@ -1,8 +1,22 @@
 // Error handler middleware for Fastify
 
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
-import { ValidationError } from "./errors.js";
+import {
+  ValidationError,
+  NotFoundError,
+  UnauthorizedError,
+  ForbiddenError,
+} from "./errors.js";
 import { ErrorResponse } from "../../types/errors.js";
+
+function resolveCode(error: Error, statusCode: number): string {
+  if (error instanceof ValidationError) return "VALIDATION_ERROR";
+  if (error instanceof NotFoundError) return "NOT_FOUND";
+  if (error instanceof UnauthorizedError) return "UNAUTHORIZED";
+  if (error instanceof ForbiddenError) return "FORBIDDEN";
+  if (statusCode >= 500) return "INTERNAL_ERROR";
+  return "BAD_REQUEST";
+}
 
 // Centralized error handler for Fastify
 // Catches all unhandled errors and returns consistent error responses
@@ -57,6 +71,7 @@ export function errorHandler(
 
   const response: ErrorResponse = {
     error: errorMessage,
+    code: resolveCode(error, statusCode),
     requestId,
     statusCode,
   };
