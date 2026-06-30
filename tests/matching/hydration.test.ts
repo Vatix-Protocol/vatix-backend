@@ -116,4 +116,16 @@ describe("#449 — hydrateAllActiveMarkets (restart simulation)", () => {
     const books: Map<string, unknown> = (matchingService as any).books;
     expect(books.size).toBe(0);
   });
+
+  it("creates empty books for outcomes with no resting orders", async () => {
+    process.env.WARM_MARKETS_ON_STARTUP = "true";
+    await matchingService.hydrateAllActiveMarkets();
+
+    const book = (matchingService as any).books.get("market-1:NO");
+    expect(book).toBeDefined();
+
+    const depth = book.getDepth(10);
+    expect(depth.bids).toHaveLength(0);
+    expect(depth.asks).toHaveLength(0);
+  });
 });
