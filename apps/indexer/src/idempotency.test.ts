@@ -5,6 +5,7 @@ import {
   withIdempotencyKey,
   insertIfNew,
   insertAllIfNew,
+  DuplicateStats,
 } from "./idempotency.js";
 import type { NormalizedTrade, NormalizedResolution } from "./types.js";
 
@@ -245,5 +246,104 @@ describe("insertIfNew", () => {
 
     expect(result).toEqual({ inserted: [later], duplicateCount: 1 });
     expect(upsert).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── DuplicateStats ───────────────────────────────────────────────────────────
+
+describe("DuplicateStats", () => {
+  const persisted = withIdempotencyKey(TRADE);
+
+  it("starts at zero", () => {
+    const stats = new DuplicateStats();
+    expect(stats.totalInserted).toBe(0);
+    expect(stats.totalDuplicates).toBe(0);
+  });
+
+  it("increments totalInserted when record() receives an inserted result", () => {
+    const stats = new DuplicateStats();
+    stats.record({ status: "inserted", record: persisted });
+    expect(stats.totalInserted).toBe(1);
+    expect(stats.totalDuplicates).toBe(0);
+  });
+
+  it("increments totalDuplicates when record() receives a duplicate result", () => {
+    const stats = new DuplicateStats();
+    stats.record({ status: "duplicate", key: persisted.idempotencyKey });
+    expect(stats.totalInserted).toBe(0);
+    expect(stats.totalDuplicates).toBe(1);
+  });
+
+  it("accumulates correctly across multiple record() calls", () => {
+    const stats = new DuplicateStats();
+    stats.record({ status: "inserted", record: persisted });
+    stats.record({ status: "inserted", record: persisted });
+    stats.record({ status: "duplicate", key: persisted.idempotencyKey });
+    expect(stats.totalInserted).toBe(2);
+    expect(stats.totalDuplicates).toBe(1);
+  });
+
+  it("recordBatch() accumulates from an InsertBatchResult", () => {
+    const stats = new DuplicateStats();
+    stats.recordBatch({ inserted: [persisted, persisted], duplicateCount: 3 });
+    expect(stats.totalInserted).toBe(2);
+    expect(stats.totalDuplicates).toBe(3);
+  });
+
+  it("recordBatch() is additive across calls", () => {
+    const stats = new DuplicateStats();
+    stats.recordBatch({ inserted: [persisted], duplicateCount: 1 });
+    stats.recordBatch({ inserted: [], duplicateCount: 2 });
+    expect(stats.totalInserted).toBe(1);
+    expect(stats.totalDuplicates).toBe(3);
+  });
+
+  it("toLogFields() returns a snapshot of counters", () => {
+    const stats = new DuplicateStats();
+    stats.record({ status: "inserted", record: persisted });
+    stats.record({ status: "duplicate", key: persisted.idempotencyKey });
+    expect(stats.toLogFields()).toEqual({ totalInserted: 1, totalDuplicates: 1 });
+  });
+
+  it("reset() clears all counters", () => {
+    const stats = new DuplicateStats();
+    stats.record({ status: "inserted", record: persisted });
+    stats.record({ status: "duplicate", key: persisted.idempotencyKey });
+    stats.reset();
+    expect(stats.totalInserted).toBe(0);
+    expect(stats.totalDuplicates).toBe(0);
+  });
+
+  it("integrates with insertIfNew — captures inserted result", async () => {
+    const stats = new DuplicateStats();
+    const upsert = vi.fn().mockResolvedValue(persisted);
+    const result = await insertIfNew(persisted, upsert);
+    stats.record(result);
+    expect(stats.totalInserted).toBe(1);
+    expect(stats.totalDuplicates).toBe(0);
+  });
+
+  it("integrates with insertIfNew — captures duplicate result", async () => {
+    const stats = new DuplicateStats();
+    const upsert = vi.fn().mockResolvedValue(null);
+    const result = await insertIfNew(persisted, upsert);
+    stats.record(result);
+    expect(stats.totalInserted).toBe(0);
+    expect(stats.totalDuplicates).toBe(1);
+  });
+
+  it("integrates with insertAllIfNew — captures batch result", async () => {
+    const stats = new DuplicateStats();
+    const later = { ...persisted, idempotencyKey: "later-key-2" };
+    const upsert = vi
+      .fn()
+      .mockResolvedValueOnce(null)        // first → duplicate
+      .mockResolvedValueOnce(later);       // second → inserted
+
+    const batchResult = await insertAllIfNew([persisted, later], upsert);
+    stats.recordBatch(batchResult);
+
+    expect(stats.totalInserted).toBe(1);
+    expect(stats.totalDuplicates).toBe(1);
   });
 });

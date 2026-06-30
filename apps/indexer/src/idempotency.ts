@@ -145,6 +145,65 @@ export interface InsertBatchResult<T> {
   duplicateCount: number;
 }
 
+// ─── Duplicate stats tracker ─────────────────────────────────────────────────
+
+/**
+ * Lightweight, process-lifetime counter for duplicate chain events.
+ *
+ * Replaces the in-memory `Set`-based `EventProcessor` class that was
+ * previously orphaned in `src/services/event-processor.ts`.  Deduplication
+ * is enforced at the DB boundary via `IndexerProcessedEvent`; this tracker
+ * only aggregates the counts for metrics / structured logs.
+ *
+ * Unlike the old `EventProcessor`, this tracker:
+ *  - Does **not** hold a `Set` of seen IDs (no unbounded memory growth)
+ *  - Is purely additive — callers increment it, the DB is the source of truth
+ *  - Is safe to share across ingestion batches
+ */
+export class DuplicateStats {
+  private _totalDuplicates = 0;
+  private _totalInserted = 0;
+
+  /** Record the outcome of a single `insertIfNew` call. */
+  record(result: InsertResult<unknown>): void {
+    if (result.status === "duplicate") {
+      this._totalDuplicates += 1;
+    } else {
+      this._totalInserted += 1;
+    }
+  }
+
+  /** Record the outcome of an `insertAllIfNew` call. */
+  recordBatch<T>(result: InsertBatchResult<T>): void {
+    this._totalInserted += result.inserted.length;
+    this._totalDuplicates += result.duplicateCount;
+  }
+
+  /** Cumulative duplicates suppressed since this instance was created. */
+  get totalDuplicates(): number {
+    return this._totalDuplicates;
+  }
+
+  /** Cumulative successful inserts since this instance was created. */
+  get totalInserted(): number {
+    return this._totalInserted;
+  }
+
+  /** Snapshot for structured logging or metrics export. */
+  toLogFields(): Record<string, number> {
+    return {
+      totalInserted: this._totalInserted,
+      totalDuplicates: this._totalDuplicates,
+    };
+  }
+
+  /** Reset counters (useful between test scenarios or replay windows). */
+  reset(): void {
+    this._totalDuplicates = 0;
+    this._totalInserted = 0;
+  }
+}
+
 /**
  * Attempt to insert a record using the provided upsert function.
  * The upsert must return `null` (or `undefined`) when the key already exists
