@@ -6,7 +6,10 @@
  * in-memory depth matches the DB state — eliminating the race window.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { matchingService, getHydratedMarketsCount } from "../../src/matching/matching-service.js";
+import {
+  matchingService,
+  getHydratedMarketsCount,
+} from "../../src/matching/matching-service.js";
 
 // ---------------------------------------------------------------------------
 // Minimal Prisma mock — avoids a real DB connection
