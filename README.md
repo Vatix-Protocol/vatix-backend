@@ -21,7 +21,7 @@ Node.js • TypeScript • Fastify • PostgreSQL • Prisma • Redis • Stell
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - pnpm 8+
 - Docker & Docker Compose
 
