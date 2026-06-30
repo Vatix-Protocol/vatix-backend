@@ -39,7 +39,6 @@ Vatix Backend is a monorepo of services that together power the Vatix prediction
 | **Indexer**   | `apps/indexer/` | Polls Stellar network for on-chain events, parses them, and writes canonical records to PostgreSQL.             |
 | **Oracle**    | `apps/oracle/`  | Fetches external price/resolution data, signs reports, and submits them on-chain via the Stellar SDK.           |
 | **Workers**   | `apps/workers/` | Queue consumers and scheduled jobs (e.g. settlement, expiry sweeps). Decoupled from the HTTP request lifecycle. |
-| **Shared DB** | `packages/db/`  | Shared Prisma client and migration utilities used by all services.                                              |
 
 ## Major Data Flows
 
