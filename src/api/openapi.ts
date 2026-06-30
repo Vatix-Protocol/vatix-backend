@@ -65,8 +65,12 @@ export const openApiSpec = {
                     dependencies: {
                       type: "object",
                       properties: {
-                        database: { $ref: "#/components/schemas/DependencyResult" },
-                        indexFreshness: { $ref: "#/components/schemas/DependencyResult" },
+                        database: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
+                        indexFreshness: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
                       },
                     },
                   },
@@ -85,8 +89,12 @@ export const openApiSpec = {
                     dependencies: {
                       type: "object",
                       properties: {
-                        database: { $ref: "#/components/schemas/DependencyResult" },
-                        indexFreshness: { $ref: "#/components/schemas/DependencyResult" },
+                        database: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
+                        indexFreshness: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
                       },
                     },
                   },
@@ -386,11 +394,19 @@ export const openApiSpec = {
     "/v1/admin/markets": {
       get: {
         summary: "Admin market listing",
-        description: "List markets for admin users",
+        description:
+          "List all markets including CANCELLED ones. Requires API key and admin token.",
         tags: ["Admin"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
         responses: {
           "200": {
             description: "Admin market list",
+          },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
           },
         },
       },
@@ -398,8 +414,10 @@ export const openApiSpec = {
     "/v1/admin/markets/{id}/status": {
       patch: {
         summary: "Update market status",
-        description: "Admin endpoint to change market status",
+        description:
+          "Admin endpoint to change market status. Requires API key and admin token.",
         tags: ["Admin"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
         parameters: [
           {
             name: "id",
@@ -432,11 +450,33 @@ export const openApiSpec = {
           "400": {
             description: "Invalid request",
           },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
+          },
+          "404": {
+            description: "Market not found",
+          },
         },
       },
     },
   },
   components: {
+    securitySchemes: {
+      ApiKeyAuth: {
+        type: "apiKey",
+        in: "header",
+        name: "x-api-key",
+        description: "API key required for all admin endpoints",
+      },
+      BearerAuth: {
+        type: "http",
+        scheme: "bearer",
+        description: "Admin token required for all admin endpoints",
+      },
+    },
     schemas: {
       Error: {
         type: "object",
