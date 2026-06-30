@@ -2,7 +2,9 @@
  * Primary Provider Adapter
  *
  * The default provider adapter used for market resolution.
- * Implements the ProviderAdapter interface.
+ * Implements the ProviderAdapter interface with per-request timeout and
+ * retry configuration. Retries are applied at the adapter level for
+ * transient errors (network failures, 5xx responses, timeouts).
  *
  * @module apps/oracle/primary-adapter
  */
@@ -13,6 +15,7 @@ import type {
   ResolutionRequest,
 } from "./provider-adapter.js";
 import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
+import { withRetry, type RetryConfig, DEFAULT_RETRY_CONFIG } from "./retry-utils.js";
 
 /**
  * Primary provider adapter configuration.
@@ -22,8 +25,14 @@ export interface PrimaryAdapterConfig {
   baseUrl: string;
   /** API key for authentication */
   apiKey?: string;
-  /** Request timeout in milliseconds */
+  /** Request timeout in milliseconds (per attempt) */
   timeoutMs?: number;
+  /**
+   * Retry configuration applied to each resolution request.
+   * Defaults to no retries (maxRetries: 0).
+   * Override to enable automatic retries on transient failures.
+   */
+  retryConfig?: Partial<RetryConfig>;
   /** Optional fetch implementation for tests */
   fetchFn?: typeof fetch;
 }
@@ -66,6 +75,7 @@ export class PrimaryAdapter implements ProviderAdapter {
   constructor(config: PrimaryAdapterConfig) {
     this.config = {
       timeoutMs: DEFAULT_TIMEOUT_MS,
+      retryConfig: { maxRetries: 0 },
       ...config,
     };
     this.fetchFn = config.fetchFn ?? fetch;
@@ -74,6 +84,11 @@ export class PrimaryAdapter implements ProviderAdapter {
   /**
    * Resolve a market using the primary provider.
    *
+   * Applies per-request timeout and retry configuration. The timeout is
+   * applied per attempt; retries use exponential back-off as configured by
+   * `retryConfig`. Request-level `timeoutMs` and `retryConfig` take
+   * precedence over adapter-level defaults.
+   *
    * @param request - Resolution request parameters
    * @returns Provider result with source attribution
    */
@@ -81,27 +96,38 @@ export class PrimaryAdapter implements ProviderAdapter {
     const timeoutMs =
       request.timeoutMs ?? this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-    const timedResult = await withTimeout<ProviderResult>(
-      async (signal) => this.fetchFromProvider(request, signal),
-      {
-        timeoutMs,
-        errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
-      }
+    // Per-request retryConfig overrides adapter-level default
+    const effectiveRetryConfig: Partial<RetryConfig> = {
+      ...this.config.retryConfig,
+      ...(request.retryConfig ?? {}),
+    };
+
+    return withRetry(
+      async () => {
+        const timedResult = await withTimeout<ProviderResult>(
+          async (signal) => this.fetchFromProvider(request, signal),
+          {
+            timeoutMs,
+            errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
+          }
+        );
+
+        if (timedResult.timedOut) {
+          throw new PrimaryProviderError(
+            "TIMEOUT",
+            timedResult.error?.message ?? "Primary provider request timed out",
+            timedResult.error
+          );
+        }
+
+        if (timedResult.error) {
+          throw this.mapProviderError(timedResult.error);
+        }
+
+        return timedResult.value!;
+      },
+      effectiveRetryConfig
     );
-
-    if (timedResult.timedOut) {
-      throw new PrimaryProviderError(
-        "TIMEOUT",
-        timedResult.error?.message ?? "Primary provider request timed out",
-        timedResult.error
-      );
-    }
-
-    if (timedResult.error) {
-      throw this.mapProviderError(timedResult.error);
-    }
-
-    return timedResult.value!;
   }
 
   /**

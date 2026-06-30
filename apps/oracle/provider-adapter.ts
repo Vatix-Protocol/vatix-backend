@@ -7,6 +7,8 @@
  * @module apps/oracle/provider-adapter
  */
 
+import type { RetryConfig } from "./retry-utils.js";
+
 /**
  * Provider resolution result with source attribution.
  */
@@ -59,6 +61,11 @@ export interface ResolutionRequest {
   oracleAddress: string;
   /** Request timeout in milliseconds */
   timeoutMs?: number;
+  /**
+   * Per-request retry configuration.
+   * When provided, overrides the adapter-level retryConfig for this request.
+   */
+  retryConfig?: Partial<RetryConfig>;
   /** Abort signal for cancellation */
   signal?: AbortSignal;
 }

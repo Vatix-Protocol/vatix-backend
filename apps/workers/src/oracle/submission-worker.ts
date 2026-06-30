@@ -26,6 +26,10 @@ import {
   type QueuedSubmission,
 } from "./redis-submission-queue.js";
 import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
+import {
+  logDeadLetter,
+  type DeadLetterMessage,
+} from "../consumers/dead-letter.js";
 
 export interface OracleStellarConfig {
   rpcUrl: string;
@@ -359,13 +363,31 @@ export class SubmissionWorker {
   }
 
   /**
-   * Mark submission as failed in database.
+   * Mark submission as failed in database and emit a dead-letter log entry.
+   *
+   * Called when max retries are exhausted. Persists the failure state to the
+   * database and records a structured dead-letter log entry so that operators
+   * can detect and diagnose permanently-failed submissions.
    */
   private async updateOnFailure(
     submission: QueuedSubmission,
     errorMessage: string
   ): Promise<void> {
     const { request } = submission;
+
+    // Emit dead-letter log entry so the failure is surfaced for operational
+    // visibility (monitored via log aggregation / alerting pipelines).
+    const deadLetterMessage: DeadLetterMessage = {
+      id: submission.id,
+      queue: "oracle-submission",
+      payload: {
+        marketId: request.marketId,
+        oracleAddress: request.oracleAddress,
+        attempts: submission.attempts,
+      },
+      reason: errorMessage,
+    };
+    logDeadLetter(this.logger, deadLetterMessage);
 
     try {
       await this.prisma.oracleReport.updateMany({
