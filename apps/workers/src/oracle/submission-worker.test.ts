@@ -10,14 +10,67 @@ vi.mock("../../../oracle/signature-helper.js", () => ({
   ),
 }));
 
-// Spy on logDeadLetter to verify dead-letter calls without real I/O.
-vi.mock("../consumers/dead-letter.js", () => ({
-  logDeadLetter: vi.fn(),
+// Mocks for the Stellar SDK calls made by SubmissionWorker.submitOnChain().
+// Exposed via vi.hoisted so individual tests can configure return values.
+const stellarMocks = vi.hoisted(() => ({
+  sign: vi.fn(),
+  getAccount: vi.fn(),
+  prepareTransaction: vi.fn(),
+  sendTransaction: vi.fn(),
+  getTransaction: vi.fn(),
+  contractCall: vi.fn((method: string, ...args: unknown[]) => ({
+    method,
+    args,
+  })),
+}));
+
+vi.mock("@stellar/stellar-sdk", () => ({
+  Keypair: {
+    fromSecret: vi.fn(() => ({
+      publicKey: () => "GORACLEPUBLICKEY",
+      sign: stellarMocks.sign,
+    })),
+  },
+  Contract: vi.fn().mockImplementation(() => ({
+    call: stellarMocks.contractCall,
+  })),
+  TransactionBuilder: vi.fn().mockImplementation(() => {
+    const builder = {
+      addOperation: vi.fn(() => builder),
+      setTimeout: vi.fn(() => builder),
+      build: vi.fn(() => ({ sign: vi.fn() })),
+    };
+    return builder;
+  }),
+  nativeToScVal: vi.fn((value: unknown) => value),
+  rpc: {
+    Server: vi.fn().mockImplementation(() => ({
+      getAccount: stellarMocks.getAccount,
+      prepareTransaction: stellarMocks.prepareTransaction,
+      sendTransaction: stellarMocks.sendTransaction,
+      getTransaction: stellarMocks.getTransaction,
+    })),
+    Api: {
+      GetTransactionStatus: {
+        SUCCESS: "SUCCESS",
+        FAILED: "FAILED",
+        NOT_FOUND: "NOT_FOUND",
+      },
+    },
+  },
+  xdr: {},
 }));
 
 import { SubmissionWorker } from "./submission-worker.js";
 import type { QueuedSubmission } from "./redis-submission-queue.js";
 import { logDeadLetter } from "../consumers/dead-letter.js";
+
+const TEST_STELLAR_CONFIG = {
+  rpcUrl: "https://rpc.test",
+  contractId: "CCONTRACTTEST",
+  networkPassphrase: "Test SDF Network ; September 2015",
+  signerSecret: "SBTESTSECRETKEY",
+};
 
 // Mock Prisma
 const mockPrisma = {
@@ -108,6 +161,69 @@ describe("SubmissionWorker", () => {
         "Oracle submission processed successfully",
         expect.any(Object)
       );
+    });
+
+    it("persists status, attempts, and tx hash on success", async () => {
+      const submission = createTestSubmission();
+      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
+      mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
+        id: "candidate-1",
+      });
+      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
+
+      await worker.processSubmission(submission);
+
+      expect(mockPrisma.oracleReport.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          status: "CONFIRMED",
+          attempts: submission.attempts + 1,
+          txHash: undefined,
+        }),
+      });
+    });
+
+    it("persists SUBMITTED status and attempt count when retrying", async () => {
+      const submission = createTestSubmission();
+      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
+      mockQueue.nack.mockResolvedValueOnce(undefined);
+
+      await expect(
+        worker.processSubmission({
+          ...submission,
+          result: { ...submission.result, signature: "" },
+        })
+      ).rejects.toThrow();
+
+      expect(mockPrisma.oracleReport.updateMany).toHaveBeenCalledWith({
+        where: { marketId: submission.request.marketId },
+        data: expect.objectContaining({
+          status: "SUBMITTED",
+          attempts: submission.attempts + 1,
+        }),
+      });
+    });
+
+    it("persists FAILED status when max attempts are exceeded", async () => {
+      const submission = createTestSubmission();
+      submission.attempts = 2;
+
+      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
+      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
+
+      await expect(
+        worker.processSubmission({
+          ...submission,
+          result: { ...submission.result, signature: "" },
+        })
+      ).rejects.toThrow();
+
+      expect(mockPrisma.oracleReport.updateMany).toHaveBeenCalledWith({
+        where: { marketId: submission.request.marketId },
+        data: expect.objectContaining({
+          status: "FAILED",
+          attempts: 3,
+        }),
+      });
     });
 
     it("should retry on first failure", async () => {
@@ -206,6 +322,143 @@ describe("SubmissionWorker", () => {
         "Failed to persist oracle submission",
         expect.any(Object)
       );
+    });
+  });
+
+  describe("submitOnChain (Stellar SDK invocation)", () => {
+    it("does not touch the Stellar SDK when no stellar config is provided", async () => {
+      const submission = createTestSubmission();
+      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
+      mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
+        id: "candidate-1",
+      });
+      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
+
+      await worker.processSubmission(submission);
+
+      expect(stellarMocks.getAccount).not.toHaveBeenCalled();
+      expect(stellarMocks.sendTransaction).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("resolve_market call skipped"),
+        expect.any(Object)
+      );
+    });
+
+    it("invokes resolve_market via the Stellar SDK when stellar config is provided", async () => {
+      const submission = createTestSubmission();
+      stellarMocks.getAccount.mockResolvedValueOnce({
+        accountId: () => "GSOURCEACCOUNT",
+      });
+      stellarMocks.prepareTransaction.mockResolvedValueOnce({
+        sign: vi.fn(),
+      });
+      stellarMocks.sendTransaction.mockResolvedValueOnce({
+        status: "PENDING",
+        hash: "txhash123",
+      });
+      stellarMocks.getTransaction.mockResolvedValueOnce({
+        status: "SUCCESS",
+        ledger: 42,
+      });
+      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
+      mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
+        id: "candidate-1",
+      });
+      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
+
+      const stellarWorker = new SubmissionWorker(
+        mockQueue as any,
+        mockPrisma as any,
+        {
+          submissionMaxRetries: 3,
+          consumerName: "test-consumer",
+          logger: mockLogger,
+          stellar: TEST_STELLAR_CONFIG,
+        }
+      );
+
+      await stellarWorker.processSubmission(submission);
+
+      expect(stellarMocks.contractCall).toHaveBeenCalledWith(
+        "resolve_market",
+        submission.request.marketId,
+        submission.result.outcome,
+        expect.anything(),
+        submission.result.publicKey
+      );
+      expect(stellarMocks.sendTransaction).toHaveBeenCalled();
+      expect(stellarMocks.getTransaction).toHaveBeenCalledWith("txhash123");
+      expect(mockQueue.acknowledge).toHaveBeenCalledWith(submission);
+    });
+
+    it("retries when sendTransaction reports an ERROR status", async () => {
+      const submission = createTestSubmission();
+      stellarMocks.getAccount.mockResolvedValueOnce({
+        accountId: () => "GSOURCEACCOUNT",
+      });
+      stellarMocks.prepareTransaction.mockResolvedValueOnce({
+        sign: vi.fn(),
+      });
+      stellarMocks.sendTransaction.mockResolvedValueOnce({
+        status: "ERROR",
+        hash: "txhash-err",
+      });
+      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
+      mockQueue.nack.mockResolvedValueOnce(undefined);
+
+      const stellarWorker = new SubmissionWorker(
+        mockQueue as any,
+        mockPrisma as any,
+        {
+          submissionMaxRetries: 3,
+          consumerName: "test-consumer",
+          logger: mockLogger,
+          stellar: TEST_STELLAR_CONFIG,
+        }
+      );
+
+      await expect(
+        stellarWorker.processSubmission(submission)
+      ).rejects.toThrow(/resolve_market submission failed/);
+
+      expect(stellarMocks.getTransaction).not.toHaveBeenCalled();
+      expect(mockQueue.nack).toHaveBeenCalled();
+    });
+
+    it("retries when the on-chain transaction ultimately fails", async () => {
+      const submission = createTestSubmission();
+      stellarMocks.getAccount.mockResolvedValueOnce({
+        accountId: () => "GSOURCEACCOUNT",
+      });
+      stellarMocks.prepareTransaction.mockResolvedValueOnce({
+        sign: vi.fn(),
+      });
+      stellarMocks.sendTransaction.mockResolvedValueOnce({
+        status: "PENDING",
+        hash: "txhash-failed",
+      });
+      stellarMocks.getTransaction.mockResolvedValueOnce({
+        status: "FAILED",
+      });
+      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
+      mockQueue.nack.mockResolvedValueOnce(undefined);
+
+      const stellarWorker = new SubmissionWorker(
+        mockQueue as any,
+        mockPrisma as any,
+        {
+          submissionMaxRetries: 3,
+          consumerName: "test-consumer",
+          logger: mockLogger,
+          stellar: TEST_STELLAR_CONFIG,
+        }
+      );
+
+      await expect(
+        stellarWorker.processSubmission(submission)
+      ).rejects.toThrow(/resolve_market transaction failed on-chain/);
+
+      expect(mockQueue.nack).toHaveBeenCalled();
     });
   });
 });

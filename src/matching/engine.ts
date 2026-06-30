@@ -38,6 +38,10 @@ export interface MatchResult {
   positionDeltas: PositionDelta[];
 }
 
+export interface MatchHooks {
+  onTradeFilled?: (trade: Trade) => void;
+}
+
 interface MatchCommand {
   execute(): void;
   rollback(): void;
@@ -212,7 +216,8 @@ function calculatePositionDeltas(trades: Trade[]): PositionDelta[] {
  */
 export function matchOrder(
   newOrder: MatchingOrder,
-  orderBook: OrderBook
+  orderBook: OrderBook,
+  hooks: MatchHooks = {}
 ): MatchResult {
   const trades: Trade[] = [];
   const executedCommands: MatchCommand[] = [];
@@ -244,6 +249,7 @@ export function matchOrder(
         timestamp
       );
       trades.push(trade);
+      hooks.onTradeFilled?.(trade);
 
       const newBookOrderQty = bookOrder.quantity - fillQty;
       let cmd: MatchCommand;

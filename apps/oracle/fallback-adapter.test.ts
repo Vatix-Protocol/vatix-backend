@@ -195,4 +195,66 @@ describe("FallbackAdapter", () => {
 
     expect(await adapter.healthCheck()).toBe(false);
   });
+
+  it("returns the outcome and confidence actually reported by the provider, not a fixed value", async () => {
+    const yesFetch = vi
+      .fn()
+      .mockResolvedValue(okResponse({ outcome: true, confidence: 0.97 }));
+    const noFetch = vi
+      .fn()
+      .mockResolvedValue(okResponse({ outcome: false, confidence: 0.12 }));
+
+    const yesResult = await makeAdapter({ fetchFn: yesFetch }).resolve({
+      marketId: "market-1",
+      oracleAddress: "GORACLE",
+    });
+    const noResult = await makeAdapter({ fetchFn: noFetch }).resolve({
+      marketId: "market-2",
+      oracleAddress: "GORACLE",
+    });
+
+    expect(yesResult.outcome).toBe(true);
+    expect(yesResult.confidence).toBe(0.97);
+    expect(noResult.outcome).toBe(false);
+    expect(noResult.confidence).toBe(0.12);
+  });
+
+  it("accepts boundary confidence values of exactly 0 and 1", async () => {
+    const zeroFetch = vi
+      .fn()
+      .mockResolvedValue(okResponse({ outcome: false, confidence: 0 }));
+    const oneFetch = vi
+      .fn()
+      .mockResolvedValue(okResponse({ outcome: true, confidence: 1 }));
+
+    const zeroResult = await makeAdapter({ fetchFn: zeroFetch }).resolve({
+      marketId: "market-1",
+      oracleAddress: "GORACLE",
+    });
+    const oneResult = await makeAdapter({ fetchFn: oneFetch }).resolve({
+      marketId: "market-1",
+      oracleAddress: "GORACLE",
+    });
+
+    expect(zeroResult.confidence).toBe(0);
+    expect(oneResult.confidence).toBe(1);
+  });
+
+  it("rejects out-of-range confidence values as INVALID_RESPONSE", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(okResponse({ outcome: true, confidence: 1.5 }));
+    const adapter = makeAdapter({
+      providers: [{ url: PROVIDER_URL }],
+      retryConfig: { maxRetries: 0 },
+      fetchFn,
+    });
+
+    await expect(
+      adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" })
+    ).rejects.toMatchObject({
+      name: "FallbackProviderError",
+      type: "ALL_PROVIDERS_FAILED",
+    });
+  });
 });

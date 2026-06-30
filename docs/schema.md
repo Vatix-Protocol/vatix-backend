@@ -135,6 +135,50 @@ Snapshot-style position record per wallet/market/outcome (used for PnL queries).
 
 Unique constraint: `(wallet_address, market_id, outcome)`
 
+### `Trade`
+
+CLOB-engine trade records. Written atomically with order fills; `trade_id` is the idempotency key preventing duplicate writes on retry.
+
+| Column          | Type            | Notes                              |
+| --------------- | --------------- | ---------------------------------- |
+| `id`            | `uuid`          | Primary key                        |
+| `trade_id`      | `VarChar(256)`  | Unique idempotency key             |
+| `market_id`     | `uuid`          | FK → `markets.id`                  |
+| `outcome`       | `Outcome`       | `YES` or `NO`                      |
+| `buyer_address` | `VarChar(56)`   | Stellar wallet address of buyer    |
+| `seller_address`| `VarChar(56)`   | Stellar wallet address of seller   |
+| `buy_order_id`  | `uuid`          | FK reference to the buy order      |
+| `sell_order_id` | `uuid`          | FK reference to the sell order     |
+| `price`         | `Decimal(10,8)` | Execution price                    |
+| `quantity`      | `Int`           | Quantity traded                    |
+| `traded_at`     | `DateTime`      | When the trade occurred            |
+| `created_at`    | `DateTime`      | Auto-set on insert                 |
+
+Indexes: `market_id`, `buyer_address`, `seller_address`, `(buyer_address, traded_at DESC)`, `(seller_address, traded_at DESC)`
+
+### `IndexedTrade`
+
+On-chain trade events ingested by the indexer. Keyed by `idempotency_key` until fill reconciliation with CLOB orders exists.
+
+| Column                 | Type           | Notes                                   |
+| ---------------------- | -------------- | --------------------------------------- |
+| `id`                   | `uuid`         | Primary key                             |
+| `idempotency_key`      | `VarChar(64)`  | Unique; prevents duplicate ingestion    |
+| `event_id`             | `String`       | Stellar event identifier                |
+| `ledger`               | `Int`          | Ledger sequence number                  |
+| `market_id`            | `String`       | Market identifier from on-chain event   |
+| `trader_address`       | `VarChar(56)`  | Stellar address of the trader           |
+| `counterparty_address` | `VarChar(56)`  | Stellar address of the counterparty     |
+| `direction`            | `VarChar(8)`   | Trade direction (e.g. `BUY`, `SELL`)    |
+| `outcome`              | `VarChar(8)`   | Outcome string from on-chain event      |
+| `price_raw`            | `String`       | Raw price value (preserves precision)   |
+| `quantity_raw`         | `String`       | Raw quantity value (preserves precision)|
+| `buy_order_id`         | `String`       | Buy-side order reference                |
+| `sell_order_id`        | `String`       | Sell-side order reference               |
+| `created_at`           | `DateTime`     | Auto-set on insert                      |
+
+Indexes: `market_id`, `ledger`
+
 ### `IndexerCursor`
 
 Tracks the Stellar ledger cursor position for the indexer.

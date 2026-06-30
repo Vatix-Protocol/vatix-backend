@@ -103,6 +103,12 @@ FROM runtime AS indexer
 CMD ["node_modules/.bin/tsx", "apps/indexer/src/main.ts"]
 
 # ---------------------------------------------------------------------------
+# oracle — oracle poller, entrypoint apps/oracle/main.ts
+# ---------------------------------------------------------------------------
+FROM runtime AS oracle
+CMD ["node_modules/.bin/tsx", "apps/oracle/main.ts"]
+
+# ---------------------------------------------------------------------------
 # finalization-worker — resolution finalization loop
 # ---------------------------------------------------------------------------
 FROM runtime AS finalization-worker

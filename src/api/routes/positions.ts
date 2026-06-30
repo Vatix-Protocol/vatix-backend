@@ -142,6 +142,80 @@ function addFixedPoint(a: string, b: string): string {
   return `${sign}${wholeOut}.${fracOut}`;
 }
 
+/**
+ * Compute the non-stale locked collateral for a wallet on a list of markets
+ * by querying both CLOB and indexed (on-chain) trades.
+ */
+async function getCalculatedCollateralMap(
+  prisma: ReturnType<typeof getPrismaClient>,
+  wallet: string,
+  marketIds: string[]
+): Promise<Map<string, number>> {
+  if (marketIds.length === 0) {
+    return new Map();
+  }
+
+  const [clobTrades, indexedTrades] = await Promise.all([
+    prisma.trade.findMany({
+      where: {
+        marketId: { in: marketIds },
+        OR: [{ buyerAddress: wallet }, { sellerAddress: wallet }],
+      },
+    }),
+    prisma.indexedTrade.findMany({
+      where: {
+        marketId: { in: marketIds },
+        OR: [{ traderAddress: wallet }, { counterpartyAddress: wallet }],
+      },
+    }),
+  ]);
+
+  const marketCollateralMap = new Map<string, number>();
+  const processedTrades = new Set<string>();
+
+  for (const trade of clobTrades) {
+    const key = `${trade.buyOrderId}:${trade.sellOrderId}`;
+    processedTrades.add(key);
+
+    const cost = Number(trade.price) * trade.quantity;
+    const current = marketCollateralMap.get(trade.marketId) ?? 0;
+    if (trade.buyerAddress === wallet) {
+      marketCollateralMap.set(trade.marketId, current + cost);
+    } else if (trade.sellerAddress === wallet) {
+      marketCollateralMap.set(trade.marketId, current - cost);
+    }
+  }
+
+  for (const trade of indexedTrades) {
+    const key = `${trade.buyOrderId}:${trade.sellOrderId}`;
+    if (processedTrades.has(key)) {
+      continue;
+    }
+    processedTrades.add(key);
+
+    const price = Number(trade.priceRaw) / 10_000_000;
+    const quantity = Number(trade.quantityRaw);
+    const cost = price * quantity;
+    const current = marketCollateralMap.get(trade.marketId) ?? 0;
+
+    const isBuyer =
+      (trade.direction === "buy" && trade.traderAddress === wallet) ||
+      (trade.direction === "sell" && trade.counterpartyAddress === wallet);
+
+    const isSeller =
+      (trade.direction === "sell" && trade.traderAddress === wallet) ||
+      (trade.direction === "buy" && trade.counterpartyAddress === wallet);
+
+    if (isBuyer) {
+      marketCollateralMap.set(trade.marketId, current + cost);
+    } else if (isSeller) {
+      marketCollateralMap.set(trade.marketId, current - cost);
+    }
+  }
+
+  return marketCollateralMap;
+}
+
 export default async function positionsRouter(server: FastifyInstance) {
   server.get<{
     Params: GetWalletPositionsParams;
@@ -244,10 +318,19 @@ export default async function positionsRouter(server: FastifyInstance) {
           midPriceMap.set(marketId, null);
         }
       }
+      const collateralMap = await getCalculatedCollateralMap(
+        prisma,
+        wallet,
+        marketIds
+      );
 
       const exposures: WalletExposureRow[] = positions.map((position) => {
         const market = position.market as any;
-        const lockedCollateral = position.lockedCollateral.toString();
+        const computedCollateral = collateralMap.get(position.marketId);
+        const lockedCollateral =
+          computedCollateral !== undefined
+            ? computedCollateral.toFixed(8)
+            : position.lockedCollateral.toString();
 
         const base: WalletExposureRow = {
           marketId: market.id,
@@ -377,8 +460,16 @@ export default async function positionsRouter(server: FastifyInstance) {
         );
       }
 
+      const collateralMap = await getCalculatedCollateralMap(prisma, wallet, [
+        marketId,
+      ]);
+      const computedCollateral = collateralMap.get(marketId);
+
       const market = position.market as any;
-      const lockedCollateral = position.lockedCollateral.toString();
+      const lockedCollateral =
+        computedCollateral !== undefined
+          ? computedCollateral.toFixed(8)
+          : position.lockedCollateral.toString();
 
       const exposure: WalletExposureRow = {
         marketId: market.id,

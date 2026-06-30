@@ -97,10 +97,10 @@ export class SubmissionWorker {
       }
 
       // Submit on-chain via Stellar SDK
-      await this.submitOnChain(report, request.oracleAddress);
+      const txHash = await this.submitOnChain(report, request.oracleAddress);
 
       // Update database on success
-      await this.updateOnSuccess(submission, report);
+      await this.updateOnSuccess(submission, report, txHash);
 
       // Acknowledge in queue
       await this.queue.acknowledge(submission);
@@ -147,7 +147,10 @@ export class SubmissionWorker {
         );
 
         // Dead-letter: mark as failed in database
-        await this.updateOnFailure(submission, errorMessage);
+        await this.updateOnFailure(
+          { ...submission, attempts: nextAttempt },
+          errorMessage
+        );
         await this.queue.acknowledge(submission); // Remove from active queue
       }
 
@@ -182,7 +185,7 @@ export class SubmissionWorker {
   private async submitOnChain(
     report: SignedResolutionReport,
     oracleAddress: string
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     if (!report.payload.marketId || !report.signature || !report.publicKey) {
       throw new Error("Invalid report: missing required fields");
     }
@@ -198,7 +201,7 @@ export class SubmissionWorker {
           "and ORACLE_SECRET_KEY to enable on-chain submission.",
         { marketId: report.payload.marketId, oracleAddress }
       );
-      return;
+      return undefined;
     }
 
     const { rpcUrl, contractId, networkPassphrase, signerSecret } =
@@ -260,7 +263,7 @@ export class SubmissionWorker {
           hash: sendResult.hash,
           ledger: txStatus.ledger,
         });
-        return;
+        return sendResult.hash;
       }
       if (txStatus.status === StellarRpc.Api.GetTransactionStatus.FAILED) {
         throw new Error(
@@ -279,7 +282,8 @@ export class SubmissionWorker {
    */
   private async updateOnSuccess(
     submission: QueuedSubmission,
-    report: SignedResolutionReport
+    report: SignedResolutionReport,
+    txHash?: string
   ): Promise<void> {
     const { request } = submission;
     const { marketId, outcome, timestamp } = report.payload;
@@ -295,6 +299,9 @@ export class SubmissionWorker {
           confidence: 1.0, // Full confidence on successful submission
           marketId,
           candidateResolution: outcome,
+          status: "CONFIRMED",
+          attempts: submission.attempts + 1,
+          txHash,
           createdAt: new Date(timestamp),
         },
       });
@@ -342,6 +349,8 @@ export class SubmissionWorker {
         where: { marketId: request.marketId },
         data: {
           confidence: Math.max(0, 1.0 - submission.attempts * 0.2),
+          status: "SUBMITTED",
+          attempts: submission.attempts,
         },
       });
     } catch (error) {
@@ -383,7 +392,11 @@ export class SubmissionWorker {
     try {
       await this.prisma.oracleReport.updateMany({
         where: { marketId: request.marketId },
-        data: { candidateResolution: null },
+        data: {
+          candidateResolution: null,
+          status: "FAILED",
+          attempts: submission.attempts,
+        },
       });
 
       await this.prisma.resolutionCandidate.updateMany({
