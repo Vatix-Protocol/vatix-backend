@@ -1,19 +1,17 @@
 # API Versioning
 
-## Overview
+## Current Strategy
 
-All public API routes are versioned under the `/v1` prefix.
+Routes are prefixed with `/v1/` to allow non-breaking additions in future versions.
 
-```
-GET /v1/health
-```
+| Route | Path | Notes |
+|---|---|---|
+| Health | `GET /v1/health` | Versioned — returns `version` field from package.json |
+| Markets | `GET /markets` | Unversioned — will migrate to `/v1/markets` |
+| Orders | `GET /orders/user/:address` | Unversioned — pending v1 prefix migration |
+| Positions | `GET /wallets/:wallet/positions` | Unversioned — pending v1 prefix migration |
 
-Non-versioned paths (e.g. `GET /health`) are supported as compatibility redirects to the canonical versioned path.
-The server responds with `308 Permanent Redirect` and includes `Location`, `Deprecation`, `Sunset`, and `Link` headers until `2027-01-01T00:00:00Z`.
-Deprecated path usage is logged with `{ event: "api.deprecated_path", path, clientIp }`.
-After the sunset timestamp, unversioned paths return `404`.
-
-## Public Route Table
+> **Open work**: Unversioned routes will gain the `/v1/` prefix before the first public release. See [docs/architecture.md](architecture.md) for the full service map.
 
 | Method | Canonical path                            | Legacy alias                | Notes                           |
 | ------ | ----------------------------------------- | --------------------------- | ------------------------------- |
@@ -31,36 +29,23 @@ After the sunset timestamp, unversioned paths return `404`.
 | PATCH  | `/v1/admin/markets/:id/status`            | `/admin/markets/:id/status` | Requires API key and admin auth |
 | GET    | `/v1/openapi.json`                        | none                        | OpenAPI specification           |
 
-## Adding New Routes
+Redis keys follow a namespaced pattern so a version bump can invalidate only affected entries without a full cache flush:
 
-Register all new routes inside the `v1` plugin in `src/index.ts` so they
-automatically inherit the `/v1` prefix:
-
-```ts
-server.register(
-  async (v1) => {
-    v1.get("/your-route", handler);
-  },
-  { prefix: "/v1" }
-);
+```
+<resource>:<version>:<identifier>
 ```
 
-## Backwards Compatibility Policy
+Examples:
 
-- Routes within a version (e.g. `/v1`) are **stable**. Breaking changes
-  (removed fields, changed semantics, altered response shapes) are not
-  permitted without introducing a new version prefix (e.g. `/v2`).
-- Additive changes (new optional fields, new endpoints) are allowed within
-  the same version.
-- When a new version is introduced, the previous version will be supported
-  for a documented deprecation window before removal.
-- Deprecation notices will be communicated via response headers
-  (`Deprecation`, `Sunset`) and updated in this document.
-- Root-level compatibility aliases are temporary only. New clients must use
-  `/v1/*` paths and must not introduce new unversioned API URLs.
+| Key | TTL | Description |
+|---|---|---|
+| `orderbook:<marketId>:<outcome>` | 60 s | Order book snapshot per market/outcome pair |
 
-## Current Versions
+When the schema of a cached value changes (e.g. new field added to order book), increment the version segment (`orderbook:v2:<marketId>:<outcome>`) rather than performing a `FLUSHDB`.
 
-| Version | Status | Base path | Notes                  |
-| ------- | ------ | --------- | ---------------------- |
-| v1      | Active | `/v1`     | Initial public version |
+## Adding a New Version
+
+1. Introduce the new route alongside the old one (`/v2/markets` + `/markets` kept for a deprecation window).
+2. Add a `Deprecation` response header to the old route pointing to the new path.
+3. Update Redis key prefixes for any cache entries whose payload shape changes.
+4. Remove the deprecated route after the agreed sunset period.
