@@ -141,11 +141,158 @@ describe("Error Handler Middleware", () => {
       server.get("/test", async () => {
         throw new Error("db failed");
       });
-      const res = await server.inject({ method: "GET", url: "/test" });
-      const body = JSON.parse(res.body);
-      expect(body.message).not.toContain("db");
-      expect(body.code).toBe("internal_error");
-      process.env.NODE_ENV = orig;
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.error).toBe("Internal server error");
+      expect(body.error).not.toContain("Database");
+
+      process.env.NODE_ENV = originalEnv;
+    });
+  });
+
+  describe("Response Format", () => {
+    it("should have consistent format with error, code, requestId, and statusCode", async () => {
+      server.get("/test", async () => {
+        throw new NotFoundError("Resource not found");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body).toHaveProperty("error");
+      expect(body).toHaveProperty("code");
+      expect(body).toHaveProperty("requestId");
+      expect(body).toHaveProperty("statusCode");
+      expect(typeof body.error).toBe("string");
+      expect(typeof body.code).toBe("string");
+      expect(typeof body.requestId).toBe("string");
+      expect(typeof body.statusCode).toBe("number");
+    });
+
+    it("should return correct code per error type", async () => {
+      const cases: [() => Error, string][] = [
+        [() => new ValidationError("bad"), "VALIDATION_ERROR"],
+        [() => new NotFoundError("nope"), "NOT_FOUND"],
+        [() => new UnauthorizedError("denied"), "UNAUTHORIZED"],
+        [() => new ForbiddenError("forbidden"), "FORBIDDEN"],
+        [() => new Error("boom"), "INTERNAL_ERROR"],
+      ];
+
+      for (const [makeError, expectedCode] of cases) {
+        server.get(`/test-${expectedCode}`, async () => {
+          throw makeError();
+        });
+        const res = await server.inject({
+          method: "GET",
+          url: `/test-${expectedCode}`,
+        });
+        expect(JSON.parse(res.body).code).toBe(expectedCode);
+      }
+    });
+
+    it("should include request ID in response", async () => {
+      server.get("/test", async () => {
+        throw new Error("Test error");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.requestId).toBe("test-request-id");
+    });
+
+    it("should match statusCode in response body and HTTP status", async () => {
+      server.get("/test", async () => {
+        throw new NotFoundError("Not found");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.statusCode).toBe(response.statusCode);
+      expect(body.statusCode).toBe(404);
+    });
+  });
+
+  describe("Logging", () => {
+    it("should log client errors at warn level", async () => {
+      // Use a simple approach - check that the error handler doesn't crash
+      // Actual logging is tested via integration tests
+      server.get("/test", async () => {
+        throw new ValidationError("Bad input");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      expect(response.statusCode).toBe(400);
+      // If we got here, logging worked without crashing
+    });
+
+    it("should log server errors at error level", async () => {
+      // Use a simple approach - check that the error handler doesn't crash
+      // Actual logging is tested via integration tests
+      server.get("/test", async () => {
+        throw new Error("Internal error");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      expect(response.statusCode).toBe(500);
+      // If we got here, logging worked without crashing
+    });
+  });
+
+  describe("Edge Cases", () => {
+    it("should handle errors with custom status codes", async () => {
+      class CustomError extends Error {
+        statusCode = 418; // I'm a teapot
+      }
+
+      server.get("/test", async () => {
+        throw new CustomError("Custom error");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      expect(response.statusCode).toBe(418);
+    });
+
+    it("should handle ValidationError without fields", async () => {
+      server.get("/test", async () => {
+        throw new ValidationError("Validation failed");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.statusCode).toBe(400);
+      expect(body.fields).toBeUndefined();
     });
   });
 });

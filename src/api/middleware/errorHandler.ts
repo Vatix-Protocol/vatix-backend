@@ -2,10 +2,22 @@
 // Single source of truth for all error normalization and logging
 
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
-import { ValidationError, AppError } from "./errors.js";
-import type { ErrorEnvelope } from "../../types/errors.js";
+import {
+  ValidationError,
+  NotFoundError,
+  UnauthorizedError,
+  ForbiddenError,
+} from "./errors.js";
+import { ErrorResponse } from "../../types/errors.js";
 
-const isProduction = () => process.env.NODE_ENV === "production";
+function resolveCode(error: Error, statusCode: number): string {
+  if (error instanceof ValidationError) return "VALIDATION_ERROR";
+  if (error instanceof NotFoundError) return "NOT_FOUND";
+  if (error instanceof UnauthorizedError) return "UNAUTHORIZED";
+  if (error instanceof ForbiddenError) return "FORBIDDEN";
+  if (statusCode >= 500) return "INTERNAL_ERROR";
+  return "BAD_REQUEST";
+}
 
 // Centralized error handler for Fastify
 // Catches all unhandled errors and returns consistent error responses
@@ -22,8 +34,8 @@ export function errorHandler(
   const isClientError = statusCode >= 400 && statusCode < 500;
   const isServerError = statusCode >= 500;
 
+  // requestId is auto-bound via requestIdLogLabel — no need to repeat it here.
   const logContext = {
-    requestId: request.id,
     method: request.method,
     path: request.url,
     statusCode,
@@ -53,6 +65,8 @@ export function errorHandler(
           : String(statusCode),
     message: errorMessage,
     error: errorMessage,
+    code: resolveCode(error, statusCode),
+    requestId,
     statusCode,
     requestId: request.id,
     // Include stack trace in response body only outside production

@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
 import { getPrismaClient } from "../../services/prisma.js";
 import { ValidationError } from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
@@ -7,11 +8,74 @@ import { matchingService } from "../../matching/matching-service.js";
 import {
   validateUserAddress,
   assertValidOrder,
+  STELLAR_PUBLIC_KEY_REGEX,
   type OrderInput,
 } from "../../matching/validation.js";
 import { heavyReadLimiter, writeLimiter } from "../middleware/rateLimiter.js";
-import { success } from "../middleware/responses.js";
-import { verifyStellarSignature } from "../middleware/stellarAuth.js";
+
+// ---------------------------------------------------------------------------
+// Zod schema for POST /orders body
+// ---------------------------------------------------------------------------
+
+const CreateOrderSchema = z.object({
+  marketId: z.string().min(1, "marketId is required"),
+  userAddress: z
+    .string()
+    .regex(
+      STELLAR_PUBLIC_KEY_REGEX,
+      "userAddress must be a valid Stellar public key"
+    ),
+  side: z.enum(["BUY", "SELL"]),
+  outcome: z.enum(["YES", "NO"]),
+  price: z
+    .number()
+    .gt(0, "price must be greater than 0")
+    .lt(1, "price must be less than 1"),
+  quantity: z
+    .number()
+    .int("quantity must be an integer")
+    .min(1, "quantity must be at least 1"),
+});
+
+type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
+
+// ---------------------------------------------------------------------------
+// Cursor pagination helpers for GET /orders/user/:address
+// Cursor encodes the last seen { createdAt (ISO string), id } so the next
+// page starts strictly after that row using the same (createdAt DESC, id DESC)
+// ordering the query uses.
+// ---------------------------------------------------------------------------
+
+interface CursorPayload {
+  createdAt: string;
+  id: string;
+}
+
+function encodeCursor(payload: CursorPayload): string {
+  return Buffer.from(JSON.stringify(payload)).toString("base64url");
+}
+
+function decodeCursor(cursor: string): CursorPayload {
+  try {
+    const raw = Buffer.from(cursor, "base64url").toString("utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as Record<string, unknown>).createdAt !== "string" ||
+      typeof (parsed as Record<string, unknown>).id !== "string"
+    ) {
+      throw new Error("invalid shape");
+    }
+    return parsed as CursorPayload;
+  } catch {
+    throw new ValidationError("cursor is invalid or corrupted");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Route interfaces
+// ---------------------------------------------------------------------------
 
 export interface GetUserOrdersParams {
   address: string;
@@ -19,7 +83,7 @@ export interface GetUserOrdersParams {
 
 export interface GetUserOrdersQuery {
   status?: OrderStatus;
-  page?: number;
+  cursor?: string;
   limit?: number;
 }
 
@@ -31,14 +95,9 @@ export interface GetWalletTradesQuery {
   marketId?: string;
 }
 
-export interface CreateOrderBody {
-  marketId: string;
-  userAddress: string;
-  side: OrderSide;
-  outcome: Outcome;
-  price: number;
-  quantity: number;
-}
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
 
 export interface OrderResponse {
   id: string;
@@ -175,24 +234,13 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         );
       }
 
-      if (marketId !== undefined) {
-        const market = await prisma.market.findUnique({
-          where: { id: marketId },
-          select: { id: true },
-        });
-        if (!market) {
-          throw new ValidationError(`Market not found: ${marketId}`);
-        }
-      }
-
       const { trades, total, hasNext } =
         await auditService.getWalletTradeHistory(
           address,
           page,
           limit,
           fromMs,
-          toMs,
-          marketId
+          toMs
         );
 
       return {
@@ -217,6 +265,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
     }
   );
 
+  // GET /orders/user/:address — cursor-paginated list of orders for a wallet.
+  // Cursor encodes the last item's (createdAt, id) and is opaque to clients.
   fastify.get<{
     Params: GetUserOrdersParams;
     Querystring: GetUserOrdersQuery;
@@ -239,10 +289,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
               type: "string",
               enum: ["OPEN", "FILLED", "CANCELLED", "PARTIALLY_FILLED"],
             },
-            page: {
-              type: "integer",
-              minimum: 1,
-            },
+            cursor: { type: "string" },
             limit: {
               type: "integer",
               minimum: 1,
@@ -272,9 +319,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
                   },
                 },
               },
-              total: { type: "number" },
+              nextCursor: { type: ["string", "null"] },
               hasNext: { type: "boolean" },
-              page: { type: "number" },
               limit: { type: "number" },
             },
           },
@@ -289,44 +335,73 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       reply
     ) => {
       const { address } = request.params;
-      const { status, page = 1, limit = 20 } = request.query;
+      const { status, cursor, limit = 20 } = request.query;
 
-      // Validate Stellar address
       const addressError = validateUserAddress(address);
       if (addressError) {
         throw new ValidationError(addressError);
       }
 
-      const whereClause = {
+      // Decode cursor to a position anchor when provided
+      let cursorPayload: CursorPayload | undefined;
+      if (cursor) {
+        cursorPayload = decodeCursor(cursor);
+      }
+
+      const baseWhere = {
         userAddress: address,
         ...(status ? { status } : {}),
       };
 
-      const skip = (page - 1) * limit;
+      // Build cursor condition: rows that come strictly after the cursor in
+      // (createdAt DESC, id DESC) order.
+      const cursorWhere = cursorPayload
+        ? {
+            OR: [
+              { createdAt: { lt: new Date(cursorPayload.createdAt) } },
+              {
+                createdAt: { equals: new Date(cursorPayload.createdAt) },
+                id: { lt: cursorPayload.id },
+              },
+            ],
+          }
+        : {};
 
-      const [orders, total] = await Promise.all([
-        prisma.order.findMany({
-          where: whereClause,
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-          skip,
-          take: limit,
-        }),
-        prisma.order.count({
-          where: whereClause,
-        }),
-      ]);
+      const whereClause = cursorPayload
+        ? { AND: [baseWhere, cursorWhere] }
+        : baseWhere;
 
-      reply.status(200).send({
-        orders,
-        total,
-        hasNext: skip + orders.length < total,
-        page,
+      // Fetch one extra row to detect whether another page exists
+      const orders = await prisma.order.findMany({
+        where: whereClause,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: limit + 1,
+      });
+
+      const hasNext = orders.length > limit;
+      const page = orders.slice(0, limit);
+
+      let nextCursor: string | null = null;
+      if (hasNext) {
+        const last = page[page.length - 1];
+        nextCursor = encodeCursor({
+          createdAt: last.createdAt.toISOString(),
+          id: last.id,
+        });
+      }
+
+      return {
+        orders: page,
+        nextCursor,
+        hasNext,
         limit,
       });
     }
   );
 
-  // Write endpoint: validation + DB write + future matching-engine work — apply strictest limit.
+  // POST /orders — create a new order.
+  // Zod validates the request body shape and types; assertValidOrder does
+  // domain validation (address format, market state).
   fastify.post<{ Body: CreateOrderBody }>(
     "/orders",
     {
@@ -409,26 +484,47 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest<{ Body: CreateOrderBody }>, reply) => {
-      const { marketId, userAddress, side, outcome, price, quantity } =
-        request.body;
+      // Zod parse: produces a typed, validated body or throws with field-level errors
+      const parseResult = CreateOrderSchema.safeParse(request.body);
+      if (!parseResult.success) {
+        const fields: Record<string, string> = {};
+        for (const issue of parseResult.error.issues) {
+          const field = issue.path.join(".") || "body";
+          fields[field] = issue.message;
+        }
+        throw new ValidationError(parseResult.error.issues[0].message, fields);
+      }
 
-      // Validate order using existing validation
+      const { marketId, userAddress, side, outcome, price, quantity } =
+        parseResult.data;
+
       const orderInput: OrderInput = {
         marketId,
         userAddress,
-        side,
-        outcome,
+        side: side as OrderSide,
+        outcome: outcome as Outcome,
         price,
         quantity,
       };
 
-      // This throws OrderValidationError if invalid
-      // Validates: address format, market exists/active, price range, quantity > 0
+      // Domain validation: address format, market existence and state
       await assertValidOrder(orderInput);
 
-      // Wire into matching engine and persist atomically
-      const { order, trades, filledQuantity } =
-        await matchingService.placeOrder(orderInput);
+      const order = await prisma.order.create({
+        data: {
+          marketId,
+          userAddress,
+          side,
+          outcome,
+          price: price.toString(),
+          quantity,
+          filledQuantity: 0,
+          status: "OPEN",
+        },
+      });
+
+      // TODO: Add to matching engine
+      // await matchingEngine.addOrder(order);
 
       reply.status(201).send({ order, trades, filledQuantity });
     }

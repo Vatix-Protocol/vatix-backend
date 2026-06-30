@@ -11,14 +11,32 @@ import { createHash } from "crypto";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
 
-const STREAM_KEY = "oracle:submissions";
+const STREAM_BASENAME = "oracle:submissions";
 const CONSUMER_GROUP = "oracle-worker";
+
+/**
+ * Build the prefixed stream key from the environment.
+ * Reads REDIS_KEY_PREFIX (default "vatix:") at construction time so the
+ * prefix is consistent for the lifetime of a RedisSubmissionQueue instance.
+ */
+function buildStreamKey(prefix?: string): string {
+  const envPrefix = process.env.REDIS_KEY_PREFIX;
+  // Use explicit config prefix first, then env var, then default.
+  // Treat empty strings as absent.
+  const keyPrefix =
+    (prefix !== undefined && prefix !== "" ? prefix : undefined) ??
+    (envPrefix !== undefined && envPrefix !== "" ? envPrefix : undefined) ??
+    "vatix:";
+  return `${keyPrefix}${STREAM_BASENAME}`;
+}
 
 export interface RedisSubmissionQueueConfig {
   redisClient: any;
   visibilityTimeoutMs: number;
   deduplicationTtlSeconds?: number;
   logger: ILogger;
+  /** Optional key prefix override. Falls back to REDIS_KEY_PREFIX env var (default: "vatix:"). */
+  keyPrefix?: string;
 }
 
 export interface QueuedSubmission extends SubmissionQueueItem {
@@ -34,12 +52,15 @@ export class RedisSubmissionQueue {
   private visibilityTimeoutMs: number;
   private deduplicationTtlSeconds: number;
   private logger: ILogger;
+  /** Fully-qualified Redis stream key (prefix + base name). */
+  private streamKey: string;
 
   constructor(config: RedisSubmissionQueueConfig) {
     this.redisClient = config.redisClient;
     this.visibilityTimeoutMs = config.visibilityTimeoutMs;
     this.deduplicationTtlSeconds = config.deduplicationTtlSeconds ?? 86400;
     this.logger = config.logger;
+    this.streamKey = buildStreamKey(config.keyPrefix);
   }
 
   /**
@@ -47,18 +68,24 @@ export class RedisSubmissionQueue {
    */
   async initialize(): Promise<void> {
     try {
-      await this.redisClient.xgroup("CREATE", STREAM_KEY, CONSUMER_GROUP, "$", {
-        MKSTREAM: true,
-      });
+      await this.redisClient.xgroup(
+        "CREATE",
+        this.streamKey,
+        CONSUMER_GROUP,
+        "$",
+        {
+          MKSTREAM: true,
+        }
+      );
       this.logger.info("Oracle submission queue initialized", {
-        stream: STREAM_KEY,
+        stream: this.streamKey,
         group: CONSUMER_GROUP,
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       if (msg.includes("BUSYGROUP")) {
         this.logger.info("Consumer group already exists", {
-          stream: STREAM_KEY,
+          stream: this.streamKey,
           group: CONSUMER_GROUP,
         });
       } else {
@@ -76,7 +103,8 @@ export class RedisSubmissionQueue {
   }
 
   /**
-   * Check if a submission is already queued (deduplication).
+   * Check if a submission with this exact payload is already queued
+   * (content-based dedup — e.g. retried bursts of an identical result).
    */
   private async isAlreadyQueued(
     marketId: string,
@@ -103,9 +131,48 @@ export class RedisSubmissionQueue {
     );
   }
 
+  private marketLockKey(marketId: string): string {
+    return `oracle:inflight:${marketId}`;
+  }
+
+  /**
+   * Check whether a market already has a submission in the active pipeline
+   * (enqueued but not yet acknowledged), regardless of payload content.
+   * Prevents two concurrent poll cycles from racing two different oracle
+   * resolutions onto the same market — market-level dedupe, independent of
+   * the content-hash dedupe above.
+   */
+  private async hasInFlightSubmission(marketId: string): Promise<boolean> {
+    return (await this.redisClient.exists(this.marketLockKey(marketId))) > 0;
+  }
+
+  /**
+   * Mark a market as having an in-flight submission. Shares the dedup TTL
+   * so a crashed worker can't wedge a market's lock forever.
+   */
+  private async markMarketInFlight(
+    marketId: string,
+    streamId: string
+  ): Promise<void> {
+    await this.redisClient.set(
+      this.marketLockKey(marketId),
+      streamId,
+      "EX",
+      this.deduplicationTtlSeconds
+    );
+  }
+
+  /**
+   * Release a market's in-flight lock so a future resolution can be queued.
+   */
+  private async clearInFlightSubmission(marketId: string): Promise<void> {
+    await this.redisClient.del(this.marketLockKey(marketId));
+  }
+
   /**
    * Enqueue a submission to the Redis stream.
-   * Returns false if already queued (deduplication).
+   * Returns false if a duplicate payload is already queued, or if the
+   * market already has a different submission in flight (market dedupe).
    */
   async enqueue(item: SubmissionQueueItem): Promise<boolean> {
     const payloadHash = this.computePayloadHash(item.result);
@@ -121,8 +188,17 @@ export class RedisSubmissionQueue {
       return false;
     }
 
+    const hasInFlightSubmission = await this.hasInFlightSubmission(marketId);
+    if (hasInFlightSubmission) {
+      this.logger.info(
+        "Market already has an in-flight submission, skipping duplicate",
+        { marketId, id: item.id }
+      );
+      return false;
+    }
+
     const streamId = await this.redisClient.xadd(
-      STREAM_KEY,
+      this.streamKey,
       "*",
       "payload",
       JSON.stringify(item),
@@ -133,6 +209,7 @@ export class RedisSubmissionQueue {
     );
 
     await this.markAsQueued(marketId, payloadHash, streamId);
+    await this.markMarketInFlight(marketId, streamId);
 
     this.logger.info("Oracle submission queued", {
       id: item.id,
@@ -156,7 +233,7 @@ export class RedisSubmissionQueue {
     const messages = await this.redisClient.xreadgroup(
       CONSUMER_GROUP,
       consumerName,
-      STREAM_KEY,
+      this.streamKey,
       ">",
       { COUNT: 1, BLOCK: maxWaitMs }
     );
@@ -208,10 +285,11 @@ export class RedisSubmissionQueue {
    */
   async acknowledge(submission: QueuedSubmission): Promise<void> {
     await this.redisClient.xack(
-      STREAM_KEY,
+      this.streamKey,
       CONSUMER_GROUP,
       submission.streamId
     );
+    await this.clearInFlightSubmission(submission.request.marketId);
 
     this.logger.info("Acknowledged oracle submission", {
       id: submission.id,
@@ -223,9 +301,12 @@ export class RedisSubmissionQueue {
   /**
    * Negative acknowledge (nack) — makes the message visible again for retry.
    */
-  async nack(submission: QueuedSubmission, consumerName: string): Promise<void> {
+  async nack(
+    submission: QueuedSubmission,
+    consumerName: string
+  ): Promise<void> {
     await this.redisClient.xclaim(
-      STREAM_KEY,
+      this.streamKey,
       CONSUMER_GROUP,
       consumerName,
       0, // Min idle time 0 = claim immediately

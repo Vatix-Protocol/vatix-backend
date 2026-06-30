@@ -6,25 +6,26 @@
       "discriminator": {
         "topicIndex": 0,
         "scvType": "ScvSymbol",
-        "value": "trade_executed",
-        "xdr": "AAAADwAAAA50cmFkZV9leGVjdXRlZAAA"
+        "value": "trade_executed_event",
+        "xdr": "AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA==",
+        "note": "Anticipates the not-yet-implemented on-chain trade event, using the same #[contractevent] snake_case-with-Event-suffix convention as every other event in contracts/market/src/events.rs."
       },
       "payloadShape": "ScvMap",
       "fields": {
-        "market_id":      "ScvSymbol → string",
-        "trader":         "ScvSymbol → string (Stellar account)",
-        "counterparty":   "ScvSymbol → string (Stellar account)",
-        "direction":      "ScvSymbol → 'buy' | 'sell'",
-        "outcome":        "ScvSymbol → 'YES' | 'NO'",
-        "price":          "ScvI128  → bigint (7 decimals, e.g. 5_000_000n = 0.5)",
-        "quantity":       "ScvI128  → bigint (integer shares)",
-        "buy_order_id":   "ScvSymbol → string",
-        "sell_order_id":  "ScvSymbol → string"
+        "market_id": "ScvSymbol → string",
+        "trader": "ScvSymbol → string (Stellar account)",
+        "counterparty": "ScvSymbol → string (Stellar account)",
+        "direction": "ScvSymbol → 'buy' | 'sell'",
+        "outcome": "ScvSymbol → 'YES' | 'NO'",
+        "price": "ScvI128  → bigint (7 decimals, e.g. 5_000_000n = 0.5)",
+        "quantity": "ScvI128  → bigint (integer shares)",
+        "buy_order_id": "ScvSymbol → string",
+        "sell_order_id": "ScvSymbol → string"
       },
       "vectors": [
         {
           "label": "buy YES at 0.5 qty=100",
-          "topicsXdr": ["AAAADwAAAA50cmFkZV9leGVjdXRlZAAA"],
+          "topicsXdr": ["AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA=="],
           "valueXdr": "AAAAEQAAAAEAAAAJAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC1hYmMAAAAAAA8AAAAGdHJhZGVyAAAAAAAPAAAACEdBQkMxMjM0AAAADwAAAAxjb3VudGVycGFydHkAAAAPAAAACEdYWVo1Njc4AAAADwAAAAlkaXJlY3Rpb24AAAAAAAAPAAAAA2J1eQAAAAAPAAAAB291dGNvbWUAAAAADwAAAANZRVMAAAAADwAAAAVwcmljZQAAAAAAAAoAAAAAAAAAAAAAAAAATEtAAAAADwAAAAhxdWFudGl0eQAAAAoAAAAAAAAAAAAAAAAAAABkAAAADwAAAAxidXlfb3JkZXJfaWQAAAAPAAAABWJ1eS0xAAAAAAAADwAAAA1zZWxsX29yZGVyX2lkAAAAAAAADwAAAAZzZWxsLTEAAA==",
           "expectedNormalized": {
             "marketId": "market-abc",
@@ -40,7 +41,7 @@
         },
         {
           "label": "sell NO at 0.5 qty=100",
-          "topicsXdr": ["AAAADwAAAA50cmFkZV9leGVjdXRlZAAA"],
+          "topicsXdr": ["AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA=="],
           "valueXdr": "AAAAEQAAAAEAAAAJAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC1hYmMAAAAAAA8AAAAGdHJhZGVyAAAAAAAPAAAACEdBQkMxMjM0AAAADwAAAAxjb3VudGVycGFydHkAAAAPAAAACEdYWVo1Njc4AAAADwAAAAlkaXJlY3Rpb24AAAAAAAAPAAAABHNlbGwAAAAPAAAAB291dGNvbWUAAAAADwAAAAJOTwAAAAAADwAAAAVwcmljZQAAAAAAAAoAAAAAAAAAAAAAAAAATEtAAAAADwAAAAhxdWFudGl0eQAAAAoAAAAAAAAAAAAAAAAAAABkAAAADwAAAAxidXlfb3JkZXJfaWQAAAAPAAAABWJ1eS0xAAAAAAAADwAAAA1zZWxsX29yZGVyX2lkAAAAAAAADwAAAAZzZWxsLTEAAA==",
           "expectedNormalized": {
             "direction": "sell",
@@ -51,7 +52,7 @@
         },
         {
           "label": "large i128 price/quantity (precision boundary)",
-          "topicsXdr": ["AAAADwAAAA50cmFkZV9leGVjdXRlZAAA"],
+          "topicsXdr": ["AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA=="],
           "valueXdr": "AAAAEQAAAAEAAAAJAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC1hYmMAAAAAAA8AAAAGdHJhZGVyAAAAAAAPAAAACEdBQkMxMjM0AAAADwAAAAxjb3VudGVycGFydHkAAAAPAAAACEdYWVo1Njc4AAAADwAAAAlkaXJlY3Rpb24AAAAAAAAPAAAAA2J1eQAAAAAPAAAAB291dGNvbWUAAAAADwAAAANZRVMAAAAADwAAAAVwcmljZQAAAAAAAAoAAAAAAAAAAAAjhvJvwP//AAAADwAAAAhxdWFudGl0eQAAAAoAAAAAAAAAAAAAAOjUpRAAAAAADwAAAAxidXlfb3JkZXJfaWQAAAAPAAAABWJ1eS0xAAAAAAAADwAAAA1zZWxsX29yZGVyX2lkAAAAAAAADwAAAAZzZWxsLTEAAA==",
           "expectedNormalized": {
             "priceRaw": "9999999999999999",
@@ -70,9 +71,9 @@
       },
       "payloadShape": "ScvVec (3-tuple)",
       "fields": {
-        "[0] account":    "ScvString → string (depositing Stellar account)",
-        "[1] market_id":  "ScvU32   → number → string (DB compat)",
-        "[2] amount":     "ScvI128  → bigint (base units)"
+        "[0] account": "ScvString → string (depositing Stellar account)",
+        "[1] market_id": "ScvU32   → number → string (DB compat)",
+        "[2] amount": "ScvI128  → bigint (base units)"
       },
       "vectors": [
         {
@@ -99,22 +100,43 @@
       "discriminator": {
         "topicIndex": 0,
         "scvType": "ScvSymbol",
-        "value": "market_resolved",
-        "xdr": "AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA"
+        "value": "market_resolved_event",
+        "xdr": "AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=",
+        "note": "Soroban's #[contractevent] macro snake_cases the struct name including its 'Event' suffix — see contracts/market/src/events.rs."
       },
-      "payloadShape": "ScvVec (3-tuple) [canonical on-chain] | ScvMap [legacy]",
+      "payloadShape": "topic[1]=ScvU32 market_id, value=ScvMap{outcome, resolved_at} [real on-chain] | ScvVec 3-tuple [legacy] | ScvMap [legacy]",
       "fields": {
-        "tuple[0] market_id":   "ScvU32  → number → string",
-        "tuple[1] outcome":     "ScvBool → true='YES' / false='NO'",
+        "tuple[0] market_id": "ScvU32  → number → string",
+        "tuple[1] outcome": "ScvBool → true='YES' / false='NO'",
         "tuple[2] resolved_at": "ScvU64  → bigint (Unix timestamp, informational only)",
-        "map.market_id":  "ScvSymbol → string",
-        "map.outcome":    "ScvSymbol → 'YES' | 'NO'",
-        "map.oracle":     "ScvSymbol → string (Stellar oracle address; '' when tuple path)"
+        "map.market_id": "ScvSymbol → string",
+        "map.outcome": "ScvSymbol → 'YES' | 'NO'",
+        "map.oracle": "ScvSymbol → string (Stellar oracle address; '' when tuple path)"
       },
       "vectors": [
         {
-          "label": "tuple YES — market 42",
-          "topicsXdr": ["AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA"],
+          "label": "real on-chain shape YES — market 42",
+          "topicsXdr": ["AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=", "AAAAAwAAACo="],
+          "valueXdr": "AAAAEQAAAAEAAAACAAAADwAAAAdvdXRjb21lAAAAAAAAAAABAAAADwAAAAtyZXNvbHZlZF9hdAAAAAAFAAAAAGVT8QA=",
+          "expectedNormalized": {
+            "marketId": "42",
+            "outcome": "YES",
+            "oracleAddress": ""
+          }
+        },
+        {
+          "label": "real on-chain shape NO — market 7",
+          "topicsXdr": ["AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=", "AAAAAwAAAAc="],
+          "valueXdr": "AAAAEQAAAAEAAAACAAAADwAAAAdvdXRjb21lAAAAAAAAAAAAAAAADwAAAAtyZXNvbHZlZF9hdAAAAAAFAAAAAGS7WoA=",
+          "expectedNormalized": {
+            "marketId": "7",
+            "outcome": "NO",
+            "oracleAddress": ""
+          }
+        },
+        {
+          "label": "legacy tuple YES — market 42",
+          "topicsXdr": ["AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA="],
           "decodedNative": [42, true, "1700000000"],
           "expectedNormalized": {
             "marketId": "42",
@@ -123,30 +145,12 @@
           }
         },
         {
-          "label": "tuple NO — market 7",
-          "decodedNative": [7, false, "99"],
-          "expectedNormalized": {
-            "marketId": "7",
-            "outcome": "NO",
-            "oracleAddress": ""
-          }
-        },
-        {
-          "label": "ScvMap YES — legacy shape with oracle",
-          "topicsXdr": ["AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA"],
+          "label": "legacy ScvMap YES — shape with oracle",
+          "topicsXdr": ["AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA="],
           "valueXdr": "AAAAEQAAAAEAAAADAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC14eXoAAAAAAA8AAAAHb3V0Y29tZQAAAAAPAAAAA1lFUwAAAAAPAAAABm9yYWNsZQAAAAAADwAAAApHT1JBQ0xFMTIzAAA=",
           "expectedNormalized": {
             "marketId": "market-xyz",
             "outcome": "YES",
-            "oracleAddress": "GORACLE123"
-          }
-        },
-        {
-          "label": "ScvMap NO — legacy shape with oracle",
-          "valueXdr": "AAAAEQAAAAEAAAADAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC14eXoAAAAAAA8AAAAHb3V0Y29tZQAAAAAPAAAAAk5PAAAAAAAPAAAABm9yYWNsZQAAAAAADwAAAApHT1JBQ0xFMTIzAAA=",
-          "expectedNormalized": {
-            "marketId": "market-xyz",
-            "outcome": "NO",
             "oracleAddress": "GORACLE123"
           }
         }
@@ -157,31 +161,29 @@
       "discriminator": {
         "topicIndex": 0,
         "scvType": "ScvSymbol",
-        "value": "market_created",
-        "xdr": "AAAADwAAAA5tYXJrZXRfY3JlYXRlZAAA"
+        "value": "market_created_event",
+        "xdr": "AAAADwAAABRtYXJrZXRfY3JlYXRlZF9ldmVudA==",
+        "note": "Soroban's #[contractevent] macro snake_cases the struct name including its 'Event' suffix — see contracts/market/src/events.rs."
       },
-      "payloadShape": "pre-decoded JS object (market-created-parser.ts input path)",
-      "note": "market-created-parser.ts operates on a pre-decoded RawMarketCreatedEvent object, not raw XDR. Ingested via a separate path outside PollingIngestionLoop.",
+      "payloadShape": "topic[1]=ScvU32 market_id, value=ScvMap{question, end_time}",
+      "note": "Parsed by apps/indexer/src/marketCreatedParser.ts from raw XDR, run inside PollingIngestionLoop alongside the other event kinds. The contract does not publish oracle_address or status on this event.",
       "fields": {
-        "id":            "string — unique market identifier",
-        "question":      "string — prediction prompt",
-        "endTime":       "number (Unix seconds) | string (ISO-8601 or numeric string)",
+        "id": "string — unique market identifier",
+        "question": "string — prediction prompt",
+        "endTime": "number (Unix seconds) | string (ISO-8601 or numeric string)",
         "oracleAddress": "string — G-prefixed Stellar address, 56 chars",
-        "status":        "'ACTIVE' | 'RESOLVED' | 'CANCELLED' (default: 'ACTIVE')"
+        "status": "'ACTIVE' | 'RESOLVED' | 'CANCELLED' (default: 'ACTIVE')"
       },
       "vectors": [
         {
-          "label": "valid active market",
-          "input": {
-            "id": "market-001",
-            "question": "Will BTC reach $100k by end of 2026?",
-            "endTime": 1893456000,
-            "oracleAddress": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "status": "ACTIVE"
-          },
+          "label": "market 42 created",
+          "topicsXdr": ["AAAADwAAABRtYXJrZXRfY3JlYXRlZF9ldmVudA==", "AAAAAwAAACo="],
+          "valueXdr": "AAAAEQAAAAEAAAACAAAADwAAAAhxdWVzdGlvbgAAAA4AAAATV2lsbCBCVEMgaGl0ICQxMDBrPwAAAAAPAAAACGVuZF90aW1lAAAABQAAAABJlgLS",
           "expectedNormalized": {
-            "id": "market-001",
-            "endTime": "2029-12-31T00:00:00.000Z",
+            "marketId": "42",
+            "question": "Will BTC hit $100k?",
+            "endTime": "2009-02-13T23:31:30.000Z",
+            "oracleAddress": "",
             "status": "ACTIVE"
           }
         }

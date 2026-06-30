@@ -16,13 +16,19 @@ import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { healthRoutes } from "./api/routes/health.js";
 import { readyRoute } from "./api/routes/ready.js";
+import { createReadyDeps } from "./api/deps/ready-deps.js";
 import { registerDeprecatedAliases } from "./api/routes/legacy.js";
 import { openApiSpec } from "./api/openapi.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
-import { requestIdMiddleware } from "./api/middleware/requestId.js";
+import {
+  makeGenReqId,
+  requestIdMiddleware,
+} from "./api/middleware/requestId.js";
 import { config } from "./config.js";
+import { parseApiEnv } from "./env.js";
 import { corsPlugin } from "./api/middleware/cors.js";
+import { redis } from "./services/redis.js";
 
 // Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
 // Oversized requests are rejected with 413 Request Entity Too Large.
@@ -40,6 +46,10 @@ function createDefaultReadyDeps(): Parameters<typeof readyRoute>[0] {
       const prisma = getPrismaClient();
       await prisma.$queryRaw`SELECT 1`;
     },
+    checkRedis: async () => {
+      const ok = await redis.healthCheck();
+      if (!ok) throw new Error("Redis PING did not return PONG");
+    },
     getLastIndexedAt: async () => {
       const prisma = getPrismaClient();
       const cursor = await prisma.indexerCursor.findFirst({
@@ -54,7 +64,12 @@ function createDefaultReadyDeps(): Parameters<typeof readyRoute>[0] {
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const server: FastifyInstance = Fastify({
     logger: options.logger ?? true,
-    genReqId: () => crypto.randomUUID(), // Generate unique request IDs
+    // Name the auto-bound pino field "requestId" so every request.log.*
+    // call carries it — not just the ones in requestLogger.
+    requestIdLogLabel: "requestId",
+    // Accept a valid incoming UUID from x-request-id before pino creates the
+    // child logger, so the binding is correct from the very first log entry.
+    genReqId: makeGenReqId(),
     bodyLimit,
   });
 
@@ -86,14 +101,24 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   // Register API routes under /v1
   server.register(
     async (v1) => {
+      // Guard: any plugin within this scope must not hardcode a /v1 prefix on
+      // its own routes — the parent scope already adds it, which would produce
+      // double-prefixed paths like /v1/v1/markets.
+      v1.addHook("onRoute", (routeOptions) => {
+        if (routeOptions.url.startsWith("/v1")) {
+          throw new Error(
+            `Plugin registered route "${routeOptions.url}" with a /v1 prefix ` +
+              `inside the /v1-scoped block — remove the prefix from the plugin.`
+          );
+        }
+      });
+
       await v1.register(marketsRoutes);
       await v1.register(ordersRoutes);
       await v1.register(positionsRouter);
       await v1.register(adminRoutes);
       await v1.register(healthRoutes);
-      await v1.register(
-        readyRoute(options.readyDeps ?? createDefaultReadyDeps())
-      );
+      await v1.register(readyRoute(options.readyDeps ?? createReadyDeps()));
 
       v1.get("/openapi.json", async (_request, reply) => {
         return reply.status(200).send(openApiSpec);
@@ -132,7 +157,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return reply.type("text/html").send(html);
   });
 
-  if (options.registerTestRoutes !== false) {
+  // Gate test routes behind option and NODE_ENV !== "production"
+  const enableTestRoutes =
+    options.registerTestRoutes !== false &&
+    (process.env.NODE_ENV || "development") !== "production";
+  if (enableTestRoutes) {
+    server.log.warn(
+      "Test routes (/test/*) are enabled. Do not enable in production!"
+    );
+
     // Test routes for error handling
     server.get("/test/validation-error", async () => {
       throw new ValidationError("Invalid input data", {
@@ -165,6 +198,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 }
 
 const start = async () => {
+  // Fail fast on invalid env before binding routes or opening connections.
+  parseApiEnv();
+
   // Disable test routes in production
   const registerTestRoutes = config.nodeEnv !== "production";
   const server = buildServer({ registerTestRoutes });
@@ -187,10 +223,32 @@ const start = async () => {
     );
 
     // Graceful shutdown handling
+    const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+    type ShutdownSignal = (typeof VALID_SHUTDOWN_SIGNALS)[number];
+
     const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
     let isShuttingDown = false;
 
-    const gracefulShutdown = async (signal: string) => {
+    const shutdown = async (signal: ShutdownSignal) => {
+      if (
+        typeof signal !== "string" ||
+        signal.trim() === "" ||
+        !VALID_SHUTDOWN_SIGNALS.includes(
+          signal as (typeof VALID_SHUTDOWN_SIGNALS)[number]
+        )
+      ) {
+        server.log.warn(
+          {
+            signal,
+            statusCode: 400,
+            component: "api-server",
+            validSignals: [...VALID_SHUTDOWN_SIGNALS],
+          },
+          "Graceful shutdown called with invalid signal"
+        );
+        return;
+      }
+
       if (isShuttingDown) {
         return;
       }
@@ -221,6 +279,12 @@ const start = async () => {
       try {
         // Close server — stops accepting new connections, drains in-flight requests
         await server.close();
+
+        // Gracefully disconnect database and redis
+        const { disconnectPrisma } = await import("./services/prisma.js");
+        const { redis } = await import("./services/redis.js");
+        await Promise.allSettled([disconnectPrisma(), redis.disconnect()]);
+
         clearTimeout(timeoutHandle);
 
         server.log.info(
@@ -250,8 +314,9 @@ const start = async () => {
     };
 
     // Register signal handlers for graceful shutdown
-    process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
-    process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
+    process.on("SIGTERM", () => void shutdown("SIGTERM"));
+    process.on("SIGINT", () => void shutdown("SIGINT"));
+    process.on("SIGHUP", () => void shutdown("SIGHUP"));
   } catch (err) {
     server.log.error(err);
     process.exit(1);

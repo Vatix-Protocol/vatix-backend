@@ -23,10 +23,10 @@ events it returns.
 | Field          | Type     | Required | Default | Description                                   |
 | -------------- | -------- | -------- | ------- | --------------------------------------------- |
 | `rpcUrl`       | `string` | Yes      | —       | Stellar Soroban RPC endpoint URL              |
-| `contractId`   | `string` | Yes      | —       | Contract whose events are fetched              |
-| `maxRetries`   | `number` | No       | `3`     | Maximum retry attempts for transient failures  |
-| `retryDelayMs` | `number` | No       | `500`   | Base delay before first retry (doubles each)   |
-| `pageLimit`    | `number` | No       | `100`   | Events per RPC page request                    |
+| `contractId`   | `string` | Yes      | —       | Contract whose events are fetched             |
+| `maxRetries`   | `number` | No       | `3`     | Maximum retry attempts for transient failures |
+| `retryDelayMs` | `number` | No       | `500`   | Base delay before first retry (doubles each)  |
+| `pageLimit`    | `number` | No       | `100`   | Events per RPC page request                   |
 
 ## Retry strategy
 
@@ -39,11 +39,11 @@ re-thrown.
 
 Two metrics are recorded via the injected `Telemetry` interface:
 
-| Metric                      | Description                              |
-| --------------------------- | ---------------------------------------- |
-| `indexer.events.fetched`    | Total events returned for a ledger window |
-| `indexer.rpc.page_fetched`  | Events returned per RPC page              |
-| `indexer.rpc.error`         | Emitted when an RPC call fails terminally  |
+| Metric                     | Description                               |
+| -------------------------- | ----------------------------------------- |
+| `indexer.events.fetched`   | Total events returned for a ledger window |
+| `indexer.rpc.page_fetched` | Events returned per RPC page              |
+| `indexer.rpc.error`        | Emitted when an RPC call fails terminally |
 
 ## Related source files
 

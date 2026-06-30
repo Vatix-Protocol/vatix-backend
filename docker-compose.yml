@@ -80,6 +80,24 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  oracle:
+    build:
+      context: .
+      target: oracle
+    container_name: vatix-oracle
+    profiles: ["app", "oracle"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vatix
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   finalization-worker:
     build:
       context: .

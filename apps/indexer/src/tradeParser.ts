@@ -8,10 +8,18 @@ import type {
 import { TradeParseError } from "./types.js";
 
 /**
- * Topic index 0 carries the event name symbol, e.g. "trade_executed".
- * We only parse events with this exact discriminator.
+ * Topic index 0 carries the event name symbol. Soroban's #[contractevent]
+ * macro derives that symbol by snake_casing the event struct name,
+ * including its literal "Event" suffix — every event currently published
+ * by contracts/market/src/events.rs follows this pattern (e.g.
+ * MarketCreatedEvent -> "market_created_event", MarketResolvedEvent ->
+ * "market_resolved_event"). The contract does not yet publish a trade
+ * execution event (trades are matched off-chain by the CLOB; see the
+ * Trade/IndexedTrade Prisma models), so this discriminator anticipates
+ * the eventual TradeExecutedEvent using that same convention rather than
+ * the unsuffixed "trade_executed" guess this previously used.
  */
-const TRADE_EVENT_TOPIC = "trade_executed";
+const TRADE_EVENT_TOPIC = "trade_executed_event";
 
 /**
  * Decode a base64-encoded XDR ScVal into its native JS representation.

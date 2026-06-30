@@ -1,4 +1,8 @@
-import type { NormalizedTrade, NormalizedResolution, NormalizedCollateralDeposit } from "./types.js";
+import type {
+  NormalizedTrade,
+  NormalizedResolution,
+  NormalizedCollateralDeposit,
+} from "./types.js";
 import type {
   PersistedTrade,
   PersistedResolution,
@@ -6,10 +10,11 @@ import type {
   PersistedMarketCreated,
   DuplicateEventLogger,
 } from "./idempotency.js";
-import { insertIfNew } from "./idempotency.js";
+import { insertAllIfNew, insertIfNew } from "./idempotency.js";
 import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client/index.js";
+import { sanitizeForJson } from "./safeJson.js";
 
 export type BatchRecord =
   | { kind: "trade"; data: PersistedTrade }
@@ -18,7 +23,7 @@ export type BatchRecord =
   | { kind: "market_created"; data: PersistedMarketCreated };
 
 export interface BatchWriteError {
-  record: BatchRecord;
+  record: Record<string, unknown>;
   error: string;
 }
 
@@ -58,11 +63,47 @@ export class PrismaBatchWriter implements BatchWriter {
       : undefined;
 
     await this.prisma.$transaction(async (tx) => {
-      for (const record of records) {
+      const keyedRecords = records.map((record) => ({
+        ...record,
+        idempotencyKey: record.data.idempotencyKey,
+      }));
+      const recordByKey = new Map(
+        records.map((record) => [record.data.idempotencyKey, record])
+      );
+
+      const deduped = await insertAllIfNew(
+        keyedRecords,
+        async (record) => {
+          const existing = await tx.indexerProcessedEvent.findUnique({
+            where: { idempotencyKey: record.idempotencyKey },
+          });
+
+          return existing ? null : record;
+        },
+        { logger: duplicateLogger }
+      );
+
+      skipped += deduped.duplicateCount;
+
+      for (const dedupedRecord of deduped.inserted) {
+        const record = recordByKey.get(dedupedRecord.idempotencyKey);
+        if (!record) {
+          continue;
+        }
+
         try {
           const result = await insertIfNew(
             record.data,
-            async (persisted) => this.persistRecord(tx, record, persisted as PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated),
+            async (persisted) =>
+              this.persistRecord(
+                tx,
+                record,
+                persisted as
+                  | PersistedTrade
+                  | PersistedResolution
+                  | PersistedCollateralDeposit
+                  | PersistedMarketCreated
+              ),
             { logger: duplicateLogger }
           );
 
@@ -72,14 +113,17 @@ export class PrismaBatchWriter implements BatchWriter {
             skipped += 1;
           }
         } catch (error) {
+          const serializedRecord = sanitizeForJson(record) as Record<
+            string,
+            unknown
+          >;
           errors.push({
-            record,
+            record: serializedRecord,
             error: error instanceof Error ? error.message : String(error),
           });
           this.logger?.warn("Failed to persist indexer batch record", {
-            kind: record.kind,
-            idempotencyKey: record.data.idempotencyKey,
-            error: error instanceof Error ? error.message : String(error),
+            record: serializedRecord,
+            error: sanitizeForJson(error),
           });
         }
       }
@@ -98,8 +142,18 @@ export class PrismaBatchWriter implements BatchWriter {
       "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
     >,
     record: BatchRecord,
-    persisted: PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated
-  ): Promise<PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated | null> {
+    persisted:
+      | PersistedTrade
+      | PersistedResolution
+      | PersistedCollateralDeposit
+      | PersistedMarketCreated
+  ): Promise<
+    | PersistedTrade
+    | PersistedResolution
+    | PersistedCollateralDeposit
+    | PersistedMarketCreated
+    | null
+  > {
     const existing = await tx.indexerProcessedEvent.findUnique({
       where: { idempotencyKey: persisted.idempotencyKey },
     });
@@ -202,9 +256,17 @@ export class PrismaBatchWriter implements BatchWriter {
     if (!Number.isFinite(quantity) || quantity <= 0) return;
 
     const traderYesDelta =
-      trade.outcome === "YES" ? (trade.direction === "buy" ? quantity : -quantity) : 0;
+      trade.outcome === "YES"
+        ? trade.direction === "buy"
+          ? quantity
+          : -quantity
+        : 0;
     const traderNoDelta =
-      trade.outcome === "NO" ? (trade.direction === "buy" ? quantity : -quantity) : 0;
+      trade.outcome === "NO"
+        ? trade.direction === "buy"
+          ? quantity
+          : -quantity
+        : 0;
 
     try {
       await tx.userPosition.upsert({
@@ -255,4 +317,8 @@ export class PrismaBatchWriter implements BatchWriter {
 }
 
 /** @deprecated Use PersistedTrade in BatchRecord after withIdempotencyKey(). */
-export type { NormalizedTrade, NormalizedResolution, NormalizedCollateralDeposit };
+export type {
+  NormalizedTrade,
+  NormalizedResolution,
+  NormalizedCollateralDeposit,
+};

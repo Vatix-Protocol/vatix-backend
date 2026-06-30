@@ -93,7 +93,7 @@ FROM runtime AS indexer
 CMD ["node_modules/.bin/tsx", "apps/indexer/src/main.ts"]
 
 # ---------------------------------------------------------------------------
-# oracle — External price/resolution oracle, entrypoint apps/oracle/main.ts
+# oracle — oracle poller, entrypoint apps/oracle/main.ts
 # ---------------------------------------------------------------------------
 FROM runtime AS oracle
 CMD ["node_modules/.bin/tsx", "apps/oracle/main.ts"]

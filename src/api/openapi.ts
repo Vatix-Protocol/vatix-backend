@@ -65,8 +65,12 @@ export const openApiSpec = {
                     dependencies: {
                       type: "object",
                       properties: {
-                        database: { $ref: "#/components/schemas/DependencyResult" },
-                        indexFreshness: { $ref: "#/components/schemas/DependencyResult" },
+                        database: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
+                        indexFreshness: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
                       },
                     },
                   },
@@ -85,8 +89,12 @@ export const openApiSpec = {
                     dependencies: {
                       type: "object",
                       properties: {
-                        database: { $ref: "#/components/schemas/DependencyResult" },
-                        indexFreshness: { $ref: "#/components/schemas/DependencyResult" },
+                        database: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
+                        indexFreshness: {
+                          $ref: "#/components/schemas/DependencyResult",
+                        },
                       },
                     },
                   },
@@ -180,8 +188,27 @@ export const openApiSpec = {
     "/v1/orders": {
       post: {
         summary: "Create an order",
-        description: "Submit a new order to the prediction market",
+        description:
+          "Submit a new order to the prediction market. Requires Stellar wallet ownership proof via Ed25519 signature headers.",
         tags: ["Orders"],
+        parameters: [
+          {
+            name: "x-signature",
+            in: "header",
+            required: true,
+            description:
+              "Base64-encoded Ed25519 signature of the canonical request body JSON (keys sorted alphabetically) combined with x-timestamp, signed by the private key of userAddress.",
+            schema: { type: "string" },
+          },
+          {
+            name: "x-timestamp",
+            in: "header",
+            required: true,
+            description:
+              "Unix timestamp in milliseconds (string). Must be within ±5 minutes of server time to prevent replay attacks.",
+            schema: { type: "string" },
+          },
+        ],
         requestBody: {
           required: true,
           content: {
@@ -230,7 +257,11 @@ export const openApiSpec = {
             description: "Order created",
           },
           "400": {
-            description: "Invalid request",
+            description: "Invalid request body or market not active",
+          },
+          "401": {
+            description:
+              "Missing, expired, or invalid x-signature / x-timestamp headers",
           },
         },
       },
@@ -363,11 +394,19 @@ export const openApiSpec = {
     "/v1/admin/markets": {
       get: {
         summary: "Admin market listing",
-        description: "List markets for admin users",
+        description:
+          "List all markets including CANCELLED ones. Requires API key and admin token.",
         tags: ["Admin"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
         responses: {
           "200": {
             description: "Admin market list",
+          },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
           },
         },
       },
@@ -375,8 +414,10 @@ export const openApiSpec = {
     "/v1/admin/markets/{id}/status": {
       patch: {
         summary: "Update market status",
-        description: "Admin endpoint to change market status",
+        description:
+          "Admin endpoint to change market status. Requires API key and admin token.",
         tags: ["Admin"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
         parameters: [
           {
             name: "id",
@@ -409,11 +450,33 @@ export const openApiSpec = {
           "400": {
             description: "Invalid request",
           },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
+          },
+          "404": {
+            description: "Market not found",
+          },
         },
       },
     },
   },
   components: {
+    securitySchemes: {
+      ApiKeyAuth: {
+        type: "apiKey",
+        in: "header",
+        name: "x-api-key",
+        description: "API key required for all admin endpoints",
+      },
+      BearerAuth: {
+        type: "http",
+        scheme: "bearer",
+        description: "Admin token required for all admin endpoints",
+      },
+    },
     schemas: {
       Error: {
         type: "object",
