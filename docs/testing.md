@@ -42,7 +42,9 @@ Admin routes require both. Tests cover: no headers → 401, API key only → 401
 
 ### Shared test harness
 
-`tests/integration/helpers/build-test-app.ts` exports `buildTestApp({ plugins })` — builds a minimal Fastify instance with the real error handler, registers each plugin under `/v1`, sets `API_KEY`/`ADMIN_TOKEN` defaults.  
+`tests/integration/helpers/build-test-app.ts` exports `buildTestApp({ plugins })` — builds a minimal Fastify instance with the real error handler, registers each plugin under `/v1`, sets `API_KEY`/`ADMIN_TOKEN` defaults.
+
+See [error-handler.md](./error-handler.md) for the error envelope shape, custom error classes, and `NODE_ENV` behaviour.  
 Call `resetRateLimits()` from the same module in `beforeEach` to prevent rate-limit state bleeding between tests.
 
 ### Required environment variables for integration tests
