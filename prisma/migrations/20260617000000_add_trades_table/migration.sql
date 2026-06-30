@@ -3,7 +3,7 @@ CREATE TABLE "trades" (
     "id" TEXT NOT NULL,
     "trade_id" VARCHAR(256) NOT NULL,
     "market_id" TEXT NOT NULL,
-    "outcome" VARCHAR(8) NOT NULL,
+    "outcome" "Outcome" NOT NULL,
     "buyer_address" VARCHAR(56) NOT NULL,
     "seller_address" VARCHAR(56) NOT NULL,
     "buy_order_id" TEXT NOT NULL,

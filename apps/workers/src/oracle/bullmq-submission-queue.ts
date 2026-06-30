@@ -11,7 +11,10 @@ import { createHash } from "crypto";
 import { Queue, Worker, type Job } from "bullmq";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
-import { DEFAULT_JOB_OPTIONS, redisConnectionFromEnv } from "../shared/queue-config.js";
+import {
+  DEFAULT_JOB_OPTIONS,
+  redisConnectionFromEnv,
+} from "../shared/queue-config.js";
 
 const QUEUE_NAME = process.env.SUBMISSION_QUEUE_NAME ?? "oracle-submissions";
 

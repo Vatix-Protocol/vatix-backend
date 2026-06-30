@@ -9,7 +9,7 @@ import type { RawChainEvent } from "./types.js";
 import { nativeToScVal } from "@stellar/stellar-sdk";
 
 const TRADE_TOPIC = "AAAADwAAAA50cmFkZV9leGVjdXRlZAAA";
-const RESOLUTION_TOPIC = "AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA";
+const RESOLUTION_TOPIC = "AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=";
 
 function makeTradeEvent(id: string): RawChainEvent {
   const valueXdr = nativeToScVal({

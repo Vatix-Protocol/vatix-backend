@@ -1,3 +1,4 @@
+export { Mutex } from "./mutex.js";
 export { OrderBook, Order as BookOrder, DepthLevel } from "./orderbook.js";
 export {
   matchOrder,
