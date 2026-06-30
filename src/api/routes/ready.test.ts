@@ -16,6 +16,7 @@ function buildServer(deps: ReadyDeps) {
 
 const freshDeps: ReadyDeps = {
   checkDatabase: async () => {},
+  checkRedis: async () => {},
   getLastIndexedAt: async () => NOW - 1000, // 1 second old — fresh
   now: () => NOW,
 };
@@ -110,6 +111,9 @@ describe("GET /v1/ready", () => {
     const server = buildServer({
       checkDatabase: async () => {
         throw new Error("db down");
+      },
+      checkRedis: async () => {
+        throw new Error("redis down");
       },
       getLastIndexedAt: async () => {
         throw new Error("index down");

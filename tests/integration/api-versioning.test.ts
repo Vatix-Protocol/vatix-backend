@@ -92,6 +92,7 @@ describe("Integration Tests: API versioning", () => {
       registerTestRoutes: false,
       readyDeps: {
         checkDatabase: async () => {},
+        checkRedis: async () => {},
         getLastIndexedAt: async () => Date.now(),
       },
     });

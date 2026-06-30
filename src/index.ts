@@ -21,9 +21,14 @@ import { registerDeprecatedAliases } from "./api/routes/legacy.js";
 import { openApiSpec } from "./api/openapi.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
-import { requestIdMiddleware } from "./api/middleware/requestId.js";
+import {
+  makeGenReqId,
+  requestIdMiddleware,
+} from "./api/middleware/requestId.js";
 import { config } from "./config.js";
+import { parseApiEnv } from "./env.js";
 import { corsPlugin } from "./api/middleware/cors.js";
+import { redis } from "./services/redis.js";
 
 // Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
 // Oversized requests are rejected with 413 Request Entity Too Large.
@@ -35,10 +40,36 @@ export interface BuildServerOptions {
   registerTestRoutes?: boolean;
 }
 
+function createDefaultReadyDeps(): Parameters<typeof readyRoute>[0] {
+  return {
+    checkDatabase: async () => {
+      const prisma = getPrismaClient();
+      await prisma.$queryRaw`SELECT 1`;
+    },
+    checkRedis: async () => {
+      const ok = await redis.healthCheck();
+      if (!ok) throw new Error("Redis PING did not return PONG");
+    },
+    getLastIndexedAt: async () => {
+      const prisma = getPrismaClient();
+      const cursor = await prisma.indexerCursor.findFirst({
+        orderBy: { updatedAt: "desc" },
+        select: { updatedAt: true },
+      });
+      return cursor ? cursor.updatedAt.getTime() : null;
+    },
+  };
+}
+
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const server: FastifyInstance = Fastify({
     logger: options.logger ?? true,
-    genReqId: () => crypto.randomUUID(), // Generate unique request IDs
+    // Name the auto-bound pino field "requestId" so every request.log.*
+    // call carries it — not just the ones in requestLogger.
+    requestIdLogLabel: "requestId",
+    // Accept a valid incoming UUID from x-request-id before pino creates the
+    // child logger, so the binding is correct from the very first log entry.
+    genReqId: makeGenReqId(),
     bodyLimit,
   });
 
@@ -70,6 +101,18 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   // Register API routes under /v1
   server.register(
     async (v1) => {
+      // Guard: any plugin within this scope must not hardcode a /v1 prefix on
+      // its own routes — the parent scope already adds it, which would produce
+      // double-prefixed paths like /v1/v1/markets.
+      v1.addHook("onRoute", (routeOptions) => {
+        if (routeOptions.url.startsWith("/v1")) {
+          throw new Error(
+            `Plugin registered route "${routeOptions.url}" with a /v1 prefix ` +
+              `inside the /v1-scoped block — remove the prefix from the plugin.`
+          );
+        }
+      });
+
       await v1.register(marketsRoutes);
       await v1.register(ordersRoutes);
       await v1.register(positionsRouter);
@@ -155,6 +198,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 }
 
 const start = async () => {
+  // Fail fast on invalid env before binding routes or opening connections.
+  parseApiEnv();
+
   // Disable test routes in production
   const registerTestRoutes = config.nodeEnv !== "production";
   const server = buildServer({ registerTestRoutes });
