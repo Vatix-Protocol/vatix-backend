@@ -61,6 +61,12 @@ CMD ["pnpm", "prisma:deploy"]
 # ---------------------------------------------------------------------------
 # runtime — common runtime base: app source + generated Prisma client +
 # production node_modules, running as a non-root user.
+#
+# apps/tsconfig.json is intentionally NOT copied: it is a dev/CI-only
+# typecheck config (noEmit + allowImportingTsExtensions) and is not used
+# by the tsx runtime entrypoints. Excluding it keeps the runtime image lean
+# and avoids confusion between the typecheck config and runtime behavior.
+# See: docs/architecture.md, #606.
 # ---------------------------------------------------------------------------
 FROM base AS runtime
 ENV NODE_ENV=production
@@ -70,8 +76,13 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/tsconfig.json ./tsconfig.json
 COPY --from=build /app/src ./src
-COPY --from=build /app/apps ./apps
 COPY --from=build /app/packages ./packages
+# Copy apps source but exclude the tsconfig (CI-only, not needed at runtime).
+# We copy individual subdirectories so apps/tsconfig.json is never included.
+COPY --from=build /app/apps/indexer ./apps/indexer
+COPY --from=build /app/apps/oracle ./apps/oracle
+COPY --from=build /app/apps/workers ./apps/workers
+COPY --from=build /app/apps/api ./apps/api
 RUN chown -R vatix:vatix /app
 USER vatix
 # Docker/Kubernetes send SIGTERM to PID 1 on stop; entrypoints in every

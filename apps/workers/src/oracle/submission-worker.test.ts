@@ -10,8 +10,14 @@ vi.mock("../../../oracle/signature-helper.js", () => ({
   ),
 }));
 
+// Spy on logDeadLetter to verify dead-letter calls without real I/O.
+vi.mock("../consumers/dead-letter.js", () => ({
+  logDeadLetter: vi.fn(),
+}));
+
 import { SubmissionWorker } from "./submission-worker.js";
 import type { QueuedSubmission } from "./redis-submission-queue.js";
+import { logDeadLetter } from "../consumers/dead-letter.js";
 
 // Mock Prisma
 const mockPrisma = {
@@ -22,6 +28,7 @@ const mockPrisma = {
   },
   resolutionCandidate: {
     upsert: vi.fn(),
+    updateMany: vi.fn(),
   },
 };
 
@@ -151,6 +158,37 @@ describe("SubmissionWorker", () => {
       expect(mockLogger.error).toHaveBeenCalledWith(
         "Oracle submission processing failed, max attempts exceeded",
         expect.any(Object)
+      );
+    });
+
+    it("should call logDeadLetter with structured fields when max retries exceeded", async () => {
+      const submission = createTestSubmission();
+      // Set attempts to maxRetries - 1 so next attempt pushes it over the limit
+      submission.attempts = 2;
+
+      mockPrisma.oracleReport.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.resolutionCandidate.updateMany.mockResolvedValue({ count: 1 });
+      mockQueue.acknowledge.mockResolvedValue(undefined);
+
+      await expect(
+        worker.processSubmission({
+          ...submission,
+          result: { ...submission.result, signature: "" }, // triggers signature failure
+        })
+      ).rejects.toThrow();
+
+      expect(logDeadLetter).toHaveBeenCalledOnce();
+      expect(logDeadLetter).toHaveBeenCalledWith(
+        mockLogger,
+        expect.objectContaining({
+          id: submission.id,
+          queue: "oracle-submission",
+          payload: expect.objectContaining({
+            marketId: submission.request.marketId,
+            oracleAddress: submission.request.oracleAddress,
+          }),
+          reason: expect.any(String),
+        })
       );
     });
 
