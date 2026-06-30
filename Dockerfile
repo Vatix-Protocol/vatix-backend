@@ -13,6 +13,7 @@
 # Build a specific process with:
 #   docker build --target api -t vatix-backend-api .
 #   docker build --target indexer -t vatix-indexer .
+#   docker build --target oracle -t vatix-oracle .
 #   docker build --target finalization-worker -t vatix-finalization-worker .
 #   docker build --target oracle-worker -t vatix-oracle-worker .
 #   docker build --target settlement-worker -t vatix-settlement-worker .
