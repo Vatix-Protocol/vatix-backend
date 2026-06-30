@@ -25,3 +25,5 @@ export {
   loadIndexerConfig,
   loadFinalizationConfig,
 } from "./config.js";
+
+export { resolveCorsAllowedOrigins } from "./cors.js";

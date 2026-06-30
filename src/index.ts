@@ -22,6 +22,7 @@ import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
 import { requestIdMiddleware } from "./api/middleware/requestId.js";
 import { config } from "./config.js";
+import { parseApiEnv } from "./env.js";
 import { corsPlugin } from "./api/middleware/cors.js";
 import { redis } from "./services/redis.js";
 
@@ -182,6 +183,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 }
 
 const start = async () => {
+  // Fail fast on invalid env before binding routes or opening connections.
+  parseApiEnv();
+
   // Disable test routes in production
   const registerTestRoutes = config.nodeEnv !== "production";
   const server = buildServer({ registerTestRoutes });
