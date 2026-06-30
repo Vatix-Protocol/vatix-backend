@@ -15,6 +15,7 @@
     "workers:submission:start": "tsx apps/workers/src/oracle/main.ts",
     "workers:oracle:dev": "tsx watch apps/workers/src/oracle/main.ts",
     "workers:oracle:start": "tsx apps/workers/src/oracle/main.ts",
+    "workers:settlement": "tsx apps/workers/src/settlement/consumer.ts",
     "workers:settlement:dev": "tsx watch apps/workers/src/settlement/consumer.ts",
     "workers:settlement:start": "tsx apps/workers/src/settlement/consumer.ts",
     "build": "tsc",
@@ -59,7 +60,8 @@
     "pg": "^8.17.2",
     "redis": "^5.10.0",
     "tsc-files": "^1.1.4",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^25.0.9",

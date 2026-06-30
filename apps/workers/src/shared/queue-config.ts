@@ -24,7 +24,11 @@ export const DEFAULT_JOB_OPTIONS: JobsOptions = {
 };
 
 /** Build a Redis connection config from the environment. */
-export function redisConnectionFromEnv(): { host: string; port: number; password?: string } {
+export function redisConnectionFromEnv(): {
+  host: string;
+  port: number;
+  password?: string;
+} {
   const raw = process.env.REDIS_URL ?? "redis://localhost:6379";
   // Strip scheme, split auth@hostport
   const noScheme = raw.replace(/^rediss?:\/\//, "");
@@ -32,7 +36,9 @@ export function redisConnectionFromEnv(): { host: string; port: number; password
   const hostPort = atIdx >= 0 ? noScheme.slice(atIdx + 1) : noScheme;
   const authPart = atIdx >= 0 ? noScheme.slice(0, atIdx) : "";
   const [host, portStr] = hostPort.split(":");
-  const password = authPart.includes(":") ? authPart.split(":")[1] : authPart || undefined;
+  const password = authPart.includes(":")
+    ? authPart.split(":")[1]
+    : authPart || undefined;
   return {
     host: host || "localhost",
     port: Number(portStr) || 6379,

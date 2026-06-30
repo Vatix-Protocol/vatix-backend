@@ -2,6 +2,8 @@ import fp from "fastify-plugin";
 import cors from "@fastify/cors";
 import type { FastifyInstance } from "fastify";
 import type { FastifyCorsOptions } from "@fastify/cors";
+import { resolveCorsAllowedOrigins } from "../../../packages/shared/src/cors.js";
+import type { NodeEnv } from "../../../packages/shared/src/cors.js";
 
 export interface CorsOriginConfig {
   origin: NonNullable<FastifyCorsOptions["origin"]>;
@@ -17,31 +19,9 @@ export interface CorsConfig {
   strictPreflight: boolean;
 }
 
-/**
- * CORS configuration.
- *
- * Allowed origins are driven by the CORS_ALLOWED_ORIGINS environment variable
- * (comma-separated list). Falls back to a restrictive default that only permits
- * the same origin in production and localhost:3000 in development/test.
- *
- * Examples:
- *   CORS_ALLOWED_ORIGINS=https://app.vatix.io,https://staging.vatix.io
- */
 function getAllowedOrigins(): string[] {
-  const raw = process.env.CORS_ALLOWED_ORIGINS;
-  if (raw && raw.trim() !== "") {
-    return raw
-      .split(",")
-      .map((o) => o.trim())
-      .filter(Boolean);
-  }
-
-  // Restrictive defaults
-  if (process.env.NODE_ENV === "production") {
-    return []; // No cross-origin access unless explicitly configured
-  }
-
-  return ["http://localhost:3000", "http://localhost:5173"];
+  const nodeEnv = (process.env.NODE_ENV ?? "development") as NodeEnv;
+  return resolveCorsAllowedOrigins(nodeEnv, process.env.CORS_ALLOWED_ORIGINS);
 }
 
 export const corsPlugin = fp(async (fastify: FastifyInstance) => {

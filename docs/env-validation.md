@@ -10,12 +10,34 @@ All Vatix services validate their environment **at boot time** — not lazily at
 the point of first use. A missing or malformed variable causes an immediate,
 descriptive startup failure rather than a silent bug at runtime.
 
-Two utilities work together:
+The **API server** validates its boot-time variables with a **Zod schema** in
+`src/env.ts` (`parseApiEnv()`), called from `src/config.ts` at module load and
+again in `src/index.ts` before the HTTP server binds.
+
+Two utilities work together for other services:
 
 | Utility                 | File                                | Purpose                        |
 | ----------------------- | ----------------------------------- | ------------------------------ |
+| `parseApiEnv()`         | `src/env.ts`                        | Zod schema for API boot env    |
 | `requireEnv()`          | `packages/shared/src/requireEnv.ts` | Fail-fast presence check       |
 | `loadBaseConfig()` etc. | `packages/shared/src/config.ts`     | Typed, validated config object |
+
+---
+
+## API boot validation (`parseApiEnv`)
+
+The HTTP API uses Zod to validate `NODE_ENV`, `PORT`, `DATABASE_URL`,
+`ORACLE_CHALLENGE_WINDOW_SECONDS`, and `ORACLE_POLL_INTERVAL_MS` before
+`buildServer()` runs. Invalid values throw with the same descriptive messages
+as the legacy manual validators.
+
+```ts
+import { parseApiEnv } from "./env.js";
+
+parseApiEnv(); // reads process.env; throws on first invalid field
+```
+
+See `src/env.test.ts` for coverage.
 
 ---
 

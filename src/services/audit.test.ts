@@ -1,7 +1,15 @@
-import { describe, it, expect, beforeEach, afterAll } from "vitest";
-import { auditService } from "./audit";
-import { redis } from "./redis";
-import type { Trade } from "../matching/engine";
+import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
+import type { Trade } from "../matching/engine.js";
+
+vi.hoisted(() => {
+  process.env.DATABASE_URL =
+    process.env.DATABASE_URL ||
+    "postgresql://postgres:postgres@localhost:5433/vatix";
+  process.env.REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
+});
+
+const { auditService } = await import("./audit.js");
+const { redis } = await import("./redis.js");
 
 describe("Audit Service", () => {
   const testMarketId = "test-market-123";
@@ -19,11 +27,12 @@ describe("Audit Service", () => {
   };
 
   beforeEach(async () => {
+    const keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
     // Clean up test streams
     try {
-      await redis.del(`audit:market:${testMarketId}`);
-      await redis.del("audit:trades:global");
-    } catch (error) {
+      await redis.del(`${keyPrefix}audit:market:${testMarketId}`);
+      await redis.del(`${keyPrefix}audit:trades:global`);
+    } catch {
       // Streams might not exist
     }
   });
@@ -81,9 +90,10 @@ describe("Audit Service", () => {
     });
 
     it("should return trades in chronological order", async () => {
-      const trade1 = { ...testTrade, id: "trade-1", timestamp: 1000 };
-      const trade2 = { ...testTrade, id: "trade-2", timestamp: 2000 };
-      const trade3 = { ...testTrade, id: "trade-3", timestamp: 3000 };
+      const base = Date.now();
+      const trade1 = { ...testTrade, id: "trade-1", timestamp: base + 1 };
+      const trade2 = { ...testTrade, id: "trade-2", timestamp: base + 2 };
+      const trade3 = { ...testTrade, id: "trade-3", timestamp: base + 3 };
 
       await auditService.logOrderMatch(trade1);
       await auditService.logOrderMatch(trade2);
@@ -98,10 +108,12 @@ describe("Audit Service", () => {
     });
 
     it("should respect limit parameter", async () => {
+      const base = Date.now();
       for (let i = 0; i < 10; i++) {
         await auditService.logOrderMatch({
           ...testTrade,
           id: `trade-${i}`,
+          timestamp: base + i,
         });
       }
 
@@ -112,8 +124,19 @@ describe("Audit Service", () => {
 
   describe("getRecentTrades", () => {
     it("should return trades from all markets", async () => {
-      const trade1 = { ...testTrade, marketId: "market-1" };
-      const trade2 = { ...testTrade, marketId: "market-2" };
+      const base = Date.now();
+      const trade1 = {
+        ...testTrade,
+        marketId: "market-1",
+        id: "trade-market-1",
+        timestamp: base + 1,
+      };
+      const trade2 = {
+        ...testTrade,
+        marketId: "market-2",
+        id: "trade-market-2",
+        timestamp: base + 2,
+      };
 
       await auditService.logOrderMatch(trade1);
       await auditService.logOrderMatch(trade2);
@@ -127,8 +150,9 @@ describe("Audit Service", () => {
     });
 
     it("should return newest trades first", async () => {
-      const trade1 = { ...testTrade, id: "trade-1", timestamp: 1000 };
-      const trade2 = { ...testTrade, id: "trade-2", timestamp: 2000 };
+      const base = Date.now();
+      const trade1 = { ...testTrade, id: "trade-1", timestamp: base + 1 };
+      const trade2 = { ...testTrade, id: "trade-2", timestamp: base + 2 };
 
       await auditService.logOrderMatch(trade1);
       await auditService.logOrderMatch(trade2);
@@ -142,9 +166,10 @@ describe("Audit Service", () => {
 
   describe("getAuditLogRange", () => {
     it("should return trades within time range", async () => {
-      const trade1 = { ...testTrade, id: "trade-1", timestamp: 1000 };
-      const trade2 = { ...testTrade, id: "trade-2", timestamp: 2000 };
-      const trade3 = { ...testTrade, id: "trade-3", timestamp: 3000 };
+      const base = Date.now();
+      const trade1 = { ...testTrade, id: "trade-1", timestamp: base + 1 };
+      const trade2 = { ...testTrade, id: "trade-2", timestamp: base + 2 };
+      const trade3 = { ...testTrade, id: "trade-3", timestamp: base + 3 };
 
       await auditService.logOrderMatch(trade1);
       await auditService.logOrderMatch(trade2);
@@ -152,8 +177,8 @@ describe("Audit Service", () => {
 
       const logs = await auditService.getAuditLogRange(
         testMarketId,
-        1500,
-        2500
+        base + 2,
+        base + 2
       );
 
       expect(logs.length).toBe(1);

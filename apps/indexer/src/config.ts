@@ -26,7 +26,9 @@ export interface IngestionLoopConfig {
 
 export interface IndexerAppConfig extends SharedIndexerConfig, ChainConfig {}
 
-export function pickIngestionLoopConfig(cfg: IndexerAppConfig): IngestionLoopConfig {
+export function pickIngestionLoopConfig(
+  cfg: IndexerAppConfig
+): IngestionLoopConfig {
   return {
     ingestionIntervalMs: cfg.ingestionIntervalMs,
     ledgerWindowSize: cfg.ledgerWindowSize,
