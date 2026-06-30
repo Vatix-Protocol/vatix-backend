@@ -22,13 +22,17 @@ describe("Error Handler Middleware", () => {
 
   // Helper
   const inject = (throw_: () => never) => {
-    server.get("/test", async () => { throw_(); });
+    server.get("/test", async () => {
+      throw_();
+    });
     return server.inject({ method: "GET", url: "/test" });
   };
 
   describe("envelope shape", () => {
     it("has code, message, statusCode, requestId", async () => {
-      server.get("/test", async () => { throw new NotFoundError("x"); });
+      server.get("/test", async () => {
+        throw new NotFoundError("x");
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       const body = JSON.parse(res.body);
       expect(body).toMatchObject({
@@ -40,7 +44,9 @@ describe("Error Handler Middleware", () => {
     });
 
     it("statusCode in body matches HTTP status", async () => {
-      server.get("/test", async () => { throw new NotFoundError(); });
+      server.get("/test", async () => {
+        throw new NotFoundError();
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       const body = JSON.parse(res.body);
       expect(body.statusCode).toBe(res.statusCode);
@@ -49,7 +55,9 @@ describe("Error Handler Middleware", () => {
 
   describe("ValidationError", () => {
     it("returns 400 with code validation_error", async () => {
-      server.get("/test", async () => { throw new ValidationError("bad input"); });
+      server.get("/test", async () => {
+        throw new ValidationError("bad input");
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).code).toBe("validation_error");
@@ -57,13 +65,17 @@ describe("Error Handler Middleware", () => {
 
     it("puts fields inside metadata", async () => {
       const fields = { email: "invalid" };
-      server.get("/test", async () => { throw new ValidationError("bad", fields); });
+      server.get("/test", async () => {
+        throw new ValidationError("bad", fields);
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(JSON.parse(res.body).metadata).toEqual({ fields });
     });
 
     it("omits metadata when no fields", async () => {
-      server.get("/test", async () => { throw new ValidationError("bad"); });
+      server.get("/test", async () => {
+        throw new ValidationError("bad");
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(JSON.parse(res.body).metadata).toBeUndefined();
     });
@@ -71,7 +83,9 @@ describe("Error Handler Middleware", () => {
 
   describe("NotFoundError", () => {
     it("returns 404 with code not_found", async () => {
-      server.get("/test", async () => { throw new NotFoundError("gone"); });
+      server.get("/test", async () => {
+        throw new NotFoundError("gone");
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(404);
       expect(JSON.parse(res.body).code).toBe("not_found");
@@ -80,7 +94,9 @@ describe("Error Handler Middleware", () => {
 
   describe("UnauthorizedError", () => {
     it("returns 401 with code unauthorized", async () => {
-      server.get("/test", async () => { throw new UnauthorizedError(); });
+      server.get("/test", async () => {
+        throw new UnauthorizedError();
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(401);
       expect(JSON.parse(res.body).code).toBe("unauthorized");
@@ -89,7 +105,9 @@ describe("Error Handler Middleware", () => {
 
   describe("ForbiddenError", () => {
     it("returns 403 with code forbidden", async () => {
-      server.get("/test", async () => { throw new ForbiddenError(); });
+      server.get("/test", async () => {
+        throw new ForbiddenError();
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(403);
       expect(JSON.parse(res.body).code).toBe("forbidden");
@@ -98,7 +116,9 @@ describe("Error Handler Middleware", () => {
 
   describe("generic Error", () => {
     it("returns 500 with code internal_error", async () => {
-      server.get("/test", async () => { throw new Error("boom"); });
+      server.get("/test", async () => {
+        throw new Error("boom");
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(500);
       expect(JSON.parse(res.body).code).toBe("internal_error");
@@ -107,7 +127,9 @@ describe("Error Handler Middleware", () => {
     it("exposes message in development", async () => {
       const orig = process.env.NODE_ENV;
       process.env.NODE_ENV = "development";
-      server.get("/test", async () => { throw new Error("db failed"); });
+      server.get("/test", async () => {
+        throw new Error("db failed");
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(JSON.parse(res.body).message).toBe("db failed");
       process.env.NODE_ENV = orig;
@@ -116,7 +138,9 @@ describe("Error Handler Middleware", () => {
     it("hides message in production", async () => {
       const orig = process.env.NODE_ENV;
       process.env.NODE_ENV = "production";
-      server.get("/test", async () => { throw new Error("db failed"); });
+      server.get("/test", async () => {
+        throw new Error("db failed");
+      });
       const res = await server.inject({ method: "GET", url: "/test" });
       const body = JSON.parse(res.body);
       expect(body.message).not.toContain("db");

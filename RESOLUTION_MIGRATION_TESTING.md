@@ -1,7 +1,9 @@
 # Resolutions Table Migration - Testing & Verification Guide
 
 ## Overview
+
 This migration adds the `resolutions` table to support finalized market resolutions. The table includes:
+
 - **Market ID keying**: Each resolution is linked to a market
 - **One active resolution per market**: Enforced via partial unique index on `market_id` WHERE `status = 'ACTIVE'`
 - **Outcome tracking**: Boolean field for YES/NO resolution
@@ -17,6 +19,7 @@ This migration adds the `resolutions` table to support finalized market resoluti
 ### Schema Changes
 
 #### New Enum: ResolutionStatus
+
 ```
 ACTIVE       - Current active resolution
 CORRECTED    - Resolution that has been corrected (new one is ACTIVE)
@@ -24,6 +27,7 @@ OVERRIDDEN   - Resolution that was overridden (new one is ACTIVE)
 ```
 
 #### New Table: resolutions
+
 ```sql
 CREATE TABLE "resolutions" (
     "id" TEXT PRIMARY KEY,
@@ -39,6 +43,7 @@ CREATE TABLE "resolutions" (
 ```
 
 #### Indexes Created
+
 - `resolutions_market_id_active_idx` (unique, partial) - Enforces one ACTIVE resolution per market
 - `resolutions_market_id_idx` - Fast lookups by market
 - `resolutions_status_idx` - Filter by resolution status
@@ -49,6 +54,7 @@ CREATE TABLE "resolutions" (
 ## Testing Steps
 
 ### 1. Apply Migration
+
 ```bash
 # Development environment
 pnpm prisma:migrate dev --name "verify resolutions migration"
@@ -58,6 +64,7 @@ pnpm prisma:deploy
 ```
 
 ### 2. Verify Schema in Database
+
 ```bash
 # Connect to database and check table structure
 pnpm prisma:studio
@@ -71,6 +78,7 @@ Expected output should show all columns with correct types.
 ### 3. Test Acceptance Criteria
 
 #### A. Resolution Keyed by Market ID
+
 ```sql
 -- Insert a market first
 INSERT INTO markets (id, question, end_time, resolution_time, oracle_address, status)
@@ -99,6 +107,7 @@ SELECT * FROM resolutions WHERE market_id = 'test-market-1';
 ```
 
 #### B. Outcome, Finalized At, and Provenance Fields
+
 ```sql
 -- Verify all fields are populated correctly
 SELECT id, market_id, outcome, finalized_at, provenance, status
@@ -109,6 +118,7 @@ WHERE market_id = 'test-market-1';
 ```
 
 #### C. One Active Resolution Per Market (Constraint)
+
 ```sql
 -- This should FAIL (unique constraint violation)
 INSERT INTO resolutions (id, market_id, outcome, finalized_at, provenance, status)
@@ -140,6 +150,7 @@ SELECT status, COUNT(*) FROM resolutions GROUP BY market_id, status HAVING COUNT
 ```
 
 #### D. Correction/Override Metadata Strategy
+
 ```sql
 -- Test with correction metadata
 UPDATE resolutions
@@ -169,28 +180,30 @@ WHERE id = 'res-1';
 ### 4. Integration with Prisma ORM
 
 #### Generate Prisma Client
+
 ```bash
 pnpm prisma:generate
 ```
 
 #### Usage Example (TypeScript)
+
 ```typescript
-import { prisma } from '@/services/prisma';
+import { prisma } from "@/services/prisma";
 
 // Create a resolution
 const resolution = await prisma.resolution.create({
   data: {
-    marketId: 'market-123',
+    marketId: "market-123",
     outcome: true,
     finalizedAt: new Date(),
-    provenance: 'CHAINLINK',
-    status: 'ACTIVE',
+    provenance: "CHAINLINK",
+    status: "ACTIVE",
   },
 });
 
 // Query active resolutions
 const activeResolutions = await prisma.resolution.findMany({
-  where: { status: 'ACTIVE' },
+  where: { status: "ACTIVE" },
   include: { market: true },
 });
 
@@ -198,27 +211,28 @@ const activeResolutions = await prisma.resolution.findMany({
 const marketResolution = await prisma.resolution.findUniqueOrThrow({
   where: {
     marketId_status: {
-      marketId: 'market-123',
-      status: 'ACTIVE',
+      marketId: "market-123",
+      status: "ACTIVE",
     },
   },
 });
 
 // Update resolution to corrected with metadata
 const corrected = await prisma.resolution.update({
-  where: { id: 'res-123' },
+  where: { id: "res-123" },
   data: {
-    status: 'CORRECTED',
+    status: "CORRECTED",
     correctionOverrideMetadata: {
       corrected_at: new Date().toISOString(),
       previous_outcome: false,
-      reason: 'Oracle data validation issue',
+      reason: "Oracle data validation issue",
     },
   },
 });
 ```
 
 ### 5. Run Full Test Suite
+
 ```bash
 # Run all tests including integration tests
 pnpm test
@@ -233,6 +247,7 @@ pnpm test:coverage
 ## Verification Queries
 
 ### Check Migration Applied
+
 ```sql
 SELECT * FROM "_prisma_migrations"
 WHERE migration = '20260428000000_add_resolutions_table'
@@ -240,11 +255,13 @@ ORDER BY finished_at DESC LIMIT 1;
 ```
 
 ### View Table Structure
+
 ```sql
 \d resolutions
 ```
 
 ### Verify Indexes
+
 ```sql
 SELECT indexname, indexdef
 FROM pg_indexes
@@ -252,6 +269,7 @@ WHERE tablename = 'resolutions';
 ```
 
 ### Test Constraint
+
 ```sql
 -- Count ACTIVE resolutions per market (should be 0 or 1 for each)
 SELECT market_id, COUNT(*) as active_count
@@ -275,6 +293,7 @@ pnpm prisma:migrate resolve --rolled-back 20260428000000_add_resolutions_table -
 ```
 
 Manual SQL rollback (if needed):
+
 ```sql
 DROP TABLE IF EXISTS resolutions CASCADE;
 DROP TYPE IF EXISTS "ResolutionStatus";
@@ -288,10 +307,11 @@ DROP TYPE IF EXISTS "ResolutionStatus";
 4. **Sentinel Provenance Values**: Use standardized provenance values (e.g., 'CHAINLINK', 'PYTH', 'MANUAL', 'OVERRIDE', 'API3', 'UMA')
 
 ## Success Criteria
+
 ✅ Migration applies without errors  
 ✅ Table structure matches schema  
 ✅ One ACTIVE resolution per market constraint enforced  
 ✅ Correction metadata is stored and retrievable  
 ✅ Foreign key cascades work correctly  
 ✅ All indexes created successfully  
-✅ Prisma ORM client generates successfully  
+✅ Prisma ORM client generates successfully

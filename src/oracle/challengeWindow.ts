@@ -21,7 +21,9 @@ export function getChallengeWindow(
   challengeWindowSeconds: number
 ): ChallengeWindow {
   const opensAt = new Date(proposedAt.getTime());
-  const closesAt = new Date(proposedAt.getTime() + challengeWindowSeconds * 1000);
+  const closesAt = new Date(
+    proposedAt.getTime() + challengeWindowSeconds * 1000
+  );
   return { opensAt, closesAt };
 }
 
@@ -37,6 +39,9 @@ export function isChallengeWindowOpen(
   challengeWindowSeconds: number,
   now: Date = new Date()
 ): boolean {
-  const { opensAt, closesAt } = getChallengeWindow(proposedAt, challengeWindowSeconds);
+  const { opensAt, closesAt } = getChallengeWindow(
+    proposedAt,
+    challengeWindowSeconds
+  );
   return now >= opensAt && now < closesAt;
 }

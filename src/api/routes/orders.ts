@@ -3,28 +3,27 @@ import { getPrismaClient } from "../../services/prisma.js";
 import { ValidationError } from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
 import { auditService } from "../../services/audit.js";
+import { matchingService } from "../../matching/matching-service.js";
 import {
   validateUserAddress,
   assertValidOrder,
   type OrderInput,
 } from "../../matching/validation.js";
-import {
-  heavyReadLimiter,
-  writeLimiter,
-} from "../middleware/rateLimiter.js";
+import { heavyReadLimiter, writeLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
+import { verifyStellarSignature } from "../middleware/stellarAuth.js";
 
-interface GetUserOrdersParams {
+export interface GetUserOrdersParams {
   address: string;
 }
 
-interface GetUserOrdersQuery {
+export interface GetUserOrdersQuery {
   status?: OrderStatus;
   page?: number;
   limit?: number;
 }
 
-interface GetWalletTradesQuery {
+export interface GetWalletTradesQuery {
   page?: number;
   limit?: number;
   from?: string;
@@ -32,13 +31,56 @@ interface GetWalletTradesQuery {
   marketId?: string;
 }
 
-interface CreateOrderBody {
+export interface CreateOrderBody {
   marketId: string;
   userAddress: string;
   side: OrderSide;
   outcome: Outcome;
   price: number;
   quantity: number;
+}
+
+export interface OrderResponse {
+  id: string;
+  marketId: string;
+  userAddress: string;
+  side: OrderSide;
+  outcome: Outcome;
+  price: string;
+  quantity: number;
+  filledQuantity: number;
+  status: OrderStatus;
+  createdAt: Date;
+}
+
+export interface OrderListResponse {
+  orders: OrderResponse[];
+  total: number;
+  hasNext: boolean;
+  page: number;
+  limit: number;
+}
+
+export interface TradeEntry {
+  id: string;
+  marketId: string;
+  outcome: Outcome;
+  buyerAddress: string;
+  sellerAddress: string;
+  buyOrderId: string;
+  sellOrderId: string;
+  price: number;
+  quantity: number;
+  timestamp: number;
+  loggedAt: string;
+}
+
+export interface TradeListResponse {
+  trades: TradeEntry[];
+  total: number;
+  hasNext: boolean;
+  page: number;
+  limit: number;
 }
 
 export async function ordersRoutes(fastify: FastifyInstance) {
@@ -51,6 +93,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
   }>(
     "/trades/user/:address",
     {
+      onRequest: [heavyReadLimiter],
       schema: {
         params: {
           type: "object",
@@ -111,14 +154,18 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       if (from !== undefined) {
         fromMs = Date.parse(from);
         if (Number.isNaN(fromMs)) {
-          throw new ValidationError("from must be a valid UTC ISO-8601 timestamp");
+          throw new ValidationError(
+            "from must be a valid UTC ISO-8601 timestamp"
+          );
         }
       }
 
       if (to !== undefined) {
         toMs = Date.parse(to);
         if (Number.isNaN(toMs)) {
-          throw new ValidationError("to must be a valid UTC ISO-8601 timestamp");
+          throw new ValidationError(
+            "to must be a valid UTC ISO-8601 timestamp"
+          );
         }
       }
 
@@ -129,20 +176,24 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       }
 
       if (marketId !== undefined) {
-        const market = await prisma.market.findUnique({ where: { id: marketId }, select: { id: true } });
+        const market = await prisma.market.findUnique({
+          where: { id: marketId },
+          select: { id: true },
+        });
         if (!market) {
           throw new ValidationError(`Market not found: ${marketId}`);
         }
       }
 
-      const { trades, total, hasNext } = await auditService.getWalletTradeHistory(
-        address,
-        page,
-        limit,
-        fromMs,
-        toMs,
-        marketId
-      );
+      const { trades, total, hasNext } =
+        await auditService.getWalletTradeHistory(
+          address,
+          page,
+          limit,
+          fromMs,
+          toMs,
+          marketId
+        );
 
       return {
         trades: trades.map((entry) => ({
@@ -265,7 +316,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         }),
       ]);
 
-      success(reply, {
+      reply.status(200).send({
         orders,
         total,
         hasNext: skip + orders.length < total,
@@ -280,6 +331,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
     "/orders",
     {
       onRequest: [writeLimiter],
+      preHandler: [verifyStellarSignature],
       schema: {
         body: {
           type: "object",
@@ -332,6 +384,25 @@ export async function ordersRoutes(fastify: FastifyInstance) {
                   createdAt: { type: "string" },
                 },
               },
+              trades: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    marketId: { type: "string" },
+                    outcome: { type: "string" },
+                    buyerAddress: { type: "string" },
+                    sellerAddress: { type: "string" },
+                    buyOrderId: { type: "string" },
+                    sellOrderId: { type: "string" },
+                    price: { type: "number" },
+                    quantity: { type: "number" },
+                    timestamp: { type: "number" },
+                  },
+                },
+              },
+              filledQuantity: { type: "number" },
             },
           },
         },
@@ -355,24 +426,11 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       // Validates: address format, market exists/active, price range, quantity > 0
       await assertValidOrder(orderInput);
 
-      // Create order in database
-      const order = await prisma.order.create({
-        data: {
-          marketId,
-          userAddress,
-          side,
-          outcome,
-          price: price.toString(),
-          quantity,
-          filledQuantity: 0,
-          status: "OPEN",
-        },
-      });
+      // Wire into matching engine and persist atomically
+      const { order, trades, filledQuantity } =
+        await matchingService.placeOrder(orderInput);
 
-      // TODO: Add to matching engine
-      // await matchingEngine.addOrder(order);
-
-      success(reply, { order }, 201);
+      reply.status(201).send({ order, trades, filledQuantity });
     }
   );
 }

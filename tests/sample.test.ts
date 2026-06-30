@@ -16,7 +16,7 @@ describe("Sample Test Setup", () => {
   it("should create a test position with correct defaults", async () => {
     // First create a market
     const market = await testUtils.createTestMarket();
-    
+
     // Create a position
     const position = await testUtils.createTestPosition(
       market.id,
@@ -32,14 +32,14 @@ describe("Sample Test Setup", () => {
   it("should validate decimal precision correctly", () => {
     expect(testUtils.assertDecimalEqual(0.12345678, 0.12345678)).toBe(true);
     expect(testUtils.assertDecimalEqual(0.12345678, 0.12345679)).toBe(false);
-    expect(testUtils.assertDecimalEqual(1.00000001, 1.00000000, 8)).toBe(false);
-    expect(testUtils.assertDecimalEqual(1.00000001, 1.00000000, 7)).toBe(true);
+    expect(testUtils.assertDecimalEqual(1.00000001, 1.0, 8)).toBe(false);
+    expect(testUtils.assertDecimalEqual(1.00000001, 1.0, 7)).toBe(true);
   });
 
   it("should generate valid Stellar addresses", () => {
     const address = testUtils.generateStellarAddress();
     expect(address).toMatch(/^G[A-Z0-9]{55}$/);
-    
+
     const customAddress = testUtils.generateStellarAddress("GTEST");
     expect(customAddress).toMatch(/^GTEST[A-Z0-9]{51}$/);
   });

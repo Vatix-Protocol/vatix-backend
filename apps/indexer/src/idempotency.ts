@@ -3,6 +3,8 @@ import type {
   RawChainEvent,
   NormalizedTrade,
   NormalizedResolution,
+  NormalizedCollateralDeposit,
+  NormalizedMarketCreated,
 } from "./types.js";
 
 /**
@@ -94,13 +96,29 @@ export interface PersistedResolution extends NormalizedResolution {
   idempotencyKey: string;
 }
 
+/** A NormalizedCollateralDeposit stamped with its idempotency key, ready for storage. */
+export interface PersistedCollateralDeposit extends NormalizedCollateralDeposit {
+  idempotencyKey: string;
+}
+
+/** A NormalizedMarketCreated stamped with its idempotency key, ready for storage. */
+export interface PersistedMarketCreated extends NormalizedMarketCreated {
+  idempotencyKey: string;
+}
+
 export function withIdempotencyKey(trade: NormalizedTrade): PersistedTrade;
 export function withIdempotencyKey(
   resolution: NormalizedResolution
 ): PersistedResolution;
 export function withIdempotencyKey(
-  record: NormalizedTrade | NormalizedResolution
-): PersistedTrade | PersistedResolution {
+  deposit: NormalizedCollateralDeposit
+): PersistedCollateralDeposit;
+export function withIdempotencyKey(
+  market: NormalizedMarketCreated
+): PersistedMarketCreated;
+export function withIdempotencyKey(
+  record: NormalizedTrade | NormalizedResolution | NormalizedCollateralDeposit | NormalizedMarketCreated
+): PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated {
   const { key } = generateIdempotencyKey({
     id: record.eventId,
     contractId: record.contractId,

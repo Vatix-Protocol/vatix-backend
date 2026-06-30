@@ -43,6 +43,10 @@ export interface ProviderResult {
   timestamp: string;
   /** Optional metadata from the provider */
   metadata?: Record<string, unknown>;
+  /** Optional Ed25519 signature (populated after signing by oracle main) */
+  signature?: string;
+  /** Optional public key matching the signature */
+  publicKey?: string;
 }
 
 /**

@@ -82,12 +82,7 @@ export class PrimaryAdapter implements ProviderAdapter {
       request.timeoutMs ?? this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
     const timedResult = await withTimeout<ProviderResult>(
-      async (signal) => {
-        // Simulate fetching from primary provider
-        // In production, this would make an HTTP request to the provider API
-        const response = await this.fetchFromProvider(request, signal);
-        return response;
-      },
+      async (signal) => this.fetchFromProvider(request, signal),
       {
         timeoutMs,
         errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
@@ -186,17 +181,17 @@ export class PrimaryAdapter implements ProviderAdapter {
     }
 
     return {
-      outcome: true,
-      confidence: 0.95,
+      outcome: payload.outcome,
+      confidence: payload.confidence,
       confidenceMetadata: {
-        score: 0.95,
+        score: payload.confidence,
         method: "primary-provider",
       },
       source: this.source,
       sourceMetadata: {
         provider: this.source,
       },
-      timestamp: new Date().toISOString(),
+      timestamp: payload.timestamp ?? new Date().toISOString(),
       metadata: {
         provider: "primary",
         marketId: request.marketId,
@@ -205,7 +200,7 @@ export class PrimaryAdapter implements ProviderAdapter {
     };
   }
 
-  private getHeaders(): HeadersInit {
+  private getHeaders(): Record<string, string> {
     return {
       Accept: "application/json",
       ...(this.config.apiKey

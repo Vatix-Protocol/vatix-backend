@@ -42,11 +42,60 @@ let lockClient: Client | null = null;
 // Advisory lock key for serializing database tests
 const DATABASE_TEST_LOCK_KEY = 1234567890;
 
+/**
+ * Validates a database URL format.
+ * Returns true if valid, false otherwise.
+ * Valid URLs must:
+ * - Be a non-empty string
+ * - Use postgresql:// or postgres:// scheme
+ * - Include a hostname
+ * @param url - The URL string to validate
+ * @returns true if valid, false if invalid
+ */
+export function validateDatabaseUrl(url: unknown): boolean {
+  // Type check: must be a string
+  if (typeof url !== "string") {
+    return false;
+  }
+
+  // Must not be empty or whitespace-only
+  if (!url || url.trim() === "") {
+    return false;
+  }
+
+  // Must be a valid URL
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+
+  // Must use postgresql:// or postgres:// scheme
+  if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
+    return false;
+  }
+
+  // Must include a hostname
+  if (!parsed.hostname) {
+    return false;
+  }
+
+  return true;
+}
+
 function getDatabaseUrl(): string {
-  return (
+  const url =
     process.env.DATABASE_URL ||
-    "postgresql://postgres:postgres@localhost:5433/vatix"
-  );
+    "postgresql://postgres:postgres@localhost:5433/vatix";
+
+  if (!validateDatabaseUrl(url)) {
+    throw new Error(
+      `Invalid DATABASE_URL: must be a valid postgresql:// or postgres:// URL with hostname`
+    );
+  }
+
+  return url;
 }
 
 /**
@@ -84,11 +133,20 @@ export function getTestPool(): Pool {
  * Delete order: orders → positions → markets
  *
  * @param client - Optional Prisma client to use. If not provided, uses the singleton.
+ * @throws Error if client is provided but is not a valid PrismaClient instance
  */
 export async function cleanDatabase(client?: PrismaClient): Promise<void> {
+  // Validate the optional client parameter
+  if (client !== undefined && typeof client !== "object") {
+    throw new Error(
+      "Invalid cleanDatabase parameter: client must be a PrismaClient instance or undefined"
+    );
+  }
+
   const prisma = client ?? getTestPrismaClient();
 
   // Delete in order respecting foreign key constraints
+  await prisma.trade.deleteMany();
   await prisma.order.deleteMany();
   await prisma.userPosition.deleteMany();
   await prisma.market.deleteMany();

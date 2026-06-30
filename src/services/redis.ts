@@ -49,35 +49,47 @@ class RedisService {
         maxRetriesPerRequest: MAX_RETRIES,
         retryStrategy: (times: number) => {
           if (times > MAX_RETRIES) {
-            console.error(`Redis: Max retries (${MAX_RETRIES}) exceeded`);
+            console.error(
+              { service: "redis", maxRetries: MAX_RETRIES },
+              "Redis max retries exceeded, giving up"
+            );
             return null; // stop retrying
           }
           const delay = Math.min(
             BASE_RETRY_DELAY * Math.pow(2, times - 1),
             2000
           );
-          console.log(`Redis: Retry attempt ${times}, waiting ${delay}ms`);
+          console.warn(
+            { service: "redis", attempt: times, delayMs: delay },
+            "Redis connection retry scheduled"
+          );
           return delay;
         },
         lazyConnect: false,
       });
 
       this.client.on("connect", () => {
-        console.log("Redis: Connected");
+        console.info({ service: "redis" }, "Redis connected");
         this.retryCount = 0;
       });
 
       this.client.on("error", (err: Error) => {
-        console.error("Redis: Connection error:", err.message);
+        console.error(
+          { service: "redis", err: err.message },
+          "Redis connection error"
+        );
       });
 
       this.client.on("reconnecting", () => {
         this.retryCount++;
-        console.log(`Redis: Reconnecting (attempt ${this.retryCount})`);
+        console.warn(
+          { service: "redis", attempt: this.retryCount },
+          "Redis reconnecting"
+        );
       });
 
       this.client.on("close", () => {
-        console.log("Redis: Connection closed");
+        console.info({ service: "redis" }, "Redis connection closed");
       });
     } finally {
       this.isConnecting = false;
@@ -93,7 +105,7 @@ class RedisService {
     try {
       return await this.getClient().get(key);
     } catch (error) {
-      console.error("Redis get error:", error);
+      console.error({ service: "redis", key, err: error }, "Redis GET failed");
       throw error;
     }
   }
@@ -112,7 +124,7 @@ class RedisService {
         await this.getClient().set(key, value);
       }
     } catch (error) {
-      console.error("Redis set error:", error);
+      console.error({ service: "redis", key, err: error }, "Redis SET failed");
       throw error;
     }
   }
@@ -124,7 +136,7 @@ class RedisService {
     try {
       await this.getClient().del(key);
     } catch (error) {
-      console.error("Redis del error:", error);
+      console.error({ service: "redis", key, err: error }, "Redis DEL failed");
       throw error;
     }
   }
@@ -137,7 +149,10 @@ class RedisService {
       const result = await this.getClient().exists(key);
       return result === 1;
     } catch (error) {
-      console.error("Redis exists error:", error);
+      console.error(
+        { service: "redis", key, err: error },
+        "Redis EXISTS failed"
+      );
       throw error;
     }
   }
@@ -163,7 +178,10 @@ class RedisService {
     try {
       await this.set(key, JSON.stringify(data), ORDER_BOOK_TTL);
     } catch (error) {
-      console.error("Redis setOrderBook error:", error);
+      console.error(
+        { service: "redis", marketId, outcome, err: error },
+        "Redis setOrderBook failed"
+      );
       throw error;
     }
   }
@@ -181,7 +199,10 @@ class RedisService {
       if (!data) return null;
       return JSON.parse(data) as OrderBookData;
     } catch (error) {
-      console.error("Redis getOrderBook error:", error);
+      console.error(
+        { service: "redis", marketId, outcome, err: error },
+        "Redis getOrderBook failed"
+      );
       throw error;
     }
   }
@@ -197,7 +218,10 @@ class RedisService {
         await this.getClient().del(...keys);
       }
     } catch (error) {
-      console.error("Redis clearOrderBook error:", error);
+      console.error(
+        { service: "redis", marketId, err: error },
+        "Redis clearOrderBook failed"
+      );
       throw error;
     }
   }
@@ -212,7 +236,10 @@ class RedisService {
       const result = await this.getClient().ping();
       return result === "PONG";
     } catch (error) {
-      console.error("Redis health check failed:", error);
+      console.error(
+        { service: "redis", err: error },
+        "Redis health check failed"
+      );
       return false;
     }
   }
@@ -224,7 +251,35 @@ class RedisService {
     if (this.client) {
       await this.client.quit();
       this.client = null;
-      console.log("Redis: Disconnected gracefully");
+      this.retryCount = 0;
+      console.info({ service: "redis" }, "Redis disconnected gracefully");
+    }
+  }
+
+  /**
+   * Create a consumer group for a stream
+   */
+  async xgroup(
+    subcommand: "CREATE",
+    key: string,
+    groupName: string,
+    id: string,
+    options?: { MKSTREAM?: boolean }
+  ): Promise<string | void> {
+    try {
+      const client = this.getClient();
+      const args = [subcommand, key, groupName, id];
+      if (options?.MKSTREAM) {
+        args.push("MKSTREAM");
+      }
+      return await (client.xgroup as any)(...args);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      if (errMsg.includes("BUSYGROUP")) {
+        return; // Group already exists, which is OK
+      }
+      console.error({ service: "redis", err: error }, "Redis XGROUP failed");
+      throw error;
     }
   }
 
@@ -236,7 +291,7 @@ class RedisService {
       const client = this.getClient();
       return await (client.xadd as any)(...args);
     } catch (error) {
-      console.error("Redis XADD error:", error);
+      console.error({ service: "redis", err: error }, "Redis XADD failed");
       throw error;
     }
   }
@@ -258,7 +313,10 @@ class RedisService {
         return await this.getClient().xrange(key, start, end);
       }
     } catch (error) {
-      console.error("Redis XRANGE error:", error);
+      console.error(
+        { service: "redis", key, err: error },
+        "Redis XRANGE failed"
+      );
       throw error;
     }
   }
@@ -286,7 +344,83 @@ class RedisService {
         return await this.getClient().xrevrange(key, start, end);
       }
     } catch (error) {
-      console.error("Redis XREVRANGE error:", error);
+      console.error(
+        { service: "redis", key, err: error },
+        "Redis XREVRANGE failed"
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Read from a consumer group (blocking)
+   */
+  async xreadgroup(
+    groupName: string,
+    consumerName: string,
+    streamKey: string,
+    id: string,
+    options?: { COUNT?: number; BLOCK?: number }
+  ): Promise<Array<[string, Array<[string, string[]]>]>> {
+    try {
+      const client = this.getClient();
+      const args = ["GROUP", groupName, consumerName];
+      if (options?.COUNT) {
+        args.push("COUNT", String(options.COUNT));
+      }
+      if (options?.BLOCK) {
+        args.push("BLOCK", String(options.BLOCK));
+      }
+      args.push("STREAMS", streamKey, id);
+      return await (client.xreadgroup as any)(...args);
+    } catch (error) {
+      console.error(
+        { service: "redis", err: error },
+        "Redis XREADGROUP failed"
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Acknowledge a message in a consumer group
+   */
+  async xack(
+    streamKey: string,
+    groupName: string,
+    ...messageIds: string[]
+  ): Promise<number> {
+    try {
+      const client = this.getClient();
+      return await (client.xack as any)(streamKey, groupName, ...messageIds);
+    } catch (error) {
+      console.error({ service: "redis", err: error }, "Redis XACK failed");
+      throw error;
+    }
+  }
+
+  /**
+   * Claim messages from a consumer group (visibility timeout)
+   */
+  async xclaim(
+    streamKey: string,
+    groupName: string,
+    consumerName: string,
+    minIdleTimeMs: number,
+    ...messageIds: string[]
+  ): Promise<Array<[string, string[]]>> {
+    try {
+      const client = this.getClient();
+      const args = [
+        streamKey,
+        groupName,
+        consumerName,
+        minIdleTimeMs,
+        ...messageIds,
+      ];
+      return await (client.xclaim as any)(...args);
+    } catch (error) {
+      console.error({ service: "redis", err: error }, "Redis XCLAIM failed");
       throw error;
     }
   }
@@ -298,7 +432,10 @@ class RedisService {
     try {
       return await this.getClient().xinfo(subcommand, key);
     } catch (error) {
-      console.error("Redis XINFO error:", error);
+      console.error(
+        { service: "redis", key, err: error },
+        "Redis XINFO failed"
+      );
       throw error;
     }
   }
@@ -310,3 +447,4 @@ class RedisService {
 export const redis = new RedisService();
 
 export { RedisService };
+export { matchingService } from "../matching/matching-service.js";
