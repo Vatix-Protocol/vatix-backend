@@ -29,7 +29,10 @@
 import type { FastifyInstance } from "fastify";
 
 /** Maximum age (ms) before the index is considered stale. Default: 5 minutes. */
-export const INDEX_STALENESS_THRESHOLD_MS = 5 * 60 * 1000;
+const thresholdEnv = process.env.INDEX_STALENESS_THRESHOLD_MS;
+export const INDEX_STALENESS_THRESHOLD_MS = thresholdEnv
+  ? parseInt(thresholdEnv, 10)
+  : 300_000;
 
 export type DependencyStatus = "ok" | "error" | "stale";
 

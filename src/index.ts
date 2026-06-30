@@ -16,6 +16,7 @@ import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { healthRoutes } from "./api/routes/health.js";
 import { readyRoute } from "./api/routes/ready.js";
+import { createReadyDeps } from "./api/deps/ready-deps.js";
 import { registerDeprecatedAliases } from "./api/routes/legacy.js";
 import { openApiSpec } from "./api/openapi.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
@@ -117,9 +118,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       await v1.register(positionsRouter);
       await v1.register(adminRoutes);
       await v1.register(healthRoutes);
-      await v1.register(
-        readyRoute(options.readyDeps ?? createDefaultReadyDeps())
-      );
+      await v1.register(readyRoute(options.readyDeps ?? createReadyDeps()));
 
       v1.get("/openapi.json", async (_request, reply) => {
         return reply.status(200).send(openApiSpec);
@@ -158,7 +157,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return reply.type("text/html").send(html);
   });
 
-  if (options.registerTestRoutes !== false) {
+  // Gate test routes behind option and NODE_ENV !== "production"
+  const enableTestRoutes =
+    options.registerTestRoutes !== false &&
+    (process.env.NODE_ENV || "development") !== "production";
+  if (enableTestRoutes) {
+    server.log.warn(
+      "Test routes (/test/*) are enabled. Do not enable in production!"
+    );
+
     // Test routes for error handling
     server.get("/test/validation-error", async () => {
       throw new ValidationError("Invalid input data", {
@@ -272,6 +279,12 @@ const start = async () => {
       try {
         // Close server — stops accepting new connections, drains in-flight requests
         await server.close();
+
+        // Gracefully disconnect database and redis
+        const { disconnectPrisma } = await import("./services/prisma.js");
+        const { redis } = await import("./services/redis.js");
+        await Promise.allSettled([disconnectPrisma(), redis.disconnect()]);
+
         clearTimeout(timeoutHandle);
 
         server.log.info(
