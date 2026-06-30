@@ -31,6 +31,9 @@ export class ConfigValidationError extends Error {
   }
 }
 
+import { resolveCorsAllowedOrigins } from "./cors.js";
+import type { NodeEnv as CorsNodeEnv } from "./cors.js";
+
 const ACCEPTED_NODE_ENVS: NodeEnv[] = ["development", "test", "production"];
 const ACCEPTED_LOG_LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 
@@ -236,19 +239,10 @@ export interface BaseConfig {
 export function loadBaseConfig(env: Env = processEnv): BaseConfig {
   const nodeEnv = loadNodeEnv(env);
 
-  // CORS: parse comma-separated list or fall back to per-environment defaults
-  const rawCors = env.CORS_ALLOWED_ORIGINS;
-  let corsAllowedOrigins: string[];
-  if (rawCors && rawCors.trim() !== "") {
-    corsAllowedOrigins = rawCors
-      .split(",")
-      .map((o) => o.trim())
-      .filter((o): o is string => o.length > 0);
-  } else if (nodeEnv === "production") {
-    corsAllowedOrigins = [];
-  } else {
-    corsAllowedOrigins = ["http://localhost:3000", "http://localhost:5173"];
-  }
+  const corsAllowedOrigins = resolveCorsAllowedOrigins(
+    nodeEnv as CorsNodeEnv,
+    env.CORS_ALLOWED_ORIGINS
+  );
 
   return {
     nodeEnv,
