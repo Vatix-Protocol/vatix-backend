@@ -2,7 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import { requireAdmin } from "../middleware/adminGuard.js";
 import { requireApiKey } from "../middleware/apiKeyAuth.js";
+import { MarketNotFoundError } from "../middleware/errors.js";
 import { adminLimiter } from "../middleware/rateLimiter.js";
+import { success } from "../middleware/responses.js";
 
 export async function adminRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
@@ -13,11 +15,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.addHook("onRequest", requireAdmin);
 
   // GET /admin/markets - list all markets including cancelled
-  fastify.get("/admin/markets", async () => {
+  fastify.get("/admin/markets", async (_request, reply) => {
     const markets = await prisma.market.findMany({
       orderBy: { createdAt: "desc" },
     });
-    return { markets, count: markets.length };
+    success(reply, { markets, count: markets.length });
   });
 
   // PATCH /admin/markets/:id/status - update market status
@@ -46,13 +48,17 @@ export async function adminRoutes(fastify: FastifyInstance) {
       const { id } = request.params;
       const { status } = request.body;
 
+      const existing = await prisma.market.findUnique({ where: { id } });
+      if (!existing) {
+        throw new MarketNotFoundError(id);
+      }
+
       const market = await prisma.market.update({
         where: { id },
         data: { status: status as any },
       });
 
-      reply.code(200);
-      return { market };
+      success(reply, { market });
     }
   );
 }

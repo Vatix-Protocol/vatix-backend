@@ -8,6 +8,12 @@ function decodeScVal(xdrBase64: string): unknown {
   return scValToNative(xdr.ScVal.fromXDR(xdrBase64, "base64"));
 }
 
+function formatDecodedValue(value: unknown): string {
+  return JSON.stringify(value, (_key, current) =>
+    typeof current === "bigint" ? current.toString() : current
+  );
+}
+
 function isCollateralDepositedEvent(topicsXdr: string[]): boolean {
   if (topicsXdr.length === 0) return false;
   try {
@@ -83,7 +89,7 @@ export function parseCollateralDepositedEvent(
 
   if (!Array.isArray(decoded) || decoded.length < 3) {
     throw new CollateralDepositedParseError(
-      `collateral_deposited payload must be a 3-element tuple, got: ${JSON.stringify(decoded)}`,
+      `collateral_deposited payload must be a 3-element tuple, got: ${formatDecodedValue(decoded)}`,
       event.id
     );
   }

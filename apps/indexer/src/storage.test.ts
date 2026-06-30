@@ -13,12 +13,7 @@ function makeMockPrisma(
 ) {
   const upsert = vi.fn().mockResolvedValue({});
   const findUnique = vi.fn().mockResolvedValue(findResult);
-  const $transaction = vi
-    .fn()
-    .mockImplementation((fn: (tx: unknown) => Promise<void>) =>
-      fn({ indexerCursor: { upsert } })
-    );
-  return { indexerCursor: { findUnique, upsert }, $transaction };
+  return { indexerCursor: { findUnique, upsert } };
 }
 
 describe("PrismaCursorStorageClient", () => {
@@ -69,15 +64,7 @@ describe("PrismaCursorStorageClient", () => {
       const client = new PrismaCursorStorageClient(networkId, cursorKey);
       await client.saveCursor("99");
 
-      expect(mockPrisma.$transaction).toHaveBeenCalled();
-      const txFn = vi.mocked(mockPrisma.$transaction).mock.calls[0][0] as (
-        tx: typeof mockPrisma
-      ) => Promise<void>;
-
-      // Re-run the transaction fn directly to inspect the upsert call
-      const upsert = vi.fn().mockResolvedValue({});
-      await txFn({ indexerCursor: { upsert } } as never);
-      expect(upsert).toHaveBeenCalledWith({
+      expect(mockPrisma.indexerCursor.upsert).toHaveBeenCalledWith({
         where: { networkId_cursorKey: { networkId, cursorKey } },
         create: { networkId, cursorKey, cursorValue: "99" },
         update: { cursorValue: "99" },

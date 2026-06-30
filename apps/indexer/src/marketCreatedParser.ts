@@ -107,8 +107,24 @@ export function parseMarketCreatedChainEvent(
 
   const map = decoded as Record<string, unknown>;
 
-  if (typeof map.question !== "string" || map.question.trim() === "") {
-    throw new MarketCreatedParseError('Missing field "question"', event.id);
+  const rawEvent = {
+    id:
+      typeof map.market_id === "string"
+        ? map.market_id
+        : String(map.market_id ?? ""),
+    question: typeof map.question === "string" ? map.question : undefined,
+    endTime: normalizeEndTime(map.end_time),
+    oracleAddress:
+      typeof map.oracle_address === "string" ? map.oracle_address : undefined,
+    status: typeof map.status === "string" ? map.status : undefined,
+  };
+
+  const result = parseMarketCreatedEvent(rawEvent);
+  if (!result.success || !result.data) {
+    throw new MarketCreatedParseError(
+      result.error ?? "Unknown parse error",
+      event.id
+    );
   }
 
   return {
