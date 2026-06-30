@@ -16,6 +16,10 @@ import {
 import { redis } from "../../../../src/services/redis.js";
 import { loadOracleWorkerConfig } from "../../../../packages/shared/src/config.js";
 import {
+  resolveOracleStellarConfig,
+  type ResolvedOracleStellarConfig,
+} from "./stellar-config.js";
+import {
   BullMQSubmissionQueue,
   createOracleSubmissionWorker,
 } from "./bullmq-submission-queue.js";
@@ -35,12 +39,7 @@ import {
 import { createHash } from "crypto";
 import type { ShutdownHandler, ShutdownSignal } from "../finalization/types.js";
 
-interface OracleStellarConfig {
-  rpcUrl: string;
-  contractId: string;
-  networkPassphrase: string;
-  signerSecret: string;
-}
+type OracleStellarConfig = ResolvedOracleStellarConfig;
 
 async function submitOnChain(
   report: SignedResolutionReport,
@@ -121,21 +120,12 @@ async function bootstrap(): Promise<void> {
   const logger = createLogger(config.logLevel);
   const prisma = getPrismaClient();
 
-  const stellarConfig: OracleStellarConfig | undefined = (() => {
-    const rpcUrl = process.env.STELLAR_RPC_URL;
-    const contractId =
-      process.env.MARKET_CONTRACT_ID ?? process.env.INDEXER_CONTRACT_ID;
-    const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE;
-    const signerSecret = process.env.ORACLE_SECRET_KEY;
-    return rpcUrl && contractId && networkPassphrase && signerSecret
-      ? { rpcUrl, contractId, networkPassphrase, signerSecret }
-      : undefined;
-  })();
+  const stellarConfig = resolveOracleStellarConfig(process.env);
 
   if (!stellarConfig) {
     logger.warn(
       "Oracle Stellar config incomplete — resolve_market calls disabled. " +
-        "Set STELLAR_RPC_URL, MARKET_CONTRACT_ID, SOROBAN_NETWORK_PASSPHRASE, " +
+        "Set STELLAR_RPC_URL, INDEXER_CONTRACT_ID (or MARKET_CONTRACT_ID), SOROBAN_NETWORK_PASSPHRASE, " +
         "and ORACLE_SECRET_KEY to enable on-chain submission.",
       { component: "oracle-worker" }
     );

@@ -54,6 +54,27 @@ function isSensitiveHeader(name: string): boolean {
 // Re-export for use in tests
 export { isSensitiveHeader };
 
+/** Structured fields on every incoming-request log entry (see docs/logger.md). */
+export const REQUEST_LOG_FIELDS = [
+  "type",
+  "requestId",
+  "method",
+  "path",
+] as const;
+
+/** Optional field when a valid Stellar address is present on the request. */
+export const REQUEST_LOG_OPTIONAL_FIELDS = ["userAddress"] as const;
+
+/** Structured fields on every completed-request log entry (see docs/logger.md). */
+export const RESPONSE_LOG_FIELDS = [
+  "type",
+  "requestId",
+  "method",
+  "path",
+  "statusCode",
+  "durationMs",
+] as const;
+
 /**
  * Request logging middleware for Fastify.
  *
