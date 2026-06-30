@@ -13,7 +13,21 @@ Routes are prefixed with `/v1/` to allow non-breaking additions in future versio
 
 > **Open work**: Unversioned routes will gain the `/v1/` prefix before the first public release. See [docs/architecture.md](architecture.md) for the full service map.
 
-## Redis Cache Key Conventions
+| Method | Canonical path                            | Legacy alias                | Notes                           |
+| ------ | ----------------------------------------- | --------------------------- | ------------------------------- |
+| GET    | `/v1/health`                              | `/health`                   | Liveness and health summary     |
+| GET    | `/v1/ready`                               | `/ready`, `/readiness`      | Readiness checks                |
+| GET    | `/v1/markets`                             | `/markets`                  | Market listing                  |
+| GET    | `/v1/markets/:id`                         | `/markets/:id`              | Market details                  |
+| GET    | `/v1/markets/:id/orderbook`               | `/markets/:id/orderbook`    | Market orderbook                |
+| POST   | `/v1/orders`                              | `/orders`                   | Create order                    |
+| GET    | `/v1/orders/user/:address`                | `/orders/user/:address`     | Wallet order history            |
+| GET    | `/v1/trades/user/:address`                | `/trades/user/:address`     | Wallet trade history            |
+| GET    | `/v1/wallets/:wallet/positions`           | `/positions/user/:address`  | Canonical wallet positions path |
+| GET    | `/v1/wallets/:wallet/positions/:marketId` | none                        | Single-market position read     |
+| GET    | `/v1/admin/markets`                       | `/admin/markets`            | Requires API key and admin auth |
+| PATCH  | `/v1/admin/markets/:id/status`            | `/admin/markets/:id/status` | Requires API key and admin auth |
+| GET    | `/v1/openapi.json`                        | none                        | OpenAPI specification           |
 
 Redis keys follow a namespaced pattern so a version bump can invalidate only affected entries without a full cache flush:
 

@@ -2,14 +2,15 @@
 
 Background execution module for queue consumers and scheduled jobs.
 
-Workers handle tasks that must run outside the HTTP request lifecycle: settlement sweeps, expiry processing, and any other async work enqueued by the API or Oracle.
+Workers handle tasks that must run outside the HTTP request lifecycle: settlement sweeps,
+expiry processing, and any other async work enqueued by the API or Oracle.
 
 ## Scope
 
-| Concern             | Description                                                               |
-| ------------------- | ------------------------------------------------------------------------- |
-| **Queue consumers** | Process jobs pushed to Redis by the API or Oracle (e.g. trade settlement) |
-| **Scheduled jobs**  | Cron-style tasks such as market expiry sweeps and position reconciliation |
+| Concern             | Description                                                                        |
+| ------------------- | ---------------------------------------------------------------------------------- |
+| **Queue consumers** | Process jobs pushed to Redis / BullMQ by the API or Oracle (e.g. trade settlement) |
+| **Scheduled jobs**  | Cron-style tasks such as market expiry sweeps and position reconciliation          |
 
 ## Implemented Workers
 
@@ -48,6 +49,18 @@ apps/workers/
 ```
 
 ## Running
+
+### With pnpm (host machine)
+
+```bash
+# One-shot (production-style)
+pnpm workers:settlement
+
+# Watch mode (development)
+pnpm workers:settlement:dev
+```
+
+### With Docker Compose
 
 ```bash
 # Development (hot reload)

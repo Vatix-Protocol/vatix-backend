@@ -1,30 +1,39 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import type { IncomingMessage } from "node:http";
 import fp from "fastify-plugin";
 
-const UUID_REGEX =
+export const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Request ID middleware.
+ * Returns a genReqId function for Fastify that accepts a valid UUID from the
+ * x-request-id request header, or falls back to the provided generator.
+ * Exported so buildServer and tests share the same validation logic without
+ * duplication.
+ */
+export function makeGenReqId(
+  fallback: () => string = () => crypto.randomUUID()
+): (req: IncomingMessage) => string {
+  return (req: IncomingMessage) => {
+    const id = (req.headers as Record<string, string | string[] | undefined>)[
+      "x-request-id"
+    ];
+    return typeof id === "string" && UUID_REGEX.test(id) ? id : fallback();
+  };
+}
+
+/**
+ * Fastify plugin: echoes the resolved request ID back as the x-request-id
+ * response header. The actual ID is set by buildServer's genReqId before any
+ * hook runs, so this plugin only needs to write the response header.
  *
- * - Accepts an incoming `x-request-id` header and uses it as the request ID
- *   when it is a valid UUID v4 string.
- * - Generates a new UUID when the header is absent or invalid.
- * - Always echoes the final request ID back in the `x-request-id` response header.
- *
- * Register this plugin BEFORE the request logger so that `request.id` is
- * already set to the correct value when the first log entry is emitted.
+ * Register BEFORE the request logger so that the header is present by the
+ * time the first log entry is emitted.
  */
 async function requestIdPlugin(fastify: FastifyInstance) {
   fastify.addHook(
     "onRequest",
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const incoming = request.headers["x-request-id"];
-
-      if (typeof incoming === "string" && UUID_REGEX.test(incoming)) {
-        (request as unknown as { id: string }).id = incoming;
-      }
-
       reply.header("x-request-id", request.id);
     }
   );
