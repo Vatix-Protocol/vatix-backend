@@ -183,9 +183,7 @@ export class SettlementWorker {
     for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       const txStatus = await server.getTransaction(sendResult.hash);
-      if (
-        txStatus.status === StellarRpc.Api.GetTransactionStatus.SUCCESS
-      ) {
+      if (txStatus.status === StellarRpc.Api.GetTransactionStatus.SUCCESS) {
         this.logger.info("settle_trade confirmed on-chain", {
           tradeId: payload.tradeId,
           hash: sendResult.hash,

@@ -1,4 +1,8 @@
-import type { NormalizedTrade, NormalizedResolution, NormalizedCollateralDeposit } from "./types.js";
+import type {
+  NormalizedTrade,
+  NormalizedResolution,
+  NormalizedCollateralDeposit,
+} from "./types.js";
 import type {
   PersistedTrade,
   PersistedResolution,
@@ -62,7 +66,16 @@ export class PrismaBatchWriter implements BatchWriter {
         try {
           const result = await insertIfNew(
             record.data,
-            async (persisted) => this.persistRecord(tx, record, persisted as PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated),
+            async (persisted) =>
+              this.persistRecord(
+                tx,
+                record,
+                persisted as
+                  | PersistedTrade
+                  | PersistedResolution
+                  | PersistedCollateralDeposit
+                  | PersistedMarketCreated
+              ),
             { logger: duplicateLogger }
           );
 
@@ -98,8 +111,18 @@ export class PrismaBatchWriter implements BatchWriter {
       "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
     >,
     record: BatchRecord,
-    persisted: PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated
-  ): Promise<PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated | null> {
+    persisted:
+      | PersistedTrade
+      | PersistedResolution
+      | PersistedCollateralDeposit
+      | PersistedMarketCreated
+  ): Promise<
+    | PersistedTrade
+    | PersistedResolution
+    | PersistedCollateralDeposit
+    | PersistedMarketCreated
+    | null
+  > {
     const existing = await tx.indexerProcessedEvent.findUnique({
       where: { idempotencyKey: persisted.idempotencyKey },
     });
@@ -202,9 +225,17 @@ export class PrismaBatchWriter implements BatchWriter {
     if (!Number.isFinite(quantity) || quantity <= 0) return;
 
     const traderYesDelta =
-      trade.outcome === "YES" ? (trade.direction === "buy" ? quantity : -quantity) : 0;
+      trade.outcome === "YES"
+        ? trade.direction === "buy"
+          ? quantity
+          : -quantity
+        : 0;
     const traderNoDelta =
-      trade.outcome === "NO" ? (trade.direction === "buy" ? quantity : -quantity) : 0;
+      trade.outcome === "NO"
+        ? trade.direction === "buy"
+          ? quantity
+          : -quantity
+        : 0;
 
     try {
       await tx.userPosition.upsert({
@@ -255,4 +286,8 @@ export class PrismaBatchWriter implements BatchWriter {
 }
 
 /** @deprecated Use PersistedTrade in BatchRecord after withIdempotencyKey(). */
-export type { NormalizedTrade, NormalizedResolution, NormalizedCollateralDeposit };
+export type {
+  NormalizedTrade,
+  NormalizedResolution,
+  NormalizedCollateralDeposit,
+};

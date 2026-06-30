@@ -8,8 +8,8 @@ import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { RawChainEvent } from "./types.js";
 import { nativeToScVal } from "@stellar/stellar-sdk";
 
-const TRADE_TOPIC = "AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA==";
-const RESOLUTION_TOPIC = "AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA";
+const TRADE_TOPIC = "AAAADwAAAA50cmFkZV9leGVjdXRlZAAA";
+const RESOLUTION_TOPIC = "AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=";
 
 function makeTradeEvent(id: string): RawChainEvent {
   const valueXdr = nativeToScVal({

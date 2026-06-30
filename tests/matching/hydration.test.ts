@@ -6,7 +6,10 @@
  * in-memory depth matches the DB state — eliminating the race window.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { matchingService, getHydratedMarketsCount } from "../../src/matching/matching-service.js";
+import {
+  matchingService,
+  getHydratedMarketsCount,
+} from "../../src/matching/matching-service.js";
 
 // ---------------------------------------------------------------------------
 // Minimal Prisma mock — avoids a real DB connection
@@ -115,5 +118,17 @@ describe("#449 — hydrateAllActiveMarkets (restart simulation)", () => {
   it("books are empty before hydration (simulates cold restart)", () => {
     const books: Map<string, unknown> = (matchingService as any).books;
     expect(books.size).toBe(0);
+  });
+
+  it("creates empty books for outcomes with no resting orders", async () => {
+    process.env.WARM_MARKETS_ON_STARTUP = "true";
+    await matchingService.hydrateAllActiveMarkets();
+
+    const book = (matchingService as any).books.get("market-1:NO");
+    expect(book).toBeDefined();
+
+    const depth = book.getDepth(10);
+    expect(depth.bids).toHaveLength(0);
+    expect(depth.asks).toHaveLength(0);
   });
 });

@@ -195,11 +195,15 @@ describe("OpenAPI contract", () => {
 
     const specPaths = Object.keys(openApiSpec.paths);
     const allowedRoutes = new Set<string>();
+    const pathsByRoute = openApiSpec.paths as Record<
+      string,
+      Record<string, unknown>
+    >;
 
     // Add OpenAPI documented routes
     for (const specPath of specPaths) {
       const fastifyPath = specPath.replace(/\{(\w+)\}/g, ":$1");
-      const pathItem = openApiSpec.paths[specPath] as Record<string, unknown>;
+      const pathItem = pathsByRoute[specPath];
       const methods = Object.keys(pathItem);
 
       for (const method of methods) {
@@ -214,9 +218,7 @@ describe("OpenAPI contract", () => {
 
     // Verify we have comprehensive coverage
     const totalDocumented = specPaths.reduce((sum, path) => {
-      const methods = Object.keys(
-        openApiSpec.paths[path] as Record<string, unknown>
-      );
+      const methods = Object.keys(pathsByRoute[path]);
       return sum + methods.length;
     }, 0);
 

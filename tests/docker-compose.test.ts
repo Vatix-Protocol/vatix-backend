@@ -72,6 +72,9 @@ describe("docker-compose.yml", () => {
     expect(content).toContain("container_name: vatix-indexer");
     expect(content).toContain("container_name: vatix-postgres");
     expect(content).toContain("container_name: vatix-redis");
+    expect(content).toContain("container_name: vatix-settlement-worker");
+    expect(content).toContain("container_name: vatix-finalization-worker");
+    expect(content).toContain("container_name: vatix-oracle-worker");
   });
 
   it("overrides DATABASE_URL/REDIS_URL to use in-network service DNS names", () => {
