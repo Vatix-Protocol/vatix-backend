@@ -26,6 +26,8 @@ const ROUTES_NOT_IN_SPEC = [
   { method: "GET", path: "/docs" },
 ] as const;
 
+type OpenApiPath = keyof typeof openApiSpec.paths;
+
 describe("OpenAPI specification", () => {
   it("exports a valid OpenAPI spec object", () => {
     expect(openApiSpec).toBeDefined();
@@ -193,7 +195,7 @@ describe("OpenAPI contract", () => {
     // To fix: add the route to openapi.ts or add it to ROUTES_NOT_IN_SPEC with a comment
     // explaining why it should not be publicly documented.
 
-    const specPaths = Object.keys(openApiSpec.paths);
+    const specPaths = Object.keys(openApiSpec.paths) as OpenApiPath[];
     const allowedRoutes = new Set<string>();
     const pathsByRoute = openApiSpec.paths as Record<
       string,

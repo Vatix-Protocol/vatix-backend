@@ -30,6 +30,7 @@ export interface IngestionDependencies {
 interface IngestionBatchResult {
   nextCursor: string;
   lastIndexedLedgerSequence: number;
+  batchWriteSucceeded: boolean;
 }
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -204,6 +205,7 @@ export class PollingIngestionLoop implements IngestionLoop {
       return {
         nextCursor: currentCursor ?? String(safeCurrentSequence),
         lastIndexedLedgerSequence: safeCurrentSequence,
+        batchWriteSucceeded: false,
       };
     }
 
@@ -277,6 +279,21 @@ export class PollingIngestionLoop implements IngestionLoop {
 
     const writeResult = await this.deps.batchWriter.write(records);
 
+    if (writeResult.errors.length > 0) {
+      this.logger.warn("Indexer batch write completed with errors", {
+        startLedger,
+        endLedger,
+        writeErrors: writeResult.errors.length,
+        written: writeResult.written,
+        skipped: writeResult.skipped,
+      });
+
+      return {
+        nextCursor: currentCursor ?? String(safeCurrentSequence),
+        lastIndexedLedgerSequence: safeCurrentSequence,
+      };
+    }
+
     this.logger.debug("Ingestion batch complete", {
       startLedger,
       endLedger,
@@ -293,6 +310,7 @@ export class PollingIngestionLoop implements IngestionLoop {
     return {
       nextCursor: String(endLedger),
       lastIndexedLedgerSequence: endLedger,
+      batchWriteSucceeded: true,
     };
   }
 }

@@ -24,6 +24,7 @@ describe("Prisma Schema", () => {
 
     expect(prisma.market).toBeDefined();
     expect(prisma.order).toBeDefined();
+    expect(prisma.trade).toBeDefined();
     expect(prisma.userPosition).toBeDefined();
     expect(prisma.position).toBeDefined();
     expect(prisma.indexerCursor).toBeDefined();

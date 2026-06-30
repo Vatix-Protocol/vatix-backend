@@ -11,6 +11,8 @@ vi.hoisted(() => {
 const { auditService } = await import("./audit.js");
 const { redis } = await import("./redis.js");
 
+const keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
+
 describe("Audit Service", () => {
   const testMarketId = "test-market-123";
   const testTrade: Trade = {

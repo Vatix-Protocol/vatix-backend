@@ -58,6 +58,11 @@ describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", ()
   beforeAll(async () => {
     process.env.API_KEY ??= "test-api-key";
     process.env.ADMIN_TOKEN ??= "test-admin-token";
+    process.env.DATABASE_URL ??=
+      "postgresql://postgres:postgres@localhost:5432/vatix_test";
+
+    ({ buildServer } = await import("../../src/index.js"));
+    ({ openApiSpec } = await import("../../src/api/openapi.js"));
 
     const market = await testUtils.createTestMarket({
       question: "OpenAPI contract market",
@@ -73,17 +78,19 @@ describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", ()
     await app.close();
   });
 
-  const paths = Object.entries(
-    openApiSpec.paths as Record<string, Record<string, unknown>>
-  );
-
   it("openApiSpec.paths is non-empty", () => {
+    const paths = Object.entries(
+      openApiSpec.paths as Record<string, Record<string, unknown>>
+    );
     expect(paths.length).toBeGreaterThan(0);
   });
 
-  it.each(paths)(
-    "path %s is registered in Fastify (returns non-404)",
-    async (openApiPath, pathItem) => {
+  it("every path is registered in Fastify (returns non-route-404)", async () => {
+    const paths = Object.entries(
+      openApiSpec.paths as Record<string, Record<string, unknown>>
+    );
+
+    for (const [openApiPath, pathItem] of paths) {
       const method = firstMethod(pathItem);
       const url = resolvePathParams(openApiPath, marketId, wallet);
 
@@ -96,5 +103,5 @@ describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", ()
         `${method.toUpperCase()} ${url} returned 404`
       ).not.toBe(404);
     }
-  );
+  });
 });

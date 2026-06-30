@@ -10,6 +10,12 @@ export interface Logger {
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
+function stringifyLogPayload(payload: Record<string, unknown>): string {
+  return JSON.stringify(payload, (_key, value) =>
+    typeof value === "bigint" ? value.toString() : value
+  );
+}
+
 const LOG_LEVEL_WEIGHT: Record<LogLevel, number> = {
   debug: 10,
   info: 20,
@@ -36,7 +42,7 @@ export function createLogger(level: LogLevel): Logger {
     };
     const safeMeta = redactMeta(meta);
     const payload = safeMeta ? { ...base, ...safeMeta } : base;
-    const line = JSON.stringify(payload);
+    const line = stringifyLogPayload(payload);
 
     if (logLevel === "error") {
       console.error(line);

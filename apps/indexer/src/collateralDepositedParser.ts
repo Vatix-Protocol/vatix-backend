@@ -1,6 +1,7 @@
 import { xdr, scValToNative } from "@stellar/stellar-sdk";
 import type { RawChainEvent } from "./types.js";
 import { CollateralDepositedParseError } from "./types.js";
+import { safeStringify } from "./safeJson.js";
 
 const COLLATERAL_DEPOSITED_TOPIC = "collateral_deposited";
 

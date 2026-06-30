@@ -76,7 +76,7 @@ export class SettlementWorker {
       );
     } catch (error) {
       if (job.attempts >= this.consumerConfig.maxAttempts) {
-        logDeadLetter(this.logger, {
+        await logDeadLetter(this.logger, {
           id: job.id,
           queue: this.consumerConfig.queueName,
           payload: job.payload,
