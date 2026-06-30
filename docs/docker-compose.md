@@ -73,6 +73,7 @@ on the host with `tsx`.
    pnpm indexer:dev                  # Indexer
    pnpm workers:finalization:dev     # Finalization worker
    pnpm workers:oracle:dev           # Oracle worker
+   pnpm workers:settlement:dev       # Settlement consumer
    ```
 
 ## Option B — Full containerized stack
@@ -100,13 +101,14 @@ root, which defines one build `--target` per process.
    ```
 
    This builds and starts `postgres`, `redis`, `api`, `indexer`,
-   `finalization-worker`, and `oracle-worker`.
+   `finalization-worker`, `oracle-worker`, and `settlement-worker`.
 
    To run a subset, use the matching profile instead of `app`, e.g.:
 
    ```bash
-   docker compose --profile api up -d --build      # postgres + redis + api only
-   docker compose --profile workers up -d --build  # postgres + redis + both workers
+   docker compose --profile api up -d --build              # postgres + redis + api only
+   docker compose --profile workers up -d --build          # postgres + redis + all workers
+   docker compose --profile settlement-worker up -d --build # settlement consumer only
    ```
 
 Inside the compose network, app containers reach Postgres/Redis via the
