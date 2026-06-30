@@ -57,9 +57,9 @@ All events share the same topic encoding: **topic[0] = ScvSymbol** carrying the 
 
 ## 3. `market_resolved`
 
-**Topic XDR:** `AAAADwAAAA9tYXJrZXRfcmVzb2x2ZWQA`
+**Topic XDR:** `AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=` (`market_resolved_event`)
 
-**Payload — canonical (on-chain tuple):** ScvVec 3-tuple:
+**Payload — real on-chain shape:** `MarketResolvedEvent` (`contracts/market/src/events.rs`) publishes `market_id` as `topics[1]` and `{ outcome, resolved_at }` as the value:
 
 | Index | ScvType | Native type | Notes                                        |
 | ----- | ------- | ----------- | -------------------------------------------- |
@@ -67,9 +67,11 @@ All events share the same topic encoding: **topic[0] = ScvSymbol** carrying the 
 | `[1]` | ScvBool | `boolean`   | `true` → `"YES"`, `false` → `"NO"`           |
 | `[2]` | ScvU64  | `bigint`    | Unix timestamp of resolution (informational) |
 
-`oracleAddress` is set to `""` for tuple payloads. `batchWriter` substitutes the Stellar null account (`GAAAAAA…AWHF`) when writing to `ResolutionCandidate.operatorAddress`.
+The contract does not publish an oracle address on this event, so `oracleAddress` is `""`. `batchWriter` substitutes the Stellar null account (`GAAAAAA…AWHF`) when writing to `ResolutionCandidate.operatorAddress`.
 
-**Payload — legacy (ScvMap):** Keys `market_id` (ScvSymbol), `outcome` (ScvSymbol `"YES"`/`"NO"`), `oracle` (ScvSymbol). `oracle` is required on this path; its absence throws `ResolutionParseError`.
+**Payload — legacy ScvVec 3-tuple:** `[market_id: u32, outcome: bool, resolved_at: u64]` all inside the value (no second topic). Same field semantics as above; `oracleAddress` is also `""`.
+
+**Payload — legacy ScvMap:** Keys `market_id` (ScvSymbol), `outcome` (ScvSymbol `"YES"`/`"NO"`), `oracle` (ScvSymbol), all inside the value. `oracle` is required on this path; its absence throws `ResolutionParseError`.
 
 **DB write:** `ResolutionCandidate` row with `status = "PROPOSED"`, `source = "chain:market_resolved:{contractId}"`.
 
