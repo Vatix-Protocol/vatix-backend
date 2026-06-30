@@ -11,7 +11,10 @@ import { createHash } from "crypto";
 import { Queue, Worker, type Job } from "bullmq";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
-import { DEFAULT_JOB_OPTIONS, redisConnectionFromEnv } from "../shared/queue-config.js";
+import {
+  DEFAULT_JOB_OPTIONS,
+  redisConnectionFromEnv,
+} from "../shared/queue-config.js";
 
 const QUEUE_NAME = process.env.SUBMISSION_QUEUE_NAME ?? "oracle-submissions";
 
@@ -80,13 +83,13 @@ export class BullMQSubmissionQueue {
  * on-chain submission and DB persistence.
  */
 export function createOracleSubmissionWorker(
-  handler: (item: SubmissionQueueItem) => Promise<void>,
+  handler: (item: SubmissionQueueItem, attemptsMade: number) => Promise<void>,
   logger: ILogger
 ): Worker<SubmissionQueueItem> {
   const worker = new Worker<SubmissionQueueItem>(
     QUEUE_NAME,
     async (job: Job<SubmissionQueueItem>) => {
-      await handler(job.data);
+      await handler(job.data, job.attemptsMade);
     },
     {
       connection: redisConnectionFromEnv(),

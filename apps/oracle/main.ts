@@ -9,6 +9,7 @@
  */
 
 import "dotenv/config";
+import { fileURLToPath } from "url";
 import {
   getPrismaClient,
   disconnectPrisma,
@@ -27,7 +28,7 @@ import type {
   ShutdownSignal,
 } from "../workers/src/finalization/types.js";
 
-async function poll(): Promise<void> {
+export async function poll(): Promise<void> {
   const config = loadOracleConfig();
   const logger = createLogger(config.logLevel);
   const prisma = getPrismaClient();
@@ -136,7 +137,7 @@ async function poll(): Promise<void> {
   }
 }
 
-async function bootstrap(): Promise<void> {
+export async function bootstrap(): Promise<void> {
   const config = loadOracleConfig();
   const logger = createLogger(config.logLevel);
 
@@ -181,14 +182,23 @@ async function bootstrap(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
-void bootstrap().catch((error) => {
-  console.error(
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      level: "error",
-      message: "Oracle failed during bootstrap",
-      error: error instanceof Error ? error.message : String(error),
-    })
-  );
-  process.exit(1);
-});
+// Only auto-boot when this file is executed directly (e.g. via `tsx
+// apps/oracle/main.ts`) — importing it for tests must not start the
+// poll loop or touch process-level signal handlers.
+const isMainModule =
+  process.argv[1] !== undefined &&
+  fileURLToPath(import.meta.url) === process.argv[1];
+
+if (isMainModule) {
+  void bootstrap().catch((error) => {
+    console.error(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: "error",
+        message: "Oracle failed during bootstrap",
+        error: error instanceof Error ? error.message : String(error),
+      })
+    );
+    process.exit(1);
+  });
+}

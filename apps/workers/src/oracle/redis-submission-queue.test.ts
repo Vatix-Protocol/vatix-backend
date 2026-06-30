@@ -27,6 +27,7 @@ const createMockRedisClient = () => ({
   xadd: vi.fn(),
   exists: vi.fn(),
   set: vi.fn(),
+  del: vi.fn(),
   xreadgroup: vi.fn(),
   xack: vi.fn(),
   xclaim: vi.fn(),
@@ -148,10 +149,12 @@ describe("RedisSubmissionQueue", () => {
       attempts: 0,
     };
 
-    it("should enqueue item and set dedup flag", async () => {
-      mockClient.exists.mockResolvedValueOnce(0); // Not already queued
+    it("should enqueue item and set both dedup flags", async () => {
+      mockClient.exists
+        .mockResolvedValueOnce(0) // Not already queued (content hash)
+        .mockResolvedValueOnce(0); // No in-flight submission for this market
       mockClient.xadd.mockResolvedValueOnce("1-0"); // Stream ID
-      mockClient.set.mockResolvedValueOnce("OK");
+      mockClient.set.mockResolvedValueOnce("OK").mockResolvedValueOnce("OK");
 
       const result = await queue.enqueue(testItem);
 
@@ -172,6 +175,12 @@ describe("RedisSubmissionQueue", () => {
         "EX",
         86400
       );
+      expect(mockClient.set).toHaveBeenCalledWith(
+        "oracle:inflight:market-1",
+        "1-0",
+        "EX",
+        86400
+      );
       expect(mockLogger.info).toHaveBeenCalledWith(
         "Oracle submission queued",
         expect.any(Object)
@@ -187,6 +196,25 @@ describe("RedisSubmissionQueue", () => {
       expect(mockClient.xadd).not.toHaveBeenCalled();
       expect(mockLogger.info).toHaveBeenCalledWith(
         "Submission already queued, skipping duplicate",
+        expect.any(Object)
+      );
+    });
+
+    it("should skip enqueue when the market already has an in-flight submission", async () => {
+      mockClient.exists
+        .mockResolvedValueOnce(0) // No duplicate payload
+        .mockResolvedValueOnce(1); // Market already has one in flight
+
+      const result = await queue.enqueue(testItem);
+
+      expect(result).toBe(false);
+      expect(mockClient.exists).toHaveBeenNthCalledWith(
+        2,
+        "oracle:inflight:market-1"
+      );
+      expect(mockClient.xadd).not.toHaveBeenCalled();
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        "Market already has an in-flight submission, skipping duplicate",
         expect.any(Object)
       );
     });
@@ -248,8 +276,9 @@ describe("RedisSubmissionQueue", () => {
   });
 
   describe("acknowledge", () => {
-    it("should acknowledge processed message", async () => {
+    it("should acknowledge processed message and release the market lock", async () => {
       mockClient.xack.mockResolvedValueOnce(1);
+      mockClient.del.mockResolvedValueOnce(1);
 
       const item = {
         id: "test-123",
@@ -278,6 +307,7 @@ describe("RedisSubmissionQueue", () => {
         "oracle-worker",
         "1-0"
       );
+      expect(mockClient.del).toHaveBeenCalledWith("oracle:inflight:m1");
       expect(mockLogger.info).toHaveBeenCalledWith(
         "Acknowledged oracle submission",
         expect.any(Object)
@@ -286,7 +316,7 @@ describe("RedisSubmissionQueue", () => {
   });
 
   describe("nack", () => {
-    it("should nack message for retry", async () => {
+    it("should nack message for retry using the given consumer name", async () => {
       mockClient.xclaim.mockResolvedValueOnce([]);
 
       const item = {
@@ -309,12 +339,12 @@ describe("RedisSubmissionQueue", () => {
         visibilityExpiresAt: Date.now() + 5000,
       };
 
-      await queue.nack(item, "nack-worker");
+      await queue.nack(item, "consumer-1");
 
       expect(mockClient.xclaim).toHaveBeenCalledWith(
         "test:oracle:submissions",
         "oracle-worker",
-        "nack-worker",
+        "consumer-1",
         0,
         "1-0"
       );

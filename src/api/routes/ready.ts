@@ -29,7 +29,10 @@
 import type { FastifyInstance } from "fastify";
 
 /** Maximum age (ms) before the index is considered stale. Default: 5 minutes. */
-export const INDEX_STALENESS_THRESHOLD_MS = 5 * 60 * 1000;
+const thresholdEnv = process.env.INDEX_STALENESS_THRESHOLD_MS;
+export const INDEX_STALENESS_THRESHOLD_MS = thresholdEnv
+  ? parseInt(thresholdEnv, 10)
+  : 300_000;
 
 export type DependencyStatus = "ok" | "error" | "stale";
 
@@ -42,6 +45,7 @@ export interface ReadyResponse {
   ready: boolean;
   dependencies: {
     database: DependencyResult;
+    redis: DependencyResult;
     indexFreshness: DependencyResult;
   };
 }
@@ -51,8 +55,10 @@ export interface ReadyResponse {
  * in tests without touching real infrastructure.
  */
 export interface ReadyDeps {
-  /** Returns true if the database is reachable. Throws on failure. */
+  /** Throws if the database is unreachable. */
   checkDatabase(): Promise<void>;
+  /** Throws if the Redis instance is unreachable. */
+  checkRedis(): Promise<void>;
   /**
    * Returns the timestamp (ms since epoch) of the most recent indexed
    * event, or null if no events have been indexed yet.
@@ -71,17 +77,22 @@ export function readyRoute(deps: ReadyDeps) {
     fastify.get("/ready", async (_request, reply) => {
       const now = deps.now ? deps.now() : Date.now();
 
-      const [dbResult, indexResult] = await Promise.all([
+      const [dbResult, redisResult, indexResult] = await Promise.all([
         checkDb(deps),
+        checkRedis(deps),
         checkIndexFreshness(deps, now),
       ]);
 
-      const ready = dbResult.status === "ok" && indexResult.status === "ok";
+      const ready =
+        dbResult.status === "ok" &&
+        redisResult.status === "ok" &&
+        indexResult.status === "ok";
 
       const body: ReadyResponse = {
         ready,
         dependencies: {
           database: dbResult,
+          redis: redisResult,
           indexFreshness: indexResult,
         },
       };
@@ -94,6 +105,18 @@ export function readyRoute(deps: ReadyDeps) {
 async function checkDb(deps: ReadyDeps): Promise<DependencyResult> {
   try {
     await deps.checkDatabase();
+    return { status: "ok" };
+  } catch (err) {
+    return {
+      status: "error",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function checkRedis(deps: ReadyDeps): Promise<DependencyResult> {
+  try {
+    await deps.checkRedis();
     return { status: "ok" };
   } catch (err) {
     return {

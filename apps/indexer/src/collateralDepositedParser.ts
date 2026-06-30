@@ -1,11 +1,18 @@
 import { xdr, scValToNative } from "@stellar/stellar-sdk";
 import type { RawChainEvent } from "./types.js";
 import { CollateralDepositedParseError } from "./types.js";
+import { safeStringify } from "./safeJson.js";
 
 const COLLATERAL_DEPOSITED_TOPIC = "collateral_deposited";
 
 function decodeScVal(xdrBase64: string): unknown {
   return scValToNative(xdr.ScVal.fromXDR(xdrBase64, "base64"));
+}
+
+function formatDecodedValue(value: unknown): string {
+  return JSON.stringify(value, (_key, current) =>
+    typeof current === "bigint" ? current.toString() : current
+  );
 }
 
 function isCollateralDepositedEvent(topicsXdr: string[]): boolean {
@@ -83,7 +90,7 @@ export function parseCollateralDepositedEvent(
 
   if (!Array.isArray(decoded) || decoded.length < 3) {
     throw new CollateralDepositedParseError(
-      `collateral_deposited payload must be a 3-element tuple, got: ${JSON.stringify(decoded)}`,
+      `collateral_deposited payload must be a 3-element tuple, got: ${formatDecodedValue(decoded)}`,
       event.id
     );
   }

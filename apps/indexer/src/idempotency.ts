@@ -117,8 +117,16 @@ export function withIdempotencyKey(
   market: NormalizedMarketCreated
 ): PersistedMarketCreated;
 export function withIdempotencyKey(
-  record: NormalizedTrade | NormalizedResolution | NormalizedCollateralDeposit | NormalizedMarketCreated
-): PersistedTrade | PersistedResolution | PersistedCollateralDeposit | PersistedMarketCreated {
+  record:
+    | NormalizedTrade
+    | NormalizedResolution
+    | NormalizedCollateralDeposit
+    | NormalizedMarketCreated
+):
+  | PersistedTrade
+  | PersistedResolution
+  | PersistedCollateralDeposit
+  | PersistedMarketCreated {
   const { key } = generateIdempotencyKey({
     id: record.eventId,
     contractId: record.contractId,
