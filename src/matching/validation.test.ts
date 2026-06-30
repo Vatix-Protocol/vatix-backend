@@ -4,12 +4,14 @@ import {
   validateOrderSide,
   validateOutcome,
   validatePrice,
+  validateTickSize,
   validateQuantity,
   validateOrderFields,
   validateMarketState,
   validateOrder,
   assertValidOrder,
   OrderValidationError,
+  TICK_SIZE,
   type OrderInput,
 } from "./validation.js";
 
@@ -185,6 +187,38 @@ describe("Order Validation", () => {
       expect(validatePrice(null)).toBe("Price is required");
       expect(validatePrice(undefined)).toBe("Price is required");
     });
+
+    it("should reject price not aligned to tick size", () => {
+      expect(validatePrice(0.505)).toBe(
+        `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`
+      );
+      expect(validatePrice(0.123)).toBe(
+        `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`
+      );
+    });
+  });
+
+  describe("validateTickSize", () => {
+    it("should accept prices that are exact multiples of TICK_SIZE", () => {
+      expect(validateTickSize(0.01)).toBeNull();
+      expect(validateTickSize(0.1)).toBeNull();
+      expect(validateTickSize(0.5)).toBeNull();
+      expect(validateTickSize(0.99)).toBeNull();
+    });
+
+    it("should reject price with sub-tick fractional component", () => {
+      const msg = `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`;
+      expect(validateTickSize(0.005)).toBe(msg);
+      expect(validateTickSize(0.125)).toBe(msg);
+      expect(validateTickSize(0.505)).toBe(msg);
+      expect(validateTickSize(0.333)).toBe(msg);
+    });
+
+    it("should correctly handle IEEE-754 edge cases (0.51, 0.97, 0.03)", () => {
+      expect(validateTickSize(0.51)).toBeNull();
+      expect(validateTickSize(0.97)).toBeNull();
+      expect(validateTickSize(0.03)).toBeNull();
+    });
   });
 
   describe("validateQuantity", () => {
@@ -248,6 +282,17 @@ describe("Order Validation", () => {
       expect(result.errors.outcome).toBeDefined();
       expect(result.errors.price).toBeDefined();
       expect(result.errors.quantity).toBeDefined();
+    });
+
+    it("should reject order with price not aligned to tick size", () => {
+      const orderWithBadPrice: OrderInput = {
+        ...validOrder,
+        price: 0.505,
+      };
+
+      const result = validateOrderFields(orderWithBadPrice);
+      expect(result.valid).toBe(false);
+      expect(result.errors.price).toContain("multiple of");
     });
   });
 
