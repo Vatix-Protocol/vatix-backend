@@ -3,9 +3,10 @@ version: "3.8"
 # Profiles let you run just the data layer (the historical default — start
 # infra, then `pnpm dev` on the host) or the fully containerized stack.
 #
-#   docker compose up -d                       # postgres + redis only
-#   docker compose --profile app up -d --build # postgres + redis + every process
-#   docker compose --profile api up -d --build # postgres + redis + api only
+#   docker compose up -d                        # postgres + redis only
+#   docker compose --profile full up -d --build # postgres + redis + api + indexer + all workers
+#   docker compose --profile app up -d --build  # postgres + redis + every process (alias for full)
+#   docker compose --profile api up -d --build  # postgres + redis + api only
 #
 # See docs/docker-compose.md for the full walkthrough.
 
@@ -49,7 +50,7 @@ services:
       context: .
       target: api
     container_name: vatix-backend
-    profiles: ["app", "api"]
+    profiles: ["app", "full", "api"]
     env_file:
       - .env
     environment:
@@ -69,7 +70,7 @@ services:
       context: .
       target: indexer
     container_name: vatix-indexer
-    profiles: ["app", "indexer"]
+    profiles: ["app", "full", "indexer"]
     env_file:
       - .env
     environment:
@@ -102,7 +103,7 @@ services:
       context: .
       target: finalization-worker
     container_name: vatix-finalization-worker
-    profiles: ["app", "workers", "finalization-worker"]
+    profiles: ["app", "full", "workers", "finalization-worker"]
     env_file:
       - .env
     environment:
@@ -117,7 +118,7 @@ services:
       context: .
       target: oracle-worker
     container_name: vatix-oracle-worker
-    profiles: ["app", "workers", "oracle-worker"]
+    profiles: ["app", "full", "workers", "oracle-worker"]
     env_file:
       - .env
     environment:
@@ -135,7 +136,7 @@ services:
       context: .
       target: settlement-worker
     container_name: vatix-settlement-worker
-    profiles: ["app", "workers", "settlement-worker"]
+    profiles: ["app", "full", "workers", "settlement-worker"]
     env_file:
       - .env
     environment:
