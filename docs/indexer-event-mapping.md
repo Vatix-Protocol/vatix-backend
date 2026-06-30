@@ -21,7 +21,9 @@ All events share the same topic encoding: **topic[0] = ScvSymbol** carrying the 
 
 ## 1. `trade_executed`
 
-**Topic XDR:** `AAAADwAAAA50cmFkZV9leGVjdXRlZAAA`
+**Topic XDR:** `AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA==` (`trade_executed_event`)
+
+> The contract does not yet publish this event — trades are currently matched off-chain by the CLOB (see the `Trade`/`IndexedTrade` Prisma models). `tradeParser.ts` anticipates the eventual on-chain event using the same topic-naming convention every other event in `contracts/market/src/events.rs` follows: Soroban's `#[contractevent]` macro snake-cases the struct name including its `Event` suffix (e.g. `MarketCreatedEvent` → `market_created_event`).
 
 **Payload:** ScvMap with keys:
 
@@ -114,7 +116,7 @@ PollingIngestionLoop.ingestFromCursor()
              ▼
         PrismaBatchWriter.write()
              │
-             ├── IndexedTrade              (trade_executed)
+             ├── IndexedTrade              (trade_executed_event)
              ├── ResolutionCandidate       (market_resolved)
              └── CollateralDeposit         (collateral_deposited)
 
