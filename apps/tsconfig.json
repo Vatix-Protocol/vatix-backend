@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "baseUrl": ".."
+  },
+  "include": [
+    "../apps/**/*.ts",
+    "../packages/**/*.ts",
+    "../src/config.ts",
+    "../src/services/prisma.ts",
+    "../src/services/redis.ts",
+    "../src/types/index.ts",
+    "../src/types/docker-compose.ts",
+    "../src/generated/**/*"
+  ],
+  "exclude": ["../node_modules", "../dist"]
+}
