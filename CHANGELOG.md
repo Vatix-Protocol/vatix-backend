@@ -8,7 +8,10 @@
   fully handled at the DB boundary via `IndexerProcessedEvent` +
   `idempotency.ts`. Added `DuplicateStats` to `idempotency.ts` so callers can
   track cumulative inserted/duplicate counts for metrics and structured logging
-  without the unbounded memory growth of the old in-memory `Set`.
+  without the unbounded memory growth of the old in-memory `Set`. Wired
+  `DuplicateStats` into `PollingIngestionLoop`: the loop accumulates
+  inserted/skipped counts from each `BatchWriteResult` and emits them in every
+  heartbeat log and in the final `stop()` log.
 
 - Public API routes are canonical under `/v1/*`. Update frontend clients
   (`apps/web`) and external integrations to use `/v1/health`, `/v1/ready`,

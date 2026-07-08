@@ -7,7 +7,7 @@ import { parseTradeEvents } from "./tradeParser.js";
 import { parseResolutionEvents } from "./resolutionParser.js";
 import { parseCollateralDepositedEvents } from "./collateralDepositedParser.js";
 import { parseMarketCreatedEvents } from "./marketCreatedParser.js";
-import { withIdempotencyKey } from "./idempotency.js";
+import { withIdempotencyKey, DuplicateStats } from "./idempotency.js";
 import {
   TradeParseError,
   ResolutionParseError,
@@ -42,6 +42,8 @@ export class PollingIngestionLoop implements IngestionLoop {
   private successfulBatchesSinceLastCheckpoint = 0;
   private batchesSinceLastHeartbeat = 0;
   private lastHeartbeatLedgerSequence: number | null = null;
+  /** Process-lifetime duplicate-event counter, accumulated across all batches. */
+  private readonly duplicateStats = new DuplicateStats();
 
   constructor(
     private readonly logger: ILogger,
@@ -91,6 +93,7 @@ export class PollingIngestionLoop implements IngestionLoop {
       finalCursor: this.cursor,
       latestIndexedLedgerSequence:
         this.metrics.getLatestIndexedLedgerSequence(),
+      ...this.duplicateStats.toLogFields(),
     });
   }
 
@@ -163,6 +166,7 @@ export class PollingIngestionLoop implements IngestionLoop {
       batchesProcessed: this.batchesSinceLastHeartbeat,
       ledgerDelta,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+      ...this.duplicateStats.toLogFields(),
     });
 
     this.batchesSinceLastHeartbeat = 0;
@@ -264,6 +268,12 @@ export class PollingIngestionLoop implements IngestionLoop {
     ];
 
     const writeResult = await this.deps.batchWriter.write(records);
+
+    // Accumulate process-lifetime duplicate/insert counts from this batch.
+    this.duplicateStats.recordBatch({
+      inserted: new Array<null>(writeResult.written).fill(null),
+      duplicateCount: writeResult.skipped,
+    });
 
     this.logger.debug("Ingestion batch complete", {
       startLedger,

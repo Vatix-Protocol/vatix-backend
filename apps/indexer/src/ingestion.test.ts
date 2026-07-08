@@ -219,4 +219,87 @@ describe("PollingIngestionLoop", () => {
     expect(storage.saveCursor).toHaveBeenCalledTimes(1);
     expect(storage.saveCursor).toHaveBeenCalledWith("200");
   });
+
+  it("DuplicateStats: accumulates inserted and skipped counts across batches", async () => {
+    vi.mocked(eventFetcher.fetchByLedgerWindow)
+      .mockResolvedValueOnce({
+        events: [makeTradeEvent("0000000050-0000000001-0000000000")],
+        latestLedger: 200,
+      })
+      .mockResolvedValueOnce({
+        events: [makeResolutionEvent("0000000051-0000000001-0000000000")],
+        latestLedger: 400,
+      });
+
+    // First batch: 1 inserted, 0 skipped
+    vi.mocked(batchWriter.write).mockResolvedValueOnce({
+      written: 1,
+      skipped: 0,
+      errors: [],
+    });
+    // Second batch: 0 inserted, 1 skipped (duplicate)
+    vi.mocked(batchWriter.write).mockResolvedValueOnce({
+      written: 0,
+      skipped: 1,
+      errors: [],
+    });
+
+    const loop = createLoop();
+    await runIngest(loop, "10");
+    await runIngest(loop, "110");
+
+    const stats = (loop as unknown as { duplicateStats: { totalInserted: number; totalDuplicates: number } }).duplicateStats;
+    expect(stats.totalInserted).toBe(1);
+    expect(stats.totalDuplicates).toBe(1);
+  });
+
+  it("DuplicateStats: emitted in heartbeat log", async () => {
+    vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValue({
+      events: [makeTradeEvent("0000000050-0000000001-0000000000")],
+      latestLedger: 200,
+    });
+    vi.mocked(batchWriter.write).mockResolvedValue({
+      written: 2,
+      skipped: 1,
+      errors: [],
+    });
+
+    const loop = createLoop();
+    await runIngest(loop, "10");
+
+    (loop as unknown as { emitHeartbeat(): void }).emitHeartbeat();
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "Indexer heartbeat",
+      expect.objectContaining({
+        totalInserted: 2,
+        totalDuplicates: 1,
+      })
+    );
+  });
+
+  it("DuplicateStats: emitted in stop() log", async () => {
+    vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValue({
+      events: [makeTradeEvent("0000000050-0000000001-0000000000")],
+      latestLedger: 200,
+    });
+    vi.mocked(batchWriter.write).mockResolvedValue({
+      written: 3,
+      skipped: 2,
+      errors: [],
+    });
+
+    const loop = createLoop();
+    (loop as unknown as { cursor: string | null }).cursor = "10";
+    await runIngest(loop, "10");
+    await loop.stop();
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "Indexer ingestion loop stopped",
+      expect.objectContaining({
+        totalInserted: 3,
+        totalDuplicates: 2,
+      })
+    );
+  });
 });
