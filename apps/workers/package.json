@@ -1,0 +1,21 @@
+{
+  "name": "@vatix/workers",
+  "version": "1.0.0",
+  "description": "Workers application for Vatix protocol",
+  "type": "module",
+  "scripts": {
+    "finalization:dev": "tsx watch src/finalization/main.ts",
+    "finalization:start": "tsx src/finalization/main.ts",
+    "oracle:dev": "tsx watch src/oracle/main.ts",
+    "oracle:start": "tsx src/oracle/main.ts",
+    "submission:dev": "tsx watch src/oracle/main.ts",
+    "submission:start": "tsx src/oracle/main.ts",
+    "settlement:dev": "tsx watch src/settlement/consumer.ts",
+    "settlement:start": "tsx src/settlement/consumer.ts",
+    "test": "vitest",
+    "test:run": "vitest run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
