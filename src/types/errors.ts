@@ -3,9 +3,9 @@
 export interface ErrorResponse {
   error: string;
   code: string;
+  message: string;
   requestId: string;
   statusCode: number;
-  requestId?: string;
   fields?: Record<string, string>;
   stack?: string;
 }

@@ -3,20 +3,17 @@
 
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import {
+  AppError,
   ValidationError,
   NotFoundError,
   UnauthorizedError,
   ForbiddenError,
 } from "./errors.js";
-import { ErrorResponse } from "../../types/errors.js";
+import type { ErrorResponse } from "../../types/errors.js";
+import { config } from "../../config.js";
 
-function resolveCode(error: Error, statusCode: number): string {
-  if (error instanceof ValidationError) return "VALIDATION_ERROR";
-  if (error instanceof NotFoundError) return "NOT_FOUND";
-  if (error instanceof UnauthorizedError) return "UNAUTHORIZED";
-  if (error instanceof ForbiddenError) return "FORBIDDEN";
-  if (statusCode >= 500) return "INTERNAL_ERROR";
-  return "BAD_REQUEST";
+function isProduction(): boolean {
+  return config.nodeEnv === "production";
 }
 
 // Centralized error handler for Fastify
@@ -56,7 +53,7 @@ export function errorHandler(
     errorMessage = "Internal server error";
   }
 
-  const envelope: ErrorEnvelope = {
+  const envelope: ErrorResponse = {
     code:
       error instanceof AppError
         ? error.code
@@ -65,17 +62,15 @@ export function errorHandler(
           : String(statusCode),
     message: errorMessage,
     error: errorMessage,
-    code: resolveCode(error, statusCode),
-    requestId,
-    statusCode,
     requestId: request.id,
+    statusCode,
     // Include stack trace in response body only outside production
     ...(!isProduction() && isServerError && { stack: error.stack }),
   };
 
   // Attach field-level details as metadata for ValidationError
   if (error instanceof ValidationError && error.fields) {
-    (envelope as ErrorEnvelope & { metadata?: unknown }).metadata = {
+    (envelope as ErrorResponse & { metadata?: unknown }).metadata = {
       fields: error.fields,
     };
   }
