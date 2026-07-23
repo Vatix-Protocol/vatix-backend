@@ -346,10 +346,11 @@ class MatchingService {
       // 2. Log trades to audit before returning control to the caller
       await Promise.all(auditWrites);
 
-      // 3. Enqueue settlement jobs (fire-and-forget)
+      // 3. Enqueue settlement jobs with proper error handling
+      const settlementErrors: Array<{ tradeId: string; error: Error }> = [];
       for (const trade of matchResult.trades) {
-        settlementQueue
-          .enqueue({
+        try {
+          await settlementQueue.enqueue({
             tradeId: trade.id,
             marketId: trade.marketId,
             outcome: trade.outcome,
@@ -360,16 +361,29 @@ class MatchingService {
             price: trade.price,
             quantity: trade.quantity,
             timestamp: trade.timestamp,
-          })
-          .catch((error) => {
-            console.error("Failed to enqueue settlement job:", error);
           });
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          settlementErrors.push({ tradeId: trade.id, error: err });
+          console.error(
+            JSON.stringify({
+              level: "error",
+              component: "matching-service",
+              action: "settlement_enqueue_failed",
+              tradeId: trade.id,
+              buyOrderId: trade.buyOrderId,
+              sellOrderId: trade.sellOrderId,
+              message: err.message,
+              stack: err.stack,
+            })
+          );
+        }
       }
 
-      // 4. Refresh Redis cache (soft)
-      const depth = book.getDepth(20);
-      redis
-        .setOrderBook(input.marketId, input.outcome, {
+      // 4. Refresh Redis cache with proper error handling
+      try {
+        const depth = book.getDepth(20);
+        await redis.setOrderBook(input.marketId, input.outcome, {
           bids: depth.bids.map((d) => ({
             price: d.price,
             quantity: d.quantity,
@@ -379,10 +393,21 @@ class MatchingService {
             quantity: d.quantity,
           })),
           timestamp: Date.now(),
-        })
-        .catch((error) => {
-          console.error("Failed to refresh Redis orderbook:", error);
         });
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        console.error(
+          JSON.stringify({
+            level: "error",
+            component: "matching-service",
+            action: "redis_orderbook_update_failed",
+            marketId: input.marketId,
+            outcome: input.outcome,
+            message: err.message,
+            stack: err.stack,
+          })
+        );
+      }
 
       return {
         order,
