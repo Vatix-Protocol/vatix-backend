@@ -12,6 +12,7 @@ import {
   type OrderInput,
 } from "../../matching/validation.js";
 import { heavyReadLimiter, writeLimiter } from "../middleware/rateLimiter.js";
+import { verifyStellarSignature } from "../middleware/stellarAuth.js";
 
 // ---------------------------------------------------------------------------
 // Zod schema for POST /orders body
@@ -23,7 +24,7 @@ const CreateOrderSchema = z.object({
     .string()
     .regex(
       STELLAR_PUBLIC_KEY_REGEX,
-      "userAddress must be a valid Stellar public key"
+      "userAddress must be a valid Stellar address (public key)"
     ),
   side: z.enum(["BUY", "SELL"]),
   outcome: z.enum(["YES", "NO"]),
@@ -131,6 +132,8 @@ export interface TradeEntry {
   price: number;
   quantity: number;
   timestamp: number;
+  /** `timestamp` normalized to an ISO-8601 UTC string. */
+  timestampIso: string;
   loggedAt: string;
 }
 
@@ -240,7 +243,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           page,
           limit,
           fromMs,
-          toMs
+          toMs,
+          marketId
         );
 
       return {
@@ -255,6 +259,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           price: entry.trade.price,
           quantity: entry.trade.quantity,
           timestamp: entry.trade.timestamp,
+          timestampIso: new Date(entry.trade.timestamp).toISOString(),
           loggedAt: entry.loggedAt,
         })),
         total,
@@ -395,7 +400,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         nextCursor,
         hasNext,
         limit,
-      });
+      };
     }
   );
 
@@ -474,6 +479,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
                     price: { type: "number" },
                     quantity: { type: "number" },
                     timestamp: { type: "number" },
+                    timestampIso: { type: "string" },
                   },
                 },
               },
@@ -510,23 +516,16 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       // Domain validation: address format, market existence and state
       await assertValidOrder(orderInput);
 
-      const order = await prisma.order.create({
-        data: {
-          marketId,
-          userAddress,
-          side,
-          outcome,
-          price: price.toString(),
-          quantity,
-          filledQuantity: 0,
-          status: "OPEN",
-        },
-      });
+      // Wire into matching engine and persist atomically
+      const { order, trades, filledQuantity } =
+        await matchingService.placeOrder(orderInput);
 
-      // TODO: Add to matching engine
-      // await matchingEngine.addOrder(order);
+      const tradesDto = trades.map((trade) => ({
+        ...trade,
+        timestampIso: new Date(trade.timestamp).toISOString(),
+      }));
 
-      reply.status(201).send({ order, trades, filledQuantity });
+      reply.status(201).send({ order, trades: tradesDto, filledQuantity });
     }
   );
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { adminRoutes } from "../../src/api/routes/admin.js";
+import { computeMarketEtag } from "../../src/api/routes/market.dto.js";
 import { buildTestApp, resetRateLimits } from "./helpers/build-test-app.js";
 import { testUtils } from "../setup.js";
 
@@ -225,5 +226,81 @@ describe("PATCH /v1/admin/markets/:id/status", () => {
     expect(res.statusCode).toBe(404);
     const body = JSON.parse(res.body);
     expect(body.code).toBe("market_not_found");
+  });
+
+  it("sets an ETag response header on a successful update", async () => {
+    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+
+    const res = await authed(
+      app,
+      "PATCH",
+      `/v1/admin/markets/${market.id}/status`,
+      { status: "CANCELLED" }
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.etag).toBeDefined();
+  });
+
+  it("applies the update when If-Match matches the market's current ETag", async () => {
+    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+    const etag = computeMarketEtag(market);
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/admin/markets/${market.id}/status`,
+      headers: {
+        "x-api-key": API_KEY,
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+        "if-match": etag,
+      },
+      payload: { status: "CANCELLED" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.market.status).toBe("CANCELLED");
+  });
+
+  it("rejects the update with 412 when If-Match is stale", async () => {
+    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+
+    // Update once so the market's ETag (derived from updatedAt) moves on.
+    await authed(app, "PATCH", `/v1/admin/markets/${market.id}/status`, {
+      status: "RESOLVED",
+    });
+
+    const staleEtag = `W/"${market.id}-1"`;
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/admin/markets/${market.id}/status`,
+      headers: {
+        "x-api-key": API_KEY,
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+        "if-match": staleEtag,
+      },
+      payload: { status: "CANCELLED" },
+    });
+
+    expect(res.statusCode).toBe(412);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("precondition_failed");
+  });
+
+  it("allows If-Match: * to pass through regardless of current state", async () => {
+    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/admin/markets/${market.id}/status`,
+      headers: {
+        "x-api-key": API_KEY,
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+        "if-match": "*",
+      },
+      payload: { status: "CANCELLED" },
+    });
+
+    expect(res.statusCode).toBe(200);
   });
 });

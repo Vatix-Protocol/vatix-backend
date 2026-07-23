@@ -241,11 +241,21 @@ describe("Integration Tests: API versioning", () => {
         payload: { status: "CANCELLED" },
         expected: [401],
       },
+      // Long-lived SSE endpoint — never completes a response, so it can't
+      // go through the one-shot inject() loop below. Covered by its own
+      // dedicated streaming test instead.
+      {
+        method: "GET",
+        url: `/v1/wallets/${wallet}/fills/stream`,
+        expected: [],
+        streaming: true,
+      },
     ] as const;
 
     expect(Object.keys(openApiSpec.paths)).toHaveLength(checks.length);
 
     for (const check of checks) {
+      if ("streaming" in check && check.streaming) continue;
       const response = await app.inject(check);
       expect(response.statusCode, `${check.method} ${check.url}`).not.toBe(404);
       expect(check.expected).toContain(response.statusCode);

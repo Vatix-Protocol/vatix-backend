@@ -2,9 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import { requireAdmin } from "../middleware/adminGuard.js";
 import { requireApiKey } from "../middleware/apiKeyAuth.js";
-import { MarketNotFoundError } from "../middleware/errors.js";
+import {
+  MarketNotFoundError,
+  PreconditionFailedError,
+} from "../middleware/errors.js";
 import { adminLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
+import { computeMarketEtag } from "./market.dto.js";
 
 export async function adminRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
@@ -23,7 +27,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
   });
 
   // PATCH /admin/markets/:id/status - update market status
-  fastify.patch<{ Params: { id: string }; Body: { status: string } }>(
+  // Supports optimistic concurrency via the If-Match header: when present,
+  // it must match the market's current ETag (as returned by GET /markets/:id)
+  // or the update is rejected with 412 Precondition Failed.
+  fastify.patch<{
+    Params: { id: string };
+    Body: { status: string };
+    Headers: { "if-match"?: string };
+  }>(
     "/admin/markets/:id/status",
     {
       schema: {
@@ -47,10 +58,19 @@ export async function adminRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params;
       const { status } = request.body;
+      const ifMatch = request.headers["if-match"];
 
       const existing = await prisma.market.findUnique({ where: { id } });
       if (!existing) {
         throw new MarketNotFoundError(id);
+      }
+
+      if (
+        ifMatch &&
+        ifMatch !== "*" &&
+        ifMatch !== computeMarketEtag(existing)
+      ) {
+        throw new PreconditionFailedError();
       }
 
       const market = await prisma.market.update({
@@ -58,6 +78,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         data: { status: status as any },
       });
 
+      reply.header("etag", computeMarketEtag(market));
       success(reply, { market });
     }
   );

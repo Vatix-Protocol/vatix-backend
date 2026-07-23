@@ -1,8 +1,8 @@
-// Global error handler middleware for Fastify
-// Single source of truth for all error normalization and logging
+// Error handler middleware for Fastify
 
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import {
+  AppError,
   ValidationError,
   NotFoundError,
   UnauthorizedError,
@@ -15,6 +15,7 @@ function resolveCode(error: Error, statusCode: number): string {
   if (error instanceof NotFoundError) return "NOT_FOUND";
   if (error instanceof UnauthorizedError) return "UNAUTHORIZED";
   if (error instanceof ForbiddenError) return "FORBIDDEN";
+  if (error instanceof AppError) return error.code;
   if (statusCode >= 500) return "INTERNAL_ERROR";
   return "BAD_REQUEST";
 }
@@ -26,59 +27,62 @@ export function errorHandler(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
-  const statusCode =
-    "statusCode" in error && typeof error.statusCode === "number"
-      ? error.statusCode
-      : 500;
+  // Determine status code
+  let statusCode = 500;
+  if ("statusCode" in error && typeof error.statusCode === "number") {
+    statusCode = error.statusCode;
+  }
 
+  // Determine if it's a client error (4xx) or server error (5xx)
   const isClientError = statusCode >= 400 && statusCode < 500;
   const isServerError = statusCode >= 500;
 
-  // requestId is auto-bound via requestIdLogLabel — no need to repeat it here.
+  // Get request ID for tracking
+  const requestId = request.id;
+
+  // Log error with appropriate level
   const logContext = {
+    requestId,
     method: request.method,
-    path: request.url,
+    url: request.url,
     statusCode,
-    message: error.message,
-    // Always include stack in logs for server errors regardless of environment
-    ...(isServerError && { stack: error.stack }),
+    error: error.message,
   };
 
   if (isClientError) {
-    request.log.warn(logContext, "Client request error");
+    // Client errors are expected (bad input, not found, etc.)
+    request.log.warn(logContext, "Client error");
   } else if (isServerError) {
-    request.log.error(logContext, "Unhandled request error");
+    // Server errors are unexpected and need investigation
+    request.log.error(
+      {
+        ...logContext,
+        stack: error.stack,
+      },
+      "Server error"
+    );
   }
 
-  // Build error response — hide internals in production
+  // Build error response
   let errorMessage = error.message;
-  if (isProduction() && isServerError) {
+
+  // hide internal error details in prod
+  if (process.env.NODE_ENV === "production" && isServerError) {
     errorMessage = "Internal server error";
   }
 
-  const envelope: ErrorEnvelope = {
-    code:
-      error instanceof AppError
-        ? error.code
-        : statusCode >= 500
-          ? "internal_error"
-          : String(statusCode),
-    message: errorMessage,
+  const response: ErrorResponse = {
     error: errorMessage,
     code: resolveCode(error, statusCode),
     requestId,
     statusCode,
-    requestId: request.id,
-    // Include stack trace in response body only outside production
-    ...(!isProduction() && isServerError && { stack: error.stack }),
   };
 
-  // Attach field-level details as metadata for ValidationError
+  // Add field details for ValidationError
   if (error instanceof ValidationError && error.fields) {
-    (envelope as ErrorEnvelope & { metadata?: unknown }).metadata = {
-      fields: error.fields,
-    };
+    response.fields = error.fields;
   }
 
-  reply.status(statusCode).send(envelope);
+  // Send error response
+  reply.status(statusCode).send(response);
 }
