@@ -124,6 +124,10 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vatix
       REDIS_URL: redis://redis:6379
+      STELLAR_RPC_URL: ${STELLAR_RPC_URL}
+      SOROBAN_NETWORK_PASSPHRASE: ${SOROBAN_NETWORK_PASSPHRASE}
+      ORACLE_SECRET_KEY: ${ORACLE_SECRET_KEY}
+      INDEXER_CONTRACT_ID: ${INDEXER_CONTRACT_ID}
     depends_on:
       postgres:
         condition: service_healthy
