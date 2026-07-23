@@ -183,9 +183,14 @@ See [docs/runbooks/incident-runbook.md](docs/runbooks/incident-runbook.md) for t
 
 Key endpoints with comprehensive test coverage:
 
-- `GET /markets` - Market listing with pagination and filtering
-- `GET /wallets/:wallet/positions` - Wallet position data with PnL calculations
+- `GET /v1/markets` - Market listing with pagination and filtering
+- `GET /v1/wallets/:wallet/positions` - Wallet position data with PnL calculations
 - `GET /v1/health` - Health check with version and dependency status
+- `POST /v1/orders` - Place a new order (BUY/SELL) with CLOB matching
+- `DELETE /v1/orders/:id` - Cancel an open order and release locked collateral
+- `GET /v1/orders/user/:address` - List orders for a user
+- `GET /v1/trades/user/:address` - List trades for a user
+- `GET /v1/markets/:id/orderbook` - Get market order book depth
 
 ## License
 

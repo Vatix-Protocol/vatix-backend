@@ -398,5 +398,34 @@ describe("OrderBook", () => {
       // Should be sorted: price desc, then time asc
       expect(orderIds).toEqual(["4", "1", "3", "2"]);
     });
+
+    it("should enforce time priority tie-break at same price level", () => {
+      // Orders at same price: order1 (earliest) should be matched first
+      orderBook.addOrder(createOrder("order-early", "ask", 50, 100, 1000));
+      orderBook.addOrder(createOrder("order-late", "ask", 50, 100, 5000));
+
+      const bestAsk = orderBook.getBestAsk();
+      expect(bestAsk?.id).toBe("order-early");
+
+      // getOrdersAtPrice should maintain insertion order
+      const orders = orderBook.getOrdersAtPrice("ask", 50);
+      expect(orders[0].id).toBe("order-early");
+      expect(orders[1].id).toBe("order-late");
+    });
+
+    it("should enforce price-first then time-second priority across levels", () => {
+      // Lower ask price should come first despite later timestamp
+      orderBook.addOrder(createOrder("ask-2", "ask", 55, 100, 3000));
+      orderBook.addOrder(createOrder("ask-1", "ask", 50, 100, 5000));
+
+      const bestAsk = orderBook.getBestAsk();
+      expect(bestAsk?.id).toBe("ask-1"); // Lower price wins
+
+      const orderedIds: string[] = [];
+      for (const o of orderBook.iterateOrders("ask")) {
+        orderedIds.push(o.id);
+      }
+      expect(orderedIds).toEqual(["ask-1", "ask-2"]);
+    });
   });
 });

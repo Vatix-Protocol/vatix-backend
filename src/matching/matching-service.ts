@@ -91,6 +91,101 @@ class MatchingService {
   }
 
   /**
+   * Cancel an open order and release its locked collateral.
+   *
+   * 1. Validates the order exists, belongs to the caller, and is cancellable.
+   * 2. Removes it from the in-memory order book (if present).
+   * 3. Updates the DB row to CANCELLED status.
+   * 4. Decrements the user's lockedCollateral for that market.
+   *
+   * @returns The cancelled order row.
+   */
+  async cancelOrder(orderId: string, userAddress: string): Promise<any> {
+    const prisma = getPrismaClient();
+
+    return prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+      });
+
+      if (!order) {
+        throw new ValidationError("Order not found", {
+          orderId: "Order not found",
+        });
+      }
+
+      if (order.userAddress !== userAddress) {
+        throw new ValidationError("Order does not belong to this user", {
+          orderId: "Order does not belong to this user",
+        });
+      }
+
+      if (order.status !== "OPEN" && order.status !== "PARTIALLY_FILLED") {
+        throw new ValidationError(
+          `Order cannot be cancelled (status: ${order.status.toLowerCase()})`,
+          {
+            orderId: `Order cannot be cancelled (status: ${order.status.toLowerCase()})`,
+          }
+        );
+      }
+
+      // 2. Remove from in-memory order book
+      const bookKey = this.getBookKey(order.marketId, order.outcome as Outcome);
+      const book = this.books.get(bookKey);
+      if (book) {
+        const bookSide = order.side === "BUY" ? "bid" : "ask";
+        book.removeOrder(orderId);
+      }
+
+      // 3. Update DB
+      const remainingQty = order.quantity - order.filledQuantity;
+
+      // 4. Release locked collateral (decrement)
+      const collateralPerUnit =
+        order.side === "BUY" ? Number(order.price) : 1 - Number(order.price);
+      const collateralToRelease =
+        Math.round(collateralPerUnit * remainingQty * 1e8) / 1e8;
+
+      const updatedOrder = await tx.order.update({
+        where: { id: orderId },
+        data: { status: "CANCELLED" },
+      });
+
+      if (collateralToRelease > 0) {
+        // Decrement lockedCollateral for this user+market
+        const position = await tx.userPosition.findUnique({
+          where: {
+            marketId_userAddress: {
+              marketId: order.marketId,
+              userAddress,
+            },
+          },
+        });
+
+        if (position) {
+          const newLocked = Math.max(
+            0,
+            Number(position.lockedCollateral) - collateralToRelease
+          );
+          await tx.userPosition.update({
+            where: {
+              marketId_userAddress: {
+                marketId: order.marketId,
+                userAddress,
+              },
+            },
+            data: {
+              lockedCollateral: newLocked,
+            },
+          });
+        }
+      }
+
+      return updatedOrder;
+    });
+  }
+
+  /**
    * Hydrate order books for all active markets on cold start.
    * Loads OPEN/PARTIALLY_FILLED orders into in-memory books so the matching
    * engine is ready before the first request arrives, eliminating the
