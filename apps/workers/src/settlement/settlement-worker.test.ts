@@ -533,4 +533,83 @@ describe("SettlementWorker — Stellar SDK invoke (executeOnChain)", () => {
     await vi.runAllTimersAsync();
     await expectation;
   });
+
+  describe("Stellar RPC retry/backoff", () => {
+    const retryJob: QueueJob = {
+      id: "job-stellar-retry",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-retry-001",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-r",
+        sellOrderId: "sell-r",
+        buyerAddress: "GBUYER111111111111111111111111111111111111111111111111",
+        sellerAddress: "GSELLER11111111111111111111111111111111111111111111111",
+        price: "0.50",
+        quantity: "10",
+        timestamp: "1700000005000",
+      },
+    };
+
+    it("retries a transient getAccount failure in place and still succeeds", async () => {
+      mockGetAccount
+        .mockRejectedValueOnce(new Error("ECONNRESET: connection reset"))
+        .mockResolvedValueOnce({ id: "mock-account" });
+
+      const processPromise = stellarWorker.process(retryJob);
+      await vi.runAllTimersAsync();
+      await processPromise;
+
+      expect(mockGetAccount).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "Retrying Stellar RPC call for settle_trade",
+        expect.objectContaining({
+          tradeId: "trade-retry-001",
+          attempt: 1,
+        })
+      );
+      expect(mockSendTransaction).toHaveBeenCalled();
+    });
+
+    it("retries a transient sendTransaction failure in place and still succeeds", async () => {
+      mockSendTransaction
+        .mockRejectedValueOnce(new Error("ETIMEDOUT: RPC timed out"))
+        .mockResolvedValueOnce({ status: "PENDING", hash: "abc123txhash" });
+
+      const processPromise = stellarWorker.process(retryJob);
+      await vi.runAllTimersAsync();
+      await processPromise;
+
+      expect(mockSendTransaction).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry a non-retryable (4xx-classified) failure", async () => {
+      mockGetAccount.mockRejectedValue(
+        new Error("400 Bad Request: invalid account")
+      );
+
+      const processPromise = stellarWorker.process(retryJob);
+      const expectation =
+        expect(processPromise).rejects.toThrow("400 Bad Request");
+      await vi.runAllTimersAsync();
+      await expectation;
+
+      expect(mockGetAccount).toHaveBeenCalledTimes(1);
+    });
+
+    it("gives up and rejects after exhausting retries on a persistent transient failure", async () => {
+      mockGetAccount.mockRejectedValue(
+        new Error("ECONNRESET: connection reset")
+      );
+
+      const processPromise = stellarWorker.process(retryJob);
+      const expectation = expect(processPromise).rejects.toThrow("ECONNRESET");
+      await vi.runAllTimersAsync();
+      await expectation;
+
+      // maxRetries: 3 => 1 initial attempt + 3 retries = 4 calls total.
+      expect(mockGetAccount).toHaveBeenCalledTimes(4);
+    });
+  });
 });
