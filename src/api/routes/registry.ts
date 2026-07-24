@@ -25,6 +25,12 @@ export const CANONICAL_V1_ROUTES: CanonicalRoute[] = [
   },
   { method: "POST", path: "/v1/orders", legacyAlias: "/orders" },
   {
+    method: "DELETE",
+    path: "/v1/orders/:id",
+    legacyAlias: "/orders/:id",
+    notes: "Cancel an open order",
+  },
+  {
     method: "GET",
     path: "/v1/orders/user/:address",
     legacyAlias: "/orders/user/:address",

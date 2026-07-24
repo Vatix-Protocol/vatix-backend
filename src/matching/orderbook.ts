@@ -25,7 +25,16 @@ export interface DepthLevel {
 }
 
 // High-performance order book implementation using sorted price levels
-// Maintains bid/ask orders sorted by price-time priority
+// Maintains bid/ask orders sorted by price-time priority.
+//
+// Price-Time Priority Tie-Break:
+//   - Primary sort: price. Bids are sorted descending (highest first); asks
+//     are sorted ascending (lowest first).
+//   - Secondary sort (tie-break at the same price level): FIFO — the order
+//     that arrived first (earliest timestamp) is matched first. This is
+//     guaranteed because `addOrder` appends to the end of the price level's
+//     order array, and `getBestBid`/`getBestAsk` return the first element.
+//   - The `iterateOrders` generator also yields in price-time priority order.
 export class OrderBook {
   private marketId: string;
   private outcome: number;
