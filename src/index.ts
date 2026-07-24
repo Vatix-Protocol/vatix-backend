@@ -13,6 +13,9 @@ import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { healthRoutes } from "./api/routes/health.js";
 import { walletRoutes } from "./api/routes/wallet.js";
+import { readyRoute } from "./api/routes/ready.js";
+import { checkDbReadiness } from "./services/dbReadiness.js";
+import { paymentMetrics } from "./services/paymentMetrics.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
 import { requestIdMiddleware } from "./api/middleware/requestId.js";
@@ -92,6 +95,19 @@ server.register(positionsRouter);
 server.register(adminRoutes);
 server.register(healthRoutes);
 server.register(walletRoutes);
+
+// Readiness probe — wired to real DB via checkDbReadiness
+server.register(
+  readyRoute({
+    checkDatabase: checkDbReadiness,
+    getLastIndexedAt: async () => null, // indexer cursor not available in API process
+  })
+);
+
+// Internal metrics endpoint — aggregate counts only, no PII or secrets
+server.get("/v1/metrics/payments", async (_req, reply) => {
+  reply.status(200).send(paymentMetrics.getSnapshot());
+});
 
 server.get("/readiness", async (_req: FastifyRequest, reply: FastifyReply) => {
   const rpcUrl = process.env.STELLAR_RPC_URL;

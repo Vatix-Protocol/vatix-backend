@@ -77,17 +77,97 @@ export const openApiSpec = {
         },
       },
     },
-    "/readiness": {
+    "/v1/ready": {
       get: {
-        summary: "Readiness check",
-        description: "Returns the readiness status including dependency health",
+        summary: "Readiness probe",
+        description:
+          "Reports whether the service can handle traffic. Checks database connectivity. Returns 503 when any critical dependency is unavailable.",
         tags: ["Health"],
         responses: {
           "200": {
-            description: "Service is ready",
+            description: "All dependencies healthy — service is ready",
+            content: {
+              "application/json": {
+                examples: {
+                  ready: {
+                    summary: "Fully ready",
+                    value: {
+                      ready: true,
+                      dependencies: {
+                        database: { status: "ok" },
+                        indexFreshness: { status: "ok" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
           "503": {
-            description: "Service is not ready",
+            description: "One or more dependencies are unavailable",
+            content: {
+              "application/json": {
+                examples: {
+                  dbDown: {
+                    summary: "Database unreachable",
+                    value: {
+                      ready: false,
+                      dependencies: {
+                        database: { status: "error", error: "connection refused" },
+                        indexFreshness: { status: "ok" },
+                      },
+                    },
+                  },
+                  staleIndex: {
+                    summary: "Index is stale",
+                    value: {
+                      ready: false,
+                      dependencies: {
+                        database: { status: "ok" },
+                        indexFreshness: { status: "stale", error: "Index is 360s old (threshold: 300s)" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/v1/metrics/payments": {
+      get: {
+        summary: "Payment flow metrics",
+        description:
+          "Returns aggregate counters for the order/payment flow. Counts only — no addresses, prices, or secrets are included.",
+        tags: ["Metrics"],
+        responses: {
+          "200": {
+            description: "Current payment metrics snapshot",
+            content: {
+              "application/json": {
+                examples: {
+                  nominal: {
+                    summary: "Healthy payment flow",
+                    value: {
+                      ordersSubmitted: 1240,
+                      ordersFilled: 1100,
+                      ordersFailed: 12,
+                      fillRate: 0.887,
+                    },
+                  },
+                  noOrders: {
+                    summary: "No orders yet",
+                    value: {
+                      ordersSubmitted: 0,
+                      ordersFilled: 0,
+                      ordersFailed: 0,
+                      fillRate: null,
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
