@@ -35,6 +35,30 @@ export class OrderValidationError extends ValidationError {
  */
 export const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
+/**
+ * Sanitizes a raw user address string before validation or DB use.
+ *
+ * Steps applied in order:
+ *  1. Reject non-string values immediately (returns null — caller must check).
+ *  2. Strip leading/trailing ASCII whitespace (prevents length-check bypass).
+ *  3. Uppercase the result (Stellar keys are uppercase; prevents case-folding
+ *     bypass and ensures consistent storage).
+ *  4. Strip any ASCII control characters and null bytes that could be used for
+ *     log injection or query confusion (U+0000–U+001F, U+007F).
+ *
+ * Returns the sanitized string, or null when the input type is invalid.
+ * Callers should pass the return value to `validateUserAddress`.
+ */
+export function sanitizeUserAddress(address: unknown): string | null {
+  if (typeof address !== "string") return null;
+  return address
+    .trim()
+    .toUpperCase()
+    // Remove ASCII control characters (including null bytes, newlines, tabs)
+    // that have no place in a Stellar base32 public key.
+    .replace(/[\x00-\x1F\x7F]/g, "");
+}
+
 export function validateUserAddress(address: string): string | null {
   if (typeof address !== "string") {
     return "User address must be a string";

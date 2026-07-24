@@ -96,9 +96,14 @@ export function parseMarketCreatedEvent(
       };
     }
 
-    // Validate oracle address format (Stellar: G + 55 alphanumeric chars)
-    const oracleAddress = rawEvent.oracleAddress.trim();
-    if (!/^G[A-Z0-9]{55}$/i.test(oracleAddress)) {
+    // Normalize oracle address: strip whitespace + control chars, uppercase.
+    // Uses the canonical Stellar StrKey base32 charset [A-Z2-7] — the same
+    // rule enforced by STELLAR_PUBLIC_KEY_REGEX in src/matching/validation.ts.
+    const oracleAddress = rawEvent.oracleAddress
+      .trim()
+      .toUpperCase()
+      .replace(/[\x00-\x1F\x7F]/g, "");
+    if (!/^G[A-Z2-7]{55}$/.test(oracleAddress)) {
       return {
         success: false,
         error: `Invalid oracle address format: ${oracleAddress}`,

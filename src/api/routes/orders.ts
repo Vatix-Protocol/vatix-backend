@@ -5,6 +5,7 @@ import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
 import { auditService } from "../../services/audit.js";
 import {
   validateUserAddress,
+  sanitizeUserAddress,
   assertValidOrder,
   type OrderInput,
 } from "../../matching/validation.js";
@@ -137,9 +138,10 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         Querystring: GetWalletTradesQuery;
       }>
     ) => {
-      const { address } = request.params;
+      const { address: rawAddress } = request.params;
       const { page = 1, limit = 20, from, to, marketId } = request.query;
 
+      const address = sanitizeUserAddress(rawAddress) ?? "";
       const addressError = validateUserAddress(address);
       if (addressError) {
         throw new ValidationError(addressError);
@@ -284,10 +286,11 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       }>,
       reply
     ) => {
-      const { address } = request.params;
+      const { address: rawAddress } = request.params;
       const { status, page = 1, limit = 20 } = request.query;
 
-      // Validate Stellar address
+      // Sanitize then validate Stellar address
+      const address = sanitizeUserAddress(rawAddress) ?? "";
       const addressError = validateUserAddress(address);
       if (addressError) {
         throw new ValidationError(addressError);
@@ -385,8 +388,9 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest<{ Body: CreateOrderBody }>, reply) => {
-      const { marketId, userAddress, side, outcome, price, quantity } =
+      const { marketId, userAddress: rawUserAddress, side, outcome, price, quantity } =
         request.body;
+      const userAddress = sanitizeUserAddress(rawUserAddress) ?? "";
 
       // Validate order using existing validation
       const orderInput: OrderInput = {

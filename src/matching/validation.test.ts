@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  sanitizeUserAddress,
   validateUserAddress,
   validateOrderSide,
   validateOutcome,
@@ -426,5 +427,69 @@ describe("Order Validation", () => {
       const error = new OrderValidationError(fields);
       expect(error.fields).toEqual(fields);
     });
+  });
+});
+
+// ─── sanitizeUserAddress ──────────────────────────────────────────────────────
+
+describe("sanitizeUserAddress", () => {
+  const valid56 = "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+
+  it("returns null for non-string input", () => {
+    expect(sanitizeUserAddress(null)).toBeNull();
+    expect(sanitizeUserAddress(undefined)).toBeNull();
+    expect(sanitizeUserAddress(123)).toBeNull();
+    expect(sanitizeUserAddress({})).toBeNull();
+  });
+
+  it("trims leading and trailing whitespace", () => {
+    expect(sanitizeUserAddress("  " + valid56 + "  ")).toBe(valid56);
+    expect(sanitizeUserAddress("\t" + valid56 + "\n")).toBe(valid56);
+  });
+
+  it("uppercases the address so case-insensitive submissions are accepted", () => {
+    const lower = valid56.toLowerCase();
+    expect(sanitizeUserAddress(lower)).toBe(valid56);
+  });
+
+  it("strips null-byte injection characters", () => {
+    const withNull = "\x00" + valid56 + "\x00";
+    expect(sanitizeUserAddress(withNull)).toBe(valid56);
+  });
+
+  it("strips newline characters used for log injection", () => {
+    const withNewline = valid56.slice(0, 28) + "\n" + valid56.slice(28);
+    const sanitized = sanitizeUserAddress(withNewline)!;
+    expect(sanitized).not.toContain("\n");
+    // The removed char leaves 55 chars — validateUserAddress correctly rejects it
+    expect(validateUserAddress(sanitized)).not.toBeNull();
+  });
+
+  it("strips carriage-return characters", () => {
+    const withCR = valid56.slice(0, 10) + "\r" + valid56.slice(10);
+    expect(sanitizeUserAddress(withCR)).not.toContain("\r");
+  });
+
+  it("returns empty string for all-whitespace input", () => {
+    expect(sanitizeUserAddress("   ")).toBe("");
+  });
+
+  it("sanitized valid address passes validateUserAddress", () => {
+    const padded = "  " + valid56 + "  ";
+    const sanitized = sanitizeUserAddress(padded)!;
+    expect(validateUserAddress(sanitized)).toBeNull();
+  });
+
+  it("SQL-fragment-style input is rejected after sanitization", () => {
+    const sqlInjection = "' OR '1'='1";
+    const sanitized = sanitizeUserAddress(sqlInjection)!;
+    expect(validateUserAddress(sanitized)).not.toBeNull();
+  });
+
+  it("unicode look-alike characters are rejected after sanitization", () => {
+    // Cyrillic look-alike (U+0433) mixed in — not in [A-Z2-7] charset
+    const lookalike = "\u0433" + valid56.slice(1);
+    const sanitized = sanitizeUserAddress(lookalike)!;
+    expect(validateUserAddress(sanitized)).not.toBeNull();
   });
 });

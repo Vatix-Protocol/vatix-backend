@@ -3,6 +3,7 @@ import { getPrismaClient } from "../../services/prisma.js";
 import {
   STELLAR_PUBLIC_KEY_REGEX,
   validateUserAddress,
+  sanitizeUserAddress,
 } from "../../matching/validation.js";
 import { ValidationError } from "../middleware/errors.js";
 import { heavyReadLimiter } from "../middleware/rateLimiter.js";
@@ -153,9 +154,10 @@ export default async function positionsRouter(server: FastifyInstance) {
       },
     },
     async (request, reply) => {
-      const { wallet } = request.params as { wallet: string };
+      const { wallet: rawWallet } = request.params as { wallet: string };
       const prisma = getPrismaClient();
 
+      const wallet = sanitizeUserAddress(rawWallet) ?? "";
       const addressError = validateUserAddress(wallet);
       if (addressError) {
         throw new ValidationError(addressError);
@@ -281,9 +283,10 @@ export default async function positionsRouter(server: FastifyInstance) {
     "/positions/user/:address",
     { onRequest: [heavyReadLimiter] },
     async (request, reply) => {
-      const { address } = request.params as { address: string };
+      const { address: rawAddress } = request.params as { address: string };
       const prisma = getPrismaClient();
 
+      const address = sanitizeUserAddress(rawAddress) ?? "";
       const addressError = validateUserAddress(address);
       if (addressError) {
         throw new ValidationError(addressError);
