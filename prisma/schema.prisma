@@ -149,7 +149,7 @@ model UserPosition {
   @@unique([marketId, userAddress])
   @@index([marketId])
   @@index([userAddress])
-  @@index([userAddress, marketId])
+  @@index([userAddress, marketId]) // Optimized for wallet + market queries
   @@map("user_positions")
 }
 
