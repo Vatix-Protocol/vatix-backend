@@ -91,7 +91,28 @@ export class PollingIngestionLoop implements IngestionLoop {
       this.logger.info(
         "Waiting for active ingestion tick to complete before stop..."
       );
-      await this.activeTickPromise;
+      // Set 30 second timeout to prevent indefinite wait if tick hangs
+      const tickTimeoutMs = 30_000;
+      try {
+        await Promise.race([
+          this.activeTickPromise,
+          new Promise<void>((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `Ingestion tick did not complete within ${tickTimeoutMs}ms`
+                  )
+                ),
+              tickTimeoutMs
+            )
+          ),
+        ]);
+      } catch (error) {
+        this.logger.warn("Ingestion tick timeout on shutdown", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     await this.flushCheckpoint(true);

@@ -8,7 +8,8 @@ import {
   UnauthorizedError,
   ForbiddenError,
 } from "./errors.js";
-import { ErrorResponse } from "../../types/errors.js";
+import type { ErrorResponse } from "../../types/errors.js";
+import { config } from "../../config.js";
 
 function resolveCode(error: Error, statusCode: number): string {
   if (error instanceof ValidationError) return "VALIDATION_ERROR";

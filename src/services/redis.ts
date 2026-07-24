@@ -61,7 +61,7 @@ export interface OrderBookData {
  */
 class RedisService {
   private client: Redis | null = null;
-  private isConnecting = false;
+  private connectionPromise: Promise<Redis> | null = null;
   private retryCount = 0;
   /**
    * Key prefix applied to all keys managed by this service.
@@ -88,78 +88,113 @@ class RedisService {
   }
 
   /**
-   * Get Redis client instance, creating if necessary
+   * Get or create Redis client instance with proper async connection handling
    */
   private getClient(): Redis {
     if (!this.client) {
-      this.connect();
+      // Connection not attempted or failed; initiate new connection attempt
+      this.connectionPromise = this.connect();
     }
     return this.client!;
   }
 
   /**
-   * Connect to Redis with retry strategy
+   * Wait for Redis connection to be established
    */
-  private connect(): void {
-    if (this.isConnecting) return;
-    this.isConnecting = true;
-
-    try {
-      const redisUrl = process.env.REDIS_URL;
-      if (!redisUrl) {
-        throw new Error("REDIS_URL environment variable is not set");
-      }
-
-      const { maxRetries, baseDelay, maxDelay, connectTimeout } =
-        loadRetryConfig();
-
-      this.client = new Redis(redisUrl, {
-        maxRetriesPerRequest: maxRetries,
-        connectTimeout,
-        retryStrategy: (times: number) => {
-          if (times > maxRetries) {
-            console.error(
-              { service: "redis", maxRetries },
-              "Redis max retries exceeded, giving up"
-            );
-            return null; // stop retrying
-          }
-          const delay = Math.min(baseDelay * Math.pow(2, times - 1), maxDelay);
-          console.warn(
-            { service: "redis", attempt: times, delayMs: delay },
-            "Redis connection retry scheduled"
-          );
-          return delay;
-        },
-        lazyConnect: false,
-      });
-
-      this.client.on("connect", () => {
-        console.info({ service: "redis" }, "Redis connected");
-        this.retryCount = 0;
-      });
-
-      this.client.on("error", (err: Error) => {
-        console.error(
-          { service: "redis", err: err.message },
-          "Redis connection error"
-        );
-      });
-
-      this.client.on("reconnecting", () => {
-        this.retryCount++;
-        console.warn(
-          { service: "redis", attempt: this.retryCount },
-          "Redis reconnecting"
-        );
-      });
-
-      this.client.on("close", () => {
-        console.info({ service: "redis" }, "Redis connection closed");
-      });
-    } finally {
-      this.isConnecting = false;
+  private async ensureConnected(): Promise<void> {
+    if (this.connectionPromise) {
+      await this.connectionPromise;
     }
+  }
+
+  /**
+   * Connect to Redis with retry strategy, returning a promise that resolves when connected
+   */
+  private connect(): Promise<Redis> {
+    return new Promise((resolve, reject) => {
+      try {
+        const redisUrl = process.env.REDIS_URL;
+        if (!redisUrl) {
+          const error = new Error("REDIS_URL environment variable is not set");
+          reject(error);
+          return;
+        }
+
+        const { maxRetries, baseDelay, maxDelay, connectTimeout } =
+          loadRetryConfig();
+
+        const client = new Redis(redisUrl, {
+          maxRetriesPerRequest: maxRetries,
+          connectTimeout,
+          retryStrategy: (times: number) => {
+            if (times > maxRetries) {
+              console.error(
+                { service: "redis", maxRetries },
+                "Redis max retries exceeded, giving up"
+              );
+              return null; // stop retrying
+            }
+            const delay = Math.min(
+              baseDelay * Math.pow(2, times - 1),
+              maxDelay
+            );
+            console.warn(
+              { service: "redis", attempt: times, delayMs: delay },
+              "Redis connection retry scheduled"
+            );
+            return delay;
+          },
+          lazyConnect: false,
+        });
+
+        let isResolved = false;
+
+        const onConnect = () => {
+          if (!isResolved) {
+            isResolved = true;
+            this.client = client;
+            console.info({ service: "redis" }, "Redis connected");
+            this.retryCount = 0;
+            resolve(client);
+          }
+        };
+
+        const onError = (err: Error) => {
+          console.error(
+            { service: "redis", err: err.message },
+            "Redis connection error"
+          );
+          if (!isResolved) {
+            isResolved = true;
+            this.client = null;
+            this.connectionPromise = null;
+            reject(err);
+          }
+        };
+
+        const onReconnecting = () => {
+          this.retryCount++;
+          console.warn(
+            { service: "redis", attempt: this.retryCount },
+            "Redis reconnecting"
+          );
+        };
+
+        const onClose = () => {
+          console.info({ service: "redis" }, "Redis connection closed");
+          // Reset client and connection promise to allow reconnection
+          this.client = null;
+          this.connectionPromise = null;
+        };
+
+        client.on("connect", onConnect);
+        client.on("error", onError);
+        client.on("reconnecting", onReconnecting);
+        client.on("close", onClose);
+      } catch (error) {
+        reject(error);
+      }
+    });
   }
 
   // ==================== Basic Methods ====================
@@ -169,6 +204,7 @@ class RedisService {
    */
   async get(key: string): Promise<string | null> {
     try {
+      await this.ensureConnected();
       return await this.getClient().get(key);
     } catch (error) {
       console.error({ service: "redis", key, err: error }, "Redis GET failed");
@@ -184,6 +220,7 @@ class RedisService {
    */
   async set(key: string, value: string, ttl?: number): Promise<void> {
     try {
+      await this.ensureConnected();
       if (ttl) {
         await this.getClient().set(key, value, "EX", ttl);
       } else {
@@ -299,6 +336,7 @@ class RedisService {
    */
   async healthCheck(): Promise<boolean> {
     try {
+      await this.ensureConnected();
       const result = await this.getClient().ping();
       return result === "PONG";
     } catch (error) {
@@ -354,6 +392,7 @@ class RedisService {
    */
   async xadd(...args: (string | number)[]): Promise<string | null> {
     try {
+      await this.ensureConnected();
       const client = this.getClient();
       return await (client.xadd as any)(...args);
     } catch (error) {

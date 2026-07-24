@@ -21,10 +21,10 @@ async function bootstrap(): Promise<void> {
     challengeWindowSeconds: config.challengeWindowSeconds,
   });
 
-  let isPollInProgress = false;
+  let activePollPromise: Promise<void> | null = null;
 
   const poll = async (): Promise<void> => {
-    if (isPollInProgress) {
+    if (activePollPromise) {
       logger.warn(
         "Skipping finalization poll because a previous poll is active",
         {
@@ -35,25 +35,27 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    isPollInProgress = true;
+    const pollPromise = (async () => {
+      try {
+        const result = await job.run();
+        logger.info("Finalization worker poll complete", {
+          component: "finalization-worker",
+          totalCandidates: result.totalCandidates,
+          finalizedCount: result.finalizedCount,
+          erroredCount: result.erroredCount,
+          skippedCount: result.skippedCount,
+        });
+      } catch (error) {
+        logger.error("Finalization worker poll failed", {
+          component: "finalization-worker",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
 
-    try {
-      const result = await job.run();
-      logger.info("Finalization worker poll complete", {
-        component: "finalization-worker",
-        totalCandidates: result.totalCandidates,
-        finalizedCount: result.finalizedCount,
-        erroredCount: result.erroredCount,
-        skippedCount: result.skippedCount,
-      });
-    } catch (error) {
-      logger.error("Finalization worker poll failed", {
-        component: "finalization-worker",
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      isPollInProgress = false;
-    }
+    activePollPromise = pollPromise;
+    await pollPromise;
+    activePollPromise = null;
   };
 
   await poll();
