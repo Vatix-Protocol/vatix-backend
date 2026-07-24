@@ -146,28 +146,35 @@ export const openApiSpec = {
                   "quantity",
                 ],
                 properties: {
-                  marketId: {
-                    type: "string",
+                  marketId: { type: "string" },
+                  userAddress: { type: "string" },
+                  side: { type: "string", enum: ["BUY", "SELL"] },
+                  outcome: { type: "string", enum: ["YES", "NO"] },
+                  price: { type: "number", minimum: 0, maximum: 1 },
+                  quantity: { type: "integer", minimum: 1 },
+                },
+              },
+              examples: {
+                buyYes: {
+                  summary: "Buy YES outcome",
+                  value: {
+                    marketId: "mkt_01j9z3k4p2q8r5t6u7v8w9x0y1",
+                    userAddress: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+                    side: "BUY",
+                    outcome: "YES",
+                    price: 0.65,
+                    quantity: 100,
                   },
-                  userAddress: {
-                    type: "string",
-                  },
-                  side: {
-                    type: "string",
-                    enum: ["BUY", "SELL"],
-                  },
-                  outcome: {
-                    type: "string",
-                    enum: ["YES", "NO"],
-                  },
-                  price: {
-                    type: "number",
-                    minimum: 0,
-                    maximum: 1,
-                  },
-                  quantity: {
-                    type: "integer",
-                    minimum: 1,
+                },
+                sellNo: {
+                  summary: "Sell NO outcome",
+                  value: {
+                    marketId: "mkt_01j9z3k4p2q8r5t6u7v8w9x0y1",
+                    userAddress: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+                    side: "SELL",
+                    outcome: "NO",
+                    price: 0.35,
+                    quantity: 50,
                   },
                 },
               },
@@ -177,15 +184,171 @@ export const openApiSpec = {
         responses: {
           "201": {
             description: "Order created",
+            content: {
+              "application/json": {
+                examples: {
+                  success: {
+                    summary: "Order placed successfully",
+                    value: {
+                      success: true,
+                      data: { orderId: "ord_01j9z3k4p2q8r5t6u7v8w9x0y1", status: "OPEN" },
+                      requestId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                      timestamp: "2026-07-24T10:00:00.000Z",
+                    },
+                  },
+                },
+              },
+            },
           },
           "400": {
             description: "Invalid request",
+            content: {
+              "application/json": {
+                examples: {
+                  missingField: {
+                    summary: "Missing required field",
+                    value: {
+                      code: "validation_error",
+                      message: "marketId is required",
+                      statusCode: 400,
+                    },
+                  },
+                  priceOutOfRange: {
+                    summary: "Price out of [0,1] range",
+                    value: {
+                      code: "validation_error",
+                      message: "price must be between 0 and 1",
+                      statusCode: 400,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "401": {
+            description: "Missing or invalid API key",
+            content: {
+              "application/json": {
+                examples: {
+                  unauthorized: {
+                    summary: "No API key provided",
+                    value: { error: "Missing API key", code: "UNAUTHORIZED", statusCode: 401 },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/v1/wallet/accounts/{accountId}": {
+      get: {
+        summary: "Get cached Horizon account",
+        description:
+          "Returns a briefly-cached Stellar Horizon account record for wallet, payment, and custody flows. Requires API key authentication.",
+        tags: ["Wallet"],
+        security: [{ apiKey: [] }],
+        parameters: [
+          {
+            name: "accountId",
+            in: "path",
+            required: true,
+            description: "Stellar public key (G…, 56 characters)",
+            schema: { type: "string", pattern: "^G[A-Z2-7]{55}$" },
+            examples: {
+              valid: {
+                summary: "Valid Stellar account",
+                value: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+              },
+            },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Account data served from Horizon cache",
+            content: {
+              "application/json": {
+                examples: {
+                  hit: {
+                    summary: "Cache hit — XLM account",
+                    value: {
+                      success: true,
+                      data: {
+                        account: {
+                          accountId: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+                          sequence: "987654321",
+                          balances: [{ asset_type: "native", balance: "250.0000000" }],
+                          fetchedAt: 1753351200000,
+                        },
+                        source: "cache",
+                      },
+                      requestId: "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+                      timestamp: "2026-07-24T10:00:00.000Z",
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "400": {
+            description: "Invalid Stellar account ID format",
+            content: {
+              "application/json": {
+                examples: {
+                  invalid: {
+                    summary: "Malformed account ID",
+                    value: {
+                      code: "validation_error",
+                      message: "accountId must be a valid Stellar public key",
+                      statusCode: 400,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "401": {
+            description: "Missing or invalid API key",
+            content: {
+              "application/json": {
+                examples: {
+                  unauthorized: {
+                    summary: "No API key",
+                    value: { error: "Missing API key", code: "UNAUTHORIZED", statusCode: 401 },
+                  },
+                },
+              },
+            },
+          },
+          "404": {
+            description: "Account not found in cache",
+            content: {
+              "application/json": {
+                examples: {
+                  miss: {
+                    summary: "Cache miss",
+                    value: {
+                      code: "not_found",
+                      message: "Account not found in cache: GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+                      statusCode: 404,
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
     },
   },
   components: {
+    securitySchemes: {
+      apiKey: {
+        type: "apiKey",
+        in: "header",
+        name: "x-api-key",
+      },
+    },
     schemas: {
       Error: {
         type: "object",

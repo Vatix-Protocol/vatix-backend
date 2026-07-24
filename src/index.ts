@@ -12,6 +12,7 @@ import { marketsRoutes } from "./api/routes/markets.js";
 import { ordersRoutes } from "./api/routes/orders.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { healthRoutes } from "./api/routes/health.js";
+import { walletRoutes } from "./api/routes/wallet.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
 import { requestIdMiddleware } from "./api/middleware/requestId.js";
@@ -90,6 +91,7 @@ server.register(ordersRoutes);
 server.register(positionsRouter);
 server.register(adminRoutes);
 server.register(healthRoutes);
+server.register(walletRoutes);
 
 server.get("/readiness", async (_req: FastifyRequest, reply: FastifyReply) => {
   const rpcUrl = process.env.STELLAR_RPC_URL;
