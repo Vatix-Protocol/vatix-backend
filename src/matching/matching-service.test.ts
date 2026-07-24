@@ -1,5 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ValidationError } from "../api/middleware/errors.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  ValidationError,
+  ServiceUnavailableError,
+} from "../api/middleware/errors.js";
 
 // Mock dependencies
 vi.mock("../services/prisma.js", () => ({
@@ -18,16 +21,22 @@ vi.mock("../services/settlement-queue.js", () => ({
   },
 }));
 
+vi.mock("../services/redis.js", () => ({
+  redis: {
+    setOrderBook: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
 vi.mock("./mutex.js", () => {
   return {
-    Mutex: vi.fn().mockImplementation(() => ({
-      run: vi.fn((fn: () => Promise<any>) => fn()),
-    })),
+    Mutex: vi.fn().mockImplementation(function (this: any) {
+      this.run = vi.fn((fn: () => Promise<any>) => fn());
+    }),
   };
 });
 
-vi.mock("./engine.js", () => {
-  const actual = vi.importActual("./engine.js");
+vi.mock("./engine.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./engine.js")>();
   return {
     ...actual,
     matchOrder: vi.fn(() => ({
@@ -43,10 +52,15 @@ const mockTx = {
   order: {
     findUnique: vi.fn(),
     update: vi.fn(),
+    create: vi.fn(),
+  },
+  trade: {
+    upsert: vi.fn(),
   },
   userPosition: {
     findUnique: vi.fn(),
     update: vi.fn(),
+    upsert: vi.fn(),
   },
 };
 
@@ -69,7 +83,11 @@ const mockPrismaClient = {
   $transaction: vi.fn((cb: (tx: any) => Promise<any>) => cb(mockTx)),
 };
 
-import { matchingService } from "./matching-service.js";
+import {
+  matchingService,
+  isMatchingEngineEnabled,
+} from "./matching-service.js";
+import { orderbookHydratedMarketsGauge } from "../services/metrics.js";
 
 describe("MatchingService", () => {
   beforeEach(() => {
@@ -199,6 +217,73 @@ describe("MatchingService", () => {
           }),
         })
       );
+    });
+  });
+
+  describe("matching engine feature flag (#744)", () => {
+    const orderInput = {
+      marketId: "market-1",
+      userAddress: "GUSER1234567890123456789012345678901234567890123456",
+      side: "BUY" as const,
+      outcome: "YES" as const,
+      price: 0.5,
+      quantity: 10,
+    };
+
+    afterEach(() => {
+      delete process.env.MATCHING_ENGINE_ENABLED;
+    });
+
+    it("isMatchingEngineEnabled() defaults to true when unset", () => {
+      delete process.env.MATCHING_ENGINE_ENABLED;
+      expect(isMatchingEngineEnabled()).toBe(true);
+    });
+
+    it('isMatchingEngineEnabled() is false only when explicitly set to "false"', () => {
+      process.env.MATCHING_ENGINE_ENABLED = "false";
+      expect(isMatchingEngineEnabled()).toBe(false);
+
+      process.env.MATCHING_ENGINE_ENABLED = "true";
+      expect(isMatchingEngineEnabled()).toBe(true);
+    });
+
+    it("placeOrder rejects with ServiceUnavailableError when the flag is disabled", async () => {
+      process.env.MATCHING_ENGINE_ENABLED = "false";
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        ServiceUnavailableError
+      );
+      // Rejected before touching the database at all.
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("placeOrder proceeds normally when the flag is enabled (default)", async () => {
+      mockPrismaClient.order.findMany.mockResolvedValue([]);
+      mockTx.order.create.mockResolvedValue({
+        id: "order-2",
+        ...orderInput,
+        status: "FILLED",
+        filledQuantity: orderInput.quantity,
+      });
+
+      await expect(
+        matchingService.placeOrder(orderInput)
+      ).resolves.toBeDefined();
+      expect(mockTx.order.create).toHaveBeenCalled();
+    });
+  });
+
+  describe("orderbook_hydrated_markets gauge (#746)", () => {
+    it("reflects the current in-memory book count after hydration", async () => {
+      mockPrismaClient.market.findMany.mockResolvedValue([{ id: "market-9" }]);
+      mockPrismaClient.order.findMany.mockResolvedValue([]);
+
+      await matchingService.hydrateAllActiveMarkets();
+
+      const snapshot = await orderbookHydratedMarketsGauge.get();
+      const books: Map<string, unknown> = (matchingService as any).books;
+      expect(snapshot.values[0].value).toBe(books.size);
+      expect(books.size).toBe(2); // market-9 x {YES, NO}
     });
   });
 });
