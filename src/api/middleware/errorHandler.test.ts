@@ -36,8 +36,8 @@ describe("Error Handler Middleware", () => {
       const res = await server.inject({ method: "GET", url: "/test" });
       const body = JSON.parse(res.body);
       expect(body).toMatchObject({
-        code: "not_found",
-        message: "x",
+        code: "NOT_FOUND",
+        error: "x",
         statusCode: 404,
         requestId: "test-request-id",
       });
@@ -60,7 +60,7 @@ describe("Error Handler Middleware", () => {
       });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(400);
-      expect(JSON.parse(res.body).code).toBe("validation_error");
+      expect(JSON.parse(res.body).code).toBe("VALIDATION_ERROR");
     });
 
     it("puts fields inside metadata", async () => {
@@ -69,7 +69,7 @@ describe("Error Handler Middleware", () => {
         throw new ValidationError("bad", fields);
       });
       const res = await server.inject({ method: "GET", url: "/test" });
-      expect(JSON.parse(res.body).metadata).toEqual({ fields });
+      expect(JSON.parse(res.body).fields).toEqual(fields);
     });
 
     it("omits metadata when no fields", async () => {
@@ -77,7 +77,7 @@ describe("Error Handler Middleware", () => {
         throw new ValidationError("bad");
       });
       const res = await server.inject({ method: "GET", url: "/test" });
-      expect(JSON.parse(res.body).metadata).toBeUndefined();
+      expect(JSON.parse(res.body).fields).toBeUndefined();
     });
   });
 
@@ -88,7 +88,7 @@ describe("Error Handler Middleware", () => {
       });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(404);
-      expect(JSON.parse(res.body).code).toBe("not_found");
+      expect(JSON.parse(res.body).code).toBe("NOT_FOUND");
     });
   });
 
@@ -99,7 +99,7 @@ describe("Error Handler Middleware", () => {
       });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(401);
-      expect(JSON.parse(res.body).code).toBe("unauthorized");
+      expect(JSON.parse(res.body).code).toBe("UNAUTHORIZED");
     });
   });
 
@@ -110,7 +110,7 @@ describe("Error Handler Middleware", () => {
       });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(403);
-      expect(JSON.parse(res.body).code).toBe("forbidden");
+      expect(JSON.parse(res.body).code).toBe("FORBIDDEN");
     });
   });
 
@@ -121,7 +121,7 @@ describe("Error Handler Middleware", () => {
       });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(500);
-      expect(JSON.parse(res.body).code).toBe("internal_error");
+      expect(JSON.parse(res.body).code).toBe("INTERNAL_ERROR");
     });
 
     it("exposes message in development", async () => {
@@ -131,7 +131,7 @@ describe("Error Handler Middleware", () => {
         throw new Error("db failed");
       });
       const res = await server.inject({ method: "GET", url: "/test" });
-      expect(JSON.parse(res.body).message).toBe("db failed");
+      expect(JSON.parse(res.body).error).toBe("db failed");
       process.env.NODE_ENV = orig;
     });
 
@@ -151,7 +151,7 @@ describe("Error Handler Middleware", () => {
       expect(body.error).toBe("Internal server error");
       expect(body.error).not.toContain("Database");
 
-      process.env.NODE_ENV = originalEnv;
+      process.env.NODE_ENV = orig;
     });
   });
 
@@ -190,6 +190,9 @@ describe("Error Handler Middleware", () => {
         server.get(`/test-${expectedCode}`, async () => {
           throw makeError();
         });
+      }
+
+      for (const [, expectedCode] of cases) {
         const res = await server.inject({
           method: "GET",
           url: `/test-${expectedCode}`,

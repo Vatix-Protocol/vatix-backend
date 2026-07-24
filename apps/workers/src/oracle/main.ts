@@ -37,7 +37,8 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { createHash } from "crypto";
-import type { ShutdownHandler, ShutdownSignal } from "../finalization/types.js";
+import type { ShutdownSignal } from "../../../../packages/shared/src/shutdown.js";
+import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
 
 type OracleStellarConfig = ResolvedOracleStellarConfig;
 
@@ -212,70 +213,21 @@ async function bootstrap(): Promise<void> {
     logger
   );
 
-  const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-  const SHUTDOWN_TIMEOUT_MS = 30_000;
-
-  let isShuttingDown = false;
-  const shutdown: ShutdownHandler = async (signal: ShutdownSignal) => {
-    if (
-      typeof signal !== "string" ||
-      signal.trim() === "" ||
-      !VALID_SHUTDOWN_SIGNALS.includes(
-        signal as (typeof VALID_SHUTDOWN_SIGNALS)[number]
-      )
-    ) {
-      logger.warn("Graceful shutdown called with invalid signal", {
-        signal,
-        statusCode: 400,
-        component: "oracle-worker",
-        validSignals: [...VALID_SHUTDOWN_SIGNALS],
-      });
-      return;
-    }
-
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-
-    logger.info("Oracle worker shutdown initiated", {
-      signal,
-      component: "oracle-worker",
-      status: "initiated",
-    });
-
-    const timeoutHandle = setTimeout(() => {
-      logger.error("Shutdown timeout exceeded, forcing exit", {
-        signal,
-        component: "oracle-worker",
-        timeoutMs: SHUTDOWN_TIMEOUT_MS,
-      });
-      process.exit(1);
-    }, SHUTDOWN_TIMEOUT_MS);
-
-    try {
-      await bullWorker.close();
-      await disconnectPrisma();
-      await redis.disconnect();
-      clearTimeout(timeoutHandle);
-
-      logger.info("Oracle worker shutdown complete", {
-        signal,
-        component: "oracle-worker",
-        status: "complete",
-        exitCode: 0,
-      });
-      process.exit(0);
-    } catch (error) {
-      clearTimeout(timeoutHandle);
-      logger.error("Oracle worker shutdown failed", {
-        signal,
-        component: "oracle-worker",
-        status: "failed",
-        exitCode: 1,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      process.exit(1);
-    }
-  };
+  const shutdown = createShutdown(logger, {
+    timeoutMs: 30_000,
+    component: "oracle-worker",
+    teardown: [
+      async () => {
+        await bullWorker.close();
+      },
+      async () => {
+        await disconnectPrisma();
+      },
+      async () => {
+        await redis.disconnect();
+      },
+    ],
+  });
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

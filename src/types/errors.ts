@@ -7,5 +7,4 @@ export interface ErrorResponse {
   requestId: string;
   statusCode: number;
   fields?: Record<string, string>;
-  stack?: string;
 }

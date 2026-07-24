@@ -1,0 +1,16 @@
+{
+  "name": "@vatix/indexer",
+  "version": "1.0.0",
+  "description": "Indexer application for Vatix protocol",
+  "main": "src/main.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "test": "vitest",
+    "test:run": "vitest run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

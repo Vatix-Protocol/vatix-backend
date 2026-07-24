@@ -14,15 +14,31 @@ expiry processing, and any other async work enqueued by the API or Oracle.
 
 ## Implemented Workers
 
+### Oracle Submission Worker (#705)
+
+Listens on a BullMQ queue (`oracle-submissions`) for signed oracle resolution reports and submits them on-chain via the Stellar smart contract's `resolve_market` method.
+
+| Config env var               | Default              | Description                               |
+| ---------------------------- | -------------------- | ----------------------------------------- |
+| `SUBMISSION_QUEUE_NAME`      | `oracle-submissions` | BullMQ queue name                         |
+| `STELLAR_RPC_URL`            | —                    | Stellar RPC endpoint                      |
+| `SOROBAN_NETWORK_PASSPHRASE` | —                    | Network passphrase                        |
+| `ORACLE_SECRET_KEY`          | —                    | Signer secret key for on-chain submission |
+| `INDEXER_CONTRACT_ID`        | —                    | Target contract ID                        |
+
+**Docker**: `docker build --target oracle-worker -t vatix-oracle-worker .`
+
+**Docker Compose profile**: `oracle-worker` (included in `app` / `full`)
+
 ### Finalization Worker
 
 Polls for `ResolutionCandidate` rows that have passed the challenge window and promotes them to a settled `Resolution`.
 
-| Config env var | Default | Description |
-|---|---|---|
-| `FINALIZATION_INTERVAL_MS` | `60000` | How often the job runs (ms). Minimum 1000. |
-| `FINALIZATION_CHALLENGE_WINDOW_SECONDS` | `3600` | How long (seconds) a candidate must be in `PROPOSED` status before it can be finalized. |
-| `FINALIZATION_LOG_LEVEL` | `info` | Log verbosity: `debug` \| `info` \| `warn` \| `error`. |
+| Config env var                          | Default | Description                                                                             |
+| --------------------------------------- | ------- | --------------------------------------------------------------------------------------- |
+| `FINALIZATION_INTERVAL_MS`              | `60000` | How often the job runs (ms). Minimum 1000.                                              |
+| `FINALIZATION_CHALLENGE_WINDOW_SECONDS` | `3600`  | How long (seconds) a candidate must be in `PROPOSED` status before it can be finalized. |
+| `FINALIZATION_LOG_LEVEL`                | `info`  | Log verbosity: `debug` \| `info` \| `warn` \| `error`.                                  |
 
 #### Queue Consumer Pattern
 

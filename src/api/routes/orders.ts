@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { getPrismaClient } from "../../services/prisma.js";
-import { ValidationError } from "../middleware/errors.js";
+import { ValidationError, NotFoundError } from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
 import { auditService } from "../../services/audit.js";
 import { matchingService } from "../../matching/matching-service.js";
@@ -12,6 +12,7 @@ import {
   type OrderInput,
 } from "../../matching/validation.js";
 import { heavyReadLimiter, writeLimiter } from "../middleware/rateLimiter.js";
+import { verifyStellarSignature } from "../middleware/stellarAuth.js";
 
 // ---------------------------------------------------------------------------
 // Zod schema for POST /orders body
@@ -23,7 +24,7 @@ const CreateOrderSchema = z.object({
     .string()
     .regex(
       STELLAR_PUBLIC_KEY_REGEX,
-      "userAddress must be a valid Stellar public key"
+      "userAddress must be a valid Stellar address (public key)"
     ),
   side: z.enum(["BUY", "SELL"]),
   outcome: z.enum(["YES", "NO"]),
@@ -131,6 +132,8 @@ export interface TradeEntry {
   price: number;
   quantity: number;
   timestamp: number;
+  /** `timestamp` normalized to an ISO-8601 UTC string. */
+  timestampIso: string;
   loggedAt: string;
 }
 
@@ -240,7 +243,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           page,
           limit,
           fromMs,
-          toMs
+          toMs,
+          marketId
         );
 
       return {
@@ -255,6 +259,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           price: entry.trade.price,
           quantity: entry.trade.quantity,
           timestamp: entry.trade.timestamp,
+          timestampIso: new Date(entry.trade.timestamp).toISOString(),
           loggedAt: entry.loggedAt,
         })),
         total,
@@ -395,7 +400,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         nextCursor,
         hasNext,
         limit,
-      });
+      };
     }
   );
 
@@ -474,6 +479,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
                     price: { type: "number" },
                     quantity: { type: "number" },
                     timestamp: { type: "number" },
+                    timestampIso: { type: "string" },
                   },
                 },
               },
@@ -510,23 +516,70 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       // Domain validation: address format, market existence and state
       await assertValidOrder(orderInput);
 
-      const order = await prisma.order.create({
-        data: {
-          marketId,
-          userAddress,
-          side,
-          outcome,
-          price: price.toString(),
-          quantity,
-          filledQuantity: 0,
-          status: "OPEN",
-        },
-      });
-
-      // TODO: Add to matching engine
-      // await matchingEngine.addOrder(order);
+      const { order, trades, filledQuantity } =
+        await matchingService.placeOrder(orderInput);
 
       reply.status(201).send({ order, trades, filledQuantity });
+    }
+  );
+
+  // DELETE /orders/:id — cancel an open order and release locked collateral
+  fastify.delete<{ Params: { id: string } }>(
+    "/orders/:id",
+    {
+      onRequest: [writeLimiter],
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          additionalProperties: false,
+          properties: {
+            id: { type: "string" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              order: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  marketId: { type: "string" },
+                  userAddress: { type: "string" },
+                  side: { type: "string" },
+                  outcome: { type: "string" },
+                  price: { type: "string" },
+                  quantity: { type: "number" },
+                  filledQuantity: { type: "number" },
+                  status: { type: "string" },
+                  createdAt: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply) => {
+      const { id } = request.params;
+
+      // userAddress must be provided in the request body or query for ownership verification
+      const body = request.body as { userAddress?: string } | undefined;
+      const userAddress = body?.userAddress;
+
+      if (!userAddress) {
+        throw new ValidationError(
+          "userAddress is required to cancel an order",
+          {
+            userAddress: "userAddress is required to cancel an order",
+          }
+        );
+      }
+
+      const order = await matchingService.cancelOrder(id, userAddress);
+
+      reply.status(200).send({ order });
     }
   );
 }
