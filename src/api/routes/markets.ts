@@ -107,7 +107,10 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         limit = 50,
       } = request.query;
 
-      const whereClause = status ? { status } : {};
+      const whereClause = {
+        ...(status ? { status } : {}),
+        deletedAt: null,
+      };
 
       const orderBy = {
         [sort]: direction,
@@ -146,7 +149,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       const { id } = request.params;
 
       const market = await prisma.market.findUnique({ where: { id } });
-      if (!market) {
+      if (!market || market.deletedAt !== null) {
         throw new MarketNotFoundError(id);
       }
 
@@ -173,7 +176,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       const { id } = request.params;
 
       const market = await prisma.market.findUnique({ where: { id } });
-      if (!market) {
+      if (!market || market.deletedAt !== null) {
         throw new MarketNotFoundError(id);
       }
 
