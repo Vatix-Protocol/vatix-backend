@@ -87,6 +87,9 @@ describe("PollingIngestionLoop", () => {
     metrics = {
       setLatestIndexedLedgerSequence: vi.fn(),
       getLatestIndexedLedgerSequence: vi.fn().mockReturnValue(10),
+      setLatestNetworkLedgerSequence: vi.fn(),
+      getLatestNetworkLedgerSequence: vi.fn().mockReturnValue(200),
+      getLag: vi.fn().mockReturnValue(190),
       toLogFields: vi.fn().mockReturnValue({}),
     } as unknown as InternalIndexerMetricsService;
     eventFetcher = {
@@ -218,6 +221,64 @@ describe("PollingIngestionLoop", () => {
     await (loop as unknown as { tick(): Promise<void> }).tick();
     expect(storage.saveCursor).toHaveBeenCalledTimes(1);
     expect(storage.saveCursor).toHaveBeenCalledWith("200");
+  });
+
+  it("ledger window size bounds check: < 1 returns early with error log (Issue #711)", async () => {
+    const loop = new PollingIngestionLoop(logger, storage, metrics, 5_000, 10, {
+      eventFetcher,
+      batchWriter,
+      contractId: "CTEST",
+      ledgerWindowSize: 0,
+    });
+    const result = await runIngest(loop, "10");
+    expect(logger.error).toHaveBeenCalledWith(
+      "Invalid ledgerWindowSize — must be >= 1",
+      expect.objectContaining({ ledgerWindowSize: 0 })
+    );
+    expect(result.nextCursor).toBe("10");
+    expect(result.lastIndexedLedgerSequence).toBe(10);
+    expect(eventFetcher.fetchByLedgerWindow).not.toHaveBeenCalled();
+  });
+
+  it("records latest network ledger sequence for lag metrics (Issue #713)", async () => {
+    vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValue({
+      events: [],
+      latestLedger: 300,
+    });
+
+    const loop = createLoop();
+    await runIngest(loop, "10");
+
+    expect(metrics.setLatestNetworkLedgerSequence).toHaveBeenCalledWith(300);
+  });
+
+  it("unknown event type logs warning without stalling (Issue #712)", async () => {
+    const unknownEvent: RawChainEvent = {
+      id: "0000000050-0000000002-0000000000",
+      ledger: 50,
+      ledgerClosedAt: "2024-01-01T00:00:00Z",
+      contractId: "CTEST",
+      type: "contract",
+      pagingToken: "token-unknown",
+      valueXdr: "AAAAAA==",
+      topicsXdr: ["AAAAEwAAAA91bmtub3duX3RvcGljAAAA"],
+    };
+
+    vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValue({
+      events: [unknownEvent],
+      latestLedger: 200,
+    });
+
+    const loop = createLoop();
+    await runIngest(loop, "10");
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Unknown event type — no matching parser found",
+      expect.objectContaining({
+        eventId: "0000000050-0000000002-0000000000",
+        ledger: 50,
+      })
+    );
   });
 
   it("graceful shutdown: stop() awaits active tick and flushes cursor", async () => {

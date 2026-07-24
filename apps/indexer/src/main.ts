@@ -20,6 +20,7 @@ async function bootstrap(): Promise<void> {
   const eventFetcher = new EventFetcher({
     rpcUrl: config.stellarRpcUrl,
     contractId: config.contractId,
+    pageLimit: config.batchSize,
   });
   const batchWriter = new PrismaBatchWriter(logger);
   const ingestionLoop = new PollingIngestionLoop(

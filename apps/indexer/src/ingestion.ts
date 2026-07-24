@@ -213,6 +213,19 @@ export class PollingIngestionLoop implements IngestionLoop {
       Number.isFinite(currentSequence) && currentSequence >= 0
         ? currentSequence
         : 0;
+
+    // Validate ledger window size bounds (Issue #711)
+    if (this.deps.ledgerWindowSize < 1) {
+      this.logger.error("Invalid ledgerWindowSize — must be >= 1", {
+        ledgerWindowSize: this.deps.ledgerWindowSize,
+      });
+      return {
+        nextCursor: currentCursor ?? String(safeCurrentSequence),
+        lastIndexedLedgerSequence: safeCurrentSequence,
+        batchWriteSucceeded: false,
+      };
+    }
+
     const startLedger = safeCurrentSequence + 1;
     const provisionalEnd = startLedger + this.deps.ledgerWindowSize - 1;
 
@@ -221,6 +234,11 @@ export class PollingIngestionLoop implements IngestionLoop {
         startLedger,
         endLedger: provisionalEnd,
       });
+
+    // Track the latest network ledger for lag computation (Issue #713)
+    if (latestLedger > 0) {
+      this.metrics.setLatestNetworkLedgerSequence(latestLedger);
+    }
 
     if (startLedger > latestLedger) {
       return {
@@ -271,31 +289,44 @@ export class PollingIngestionLoop implements IngestionLoop {
       });
     }
 
+    // Log events that matched no known parser (Issue #712)
+    const knownEventIds = new Set([
+      ...tradeErrors.map((e) => e.eventId),
+      ...trades.map((t) => t.eventId),
+      ...resolutionErrors.map((e) => e.eventId),
+      ...resolutions.map((r) => r.eventId),
+      ...depositErrors.map((e) => e.eventId),
+      ...deposits.map((d) => d.eventId),
+      ...marketErrors.map((e) => e.eventId),
+      ...markets.map((m) => m.eventId),
+    ]);
+    for (const event of events) {
+      if (!knownEventIds.has(event.id)) {
+        this.logger.warn("Unknown event type — no matching parser found", {
+          eventId: event.id,
+          ledger: event.ledger,
+          topicsXdr: event.topicsXdr,
+        });
+      }
+    }
+
     const records: BatchRecord[] = [
-      ...markets.map(
-        (market): BatchRecord => ({
-          kind: "market_created",
-          data: withIdempotencyKey(market),
-        })
-      ),
-      ...trades.map(
-        (trade): BatchRecord => ({
-          kind: "trade",
-          data: withIdempotencyKey(trade),
-        })
-      ),
-      ...resolutions.map(
-        (resolution): BatchRecord => ({
-          kind: "resolution",
-          data: withIdempotencyKey(resolution),
-        })
-      ),
-      ...deposits.map(
-        (deposit): BatchRecord => ({
-          kind: "collateral_deposited",
-          data: withIdempotencyKey(deposit),
-        })
-      ),
+      ...markets.map((market): BatchRecord => ({
+        kind: "market_created",
+        data: withIdempotencyKey(market),
+      })),
+      ...trades.map((trade): BatchRecord => ({
+        kind: "trade",
+        data: withIdempotencyKey(trade),
+      })),
+      ...resolutions.map((resolution): BatchRecord => ({
+        kind: "resolution",
+        data: withIdempotencyKey(resolution),
+      })),
+      ...deposits.map((deposit): BatchRecord => ({
+        kind: "collateral_deposited",
+        data: withIdempotencyKey(deposit),
+      })),
     ];
 
     const writeResult = await this.deps.batchWriter.write(records);
@@ -312,6 +343,7 @@ export class PollingIngestionLoop implements IngestionLoop {
       return {
         nextCursor: currentCursor ?? String(safeCurrentSequence),
         lastIndexedLedgerSequence: safeCurrentSequence,
+        batchWriteSucceeded: false,
       };
     }
 
