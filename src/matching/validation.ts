@@ -211,7 +211,7 @@ export async function validateMarketState(
     where: { id: marketId },
   });
 
-  if (!market) {
+  if (!market || market.deletedAt !== null) {
     errors.marketId = "Market not found";
     return { valid: false, errors };
   }
