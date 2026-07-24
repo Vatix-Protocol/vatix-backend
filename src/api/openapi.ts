@@ -296,6 +296,59 @@ export const openApiSpec = {
         },
       },
     },
+    "/v1/trades": {
+      get: {
+        summary: "Trade listing",
+        description:
+          "Retrieve a Postgres-paginated listing of trades across all wallets, optionally filtered by market and time range. May be served from an optional Redis cache when TRADES_CACHE_ENABLED=true.",
+        tags: ["Trades"],
+        parameters: [
+          {
+            name: "page",
+            in: "query",
+            required: false,
+            schema: { type: "integer", minimum: 1, default: 1 },
+          },
+          {
+            name: "limit",
+            in: "query",
+            required: false,
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+              default: 20,
+            },
+          },
+          {
+            name: "marketId",
+            in: "query",
+            required: false,
+            schema: { type: "string" },
+            description: "Filter trades by market identifier",
+          },
+          {
+            name: "from",
+            in: "query",
+            required: false,
+            schema: { type: "string", format: "date-time" },
+            description: "Inclusive UTC start timestamp (ISO-8601)",
+          },
+          {
+            name: "to",
+            in: "query",
+            required: false,
+            schema: { type: "string", format: "date-time" },
+            description: "Inclusive UTC end timestamp (ISO-8601)",
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Trade listing",
+          },
+        },
+      },
+    },
     "/v1/trades/user/{address}": {
       get: {
         summary: "User trade history",

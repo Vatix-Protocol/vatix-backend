@@ -267,6 +267,75 @@ export class AuditService {
   }
 
   /**
+   * Get paginated trade history across all wallets from Postgres (durable).
+   * Same shape as getWalletTradeHistory but without a buyer/seller filter.
+   */
+  async getTradeHistory(
+    page: number = 1,
+    limit: number = 20,
+    fromMs?: number,
+    toMs?: number,
+    marketId?: string
+  ): Promise<{
+    trades: AuditLogEntry[];
+    total: number;
+    hasNext: boolean;
+    page: number;
+    limit: number;
+  }> {
+    const prisma = getPrismaClient();
+
+    const where = {
+      ...(marketId ? { marketId } : {}),
+      ...(fromMs !== undefined || toMs !== undefined
+        ? {
+            tradedAt: {
+              ...(fromMs !== undefined ? { gte: new Date(fromMs) } : {}),
+              ...(toMs !== undefined ? { lte: new Date(toMs) } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const skip = (page - 1) * limit;
+
+    const [rows, total] = await Promise.all([
+      prisma.trade.findMany({
+        where,
+        orderBy: { tradedAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.trade.count({ where }),
+    ]);
+
+    const trades: AuditLogEntry[] = rows.map((row) => ({
+      id: row.id,
+      trade: {
+        id: row.tradeId,
+        marketId: row.marketId,
+        outcome: row.outcome as "YES" | "NO",
+        buyerAddress: row.buyerAddress,
+        sellerAddress: row.sellerAddress,
+        buyOrderId: row.buyOrderId,
+        sellOrderId: row.sellOrderId,
+        price: Number(row.price),
+        quantity: row.quantity,
+        timestamp: row.tradedAt.getTime(),
+      },
+      loggedAt: row.createdAt.toISOString(),
+    }));
+
+    return {
+      trades,
+      total,
+      hasNext: skip + rows.length < total,
+      page,
+      limit,
+    };
+  }
+
+  /**
    * Get audit log entries within a time range
    *
    * @param marketId - Market ID to query

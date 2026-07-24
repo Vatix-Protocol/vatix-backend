@@ -37,6 +37,11 @@ export const CANONICAL_V1_ROUTES: CanonicalRoute[] = [
   },
   {
     method: "GET",
+    path: "/v1/trades",
+    notes: "Postgres-paginated trade listing; optional Redis cache layer",
+  },
+  {
+    method: "GET",
     path: "/v1/trades/user/:address",
     legacyAlias: "/trades/user/:address",
   },
