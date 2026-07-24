@@ -13,6 +13,7 @@ import "dotenv/config";
 import { getPrismaClient } from "./services/prisma.js";
 import { marketsRoutes } from "./api/routes/markets.js";
 import { ordersRoutes } from "./api/routes/orders.js";
+import { fillsRoutes } from "./api/routes/fills.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { healthRoutes } from "./api/routes/health.js";
 import { readyRoute } from "./api/routes/ready.js";
@@ -105,7 +106,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       // its own routes — the parent scope already adds it, which would produce
       // double-prefixed paths like /v1/v1/markets.
       v1.addHook("onRoute", (routeOptions) => {
-        if (routeOptions.url.startsWith("/v1")) {
+        if (routeOptions.url.startsWith("/v1/v1")) {
           throw new Error(
             `Plugin registered route "${routeOptions.url}" with a /v1 prefix ` +
               `inside the /v1-scoped block — remove the prefix from the plugin.`
@@ -116,6 +117,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       await v1.register(marketsRoutes);
       await v1.register(ordersRoutes);
       await v1.register(positionsRouter);
+      await v1.register(fillsRoutes);
       await v1.register(adminRoutes);
       await v1.register(healthRoutes);
       await v1.register(readyRoute(options.readyDeps ?? createReadyDeps()));

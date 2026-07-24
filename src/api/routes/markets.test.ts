@@ -775,8 +775,8 @@ describe("GET /markets/:id", () => {
       expect(response.statusCode).toBe(404);
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty("code", "market_not_found");
-      expect(body).toHaveProperty("message");
-      expect(body.message).toContain("non-existent-id");
+      expect(body).toHaveProperty("error");
+      expect(body.error).toContain("non-existent-id");
     });
   });
 });

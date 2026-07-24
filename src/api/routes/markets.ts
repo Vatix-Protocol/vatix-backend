@@ -10,6 +10,7 @@ import type {
   MarketOrderBookDto,
   OrderBookLevelDto,
 } from "./market.dto.js";
+import { computeMarketEtag } from "./market.dto.js";
 
 interface GetMarketsQueryParams {
   status?: MarketStatus;
@@ -150,6 +151,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         throw new MarketNotFoundError(id);
       }
 
+      reply.header("etag", computeMarketEtag(market));
       success(reply, { market: toMarketDto(market) });
     }
   );

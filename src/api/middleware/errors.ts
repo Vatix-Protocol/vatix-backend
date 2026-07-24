@@ -46,3 +46,11 @@ export class ForbiddenError extends AppError {
     super(message, 403, "forbidden");
   }
 }
+
+export class PreconditionFailedError extends AppError {
+  constructor(
+    message = "Precondition failed: resource has been modified since the supplied ETag"
+  ) {
+    super(message, 412, "precondition_failed");
+  }
+}

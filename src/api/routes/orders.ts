@@ -24,7 +24,7 @@ const CreateOrderSchema = z.object({
     .string()
     .regex(
       STELLAR_PUBLIC_KEY_REGEX,
-      "userAddress must be a valid Stellar public key"
+      "userAddress must be a valid Stellar address (public key)"
     ),
   side: z.enum(["BUY", "SELL"]),
   outcome: z.enum(["YES", "NO"]),
@@ -132,6 +132,8 @@ export interface TradeEntry {
   price: number;
   quantity: number;
   timestamp: number;
+  /** `timestamp` normalized to an ISO-8601 UTC string. */
+  timestampIso: string;
   loggedAt: string;
 }
 
@@ -241,7 +243,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           page,
           limit,
           fromMs,
-          toMs
+          toMs,
+          marketId
         );
 
       return {
@@ -256,6 +259,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           price: entry.trade.price,
           quantity: entry.trade.quantity,
           timestamp: entry.trade.timestamp,
+          timestampIso: new Date(entry.trade.timestamp).toISOString(),
           loggedAt: entry.loggedAt,
         })),
         total,
@@ -475,6 +479,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
                     price: { type: "number" },
                     quantity: { type: "number" },
                     timestamp: { type: "number" },
+                    timestampIso: { type: "string" },
                   },
                 },
               },

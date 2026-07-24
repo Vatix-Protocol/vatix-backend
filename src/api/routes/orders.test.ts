@@ -131,7 +131,9 @@ describe("GET /trades/user/:address", () => {
     expect(body.trades).toHaveLength(2);
     expect(body.trades[0].id).toBe("trade-2");
     expect(body.trades[0].marketId).toBe("market-2");
+    expect(body.trades[0].timestampIso).toBe("2024-04-26T22:20:00.002Z");
     expect(body.trades[1].id).toBe("trade-1");
+    expect(body.trades[1].timestampIso).toBe("2024-04-26T22:20:00.001Z");
     expect(body.total).toBe(2);
     expect(body.hasNext).toBe(false);
     expect(body.page).toBe(1);
@@ -504,6 +506,61 @@ describe("POST /orders", () => {
     expect(body.order.status).toBe("OPEN");
     expect(body.trades).toEqual([]);
     expect(body.filledQuantity).toBe(0);
+  });
+
+  it("normalizes trade timestamps to ISO-8601 in the response", async () => {
+    const newOrder = {
+      marketId: "market-1",
+      userAddress: validAddress,
+      side: "BUY" as const,
+      outcome: "YES" as const,
+      price: 0.6,
+      quantity: 100,
+    };
+
+    (
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(validMarket);
+
+    (
+      mockMatchingService.placeOrder as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      order: {
+        id: "order-123",
+        ...newOrder,
+        price: "0.6",
+        filledQuantity: 100,
+        status: "FILLED",
+        createdAt: new Date(),
+      },
+      trades: [
+        {
+          id: "trade-1",
+          marketId: "market-1",
+          outcome: "YES",
+          buyerAddress: validAddress,
+          sellerAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          buyOrderId: "order-123",
+          sellOrderId: "order-456",
+          price: 0.6,
+          quantity: 100,
+          timestamp: 1714170000002,
+        },
+      ],
+      filledQuantity: 100,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/orders",
+      payload: newOrder,
+    });
+
+    expect(response.statusCode).toBe(201);
+    const body = JSON.parse(response.body);
+    expect(body.trades[0].timestamp).toBe(1714170000002);
+    expect(body.trades[0].timestampIso).toBe("2024-04-26T22:20:00.002Z");
   });
 
   it("should reject order with invalid Stellar address", async () => {

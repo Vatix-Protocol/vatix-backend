@@ -5,7 +5,5 @@ export interface ErrorResponse {
   code: string;
   requestId: string;
   statusCode: number;
-  requestId?: string;
   fields?: Record<string, string>;
-  stack?: string;
 }

@@ -154,7 +154,17 @@ export const openApiSpec = {
         ],
         responses: {
           "200": {
-            description: "Market details",
+            description:
+              "Market details. Includes an ETag header identifying this " +
+              "revision of the market — pass it back as If-Match on " +
+              "PATCH /v1/admin/markets/{id}/status to guard against " +
+              "concurrent updates.",
+            headers: {
+              ETag: {
+                description: "Opaque version identifier for this market",
+                schema: { type: "string" },
+              },
+            },
           },
           "404": {
             description: "Market not found",
@@ -391,6 +401,46 @@ export const openApiSpec = {
         },
       },
     },
+    "/v1/wallets/{wallet}/fills/stream": {
+      get: {
+        summary: "Order fill notifications (SSE)",
+        description:
+          "Server-Sent Events stream of order fill notifications for a wallet. " +
+          "Emits a `connected` event on open, then an `order_fill` event for " +
+          "each trade the wallet is party to as it settles. Only fills that " +
+          "occur after the connection opens are sent — historical fills are " +
+          "served by GET /v1/trades/user/{wallet}. The connection stays open " +
+          "until the client disconnects.",
+        tags: ["Orders"],
+        // Marks this as a long-lived streaming endpoint so generic
+        // reachability contract tests (which expect a response to
+        // complete) skip it — see tests/contract/openapi-routes.test.ts.
+        "x-streaming": true,
+        parameters: [
+          {
+            name: "wallet",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description:
+              "Stellar public key (StrKey): starts with G and is 56 chars using [A-Z2-7]",
+          },
+        ],
+        responses: {
+          "200": {
+            description: "text/event-stream of order fill notifications",
+            content: {
+              "text/event-stream": {
+                schema: { type: "string" },
+              },
+            },
+          },
+          "400": {
+            description: "Invalid wallet address",
+          },
+        },
+      },
+    },
     "/v1/admin/markets": {
       get: {
         summary: "Admin market listing",
@@ -415,7 +465,10 @@ export const openApiSpec = {
       patch: {
         summary: "Update market status",
         description:
-          "Admin endpoint to change market status. Requires API key and admin token.",
+          "Admin endpoint to change market status. Requires API key and admin token. " +
+          "Supports optimistic concurrency: send If-Match with the ETag from GET " +
+          "/v1/markets/{id} to reject the update with 412 if the market changed " +
+          "since it was read.",
         tags: ["Admin"],
         security: [{ ApiKeyAuth: [], BearerAuth: [] }],
         parameters: [
@@ -423,6 +476,16 @@ export const openApiSpec = {
             name: "id",
             in: "path",
             required: true,
+            schema: { type: "string" },
+          },
+          {
+            name: "If-Match",
+            in: "header",
+            required: false,
+            description:
+              "ETag previously returned by GET /v1/markets/{id}. When provided " +
+              "and it no longer matches the market's current ETag, the update " +
+              "is rejected with 412 Precondition Failed.",
             schema: { type: "string" },
           },
         ],
@@ -458,6 +521,10 @@ export const openApiSpec = {
           },
           "404": {
             description: "Market not found",
+          },
+          "412": {
+            description:
+              "If-Match header did not match the market's current ETag",
           },
         },
       },
