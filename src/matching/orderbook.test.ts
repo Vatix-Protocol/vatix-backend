@@ -384,6 +384,34 @@ describe("OrderBook", () => {
       expect(orderBook.getBestAsk()).toBeNull();
     });
 
+    it("should export a snapshot with all price levels and metadata (#704)", () => {
+      orderBook.addOrder(createOrder("1", "bid", 50, 100, 1000));
+      orderBook.addOrder(createOrder("2", "bid", 55, 200, 2000));
+      orderBook.addOrder(createOrder("3", "ask", 60, 150, 3000));
+      orderBook.addOrder(createOrder("4", "ask", 55, 250, 4000));
+
+      const snap = orderBook.snapshot();
+
+      expect(snap.marketId).toBe(marketId);
+      expect(snap.outcome).toBe(outcome);
+      expect(snap.orderCount).toBe(4);
+      expect(snap.timestamp).toBeGreaterThan(0);
+
+      // Bids sorted high-to-low
+      expect(snap.bids.length).toBe(2);
+      expect(snap.bids[0].price).toBe(55);
+      expect(snap.bids[0].quantity).toBe(200);
+      expect(snap.bids[1].price).toBe(50);
+      expect(snap.bids[1].quantity).toBe(100);
+
+      // Asks sorted low-to-high
+      expect(snap.asks.length).toBe(2);
+      expect(snap.asks[0].price).toBe(55);
+      expect(snap.asks[0].quantity).toBe(250);
+      expect(snap.asks[1].price).toBe(60);
+      expect(snap.asks[1].quantity).toBe(150);
+    });
+
     it("should iterate orders in price-time priority", () => {
       orderBook.addOrder(createOrder("1", "bid", 55, 100, 1000));
       orderBook.addOrder(createOrder("2", "bid", 50, 100, 2000));

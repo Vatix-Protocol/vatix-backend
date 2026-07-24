@@ -267,6 +267,45 @@ export class OrderBook {
     return bestAsk.price - bestBid.price;
   }
 
+  /**
+   * Returns a plain JSON-serializable snapshot of the order book for debugging (#704).
+   *
+   * The snapshot includes all bids and asks grouped by price level, along with
+   * book metadata (market ID, outcome, order count, and timestamp). Price levels
+   * with zero orders are omitted.
+   */
+  snapshot(): {
+    marketId: string;
+    outcome: number;
+    bids: DepthLevel[];
+    asks: DepthLevel[];
+    orderCount: number;
+    timestamp: number;
+  } {
+    return {
+      marketId: this.marketId,
+      outcome: this.outcome,
+      bids: this.bidPrices.map((price) => {
+        const level = this.bidLevels.get(price)!;
+        return {
+          price: level.price,
+          quantity: level.totalQuantity,
+          orderCount: level.orders.length,
+        };
+      }),
+      asks: this.askPrices.map((price) => {
+        const level = this.askLevels.get(price)!;
+        return {
+          price: level.price,
+          quantity: level.totalQuantity,
+          orderCount: level.orders.length,
+        };
+      }),
+      orderCount: this.orderMap.size,
+      timestamp: Date.now(),
+    };
+  }
+
   // Clear all orders from the book
   clear(): void {
     this.bidLevels.clear();
