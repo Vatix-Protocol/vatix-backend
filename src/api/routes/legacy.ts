@@ -26,6 +26,7 @@ const legacyRoutes: LegacyRoute[] = [
     canonical: "/v1/markets/:id/orderbook",
   },
   { method: "POST", url: "/orders", canonical: "/v1/orders" },
+  { method: "DELETE", url: "/orders/:id", canonical: "/v1/orders/:id" },
   {
     method: "GET",
     url: "/orders/user/:address",

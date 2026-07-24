@@ -20,6 +20,7 @@ import {
 } from "./settlement-worker.js";
 import type { QueueJob } from "../consumers/queue-consumer.js";
 import { redisConnectionFromEnv } from "../shared/queue-config.js";
+import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
 
 const QUEUE_NAME = (): string => {
   const name = process.env.SETTLEMENT_QUEUE_NAME ?? "settlement-trades";
@@ -100,56 +101,23 @@ async function bootstrap(): Promise<void> {
     });
   });
 
-  const VALID_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-  let isShuttingDown = false;
+  const shutdown = createShutdown(logger, {
+    timeoutMs: 30_000,
+    component: "settlement-worker",
+    teardown: [
+      async () => {
+        await worker.close();
+      },
+      async () => {
+        await disconnectPrisma();
+      },
+      async () => {
+        await redis.disconnect();
+      },
+    ],
+  });
 
-  const shutdown = async (signal: string): Promise<void> => {
-    if (
-      typeof signal !== "string" ||
-      !VALID_SIGNALS.includes(signal as (typeof VALID_SIGNALS)[number])
-    ) {
-      logger.warn("Graceful shutdown called with invalid signal", {
-        signal,
-        statusCode: 400,
-        component: "settlement-worker",
-        validSignals: [...VALID_SIGNALS],
-      });
-      return;
-    }
-
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-
-    logger.info("Settlement worker shutdown initiated", {
-      signal,
-      component: "settlement-worker",
-      status: "initiated",
-    });
-
-    try {
-      await worker.close();
-      await disconnectPrisma();
-      await redis.disconnect();
-      logger.info("Settlement worker shutdown complete", {
-        signal,
-        component: "settlement-worker",
-        status: "complete",
-        exitCode: 0,
-      });
-      process.exit(0);
-    } catch (error) {
-      logger.error("Settlement worker shutdown failed", {
-        signal,
-        component: "settlement-worker",
-        status: "failed",
-        exitCode: 1,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      process.exit(1);
-    }
-  };
-
-  for (const sig of VALID_SIGNALS) {
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(sig, () => void shutdown(sig));
   }
 }
