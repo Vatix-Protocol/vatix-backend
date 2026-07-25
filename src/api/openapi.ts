@@ -248,7 +248,8 @@ export const openApiSpec = {
                   summary: "Buy YES outcome",
                   value: {
                     marketId: "mkt_01j9z3k4p2q8r5t6u7v8w9x0y1",
-                    userAddress: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+                    userAddress:
+                      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
                     side: "BUY",
                     outcome: "YES",
                     price: 0.65,
@@ -259,7 +260,8 @@ export const openApiSpec = {
                   summary: "Sell NO outcome",
                   value: {
                     marketId: "mkt_01j9z3k4p2q8r5t6u7v8w9x0y1",
-                    userAddress: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+                    userAddress:
+                      "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
                     side: "SELL",
                     outcome: "NO",
                     price: 0.35,
@@ -280,7 +282,10 @@ export const openApiSpec = {
                     summary: "Order placed successfully",
                     value: {
                       success: true,
-                      data: { orderId: "ord_01j9z3k4p2q8r5t6u7v8w9x0y1", status: "OPEN" },
+                      data: {
+                        orderId: "ord_01j9z3k4p2q8r5t6u7v8w9x0y1",
+                        status: "OPEN",
+                      },
                       requestId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                       timestamp: "2026-07-24T10:00:00.000Z",
                     },
@@ -321,7 +326,11 @@ export const openApiSpec = {
                 examples: {
                   unauthorized: {
                     summary: "No API key provided",
-                    value: { error: "Missing API key", code: "UNAUTHORIZED", statusCode: 401 },
+                    value: {
+                      error: "Missing API key",
+                      code: "UNAUTHORIZED",
+                      statusCode: 401,
+                    },
                   },
                 },
               },
@@ -347,7 +356,8 @@ export const openApiSpec = {
             examples: {
               valid: {
                 summary: "Valid Stellar account",
-                value: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+                value:
+                  "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
               },
             },
           },
@@ -364,9 +374,12 @@ export const openApiSpec = {
                       success: true,
                       data: {
                         account: {
-                          accountId: "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN",
+                          accountId:
+                            "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA",
                           sequence: "987654321",
-                          balances: [{ asset_type: "native", balance: "250.0000000" }],
+                          balances: [
+                            { asset_type: "native", balance: "250.0000000" },
+                          ],
                           fetchedAt: 1753351200000,
                         },
                         source: "cache",

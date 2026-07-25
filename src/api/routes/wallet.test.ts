@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import { walletRoutes } from "./wallet.js";
 
-const VALID_ACCOUNT = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
+const VALID_ACCOUNT =
+  "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA";
 const VALID_KEY = "test-api-key";
 
 const cachedAccount = {
@@ -24,7 +25,7 @@ vi.mock("../../services/horizonCache.js", () => ({
 function buildServer(apiKey = VALID_KEY): FastifyInstance {
   process.env.API_KEY = apiKey;
   const server = Fastify({ logger: false });
-  server.setErrorHandler((err, _req, reply) => {
+  server.setErrorHandler((err: FastifyError, _req, reply) => {
     reply.status(err.statusCode ?? 500).send({
       code: (err as any).code ?? "error",
       message: err.message,
@@ -99,7 +100,8 @@ describe("GET /v1/wallet/accounts/:accountId", () => {
 
   it("returns 404 when account is not in cache", async () => {
     server = buildServer();
-    const unknownAccount = "GBXGQJWVLWOYHFLVTKWV5FGHA3LNYY2JQKM7OAJAUEQFU6LPCSEFVXON";
+    const unknownAccount =
+      "GBXGQJWVLWOYHFLVTKWV5FGHA3LNYY2JQKM7OAJAUEQFU6LPCSEFVXON";
     const res = await server.inject({
       method: "GET",
       url: `/v1/wallet/accounts/${unknownAccount}`,

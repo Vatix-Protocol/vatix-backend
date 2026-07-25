@@ -99,13 +99,13 @@ class RedisService {
    * `connectionPromise` makes those states resolve gracefully instead.
    */
   private async ensureConnected(): Promise<Redis> {
-    if (this.client) {
-      return this.client;
+    if (!this.client) {
+      if (!this.connectionPromise) {
+        this.connectionPromise = this.connect();
+      }
+      await this.connectionPromise;
     }
-    if (!this.connectionPromise) {
-      this.connectionPromise = this.connect();
-    }
-    return this.connectionPromise;
+    return this.getClient();
   }
 
   /**
