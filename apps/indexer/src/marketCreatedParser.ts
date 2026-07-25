@@ -69,10 +69,7 @@ export function parseMarketCreatedChainEvent(
   }
 
   if (event.topicsXdr.length < 2) {
-    throw new MarketCreatedParseError(
-      "Missing market_id topic",
-      event.id
-    );
+    throw new MarketCreatedParseError("Missing market_id topic", event.id);
   }
 
   let marketIdRaw: unknown;

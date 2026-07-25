@@ -1,8 +1,7 @@
 type DockerComposeScalar = string | number | boolean | null;
 
 type DockerComposeEnvironment =
-  | Record<string, DockerComposeScalar>
-  | `${string}=${string}`[];
+  Record<string, DockerComposeScalar> | `${string}=${string}`[];
 
 export interface DockerComposePort {
   target?: number;

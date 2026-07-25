@@ -15,7 +15,11 @@ import type {
   ResolutionRequest,
 } from "./provider-adapter.js";
 import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
-import { withRetry, type RetryConfig, DEFAULT_RETRY_CONFIG } from "./retry-utils.js";
+import {
+  withRetry,
+  type RetryConfig,
+  DEFAULT_RETRY_CONFIG,
+} from "./retry-utils.js";
 
 /**
  * Primary provider adapter configuration.
@@ -102,32 +106,29 @@ export class PrimaryAdapter implements ProviderAdapter {
       ...(request.retryConfig ?? {}),
     };
 
-    return withRetry(
-      async () => {
-        const timedResult = await withTimeout<ProviderResult>(
-          async (signal) => this.fetchFromProvider(request, signal),
-          {
-            timeoutMs,
-            errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
-          }
+    return withRetry(async () => {
+      const timedResult = await withTimeout<ProviderResult>(
+        async (signal) => this.fetchFromProvider(request, signal),
+        {
+          timeoutMs,
+          errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
+        }
+      );
+
+      if (timedResult.timedOut) {
+        throw new PrimaryProviderError(
+          "TIMEOUT",
+          timedResult.error?.message ?? "Primary provider request timed out",
+          timedResult.error
         );
+      }
 
-        if (timedResult.timedOut) {
-          throw new PrimaryProviderError(
-            "TIMEOUT",
-            timedResult.error?.message ?? "Primary provider request timed out",
-            timedResult.error
-          );
-        }
+      if (timedResult.error) {
+        throw this.mapProviderError(timedResult.error);
+      }
 
-        if (timedResult.error) {
-          throw this.mapProviderError(timedResult.error);
-        }
-
-        return timedResult.value!;
-      },
-      effectiveRetryConfig
-    );
+      return timedResult.value!;
+    }, effectiveRetryConfig);
   }
 
   /**

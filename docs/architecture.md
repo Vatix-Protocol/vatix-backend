@@ -33,12 +33,12 @@ Vatix Backend is a monorepo of services that together power the Vatix prediction
 
 ## Service Boundaries
 
-| Module        | Directory       | Responsibility                                                                                                  |
-| ------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| **API**       | `src/`          | HTTP server (Fastify). Handles order placement, market queries, position reads. Owns the CLOB matching engine.  |
-| **Indexer**   | `apps/indexer/` | Polls Stellar network for on-chain events, parses them, and writes canonical records to PostgreSQL.             |
-| **Oracle**    | `apps/oracle/`  | Fetches external price/resolution data, signs reports, and submits them on-chain via the Stellar SDK.           |
-| **Workers**   | `apps/workers/` | Queue consumers and scheduled jobs (e.g. settlement, expiry sweeps). Decoupled from the HTTP request lifecycle. |
+| Module      | Directory       | Responsibility                                                                                                  |
+| ----------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
+| **API**     | `src/`          | HTTP server (Fastify). Handles order placement, market queries, position reads. Owns the CLOB matching engine.  |
+| **Indexer** | `apps/indexer/` | Polls Stellar network for on-chain events, parses them, and writes canonical records to PostgreSQL.             |
+| **Oracle**  | `apps/oracle/`  | Fetches external price/resolution data, signs reports, and submits them on-chain via the Stellar SDK.           |
+| **Workers** | `apps/workers/` | Queue consumers and scheduled jobs (e.g. settlement, expiry sweeps). Decoupled from the HTTP request lifecycle. |
 
 ## Major Data Flows
 

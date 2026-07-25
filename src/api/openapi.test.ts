@@ -136,11 +136,7 @@ describe("OpenAPI contract", () => {
       for (const method of methods) {
         const exists = server.hasRoute({
           method: method.toUpperCase() as
-            | "GET"
-            | "POST"
-            | "PATCH"
-            | "PUT"
-            | "DELETE",
+            "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
           url: fastifyPath,
         });
         expect(

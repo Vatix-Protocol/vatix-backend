@@ -8,12 +8,12 @@ Test vectors: [`apps/indexer/fixtures/contract-event-vectors.json`](../apps/inde
 
 ## Event table
 
-| Event topic            | Payload shape         | Parser                          | Normalized type                  | DB table(s)                        |
-|------------------------|-----------------------|---------------------------------|----------------------------------|------------------------------------|
-| `trade_executed`       | ScvMap (9 fields)     | `tradeParser.ts`                | `NormalizedTrade`                | `IndexedTrade`                     |
-| `collateral_deposited` | ScvVec 3-tuple        | `collateralDepositedParser.ts`  | `NormalizedCollateralDeposit`    | `CollateralDeposit`                |
-| `market_resolved`      | ScvVec 3-tuple or ScvMap | `resolutionParser.ts`        | `NormalizedResolution`           | `ResolutionCandidate`              |
-| `market_created`       | pre-decoded JS object | `market-created-parser.ts`      | `MarketCreatedEvent`             | `Market` (ingested outside `PollingIngestionLoop`) |
+| Event topic            | Payload shape            | Parser                         | Normalized type               | DB table(s)                                        |
+| ---------------------- | ------------------------ | ------------------------------ | ----------------------------- | -------------------------------------------------- |
+| `trade_executed`       | ScvMap (9 fields)        | `tradeParser.ts`               | `NormalizedTrade`             | `IndexedTrade`                                     |
+| `collateral_deposited` | ScvVec 3-tuple           | `collateralDepositedParser.ts` | `NormalizedCollateralDeposit` | `CollateralDeposit`                                |
+| `market_resolved`      | ScvVec 3-tuple or ScvMap | `resolutionParser.ts`          | `NormalizedResolution`        | `ResolutionCandidate`                              |
+| `market_created`       | pre-decoded JS object    | `market-created-parser.ts`     | `MarketCreatedEvent`          | `Market` (ingested outside `PollingIngestionLoop`) |
 
 All events share the same topic encoding: **topic[0] = ScvSymbol** carrying the event name. Soroban's `#[contractevent]` macro derives that symbol from the event struct name including its literal `Event` suffix (e.g. `MarketCreatedEvent` → `market_created_event`) — see `contracts/market/src/events.rs`.
 

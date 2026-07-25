@@ -4,12 +4,12 @@
 
 Routes are prefixed with `/v1/` to allow non-breaking additions in future versions.
 
-| Route | Path | Notes |
-|---|---|---|
-| Health | `GET /v1/health` | Versioned — returns `version` field from package.json |
-| Markets | `GET /markets` | Unversioned — will migrate to `/v1/markets` |
-| Orders | `GET /orders/user/:address` | Unversioned — pending v1 prefix migration |
-| Positions | `GET /wallets/:wallet/positions` | Unversioned — pending v1 prefix migration |
+| Route     | Path                             | Notes                                                 |
+| --------- | -------------------------------- | ----------------------------------------------------- |
+| Health    | `GET /v1/health`                 | Versioned — returns `version` field from package.json |
+| Markets   | `GET /markets`                   | Unversioned — will migrate to `/v1/markets`           |
+| Orders    | `GET /orders/user/:address`      | Unversioned — pending v1 prefix migration             |
+| Positions | `GET /wallets/:wallet/positions` | Unversioned — pending v1 prefix migration             |
 
 > **Open work**: Unversioned routes will gain the `/v1/` prefix before the first public release. See [docs/architecture.md](architecture.md) for the full service map.
 
@@ -37,8 +37,8 @@ Redis keys follow a namespaced pattern so a version bump can invalidate only aff
 
 Examples:
 
-| Key | TTL | Description |
-|---|---|---|
+| Key                              | TTL  | Description                                 |
+| -------------------------------- | ---- | ------------------------------------------- |
 | `orderbook:<marketId>:<outcome>` | 60 s | Order book snapshot per market/outcome pair |
 
 When the schema of a cached value changes (e.g. new field added to order book), increment the version segment (`orderbook:v2:<marketId>:<outcome>`) rather than performing a `FLUSHDB`.

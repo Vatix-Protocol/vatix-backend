@@ -74,6 +74,7 @@ export function errorHandler(
 
   const response: ErrorResponse = {
     error: errorMessage,
+    message: errorMessage,
     code: resolveCode(error, statusCode),
     requestId,
     statusCode,

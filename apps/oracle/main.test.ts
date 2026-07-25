@@ -64,7 +64,11 @@ vi.mock("./fallback-adapter.js", () => ({
 
 vi.mock("./signature-helper.js", () => ({
   signResolutionReport: vi.fn(() => ({
-    payload: { marketId: "m1", outcome: true, timestamp: "2024-01-01T00:00:00Z" },
+    payload: {
+      marketId: "m1",
+      outcome: true,
+      timestamp: "2024-01-01T00:00:00Z",
+    },
     signature: "sig",
     publicKey: "pub",
   })),

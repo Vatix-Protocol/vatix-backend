@@ -135,7 +135,10 @@ describe("PrismaBatchWriter", () => {
 
     const writer = new PrismaBatchWriter();
     const result = await writer.write([
-      { kind: "collateral_deposited", data: withIdempotencyKey(COLLATERAL_DEPOSIT) },
+      {
+        kind: "collateral_deposited",
+        data: withIdempotencyKey(COLLATERAL_DEPOSIT),
+      },
     ]);
 
     expect(result).toEqual({ written: 1, skipped: 0, errors: [] });
@@ -186,7 +189,10 @@ describe("PrismaBatchWriter", () => {
     const result = await writer.write([
       { kind: "trade", data: withIdempotencyKey(TRADE) },
       { kind: "resolution", data: withIdempotencyKey(RESOLUTION) },
-      { kind: "collateral_deposited", data: withIdempotencyKey(COLLATERAL_DEPOSIT) },
+      {
+        kind: "collateral_deposited",
+        data: withIdempotencyKey(COLLATERAL_DEPOSIT),
+      },
       { kind: "market_created", data: withIdempotencyKey(MARKET_CREATED) },
     ]);
 

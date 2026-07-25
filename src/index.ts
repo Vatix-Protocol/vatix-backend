@@ -209,17 +209,19 @@ const start = async () => {
 
   // Set up global handlers for unhandled rejections and exceptions
   // These handlers ensure all unhandled errors are logged and the process exits gracefully
-  process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
-    const message =
-      reason instanceof Error ? reason.message : String(reason);
-    const stack = reason instanceof Error ? reason.stack : undefined;
-    server.log.error(
-      { reason: message, stack, promise: String(promise) },
-      "Unhandled promise rejection"
-    );
-    // Exit with error code after logging
-    process.exit(1);
-  });
+  process.on(
+    "unhandledRejection",
+    (reason: unknown, promise: Promise<unknown>) => {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      const stack = reason instanceof Error ? reason.stack : undefined;
+      server.log.error(
+        { reason: message, stack, promise: String(promise) },
+        "Unhandled promise rejection"
+      );
+      // Exit with error code after logging
+      process.exit(1);
+    }
+  );
 
   process.on("uncaughtException", (error: Error) => {
     server.log.error(

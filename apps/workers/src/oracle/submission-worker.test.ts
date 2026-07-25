@@ -417,9 +417,9 @@ describe("SubmissionWorker", () => {
         }
       );
 
-      await expect(
-        stellarWorker.processSubmission(submission)
-      ).rejects.toThrow(/resolve_market submission failed/);
+      await expect(stellarWorker.processSubmission(submission)).rejects.toThrow(
+        /resolve_market submission failed/
+      );
 
       expect(stellarMocks.getTransaction).not.toHaveBeenCalled();
       expect(mockQueue.nack).toHaveBeenCalled();
@@ -454,9 +454,9 @@ describe("SubmissionWorker", () => {
         }
       );
 
-      await expect(
-        stellarWorker.processSubmission(submission)
-      ).rejects.toThrow(/resolve_market transaction failed on-chain/);
+      await expect(stellarWorker.processSubmission(submission)).rejects.toThrow(
+        /resolve_market transaction failed on-chain/
+      );
 
       expect(mockQueue.nack).toHaveBeenCalled();
     });

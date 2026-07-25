@@ -116,7 +116,10 @@
       "vectors": [
         {
           "label": "real on-chain shape YES — market 42",
-          "topicsXdr": ["AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=", "AAAAAwAAACo="],
+          "topicsXdr": [
+            "AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=",
+            "AAAAAwAAACo="
+          ],
           "valueXdr": "AAAAEQAAAAEAAAACAAAADwAAAAdvdXRjb21lAAAAAAAAAAABAAAADwAAAAtyZXNvbHZlZF9hdAAAAAAFAAAAAGVT8QA=",
           "expectedNormalized": {
             "marketId": "42",
@@ -126,7 +129,10 @@
         },
         {
           "label": "real on-chain shape NO — market 7",
-          "topicsXdr": ["AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=", "AAAAAwAAAAc="],
+          "topicsXdr": [
+            "AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=",
+            "AAAAAwAAAAc="
+          ],
           "valueXdr": "AAAAEQAAAAEAAAACAAAADwAAAAdvdXRjb21lAAAAAAAAAAAAAAAADwAAAAtyZXNvbHZlZF9hdAAAAAAFAAAAAGS7WoA=",
           "expectedNormalized": {
             "marketId": "7",
@@ -177,7 +183,10 @@
       "vectors": [
         {
           "label": "market 42 created",
-          "topicsXdr": ["AAAADwAAABRtYXJrZXRfY3JlYXRlZF9ldmVudA==", "AAAAAwAAACo="],
+          "topicsXdr": [
+            "AAAADwAAABRtYXJrZXRfY3JlYXRlZF9ldmVudA==",
+            "AAAAAwAAACo="
+          ],
           "valueXdr": "AAAAEQAAAAEAAAACAAAADwAAAAhxdWVzdGlvbgAAAA4AAAATV2lsbCBCVEMgaGl0ICQxMDBrPwAAAAAPAAAACGVuZF90aW1lAAAABQAAAABJlgLS",
           "expectedNormalized": {
             "marketId": "42",
