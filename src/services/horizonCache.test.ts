@@ -1,7 +1,11 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
-import { HorizonCacheService, type HorizonAccountData } from "./horizonCache.js";
+import {
+  HorizonCacheService,
+  type HorizonAccountData,
+} from "./horizonCache.js";
 
-const VALID_ACCOUNT = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
+const VALID_ACCOUNT =
+  "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA";
 const INVALID_ACCOUNT = "not-a-stellar-key";
 
 const sampleData: HorizonAccountData = {
@@ -17,8 +21,12 @@ vi.mock("./redis.js", () => {
   return {
     redis: {
       get: vi.fn(async (key: string) => store.get(key) ?? null),
-      set: vi.fn(async (key: string, value: string) => { store.set(key, value); }),
-      del: vi.fn(async (key: string) => { store.delete(key); }),
+      set: vi.fn(async (key: string, value: string) => {
+        store.set(key, value);
+      }),
+      del: vi.fn(async (key: string) => {
+        store.delete(key);
+      }),
       _store: store, // exposed for test assertions
     },
   };

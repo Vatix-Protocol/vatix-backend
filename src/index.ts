@@ -31,6 +31,7 @@ import { config } from "./config.js";
 import { parseApiEnv } from "./env.js";
 import { corsPlugin } from "./api/middleware/cors.js";
 import { redis } from "./services/redis.js";
+import { walletRoutes } from "./api/routes/wallet.js";
 
 // Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
 // Oversized requests are rejected with 413 Request Entity Too Large.
@@ -133,6 +134,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   );
 
   registerDeprecatedAliases(server);
+
+  // walletRoutes hardcodes its own /v1 prefix internally, so it must be
+  // registered outside the /v1-scoped block above (the onRoute guard there
+  // rejects routes that already start with /v1 to prevent /v1/v1 double-prefixing).
+  server.register(walletRoutes);
 
   // Prometheus scrape endpoint, unversioned and unauthenticated by convention
   // (restrict network access to it at the infra/ingress layer).

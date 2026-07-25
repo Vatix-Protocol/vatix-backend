@@ -102,14 +102,14 @@ class RedisService {
    * and this.connectionPromise, so without this check getClient() would kick
    * off a new connection but return null before it resolves.
    */
-  private async ensureConnected(): Promise<void> {
+  private async ensureConnected(): Promise<Redis> {
     if (!this.client) {
       if (!this.connectionPromise) {
         this.connectionPromise = this.connect();
       }
       await this.connectionPromise;
     }
-    return this.connectionPromise;
+    return this.getClient();
   }
 
   /**
@@ -323,8 +323,8 @@ class RedisService {
   async clearOrderBook(marketId: string): Promise<void> {
     const pattern = `${this.keyPrefix}orderbook:${marketId}:*`;
     try {
-      await this.ensureConnected();
-      const keys = await this.getClient().keys(pattern);
+      const client = await this.ensureConnected();
+      const keys = await client.keys(pattern);
       if (keys.length > 0) {
         await client.del(...keys);
       }
@@ -423,7 +423,7 @@ class RedisService {
     limit?: string
   ): Promise<Array<[string, string[]]>> {
     try {
-      await this.ensureConnected();
+      const client = await this.ensureConnected();
       if (countArg && limit) {
         return await client.xrange(key, start, end, countArg, limit);
       } else {
@@ -449,7 +449,7 @@ class RedisService {
     limit?: string
   ): Promise<Array<[string, string[]]>> {
     try {
-      await this.ensureConnected();
+      const client = await this.ensureConnected();
       if (countArg && limit) {
         return await client.xrevrange(key, start, end, countArg, limit);
       } else {
