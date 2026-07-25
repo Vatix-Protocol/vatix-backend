@@ -6,10 +6,11 @@ import { ValidationError } from "../middleware/errors.js";
 import type { PrismaClient } from "../../generated/prisma/client";
 import { clearRateLimitStores } from "../middleware/rateLimiter.js";
 
-const { mockAuditService, mockPrismaClient, mockMatchingService } = vi.hoisted(
-  () => ({
+const { mockAuditService, mockPrismaClient, mockMatchingService, mockRedis } =
+  vi.hoisted(() => ({
     mockAuditService: {
       getWalletTradeHistory: vi.fn(),
+      getTradeHistory: vi.fn(),
     },
     mockPrismaClient: {
       order: {
@@ -25,8 +26,12 @@ const { mockAuditService, mockPrismaClient, mockMatchingService } = vi.hoisted(
       placeOrder: vi.fn(),
       cancelOrder: vi.fn(),
     },
-  })
-);
+    mockRedis: {
+      get: vi.fn(),
+      set: vi.fn(),
+      prefixed: vi.fn((key: string) => `vatix:${key}`),
+    },
+  }));
 
 vi.mock("../../services/prisma.js", () => ({
   getPrismaClient: () => mockPrismaClient,
@@ -34,6 +39,10 @@ vi.mock("../../services/prisma.js", () => ({
 
 vi.mock("../../services/audit.js", () => ({
   auditService: mockAuditService,
+}));
+
+vi.mock("../../services/redis.js", () => ({
+  redis: mockRedis,
 }));
 
 vi.mock("../../matching/matching-service.js", () => ({
@@ -214,6 +223,177 @@ describe("GET /trades/user/:address", () => {
     });
 
     expect(response.statusCode).toBe(400);
+  });
+});
+
+describe("GET /trades", () => {
+  let app: FastifyInstance;
+  const originalCacheEnabled = process.env.TRADES_CACHE_ENABLED;
+
+  beforeEach(async () => {
+    clearRateLimitStores();
+    app = Fastify({ logger: false });
+    app.setErrorHandler(errorHandler);
+    await app.register(ordersRoutes);
+    vi.clearAllMocks();
+    delete process.env.TRADES_CACHE_ENABLED;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    clearRateLimitStores();
+    if (originalCacheEnabled === undefined) {
+      delete process.env.TRADES_CACHE_ENABLED;
+    } else {
+      process.env.TRADES_CACHE_ENABLED = originalCacheEnabled;
+    }
+  });
+
+  const sampleHistory = {
+    trades: [
+      {
+        id: "1714170000002-0",
+        trade: {
+          id: "trade-2",
+          marketId: "market-2",
+          outcome: "NO",
+          buyerAddress:
+            "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW",
+          sellerAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          buyOrderId: "buy-2",
+          sellOrderId: "sell-2",
+          price: 0.67,
+          quantity: 12,
+          timestamp: 1714170000002,
+        },
+        loggedAt: "2026-04-27T14:00:02.000Z",
+      },
+    ],
+    total: 1,
+    hasNext: false,
+    page: 1,
+    limit: 20,
+  };
+
+  it("should return global trade listing with pagination metadata", async () => {
+    (
+      mockAuditService.getTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(sampleHistory);
+
+    const response = await app.inject({ method: "GET", url: "/trades" });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.trades).toHaveLength(1);
+    expect(body.trades[0].id).toBe("trade-2");
+    expect(body.total).toBe(1);
+    expect(body.hasNext).toBe(false);
+    expect(body.page).toBe(1);
+    expect(body.limit).toBe(20);
+    expect(mockAuditService.getTradeHistory).toHaveBeenCalledWith(
+      1,
+      20,
+      undefined,
+      undefined,
+      undefined
+    );
+  });
+
+  it("should pass page/limit/marketId/from/to filters through", async () => {
+    (
+      mockAuditService.getTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({ ...sampleHistory, page: 2, limit: 5 });
+
+    const from = "2026-04-27T00:00:00.000Z";
+    const to = "2026-04-27T23:59:59.999Z";
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/trades?page=2&limit=5&marketId=market-2&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockAuditService.getTradeHistory).toHaveBeenCalledWith(
+      2,
+      5,
+      Date.parse(from),
+      Date.parse(to),
+      "market-2"
+    );
+  });
+
+  it("should return 400 when from is after to", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/trades?from=2026-04-28T00:00:00.000Z&to=2026-04-27T00:00:00.000Z",
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.error).toContain("Invalid date range");
+  });
+
+  it("should not read or write the Redis cache when TRADES_CACHE_ENABLED is unset", async () => {
+    (
+      mockAuditService.getTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(sampleHistory);
+
+    const response = await app.inject({ method: "GET", url: "/trades" });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockRedis.get).not.toHaveBeenCalled();
+    expect(mockRedis.set).not.toHaveBeenCalled();
+  });
+
+  it("should serve from Redis cache on a hit when TRADES_CACHE_ENABLED=true", async () => {
+    process.env.TRADES_CACHE_ENABLED = "true";
+    (mockRedis.get as ReturnType<typeof vi.fn>).mockResolvedValue(
+      JSON.stringify(sampleHistory)
+    );
+
+    const response = await app.inject({ method: "GET", url: "/trades" });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body).toEqual(sampleHistory);
+    expect(mockAuditService.getTradeHistory).not.toHaveBeenCalled();
+    expect(mockRedis.set).not.toHaveBeenCalled();
+  });
+
+  it("should query Postgres and populate the cache on a miss when TRADES_CACHE_ENABLED=true", async () => {
+    process.env.TRADES_CACHE_ENABLED = "true";
+    (mockRedis.get as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (
+      mockAuditService.getTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(sampleHistory);
+
+    const response = await app.inject({ method: "GET", url: "/trades" });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockAuditService.getTradeHistory).toHaveBeenCalled();
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.any(Number)
+    );
+  });
+
+  it("should fall back to Postgres when Redis read fails", async () => {
+    process.env.TRADES_CACHE_ENABLED = "true";
+    (mockRedis.get as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("connection refused")
+    );
+    (
+      mockAuditService.getTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(sampleHistory);
+
+    const response = await app.inject({ method: "GET", url: "/trades" });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.trades).toHaveLength(1);
+    expect(mockAuditService.getTradeHistory).toHaveBeenCalled();
   });
 });
 

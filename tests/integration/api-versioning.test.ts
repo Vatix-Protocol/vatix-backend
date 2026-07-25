@@ -124,6 +124,7 @@ describe("Integration Tests: API versioning", () => {
         expected: 200,
       },
       { method: "GET", url: `/v1/orders/user/${wallet}`, expected: 200 },
+      { method: "GET", url: "/v1/trades", expected: 200 },
       { method: "GET", url: `/v1/trades/user/${wallet}`, expected: 200 },
       {
         method: "GET",
@@ -223,6 +224,7 @@ describe("Integration Tests: API versioning", () => {
         expected: [201, 401],
       },
       { method: "GET", url: `/v1/orders/user/${wallet}`, expected: [200] },
+      { method: "GET", url: "/v1/trades", expected: [200] },
       { method: "GET", url: `/v1/trades/user/${wallet}`, expected: [200] },
       {
         method: "GET",
