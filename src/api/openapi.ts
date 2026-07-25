@@ -50,8 +50,9 @@ export const openApiSpec = {
     },
     "/v1/ready": {
       get: {
-        summary: "Readiness check",
-        description: "Returns the readiness status including dependency health",
+        summary: "Readiness probe",
+        description:
+          "Reports whether the service can handle traffic. Checks database connectivity. Returns 503 when any critical dependency is unavailable.",
         tags: ["Health"],
         responses: {
           "200": {
