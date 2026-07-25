@@ -6,6 +6,8 @@ import {
   writeLimiter,
   adminLimiter,
   clearRateLimitStores,
+  sweepExpiredRateLimitEntries,
+  getRateLimitStoreSize,
 } from "./rateLimiter.js";
 
 // ---------------------------------------------------------------------------
@@ -426,6 +428,82 @@ describe("adminLimiter", () => {
     const globalRes = await s.inject({ method: "GET", url: "/markets" });
     expect(globalRes.statusCode).toBe(200);
 
+    await s.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale entry cleanup — prevents unbounded memory growth (#747-#750)
+// ---------------------------------------------------------------------------
+
+describe("stale entry cleanup", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    clearRateLimitStores();
+  });
+
+  it("removes entries whose window has already reset", async () => {
+    vi.stubEnv("RATE_LIMIT_MAX", "5");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "50");
+
+    const s = buildServer(rateLimiter);
+
+    // Distinct IPs so each gets its own tracked entry.
+    for (let i = 0; i < 5; i++) {
+      await s.inject({
+        method: "GET",
+        url: "/test",
+        headers: { "x-forwarded-for": `10.0.0.${i}` },
+      });
+    }
+    expect(getRateLimitStoreSize("global")).toBe(5);
+
+    // Let the window pass, then sweep.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    sweepExpiredRateLimitEntries();
+
+    expect(getRateLimitStoreSize("global")).toBe(0);
+    await s.close();
+  });
+
+  it("keeps entries whose window is still active", async () => {
+    vi.stubEnv("RATE_LIMIT_MAX", "5");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
+
+    const s = buildServer(rateLimiter);
+    await s.inject({
+      method: "GET",
+      url: "/test",
+      headers: { "x-forwarded-for": "10.0.0.1" },
+    });
+    expect(getRateLimitStoreSize("global")).toBe(1);
+
+    sweepExpiredRateLimitEntries();
+
+    expect(getRateLimitStoreSize("global")).toBe(1);
+    await s.close();
+  });
+
+  it("leaves other tiers untouched when sweeping", async () => {
+    vi.stubEnv("RATE_LIMIT_MAX", "5");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "50");
+    vi.stubEnv("RATE_LIMIT_HEAVY_MAX", "5");
+    vi.stubEnv("RATE_LIMIT_HEAVY_WINDOW_MS", "60000");
+
+    const s = Fastify({ logger: false });
+    s.get("/g", { onRequest: [rateLimiter] }, async () => ({ ok: true }));
+    s.get("/h", { onRequest: [heavyReadLimiter] }, async () => ({ ok: true }));
+
+    await s.inject({ method: "GET", url: "/g" });
+    await s.inject({ method: "GET", url: "/h" });
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    sweepExpiredRateLimitEntries();
+
+    // Global tier's short window expired and was swept...
+    expect(getRateLimitStoreSize("global")).toBe(0);
+    // ...but the heavy-read tier's long-lived window was left alone.
+    expect(getRateLimitStoreSize("heavy-read")).toBe(1);
     await s.close();
   });
 });

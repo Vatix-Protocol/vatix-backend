@@ -233,4 +233,72 @@ describe("EventProcessor — duplicate event handling", () => {
     // Failed event is NOT in seen set — can be retried
     expect(processor.getSeenCount()).toBe(1);
   });
+
+  // -------------------------------------------------------------------------
+  // Bounded memory — the seen-ID window does not grow without limit
+  // -------------------------------------------------------------------------
+
+  describe("bounded seen-ID window", () => {
+    it("evicts the oldest event ID once the cap is reached", async () => {
+      const bounded = new EventProcessor(3);
+
+      await bounded.processBatch(
+        [
+          makeEvent("evt-1", 100),
+          makeEvent("evt-2", 100),
+          makeEvent("evt-3", 100),
+        ],
+        handler
+      );
+      expect(bounded.getSeenCount()).toBe(3);
+
+      // A 4th unique event pushes the set over its cap of 3 — the oldest
+      // tracked ID (evt-1) must be evicted to make room.
+      await bounded.processBatch([makeEvent("evt-4", 101)], handler);
+      expect(bounded.getSeenCount()).toBe(3);
+
+      // evt-1 was evicted, so replaying it is treated as new again.
+      handler.mockClear();
+      const replay = await bounded.processBatch(
+        [makeEvent("evt-1", 100)],
+        handler
+      );
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(replay.duplicates).toBe(0);
+      expect(replay.processed).toBe(1);
+    });
+
+    it("still detects duplicates for IDs within the cap", async () => {
+      const bounded = new EventProcessor(3);
+      const event = makeEvent("evt-1", 100);
+
+      await bounded.processBatch([event], handler);
+      handler.mockClear();
+      const result = await bounded.processBatch([event], handler);
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(result.duplicates).toBe(1);
+    });
+
+    it("never exceeds the configured cap across many batches", async () => {
+      const cap = 5;
+      const bounded = new EventProcessor(cap);
+
+      for (let i = 0; i < 50; i++) {
+        await bounded.processBatch([makeEvent(`evt-${i}`, 100 + i)], handler);
+        expect(bounded.getSeenCount()).toBeLessThanOrEqual(cap);
+      }
+      expect(bounded.getSeenCount()).toBe(cap);
+    });
+
+    it("defaults to a large cap so normal operation is unaffected", async () => {
+      const defaultProcessor = new EventProcessor();
+      const batch = Array.from({ length: 100 }, (_, i) =>
+        makeEvent(`evt-${i}`, 100 + i)
+      );
+
+      await defaultProcessor.processBatch(batch, handler);
+      expect(defaultProcessor.getSeenCount()).toBe(100);
+    });
+  });
 });

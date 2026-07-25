@@ -109,6 +109,7 @@ class RedisService {
       }
       await this.connectionPromise;
     }
+    return this.connectionPromise;
   }
 
   /**
@@ -208,8 +209,8 @@ class RedisService {
    */
   async get(key: string): Promise<string | null> {
     try {
-      await this.ensureConnected();
-      return await this.getClient().get(key);
+      const client = await this.ensureConnected();
+      return await client.get(key);
     } catch (error) {
       console.error({ service: "redis", key, err: error }, "Redis GET failed");
       throw error;
@@ -224,11 +225,11 @@ class RedisService {
    */
   async set(key: string, value: string, ttl?: number): Promise<void> {
     try {
-      await this.ensureConnected();
+      const client = await this.ensureConnected();
       if (ttl) {
-        await this.getClient().set(key, value, "EX", ttl);
+        await client.set(key, value, "EX", ttl);
       } else {
-        await this.getClient().set(key, value);
+        await client.set(key, value);
       }
     } catch (error) {
       console.error({ service: "redis", key, err: error }, "Redis SET failed");
@@ -325,7 +326,7 @@ class RedisService {
       await this.ensureConnected();
       const keys = await this.getClient().keys(pattern);
       if (keys.length > 0) {
-        await this.getClient().del(...keys);
+        await client.del(...keys);
       }
     } catch (error) {
       console.error(
@@ -403,8 +404,7 @@ class RedisService {
    */
   async xadd(...args: (string | number)[]): Promise<string | null> {
     try {
-      await this.ensureConnected();
-      const client = this.getClient();
+      const client = await this.ensureConnected();
       return await (client.xadd as any)(...args);
     } catch (error) {
       console.error({ service: "redis", err: error }, "Redis XADD failed");
@@ -425,9 +425,9 @@ class RedisService {
     try {
       await this.ensureConnected();
       if (countArg && limit) {
-        return await this.getClient().xrange(key, start, end, countArg, limit);
+        return await client.xrange(key, start, end, countArg, limit);
       } else {
-        return await this.getClient().xrange(key, start, end);
+        return await client.xrange(key, start, end);
       }
     } catch (error) {
       console.error(
@@ -451,15 +451,9 @@ class RedisService {
     try {
       await this.ensureConnected();
       if (countArg && limit) {
-        return await this.getClient().xrevrange(
-          key,
-          start,
-          end,
-          countArg,
-          limit
-        );
+        return await client.xrevrange(key, start, end, countArg, limit);
       } else {
-        return await this.getClient().xrevrange(key, start, end);
+        return await client.xrevrange(key, start, end);
       }
     } catch (error) {
       console.error(
