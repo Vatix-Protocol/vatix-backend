@@ -25,8 +25,34 @@ export interface AuditLogEntry {
 export class AuditService {
   private readonly streamPrefix = "audit:market:";
   private readonly globalStream = "audit:trades:global";
-  private readonly maxLogEntries = 100000; // ~30 days at 1 trade/min
+  /**
+   * Maximum entries kept per market stream.
+   * Configurable via AUDIT_STREAM_MAXLEN (default: 100 000 ≈ 30 days at 1 trade/min).
+   * The global stream retains 10× this value so cross-market queries remain useful.
+   * Approximate trimming (~) is always used so Redis can batch the compaction work
+   * without blocking write paths.
+   */
+  private readonly maxLogEntries: number;
   private readonly approximateTrimming = true;
+
+  constructor() {
+    const raw = (
+      (globalThis as Record<string, unknown>)["process"] as
+        | { env: Record<string, string | undefined> }
+        | undefined
+    )?.env?.["AUDIT_STREAM_MAXLEN"];
+    const parsed = raw !== undefined && raw !== "" ? Number(raw) : NaN;
+    if (!Number.isNaN(parsed) && Number.isInteger(parsed) && parsed >= 1) {
+      this.maxLogEntries = parsed;
+    } else {
+      if (raw !== undefined && raw !== "") {
+        console.warn(
+          `AUDIT_STREAM_MAXLEN="${raw}" is invalid — must be a positive integer. Using default 100000.`
+        );
+      }
+      this.maxLogEntries = 100_000;
+    }
+  }
 
   /**
    * Log a trade execution to audit stream
