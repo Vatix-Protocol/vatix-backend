@@ -14,6 +14,10 @@ import {
 } from "../consumers/queue-consumer.js";
 import { logDeadLetter } from "../consumers/dead-letter.js";
 import { withRetry } from "../../../oracle/retry-utils.js";
+import {
+  classifySettlementError,
+  annotateError,
+} from "./error-codes.js";
 
 /** Retry config for individual Stellar RPC calls (getAccount, prepareTransaction,
  *  sendTransaction). Bounded and short-lived so a transient RPC blip is absorbed
@@ -54,6 +58,11 @@ export interface SettlementStellarConfig {
 export interface SettlementRedisClient {
   exists: (key: string) => Promise<boolean | number>;
   set: (key: string, value: string, ttl?: number) => Promise<void>;
+  /**
+   * Atomically set a key only if it does not already exist.
+   * Returns true when the key was set, false when it already existed.
+   */
+  setnx: (key: string, value: string, ttl?: number) => Promise<boolean>;
 }
 
 export class SettlementWorker {
@@ -85,15 +94,28 @@ export class SettlementWorker {
         this.handleJob(j)
       );
     } catch (error) {
+      const errorInfo = classifySettlementError(error);
+      const annotated = annotateError(error, errorInfo);
+
+      this.logger.info("Settlement job error classified", {
+        jobId: job.id,
+        tradeId: (job.payload as Record<string, unknown>)?.tradeId,
+        errorCode: errorInfo.code,
+        errorStatus: errorInfo.status,
+        reason: errorInfo.message,
+        attempt: job.attempts,
+        maxAttempts: this.consumerConfig.maxAttempts,
+      });
+
       if (job.attempts >= this.consumerConfig.maxAttempts) {
         await logDeadLetter(this.logger, {
           id: job.id,
           queue: this.consumerConfig.queueName,
           payload: job.payload,
-          reason: error instanceof Error ? error.message : String(error),
+          reason: errorInfo.message,
         });
       }
-      throw error;
+      throw annotated;
     }
   }
 
@@ -102,9 +124,16 @@ export class SettlementWorker {
     const { tradeId } = payload;
 
     const idempotencyKey = `settlement:processed:${tradeId}`;
-    const alreadyProcessed = await this.redisClient.exists(idempotencyKey);
 
-    if (alreadyProcessed) {
+    // Atomically claim the idempotency lock via SET NX.
+    // This prevents double-settlement when two workers race on the same tradeId.
+    const claimed = await this.redisClient.setnx(
+      idempotencyKey,
+      "1",
+      this.idempotencyTtlSeconds
+    );
+
+    if (!claimed) {
       this.logger.info("Settlement job skipped (already processed)", {
         tradeId,
         jobId: job.id,
@@ -129,8 +158,6 @@ export class SettlementWorker {
         { tradeId, marketId: payload.marketId }
       );
     }
-
-    await this.redisClient.set(idempotencyKey, "1", this.idempotencyTtlSeconds);
 
     this.logger.info("Settlement job completed", {
       tradeId,

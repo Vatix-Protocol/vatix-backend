@@ -541,6 +541,29 @@ class RedisService {
   }
 
   /**
+   * Atomically set a key only if it does not already exist (SET NX).
+   * Returns true when the key was set, false when it already existed.
+   * When a TTL is provided, the key auto-expires after that many seconds (EX).
+   */
+  async setnx(key: string, value: string, ttlSeconds?: number): Promise<boolean> {
+    try {
+      await this.ensureConnected();
+      const client = this.getClient();
+      const result =
+        ttlSeconds !== undefined
+          ? await client.set(key, value, "EX", ttlSeconds, "NX")
+          : await client.set(key, value, "NX");
+      return result === "OK";
+    } catch (error) {
+      console.error(
+        { service: "redis", key, err: error },
+        "Redis SETNX failed"
+      );
+      throw error;
+    }
+  }
+
+  /**
    * Get stream info
    */
   async xinfo(subcommand: "STREAM", key: string): Promise<any> {
