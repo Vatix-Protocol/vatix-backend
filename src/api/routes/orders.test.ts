@@ -457,6 +457,7 @@ describe("POST /orders", () => {
     endTime: new Date(Date.now() + 24 * 60 * 60 * 1000), // Tomorrow
     createdAt: new Date(),
     updatedAt: new Date(),
+    deletedAt: null,
   };
 
   it("should create a valid order", async () => {
@@ -546,6 +547,7 @@ describe("POST /orders", () => {
           price: 0.6,
           quantity: 100,
           timestamp: 1714170000002,
+          timestampIso: "2024-04-26T22:20:00.002Z",
         },
       ],
       filledQuantity: 100,

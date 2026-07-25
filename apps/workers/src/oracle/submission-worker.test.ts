@@ -31,10 +31,12 @@ vi.mock("@stellar/stellar-sdk", () => ({
       sign: stellarMocks.sign,
     })),
   },
-  Contract: vi.fn().mockImplementation(() => ({
-    call: stellarMocks.contractCall,
-  })),
-  TransactionBuilder: vi.fn().mockImplementation(() => {
+  Contract: vi.fn().mockImplementation(function () {
+    return {
+      call: stellarMocks.contractCall,
+    };
+  }),
+  TransactionBuilder: vi.fn().mockImplementation(function () {
     const builder = {
       addOperation: vi.fn(() => builder),
       setTimeout: vi.fn(() => builder),
@@ -44,12 +46,14 @@ vi.mock("@stellar/stellar-sdk", () => ({
   }),
   nativeToScVal: vi.fn((value: unknown) => value),
   rpc: {
-    Server: vi.fn().mockImplementation(() => ({
-      getAccount: stellarMocks.getAccount,
-      prepareTransaction: stellarMocks.prepareTransaction,
-      sendTransaction: stellarMocks.sendTransaction,
-      getTransaction: stellarMocks.getTransaction,
-    })),
+    Server: vi.fn().mockImplementation(function () {
+      return {
+        getAccount: stellarMocks.getAccount,
+        prepareTransaction: stellarMocks.prepareTransaction,
+        sendTransaction: stellarMocks.sendTransaction,
+        getTransaction: stellarMocks.getTransaction,
+      };
+    }),
     Api: {
       GetTransactionStatus: {
         SUCCESS: "SUCCESS",
@@ -59,6 +63,10 @@ vi.mock("@stellar/stellar-sdk", () => ({
     },
   },
   xdr: {},
+}));
+
+vi.mock("../consumers/dead-letter.js", () => ({
+  logDeadLetter: vi.fn(),
 }));
 
 import { SubmissionWorker } from "./submission-worker.js";
