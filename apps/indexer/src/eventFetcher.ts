@@ -13,10 +13,27 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const DEFAULT_PAGE_LIMIT = 100;
 
+/**
+ * Maximum consecutive RPC failures before the fetcher enters a disconnected
+ * state. Once disconnected, the fetcher applies a longer backoff to allow
+ * the RPC endpoint to recover before the next attempt.
+ */
+const MAX_CONSECUTIVE_DISCONNECTIONS = 5;
+
+/**
+ * Backoff delay (ms) applied when the fetcher has been consecutively
+ * disconnected for MAX_CONSECUTIVE_DISCONNECTIONS or more attempts.
+ * This is longer than the per-page retry delay to avoid hammering a
+ * downed RPC endpoint.
+ */
+const DISCONNECTED_BACKOFF_MS = 10_000;
+
 export class EventFetcher {
   private readonly server: StellarRpc.Server;
   private readonly config: Required<EventFetcherConfig>;
   private readonly telemetry: Telemetry;
+  /** Tracks consecutive RPC failures to detect sustained disconnect. */
+  private consecutiveDisconnections = 0;
 
   constructor(
     config: EventFetcherConfig,
@@ -33,11 +50,33 @@ export class EventFetcher {
   }
 
   /**
+   * Returns the current consecutive RPC disconnection count for
+   * observability / health-check surfaces.
+   */
+  getConsecutiveDisconnections(): number {
+    return this.consecutiveDisconnections;
+  }
+
+  /**
    * Fetch all raw chain events within [startLedger, endLedger].
    * Handles multi-page responses and retries on transient failures.
+   * Applies an extended ingestion backoff when the RPC endpoint has been
+   * consecutively unreachable (Issue #710).
    */
   async fetchByLedgerWindow(window: LedgerWindow): Promise<FetchEventsResult> {
     const { startLedger, endLedger } = window;
+
+    // If we have been consecutively disconnected too many times, apply a
+    // longer backoff delay before the next attempt to avoid hammering a
+    // downed RPC endpoint.
+    if (this.consecutiveDisconnections >= MAX_CONSECUTIVE_DISCONNECTIONS) {
+      this.telemetry.record("indexer.rpc.disconnected_backoff", 1, {
+        consecutiveDisconnections: String(this.consecutiveDisconnections),
+        backoffMs: String(DISCONNECTED_BACKOFF_MS),
+      });
+      await sleep(DISCONNECTED_BACKOFF_MS);
+    }
+
     const allEvents: RawChainEvent[] = [];
     let cursor: string | undefined;
     let latestLedger = 0;
@@ -91,6 +130,9 @@ export class EventFetcher {
           ...(cursor ? ({ cursor } as any) : {}),
         } as any);
 
+        // Success — reset the consecutive disconnection counter
+        this.consecutiveDisconnections = 0;
+
         this.telemetry.record(
           "indexer.rpc.page_fetched",
           response.events.length,
@@ -101,11 +143,20 @@ export class EventFetcher {
 
         return response;
       } catch (err) {
+        const isTransient = isTransientError(err);
         const isLast = attempt === maxRetries;
-        if (isLast || !isTransientError(err)) {
+
+        if (isTransient) {
+          this.consecutiveDisconnections++;
+          this.telemetry.record("indexer.rpc.disconnection", 1, {
+            consecutive: String(this.consecutiveDisconnections),
+          });
+        }
+
+        if (isLast || !isTransient) {
           this.telemetry.record("indexer.rpc.error", 1, {
             attempt: String(attempt),
-            transient: String(isTransientError(err)),
+            transient: String(isTransient),
           });
           throw err;
         }

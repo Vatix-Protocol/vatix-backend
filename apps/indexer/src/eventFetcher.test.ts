@@ -163,4 +163,117 @@ describe("EventFetcher", () => {
     expect(summary!.value).toBe(2);
     expect(summary!.tags).toMatchObject({ startLedger: "1", endLedger: "2" });
   });
+
+  describe("RPC disconnect backoff (Issue #710)", () => {
+    it("resets consecutiveDisconnections on successful fetch", async () => {
+      const server = makeMockServer([[makeEvent(1)]]);
+      const fetcher = makeFetcher(server, telemetry);
+      (fetcher as any).consecutiveDisconnections = 3;
+
+      await fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 1 });
+
+      expect((fetcher as any).consecutiveDisconnections).toBe(0);
+    });
+
+    it("increments consecutiveDisconnections on transient error", async () => {
+      const err = Object.assign(new Error("socket hang up"), {
+        code: "ECONNRESET",
+      });
+      const mockServer = {
+        getEvents: vi.fn().mockRejectedValue(err),
+      };
+      const fetcher = makeFetcher(mockServer, telemetry);
+      (fetcher as any).config.maxRetries = 1;
+      (fetcher as any).config.retryDelayMs = 0;
+
+      await expect(
+        fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+      ).rejects.toThrow();
+
+      // 1 initial + 1 retry = 2 failures total, should increment by 2
+      expect((fetcher as any).consecutiveDisconnections).toBe(2);
+    });
+
+    it("does not increment consecutiveDisconnections on non-transient error", async () => {
+      const mockServer = {
+        getEvents: vi.fn().mockRejectedValue(new Error("bad request")),
+      };
+      const fetcher = makeFetcher(mockServer, telemetry);
+
+      await expect(
+        fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+      ).rejects.toThrow();
+
+      expect((fetcher as any).consecutiveDisconnections).toBe(0);
+    });
+
+    it("applies extended backoff when consecutiveDisconnections exceeds threshold", async () => {
+      vi.useFakeTimers();
+
+      try {
+        const err = Object.assign(new Error("socket hang up"), {
+          code: "ECONNRESET",
+        });
+        const mockServer = {
+          getEvents: vi.fn().mockRejectedValue(err),
+        };
+        const fetcher = makeFetcher(mockServer, telemetry);
+        (fetcher as any).config.maxRetries = 0;
+        (fetcher as any).config.retryDelayMs = 0;
+        // Set consecutive disconnections above threshold
+        (fetcher as any).consecutiveDisconnections = 5;
+
+        // Start the fetch (will hit the backoff sleep first)
+        const fetchPromise = fetcher.fetchByLedgerWindow({
+          startLedger: 1,
+          endLedger: 5,
+        });
+
+        // Advance past the DISCONNECTED_BACKOFF_MS (10_000ms) sleep so the
+        // fetch proceeds, fails, and the promise settles.
+        await vi.advanceTimersByTimeAsync(10_001);
+
+        // Suppress the expected rejection to avoid unhandled rejection warning
+        await fetchPromise.catch(() => {});
+
+        const backoffMetric = recorded.find(
+          (r) => r.metric === "indexer.rpc.disconnected_backoff"
+        );
+        expect(backoffMetric).toBeDefined();
+        expect(backoffMetric!.tags?.consecutiveDisconnections).toBe("5");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("telemetry records disconnection events", async () => {
+      const err = Object.assign(new Error("socket hang up"), {
+        code: "ECONNRESET",
+      });
+      const mockServer = {
+        getEvents: vi.fn().mockRejectedValue(err),
+      };
+      const fetcher = makeFetcher(mockServer, telemetry);
+      (fetcher as any).config.maxRetries = 0;
+      (fetcher as any).config.retryDelayMs = 0;
+
+      await expect(
+        fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+      ).rejects.toThrow();
+
+      const disconnectionMetric = recorded.find(
+        (r) => r.metric === "indexer.rpc.disconnection"
+      );
+      expect(disconnectionMetric).toBeDefined();
+      expect(disconnectionMetric!.tags?.consecutive).toBe("1");
+    });
+
+    it("exposes consecutive disconnections via getConsecutiveDisconnections()", () => {
+      const server = makeMockServer([[makeEvent(1)]]);
+      const fetcher = makeFetcher(server, telemetry);
+      expect(fetcher.getConsecutiveDisconnections()).toBe(0);
+      (fetcher as any).consecutiveDisconnections = 7;
+      expect(fetcher.getConsecutiveDisconnections()).toBe(7);
+    });
+  });
 });

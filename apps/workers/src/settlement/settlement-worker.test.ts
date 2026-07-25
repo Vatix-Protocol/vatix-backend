@@ -127,6 +127,7 @@ function makeRedisClient(
   return {
     exists: vi.fn().mockResolvedValue(false),
     set: vi.fn().mockResolvedValue(undefined),
+    setnx: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
 }
@@ -202,12 +203,12 @@ describe("SettlementWorker", () => {
       );
     });
 
-    it("writes the idempotency key to Redis on success", async () => {
+    it("claims the idempotency lock via setnx on success", async () => {
       const job = makeJob();
 
       await worker.process(job);
 
-      expect(redisClient.set).toHaveBeenCalledWith(
+      expect(redisClient.setnx).toHaveBeenCalledWith(
         "settlement:processed:trade-abc-123",
         "1",
         86_400
@@ -218,7 +219,7 @@ describe("SettlementWorker", () => {
   describe("process — idempotency", () => {
     it("skips processing when trade was already processed", async () => {
       redisClient = makeRedisClient({
-        exists: vi.fn().mockResolvedValue(true),
+        setnx: vi.fn().mockResolvedValue(false),
       });
       worker = new SettlementWorker(redisClient, logger, makeConfig());
 
@@ -233,15 +234,17 @@ describe("SettlementWorker", () => {
       expect(redisClient.set).not.toHaveBeenCalled();
     });
 
-    it("checks the correct idempotency key", async () => {
+    it("checks the correct idempotency key via setnx", async () => {
       const job = makeJob({
         payload: { ...makeJob().payload, tradeId: "trade-xyz-999" },
       });
 
       await worker.process(job);
 
-      expect(redisClient.exists).toHaveBeenCalledWith(
-        "settlement:processed:trade-xyz-999"
+      expect(redisClient.setnx).toHaveBeenCalledWith(
+        "settlement:processed:trade-xyz-999",
+        "1",
+        86_400
       );
     });
   });
@@ -249,7 +252,7 @@ describe("SettlementWorker", () => {
   describe("process — failure path", () => {
     it("re-throws the error when handler fails below max attempts", async () => {
       redisClient = makeRedisClient({
-        exists: vi.fn().mockRejectedValue(new Error("Redis down")),
+        setnx: vi.fn().mockRejectedValue(new Error("Redis down")),
       });
       worker = new SettlementWorker(
         redisClient,
@@ -264,7 +267,7 @@ describe("SettlementWorker", () => {
 
     it("logs warn (not error) when attempts remain", async () => {
       redisClient = makeRedisClient({
-        exists: vi.fn().mockRejectedValue(new Error("transient")),
+        setnx: vi.fn().mockRejectedValue(new Error("transient")),
       });
       worker = new SettlementWorker(
         redisClient,
@@ -285,7 +288,7 @@ describe("SettlementWorker", () => {
 
     it("dead-letters and logs error after max attempts", async () => {
       redisClient = makeRedisClient({
-        exists: vi.fn().mockRejectedValue(new Error("permanent failure")),
+        setnx: vi.fn().mockRejectedValue(new Error("permanent failure")),
       });
       worker = new SettlementWorker(
         redisClient,
