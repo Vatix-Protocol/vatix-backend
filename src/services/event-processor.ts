@@ -14,14 +14,27 @@ export interface ProcessResult {
   failed: number;
 }
 
+/** Default cap on tracked event IDs before the oldest are evicted. */
+const DEFAULT_MAX_SEEN_EVENT_IDS = 100_000;
+
 /**
  * Processes batches of indexer events with idempotency guarantees.
  * Duplicate events (same event ID) are detected and skipped without
  * mutating state, ensuring ledger replays are safe.
+ *
+ * The seen-ID window is bounded (oldest IDs are evicted first) so a
+ * long-running process doesn't grow this set without limit — this is a
+ * fast-path dedup for recent replays, not the durable idempotency source
+ * of truth (which lives in the database).
  */
 export class EventProcessor {
   private readonly seenEventIds = new Set<string>();
+  private readonly maxSeenEventIds: number;
   private duplicateCount = 0;
+
+  constructor(maxSeenEventIds: number = DEFAULT_MAX_SEEN_EVENT_IDS) {
+    this.maxSeenEventIds = maxSeenEventIds;
+  }
 
   /**
    * Process a batch of events. Duplicates are skipped and counted.
@@ -51,7 +64,7 @@ export class EventProcessor {
 
       try {
         await handler(event);
-        this.seenEventIds.add(event.id);
+        this.markSeen(event.id);
         processed++;
       } catch (err) {
         failed++;
@@ -79,5 +92,20 @@ export class EventProcessor {
   reset(): void {
     this.seenEventIds.clear();
     this.duplicateCount = 0;
+  }
+
+  /**
+   * Record an event ID as seen, evicting the oldest tracked ID first if the
+   * set is at capacity. `Set` iteration order is insertion order, so the
+   * first value is always the oldest.
+   */
+  private markSeen(id: string): void {
+    if (this.seenEventIds.size >= this.maxSeenEventIds) {
+      const oldest = this.seenEventIds.values().next().value;
+      if (oldest !== undefined) {
+        this.seenEventIds.delete(oldest);
+      }
+    }
+    this.seenEventIds.add(id);
   }
 }

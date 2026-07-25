@@ -159,6 +159,76 @@ describe("RedisService", () => {
     });
   });
 
+  // =========================================================================
+  // Cold-start resilience — every method must connect on its own, not only
+  // get/set/healthCheck (closes #747-#750)
+  // =========================================================================
+  describe("first-call resilience on a cold connection", () => {
+    // Each test uses a brand-new instance so no prior call in this file has
+    // already warmed up `this.client`.
+    it("del() succeeds as the very first operation on a new instance", async () => {
+      const svc = new RedisService();
+      await expect(svc.del("cold-start:del")).resolves.not.toThrow();
+      await svc.disconnect();
+    });
+
+    it("exists() succeeds as the very first operation on a new instance", async () => {
+      const svc = new RedisService();
+      await expect(svc.exists("cold-start:exists")).resolves.toBe(false);
+      await svc.disconnect();
+    });
+
+    it("clearOrderBook() succeeds as the very first operation on a new instance", async () => {
+      const svc = new RedisService();
+      await expect(
+        svc.clearOrderBook("cold-start-market")
+      ).resolves.not.toThrow();
+      await svc.disconnect();
+    });
+
+    it("xadd()/xrange() succeed as the very first operations on a new instance", async () => {
+      const svc = new RedisService();
+      const stream = svc.prefixed("cold-start:stream");
+      await expect(
+        svc.xadd(stream, "*", "field", "value")
+      ).resolves.not.toThrow();
+      const entries = await svc.xrange(stream, "-", "+");
+      expect(entries.length).toBeGreaterThan(0);
+      await svc.del(stream);
+      await svc.disconnect();
+    });
+
+    it("xinfo() succeeds as the very first operation on a new instance", async () => {
+      const svc = new RedisService();
+      const stream = svc.prefixed("cold-start:xinfo-stream");
+      await svc.xadd(stream, "*", "field", "value");
+
+      const freshSvc = new RedisService();
+      await expect(freshSvc.xinfo("STREAM", stream)).resolves.toBeDefined();
+
+      await svc.del(stream);
+      await svc.disconnect();
+      await freshSvc.disconnect();
+    });
+
+    it("multiple methods called concurrently on a cold instance all resolve", async () => {
+      const svc = new RedisService();
+      // Fire several client-touching calls before any of them has had a
+      // chance to establish the connection — they must all share the same
+      // in-flight connection attempt rather than racing on a null client.
+      const results = await Promise.allSettled([
+        svc.exists("cold-start:concurrent-a"),
+        svc.del("cold-start:concurrent-b"),
+        svc.healthCheck(),
+      ]);
+
+      for (const result of results) {
+        expect(result.status).toBe("fulfilled");
+      }
+      await svc.disconnect();
+    });
+  });
+
   describe("error handling", () => {
     it("should return false when REDIS_URL is not set", async () => {
       const originalUrl = process.env.REDIS_URL;
