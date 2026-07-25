@@ -17,6 +17,7 @@ import { fillsRoutes } from "./api/routes/fills.js";
 import { adminRoutes } from "./api/routes/admin.js";
 import { healthRoutes } from "./api/routes/health.js";
 import { readyRoute } from "./api/routes/ready.js";
+import { metricsRoutes } from "./api/routes/metrics.js";
 import { createReadyDeps } from "./api/deps/ready-deps.js";
 import { registerDeprecatedAliases } from "./api/routes/legacy.js";
 import { openApiSpec } from "./api/openapi.js";
@@ -91,7 +92,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   // blocked by authentication so the cluster can determine service health
   server.addHook("onRequest", (request, reply, done) => {
     const isHealthProbe =
-      request.url === "/v1/ready" || request.url === "/v1/health";
+      request.url === "/v1/ready" ||
+      request.url === "/v1/health" ||
+      request.url === "/metrics";
     if (isHealthProbe) {
       done();
     } else {
@@ -130,6 +133,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   );
 
   registerDeprecatedAliases(server);
+
+  // Prometheus scrape endpoint, unversioned and unauthenticated by convention
+  // (restrict network access to it at the infra/ingress layer).
+  server.register(metricsRoutes);
 
   // Serve interactive API documentation at /docs using Swagger UI (CDN-hosted).
   // The spec is loaded from /v1/openapi.json at runtime so it stays in sync.
@@ -209,17 +216,19 @@ const start = async () => {
 
   // Set up global handlers for unhandled rejections and exceptions
   // These handlers ensure all unhandled errors are logged and the process exits gracefully
-  process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
-    const message =
-      reason instanceof Error ? reason.message : String(reason);
-    const stack = reason instanceof Error ? reason.stack : undefined;
-    server.log.error(
-      { reason: message, stack, promise: String(promise) },
-      "Unhandled promise rejection"
-    );
-    // Exit with error code after logging
-    process.exit(1);
-  });
+  process.on(
+    "unhandledRejection",
+    (reason: unknown, promise: Promise<unknown>) => {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      const stack = reason instanceof Error ? reason.stack : undefined;
+      server.log.error(
+        { reason: message, stack, promise: String(promise) },
+        "Unhandled promise rejection"
+      );
+      // Exit with error code after logging
+      process.exit(1);
+    }
+  );
 
   process.on("uncaughtException", (error: Error) => {
     server.log.error(
@@ -307,8 +316,14 @@ const start = async () => {
 
         // Gracefully disconnect database and redis
         const { disconnectPrisma } = await import("./services/prisma.js");
+        const { disconnectAnalyticsPrisma } =
+          await import("./services/analytics-prisma.js");
         const { redis } = await import("./services/redis.js");
-        await Promise.allSettled([disconnectPrisma(), redis.disconnect()]);
+        await Promise.allSettled([
+          disconnectPrisma(),
+          disconnectAnalyticsPrisma(),
+          redis.disconnect(),
+        ]);
 
         clearTimeout(timeoutHandle);
 

@@ -5,38 +5,53 @@ export type ApiNodeEnv = z.infer<typeof apiEnvSchema>["NODE_ENV"];
 const emptyToUndefined = (value: unknown) =>
   value === "" || value === undefined ? undefined : value;
 
+function validatePostgresUrl(raw: string, name: string, ctx: z.RefinementCtx) {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${name} is not a valid URL (expected format: postgresql://user:pass@host:port/db)`,
+    });
+    return;
+  }
+
+  if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${name} must use the postgresql:// or postgres:// scheme, got: ${JSON.stringify(parsed.protocol)}`,
+    });
+  }
+
+  if (!parsed.hostname) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${name} must include a hostname`,
+    });
+  }
+}
+
 const postgresUrlSchema = z
   .string({
     required_error: "Missing required environment variable: DATABASE_URL",
   })
   .min(1, "Missing required environment variable: DATABASE_URL")
-  .superRefine((raw, ctx) => {
-    let parsed: URL;
-    try {
-      parsed = new URL(raw);
-    } catch {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "DATABASE_URL is not a valid URL (expected format: postgresql://user:pass@host:port/db)",
-      });
-      return;
-    }
+  .superRefine((raw, ctx) => validatePostgresUrl(raw, "DATABASE_URL", ctx));
 
-    if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `DATABASE_URL must use the postgresql:// or postgres:// scheme, got: ${JSON.stringify(parsed.protocol)}`,
-      });
-    }
-
-    if (!parsed.hostname) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "DATABASE_URL must include a hostname",
-      });
-    }
-  });
+/**
+ * Optional postgres URL variable (e.g. ANALYTICS_DATABASE_URL). Unset/empty
+ * is valid and yields undefined; when present it must be a well-formed
+ * postgresql:// or postgres:// URL, same as DATABASE_URL.
+ */
+const optionalPostgresUrlSchema = (name: string) =>
+  z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .superRefine((raw, ctx) => validatePostgresUrl(raw, name, ctx))
+      .optional()
+  );
 
 const positiveInt = (name: string) =>
   z.preprocess(
@@ -95,6 +110,19 @@ export const apiEnvSchema = z.object({
       })
       .default(30_000)
   ),
+  MATCHING_ENGINE_ENABLED: z.preprocess(
+    emptyToUndefined,
+    z
+      .enum(["true", "false"], {
+        errorMap: () => ({
+          message:
+            'MATCHING_ENGINE_ENABLED must be "true" or "false", got: invalid value',
+        }),
+      })
+      .default("true")
+      .transform((value) => value === "true")
+  ),
+  ANALYTICS_DATABASE_URL: optionalPostgresUrlSchema("ANALYTICS_DATABASE_URL"),
 });
 
 export type ParsedApiEnv = z.infer<typeof apiEnvSchema>;

@@ -13,7 +13,11 @@ import { auditService } from "../services/audit.js";
 import { settlementQueue } from "../services/settlement-queue.js";
 import { redis } from "../services/redis.js";
 import { getPrismaClient } from "../services/prisma.js";
-import { ValidationError } from "../api/middleware/errors.js";
+import {
+  ValidationError,
+  ServiceUnavailableError,
+} from "../api/middleware/errors.js";
+import { orderbookHydratedMarketsGauge } from "../services/metrics.js";
 
 export interface PlaceOrderResult {
   order: any;
@@ -27,6 +31,20 @@ let hydratedMarketsCount = 0;
 /** Returns how many markets were hydrated on cold start. */
 export function getHydratedMarketsCount(): number {
   return hydratedMarketsCount;
+}
+
+/**
+ * Feature flag (#744): whether the matching engine accepts and matches new
+ * orders. Read directly from process.env (like WARM_MARKETS_ON_STARTUP
+ * above) rather than via src/config.js, so importing this module never
+ * forces a boot-time DATABASE_URL validation — tests that mock
+ * services/prisma.js can still import matching-service.ts without a real
+ * database configured. The canonical, validated boolean is parsed at server
+ * startup in src/env.ts / src/config.ts (config.matchingEngineEnabled) so
+ * malformed values still fail fast before the process binds a port.
+ */
+export function isMatchingEngineEnabled(): boolean {
+  return process.env.MATCHING_ENGINE_ENABLED !== "false";
 }
 
 class MatchingService {
@@ -82,12 +100,19 @@ class MatchingService {
     }
 
     this.books.set(bookKey, book);
+    this.syncHydratedMarketsGauge();
     return book;
   }
 
   private invalidateBook(marketId: string, outcome: Outcome): void {
     const bookKey = this.getBookKey(marketId, outcome);
     this.books.delete(bookKey);
+    this.syncHydratedMarketsGauge();
+  }
+
+  /** Keeps the orderbook_hydrated_markets gauge in sync with in-memory book count (#746). */
+  private syncHydratedMarketsGauge(): void {
+    orderbookHydratedMarketsGauge.set(this.books.size);
   }
 
   /**
@@ -193,8 +218,13 @@ class MatchingService {
    *
    * Configurable via WARM_MARKETS_ON_STARTUP env var (default: true).
    * Set WARM_MARKETS_ON_STARTUP=false to skip (e.g. in tests).
+   *
+   * Also skipped when the matching engine is disabled via
+   * MATCHING_ENGINE_ENABLED=false (#744) — there is nothing useful to warm
+   * if order placement itself will be rejected.
    */
   async hydrateAllActiveMarkets(): Promise<void> {
+    if (!isMatchingEngineEnabled()) return;
     if (process.env.WARM_MARKETS_ON_STARTUP === "false") return;
 
     const prisma = getPrismaClient();
@@ -245,7 +275,18 @@ class MatchingService {
     return book;
   }
 
+  /**
+   * Places (and attempts to match) an order.
+   *
+   * Rejects with 503 when the matching engine is disabled via
+   * MATCHING_ENGINE_ENABLED=false (#744). Order cancellation is unaffected —
+   * users can still withdraw resting orders while matching is paused.
+   */
   async placeOrder(input: OrderInput): Promise<PlaceOrderResult> {
+    if (!isMatchingEngineEnabled()) {
+      throw new ServiceUnavailableError("Matching engine is disabled");
+    }
+
     const bookKey = this.getBookKey(input.marketId, input.outcome);
 
     return this.getOrCreateMutex(bookKey).run(async () => {

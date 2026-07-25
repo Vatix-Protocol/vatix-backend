@@ -54,6 +54,7 @@ describe("Admin routes — auth guard matrix", () => {
       url: "/v1/admin/markets/00000000-0000-0000-0000-000000000000/status",
       payload: { status: "CANCELLED" },
     },
+    { method: "GET", url: "/v1/admin/analytics/summary" },
   ];
 
   it.each(guardedEndpoints)(
@@ -163,6 +164,53 @@ describe("GET /v1/admin/markets", () => {
     const statuses = body.data.markets.map((m: any) => m.status);
     expect(statuses).toContain("ACTIVE");
     expect(statuses).toContain("CANCELLED");
+  });
+});
+
+describe("GET /v1/admin/analytics/summary (#743)", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    process.env.API_KEY = API_KEY;
+    process.env.ADMIN_TOKEN = ADMIN_TOKEN;
+    app = await buildTestApp({ plugins: [adminRoutes] });
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    resetRateLimits();
+  });
+
+  it("returns 200 with an aggregate market/trade summary", async () => {
+    await testUtils.createTestMarket({
+      question: "Active market",
+      status: "ACTIVE",
+    });
+    await testUtils.createTestMarket({
+      question: "Cancelled market",
+      status: "CANCELLED",
+    });
+
+    const res = await authed(app, "GET", "/v1/admin/analytics/summary");
+    expect(res.statusCode).toBe(200);
+
+    const body = JSON.parse(res.body);
+    expect(body.success).toBe(true);
+    expect(body.data.marketsByStatus.ACTIVE).toBeGreaterThanOrEqual(1);
+    expect(body.data.marketsByStatus.CANCELLED).toBeGreaterThanOrEqual(1);
+    expect(typeof body.data.totalTrades).toBe("number");
+    expect(typeof body.data.totalTradedQuantity).toBe("number");
+  });
+
+  it('reports source: "primary" when ANALYTICS_DATABASE_URL is unset', async () => {
+    expect(process.env.ANALYTICS_DATABASE_URL).toBeUndefined();
+
+    const res = await authed(app, "GET", "/v1/admin/analytics/summary");
+    const body = JSON.parse(res.body);
+    expect(body.data.source).toBe("primary");
   });
 });
 

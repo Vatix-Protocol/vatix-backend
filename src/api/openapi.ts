@@ -694,6 +694,30 @@ export const openApiSpec = {
         },
       },
     },
+    "/v1/admin/analytics/summary": {
+      get: {
+        summary: "Admin analytics summary",
+        description:
+          "Aggregate market/trade reporting stats (market counts by status, " +
+          "total trades, total traded quantity). Requires API key and admin " +
+          "token. Reads from the analytics (read-only) database connection " +
+          "when ANALYTICS_DATABASE_URL is configured, falling back to the " +
+          "primary connection otherwise — see 'source' in the response.",
+        tags: ["Admin"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
+        responses: {
+          "200": {
+            description: "Aggregate analytics summary",
+          },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
+          },
+        },
+      },
+    },
   },
   components: {
     securitySchemes: {
