@@ -27,7 +27,8 @@ Two utilities work together for other services:
 ## API boot validation (`parseApiEnv`)
 
 The HTTP API uses Zod to validate `NODE_ENV`, `PORT`, `DATABASE_URL`,
-`ORACLE_CHALLENGE_WINDOW_SECONDS`, and `ORACLE_POLL_INTERVAL_MS` before
+`ORACLE_CHALLENGE_WINDOW_SECONDS`, `ORACLE_POLL_INTERVAL_MS`,
+`MATCHING_ENGINE_ENABLED`, and `ANALYTICS_DATABASE_URL` before
 `buildServer()` runs. Invalid values throw with the same descriptive messages
 as the legacy manual validators.
 
@@ -138,11 +139,17 @@ Missing required environment variable: API_KEY
 
 Must be a valid URL and use one of the accepted schemes.
 
-| Variable          | Accepted schemes               |
-| ----------------- | ------------------------------ |
-| `DATABASE_URL`    | `postgresql://`, `postgres://` |
-| `REDIS_URL`       | `redis://`, `rediss://`        |
-| `STELLAR_RPC_URL` | `https://`, `http://`          |
+| Variable                 | Accepted schemes               |
+| ------------------------ | ------------------------------ |
+| `DATABASE_URL`           | `postgresql://`, `postgres://` |
+| `ANALYTICS_DATABASE_URL` | `postgresql://`, `postgres://` |
+| `REDIS_URL`              | `redis://`, `rediss://`        |
+| `STELLAR_RPC_URL`        | `https://`, `http://`          |
+
+`ANALYTICS_DATABASE_URL` is optional — unset or empty is valid and the API
+falls back to `DATABASE_URL` (see `config.analyticsDatabaseUrl` in
+`src/config.ts`, consumed by `src/services/analytics-prisma.ts`). When set,
+it must be a well-formed postgres URL just like `DATABASE_URL`.
 
 **Error example:**
 
@@ -200,6 +207,21 @@ PORT must be a positive integer, got: "abc"
 PORT must be <= 65535, got: "99999"
 ```
 
+### Boolean variables
+
+Accepted values are the literal strings `true` or `false`; any other value
+throws a descriptive error. Unset uses the default.
+
+| Variable                  | Default | Effect when `false`                                                                                                  |
+| ------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
+| `MATCHING_ENGINE_ENABLED` | `true`  | Startup order-book hydration is skipped; `POST` order placement returns 503. See `src/matching/matching-service.ts`. |
+
+**Error example:**
+
+```
+MATCHING_ENGINE_ENABLED must be "true" or "false", got: invalid value
+```
+
 ### Optional strings with defaults
 
 These variables are safe to omit; a sensible default is used when absent.
@@ -253,6 +275,7 @@ The following variables are treated as secrets and are **never logged** in full,
 even at debug level:
 
 - `DATABASE_URL` (may contain password)
+- `ANALYTICS_DATABASE_URL` (may contain password)
 - `REDIS_URL` (may contain password)
 - `ORACLE_SECRET_KEY`
 - `API_KEY`

@@ -2,7 +2,7 @@
  * Submission Worker Tests
  */
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 vi.mock("../../../oracle/signature-helper.js", () => ({
   verifyResolutionReport: vi.fn((report: { signature?: string }) =>
@@ -24,6 +24,8 @@ const stellarMocks = vi.hoisted(() => ({
   })),
 }));
 
+// Vitest 4.x requires the `class` keyword (not an arrow function) inside
+// mockImplementation for a mock to work as a constructor via `new`.
 vi.mock("@stellar/stellar-sdk", () => ({
   Keypair: {
     fromSecret: vi.fn(() => ({
@@ -31,29 +33,28 @@ vi.mock("@stellar/stellar-sdk", () => ({
       sign: stellarMocks.sign,
     })),
   },
-  Contract: vi.fn().mockImplementation(function () {
-    return {
-      call: stellarMocks.contractCall,
-    };
-  }),
-  TransactionBuilder: vi.fn().mockImplementation(function () {
-    const builder = {
-      addOperation: vi.fn(() => builder),
-      setTimeout: vi.fn(() => builder),
-      build: vi.fn(() => ({ sign: vi.fn() })),
-    };
-    return builder;
-  }),
+  Contract: vi.fn().mockImplementation(
+    class {
+      call = stellarMocks.contractCall;
+    }
+  ),
+  TransactionBuilder: vi.fn().mockImplementation(
+    class {
+      addOperation = vi.fn().mockReturnThis();
+      setTimeout = vi.fn().mockReturnThis();
+      build = vi.fn(() => ({ sign: vi.fn() }));
+    }
+  ),
   nativeToScVal: vi.fn((value: unknown) => value),
   rpc: {
-    Server: vi.fn().mockImplementation(function () {
-      return {
-        getAccount: stellarMocks.getAccount,
-        prepareTransaction: stellarMocks.prepareTransaction,
-        sendTransaction: stellarMocks.sendTransaction,
-        getTransaction: stellarMocks.getTransaction,
-      };
-    }),
+    Server: vi.fn().mockImplementation(
+      class {
+        getAccount = stellarMocks.getAccount;
+        prepareTransaction = stellarMocks.prepareTransaction;
+        sendTransaction = stellarMocks.sendTransaction;
+        getTransaction = stellarMocks.getTransaction;
+      }
+    ),
     Api: {
       GetTransactionStatus: {
         SUCCESS: "SUCCESS",
@@ -467,6 +468,96 @@ describe("SubmissionWorker", () => {
       );
 
       expect(mockQueue.nack).toHaveBeenCalled();
+    });
+  });
+
+  describe("Stellar RPC retry/backoff", () => {
+    let stellarWorker: SubmissionWorker;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      stellarWorker = new SubmissionWorker(
+        mockQueue as any,
+        mockPrisma as any,
+        {
+          submissionMaxRetries: 3,
+          consumerName: "test-consumer",
+          logger: mockLogger,
+          stellar: TEST_STELLAR_CONFIG,
+        }
+      );
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("retries a transient getAccount failure in place and still succeeds", async () => {
+      const submission = createTestSubmission();
+      stellarMocks.getAccount
+        .mockRejectedValueOnce(new Error("ECONNRESET: connection reset"))
+        .mockResolvedValueOnce({ accountId: () => "GSOURCEACCOUNT" });
+      stellarMocks.prepareTransaction.mockResolvedValueOnce({ sign: vi.fn() });
+      stellarMocks.sendTransaction.mockResolvedValueOnce({
+        status: "PENDING",
+        hash: "txhash-retry",
+      });
+      stellarMocks.getTransaction.mockResolvedValueOnce({
+        status: "SUCCESS",
+        ledger: 1,
+      });
+      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
+      mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
+        id: "candidate-1",
+      });
+      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
+
+      const processPromise = stellarWorker.processSubmission(submission);
+      await vi.runAllTimersAsync();
+      await processPromise;
+
+      expect(stellarMocks.getAccount).toHaveBeenCalledTimes(2);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        "Retrying Stellar RPC call for resolve_market",
+        expect.objectContaining({
+          marketId: submission.request.marketId,
+          attempt: 1,
+        })
+      );
+    });
+
+    it("does not retry a non-retryable (4xx-classified) failure", async () => {
+      const submission = createTestSubmission();
+      stellarMocks.getAccount.mockRejectedValue(
+        new Error("400 Bad Request: invalid account")
+      );
+      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
+      mockQueue.nack.mockResolvedValueOnce(undefined);
+
+      const processPromise = stellarWorker.processSubmission(submission);
+      const expectation =
+        expect(processPromise).rejects.toThrow("400 Bad Request");
+      await vi.runAllTimersAsync();
+      await expectation;
+
+      expect(stellarMocks.getAccount).toHaveBeenCalledTimes(1);
+    });
+
+    it("gives up and rejects after exhausting retries on a persistent transient failure", async () => {
+      const submission = createTestSubmission();
+      stellarMocks.getAccount.mockRejectedValue(
+        new Error("ECONNRESET: connection reset")
+      );
+      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
+      mockQueue.nack.mockResolvedValueOnce(undefined);
+
+      const processPromise = stellarWorker.processSubmission(submission);
+      const expectation = expect(processPromise).rejects.toThrow("ECONNRESET");
+      await vi.runAllTimersAsync();
+      await expectation;
+
+      // maxRetries: 3 => 1 initial attempt + 3 retries = 4 calls total.
+      expect(stellarMocks.getAccount).toHaveBeenCalledTimes(4);
     });
   });
 });

@@ -115,6 +115,19 @@ describe("#449 — hydrateAllActiveMarkets (restart simulation)", () => {
     expect(books.size).toBe(0);
   });
 
+  it("skips hydration when MATCHING_ENGINE_ENABLED=false (#744)", async () => {
+    process.env.WARM_MARKETS_ON_STARTUP = "true";
+    process.env.MATCHING_ENGINE_ENABLED = "false";
+    try {
+      await matchingService.hydrateAllActiveMarkets();
+
+      const books: Map<string, unknown> = (matchingService as any).books;
+      expect(books.size).toBe(0);
+    } finally {
+      delete process.env.MATCHING_ENGINE_ENABLED;
+    }
+  });
+
   it("books are empty before hydration (simulates cold restart)", () => {
     const books: Map<string, unknown> = (matchingService as any).books;
     expect(books.size).toBe(0);

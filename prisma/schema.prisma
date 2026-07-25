@@ -249,7 +249,7 @@ model Trade {
   id            String   @id @default(uuid())
   tradeId       String   @unique @map("trade_id") @db.VarChar(256)
   marketId      String   @map("market_id")
-  outcome       Outcome
+  outcome       String   @db.VarChar(8)
   buyerAddress  String   @map("buyer_address") @db.VarChar(56)
   sellerAddress String   @map("seller_address") @db.VarChar(56)
   buyOrderId    String   @map("buy_order_id")
@@ -264,6 +264,7 @@ model Trade {
   @@index([sellerAddress])
   @@index([buyerAddress, tradedAt(sort: Desc)])
   @@index([sellerAddress, tradedAt(sort: Desc)])
+  @@index([tradedAt(sort: Desc)])
   @@map("trades")
 }
 
