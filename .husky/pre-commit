@@ -1,6 +1,16 @@
+#!/bin/sh
+set -e
+
 echo "🔍 Running pre-commit checks..."
 
 # Run lint-staged (TypeScript check + Prisma format)
-pnpm lint-staged
+./node_modules/.bin/lint-staged
+
+# Lint apps and packages directories with prettier
+echo "🔍 Linting apps/ and packages/..."
+if [ -d "apps" ] || [ -d "packages" ]; then
+  ./node_modules/.bin/prettier --check apps/ packages/ 2>/dev/null || \
+    (echo "⚠️  Some files in apps/ or packages/ need formatting. Run 'pnpm format' to fix." && false) || true
+fi
 
 echo "All checks passed!"

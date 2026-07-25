@@ -1,4 +1,4 @@
-import type { MarketStatus, Outcome } from "../../types/index.js";
+import type { Market, MarketStatus, Outcome } from "../../types/index.js";
 
 export interface MarketListItemDto {
   id: string;
@@ -31,4 +31,15 @@ export interface MarketOrderBookDto {
   ledgerSequence: number | null;
   bids: OrderBookLevelDto[];
   asks: OrderBookLevelDto[];
+}
+
+/**
+ * Computes a weak ETag for a market resource from its id and last-modified
+ * timestamp, so it changes whenever the row is updated. Used for If-Match
+ * concurrency control on market update endpoints.
+ */
+export function computeMarketEtag(
+  market: Pick<Market, "id" | "updatedAt">
+): string {
+  return `W/"${market.id}-${market.updatedAt.getTime()}"`;
 }

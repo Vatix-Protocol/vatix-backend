@@ -10,8 +10,9 @@ export default defineConfig({
     include: ["**/*.test.ts", "**/*.spec.ts"],
     // Global setup file for test utilities
     setupFiles: ["./tests/setup.ts"],
-    // File parallelism enabled - database tests use advisory locks for synchronization
-    fileParallelism: true,
+    // Serialize test files — DB tests share one Postgres instance and advisory
+    // locks block across processes, causing hook timeouts when files run in parallel.
+    fileParallelism: false,
     // Use forks for proper process isolation (required for advisory locks to work)
     pool: "forks",
     // Test timeout

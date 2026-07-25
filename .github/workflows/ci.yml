@@ -50,9 +50,9 @@ jobs:
           node-version: "22"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
+          version: 10
 
       - name: Get pnpm store directory
         id: pnpm-cache
@@ -61,7 +61,7 @@ jobs:
           echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
 
       - name: Setup pnpm cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -96,6 +96,7 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
           REDIS_URL: redis://localhost:6379
           NODE_ENV: test
+          ADMIN_TOKEN: test-admin-token
 
       - name: Run integration tests
         run: pnpm test:integration
@@ -150,9 +151,9 @@ jobs:
           node-version: "22"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
+          version: 10
 
       - name: Get pnpm store directory
         id: pnpm-cache
@@ -161,7 +162,7 @@ jobs:
           echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
 
       - name: Setup pnpm cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -179,8 +180,14 @@ jobs:
       - name: Check code formatting
         run: pnpm format:check
 
-      - name: Check TypeScript
+      - name: Check TypeScript (src)
         run: pnpm tsc --noEmit
+
+      - name: Check TypeScript (apps + packages)
+        run: pnpm tsc --noEmit -p apps/tsconfig.json
+
+      - name: Check TypeScript (packages)
+        run: pnpm tsc --noEmit -p packages/tsconfig.json
 
   build:
     name: Build
@@ -196,9 +203,9 @@ jobs:
           node-version: "22"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
+          version: 10
 
       - name: Get pnpm store directory
         id: pnpm-cache
@@ -207,7 +214,7 @@ jobs:
           echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
 
       - name: Setup pnpm cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}

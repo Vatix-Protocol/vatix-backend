@@ -282,7 +282,15 @@ async function createOrders(
 }
 
 /**
- * Creates sample user positions
+ * Creates sample user positions.
+ *
+ * Field mapping (Prisma camelCase → DB snake_case):
+ *   yesShares        → yes_shares        (Int)
+ *   noShares         → no_shares         (Int)
+ *   lockedCollateral → locked_collateral (Decimal 20,8) — passed as string
+ *                      for exact precision; Prisma coerces string → Decimal.
+ *   isSettled        → is_settled        (Boolean) — true only for RESOLVED
+ *                      markets; CANCELLED markets are not settled.
  */
 async function createPositions(
   prisma: PrismaClient,
@@ -290,57 +298,63 @@ async function createPositions(
 ) {
   console.log("Creating sample user positions...");
 
+  // UserPosition fields aligned with prisma/schema.prisma UserPosition model.
+  // lockedCollateral is provided as a string to avoid floating-point rounding
+  // that could silently corrupt Decimal(20,8) storage.
   const positionsData: Array<{
     marketId: string;
     userAddress: string;
     yesShares: number;
     noShares: number;
-    lockedCollateral: number;
+    lockedCollateral: string;
     isSettled: boolean;
   }> = [];
 
   for (const market of markets) {
-    // Create positions for users who have traded in this market
+    // Only RESOLVED markets have settled positions; ACTIVE and CANCELLED are
+    // both considered unsettled (CANCELLED markets never reach settlement).
+    const isSettled = market.status === "RESOLVED";
+
     positionsData.push(
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[0],
         yesShares: 100,
         noShares: 0,
-        lockedCollateral: 55.0,
-        isSettled: market.status === "RESOLVED",
+        lockedCollateral: "55.00000000",
+        isSettled,
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[1],
         yesShares: 50,
         noShares: 75,
-        lockedCollateral: 60.0,
-        isSettled: market.status === "RESOLVED",
+        lockedCollateral: "60.00000000",
+        isSettled,
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[2],
         yesShares: 0,
         noShares: 200,
-        lockedCollateral: 80.0,
-        isSettled: market.status === "RESOLVED",
+        lockedCollateral: "80.00000000",
+        isSettled,
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[3],
         yesShares: 150,
         noShares: 50,
-        lockedCollateral: 100.0,
-        isSettled: market.status === "RESOLVED",
+        lockedCollateral: "100.00000000",
+        isSettled,
       },
       {
         marketId: market.id,
         userAddress: USER_ADDRESSES[4],
         yesShares: 100,
         noShares: 0,
-        lockedCollateral: 53.0,
-        isSettled: market.status === "RESOLVED",
+        lockedCollateral: "53.00000000",
+        isSettled,
       }
     );
   }

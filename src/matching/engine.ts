@@ -1,7 +1,6 @@
 import type { Outcome, OrderSide } from "../types/index.js";
 import type { Order as BookOrder } from "./orderbook.js";
 import { OrderBook } from "./orderbook.js";
-import { auditService } from "../services/audit.js";
 
 export interface MatchingOrder {
   id: string;
@@ -37,6 +36,10 @@ export interface MatchResult {
   trades: Trade[];
   remainingOrder: MatchingOrder | null;
   positionDeltas: PositionDelta[];
+}
+
+export interface MatchHooks {
+  onTradeFilled?: (trade: Trade) => void;
 }
 
 interface MatchCommand {
@@ -213,7 +216,8 @@ function calculatePositionDeltas(trades: Trade[]): PositionDelta[] {
  */
 export function matchOrder(
   newOrder: MatchingOrder,
-  orderBook: OrderBook
+  orderBook: OrderBook,
+  hooks: MatchHooks = {}
 ): MatchResult {
   const trades: Trade[] = [];
   const executedCommands: MatchCommand[] = [];
@@ -230,6 +234,16 @@ export function matchOrder(
 
       if (!bookOrder) break;
 
+      // Reject self-trade: skip the order if both sides have the same userAddress (#703)
+      if (bookOrder.userAddress === newOrder.userAddress) {
+        // Remove the self-trade order from the book so it doesn't block matching
+        // with other orders at the same price level.
+        const removeCmd = new RemoveOrderCommand(orderBook, bookOrder.id);
+        removeCmd.execute();
+        executedCommands.push(removeCmd);
+        continue;
+      }
+
       if (!canMatch(newOrder.price, bookOrder.price, newOrder.side)) {
         break;
       }
@@ -245,12 +259,7 @@ export function matchOrder(
         timestamp
       );
       trades.push(trade);
-
-      // Log trade to audit stream
-      auditService.logOrderMatch(trade).catch((error) => {
-        // Don't fail matching if audit log fails
-        console.error("Failed to log trade to audit:", error);
-      });
+      hooks.onTradeFilled?.(trade);
 
       const newBookOrderQty = bookOrder.quantity - fillQty;
       let cmd: MatchCommand;
