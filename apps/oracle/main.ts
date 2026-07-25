@@ -137,23 +137,51 @@ export async function poll(): Promise<void> {
   }
 }
 
+/**
+ * Wraps a poll function so overlapping invocations are skipped instead of
+ * running concurrently. If a cycle takes longer than the scheduling interval
+ * (e.g. a slow provider or many active markets), the next tick logs a
+ * warning and returns immediately rather than double-processing the same
+ * markets (duplicate provider calls, duplicate OracleReport writes).
+ * Errors from `pollFn` are caught and logged, never thrown, so a single bad
+ * cycle can't take down the setInterval loop.
+ */
+export function createOverlapGuardedPoll(
+  pollFn: () => Promise<void>,
+  logger: ReturnType<typeof createLogger>
+): () => Promise<void> {
+  let isPollInProgress = false;
+
+  return async (): Promise<void> => {
+    if (isPollInProgress) {
+      logger.warn("Skipping oracle poll because a previous poll is active");
+      return;
+    }
+    isPollInProgress = true;
+    try {
+      await pollFn();
+    } catch (err) {
+      logger.error("Poll cycle failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      isPollInProgress = false;
+    }
+  };
+}
+
 export async function bootstrap(): Promise<void> {
   const config = loadOracleConfig();
   const logger = createLogger(config.logLevel);
 
   logger.info("Oracle starting", { pollIntervalMs: config.pollIntervalMs });
 
-  // Run immediately, then on interval
+  const runPoll = createOverlapGuardedPoll(poll, logger);
+
+  // Run immediately (unguarded — fail fast on startup misconfiguration,
+  // matching the previous behavior), then on interval with overlap guarding.
   await poll();
-  const timer = setInterval(
-    () =>
-      void poll().catch((err) => {
-        logger.error("Poll cycle failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }),
-    config.pollIntervalMs
-  );
+  const timer = setInterval(() => void runPoll(), config.pollIntervalMs);
 
   const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
   let isShuttingDown = false;
