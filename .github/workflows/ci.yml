@@ -96,6 +96,7 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
           REDIS_URL: redis://localhost:6379
           NODE_ENV: test
+          ADMIN_TOKEN: test-admin-token
 
       - name: Run integration tests
         run: pnpm test:integration

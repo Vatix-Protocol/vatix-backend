@@ -276,6 +276,33 @@ export const openApiSpec = {
         },
       },
     },
+    "/v1/orders/{id}": {
+      delete: {
+        summary: "Cancel order",
+        description: "Cancel an open order by ID",
+        tags: ["Orders"],
+        parameters: [
+          {
+            name: "id",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description: "Order ID",
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Order cancelled successfully",
+          },
+          "400": {
+            description: "Invalid order ID or order already filled/cancelled",
+          },
+          "404": {
+            description: "Order not found",
+          },
+        },
+      },
+    },
     "/v1/orders/user/{address}": {
       get: {
         summary: "User orders",

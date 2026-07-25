@@ -21,6 +21,7 @@ Routes are prefixed with `/v1/` to allow non-breaking additions in future versio
 | GET    | `/v1/markets/:id`                         | `/markets/:id`              | Market details                  |
 | GET    | `/v1/markets/:id/orderbook`               | `/markets/:id/orderbook`    | Market orderbook                |
 | POST   | `/v1/orders`                              | `/orders`                   | Create order                    |
+| DELETE | `/v1/orders/:id`                          | `/orders/:id`               | Cancel an open order            |
 | GET    | `/v1/orders/user/:address`                | `/orders/user/:address`     | Wallet order history            |
 | GET    | `/v1/trades/user/:address`                | `/trades/user/:address`     | Wallet trade history            |
 | GET    | `/v1/wallets/:wallet/positions`           | `/positions/user/:address`  | Canonical wallet positions path |
