@@ -7,6 +7,7 @@ import { auditService } from "../../services/audit.js";
 import { matchingService } from "../../matching/matching-service.js";
 import {
   validateUserAddress,
+  sanitizeUserAddress,
   assertValidOrder,
   STELLAR_PUBLIC_KEY_REGEX,
   type OrderInput,
@@ -202,9 +203,10 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         Querystring: GetWalletTradesQuery;
       }>
     ) => {
-      const { address } = request.params;
+      const { address: rawAddress } = request.params;
       const { page = 1, limit = 20, from, to, marketId } = request.query;
 
+      const address = sanitizeUserAddress(rawAddress) ?? "";
       const addressError = validateUserAddress(address);
       if (addressError) {
         throw new ValidationError(addressError);
