@@ -30,6 +30,16 @@ import {
   logDeadLetter,
   type DeadLetterMessage,
 } from "../consumers/dead-letter.js";
+import { withRetry } from "../../../oracle/retry-utils.js";
+
+/** Retry config for individual Stellar RPC calls (getAccount, prepareTransaction,
+ *  sendTransaction). Bounded and short-lived so a transient RPC blip is absorbed
+ *  in place instead of burning one of the submission's limited job-level retries. */
+const STELLAR_RPC_RETRY_CONFIG = {
+  maxRetries: 3,
+  initialDelayMs: 500,
+  maxDelayMs: 5_000,
+};
 
 export interface OracleStellarConfig {
   rpcUrl: string;
@@ -218,7 +228,20 @@ export class SubmissionWorker {
     const server = new StellarRpc.Server(rpcUrl);
     const contract = new Contract(contractId);
 
-    const sourceAccount = await server.getAccount(keypair.publicKey());
+    const onRpcRetry = (error: Error, attempt: number, delayMs: number) => {
+      this.logger.warn("Retrying Stellar RPC call for resolve_market", {
+        marketId: report.payload.marketId,
+        attempt,
+        delayMs,
+        error: error.message,
+      });
+    };
+
+    const sourceAccount = await withRetry(
+      () => server.getAccount(keypair.publicKey()),
+      STELLAR_RPC_RETRY_CONFIG,
+      onRpcRetry
+    );
 
     const args: xdr.ScVal[] = [
       nativeToScVal(report.payload.marketId, { type: "string" }),
@@ -235,10 +258,18 @@ export class SubmissionWorker {
       .setTimeout(30)
       .build();
 
-    const preparedTx = await server.prepareTransaction(tx);
+    const preparedTx = await withRetry(
+      () => server.prepareTransaction(tx),
+      STELLAR_RPC_RETRY_CONFIG,
+      onRpcRetry
+    );
     preparedTx.sign(keypair);
 
-    const sendResult = await server.sendTransaction(preparedTx);
+    const sendResult = await withRetry(
+      () => server.sendTransaction(preparedTx),
+      STELLAR_RPC_RETRY_CONFIG,
+      onRpcRetry
+    );
 
     if (sendResult.status === "ERROR") {
       throw new Error(
