@@ -257,7 +257,7 @@ export default async function positionsRouter(server: FastifyInstance) {
       }>,
       reply: FastifyReply
     ) => {
-      const { wallet } = request.params;
+      const { wallet: rawWallet } = request.params;
       const { includePnl = false } = request.query;
       const prisma = getPrismaClient();
 

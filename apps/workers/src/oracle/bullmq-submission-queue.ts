@@ -39,6 +39,15 @@ export class BullMQSubmissionQueue {
       connection: redisConnectionFromEnv(),
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     });
+
+    // BullMQ (via EventEmitter) forwards Redis connection errors as "error"
+    // events. Without a listener, Node's default EventEmitter behavior is to
+    // throw and crash the process on the very next transient Redis blip.
+    this.queue.on("error", (err: Error) => {
+      this.logger.error("Oracle submission queue connection error", {
+        error: err.message,
+      });
+    });
   }
 
   /**
@@ -111,6 +120,14 @@ export function createOracleSubmissionWorker(
       });
     }
   );
+
+  // See the matching comment in BullMQSubmissionQueue's constructor — an
+  // unhandled "error" event here would crash the whole worker process.
+  worker.on("error", (err: Error) => {
+    logger.error("Oracle submission worker connection error", {
+      error: err.message,
+    });
+  });
 
   return worker;
 }

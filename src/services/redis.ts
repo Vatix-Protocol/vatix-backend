@@ -88,26 +88,22 @@ class RedisService {
   }
 
   /**
-   * Get the current Redis client instance. Callers must await ensureConnected()
-   * first — this only returns whatever client is currently set.
+   * Get the connected Redis client, establishing (or awaiting) the
+   * connection first if necessary.
+   *
+   * Every method that talks to Redis must go through this helper instead of
+   * reading `this.client` directly — reading `this.client` before the
+   * connection promise resolves (e.g. the very first call after startup, or
+   * any call issued right after a "close" event resets the client) returns
+   * `null` and crashes the caller. Routing everything through the pending
+   * `connectionPromise` makes those states resolve gracefully instead.
    */
-  private getClient(): Redis {
-    return this.client!;
-  }
-
-  /**
-   * Wait for Redis connection to be established, (re)initiating a connection
-   * attempt if none is in flight. This must be called before getClient() in
-   * every method — a dropped connection (see onClose) nulls both this.client
-   * and this.connectionPromise, so without this check getClient() would kick
-   * off a new connection but return null before it resolves.
-   */
-  private async ensureConnected(): Promise<void> {
-    if (!this.client) {
-      if (!this.connectionPromise) {
-        this.connectionPromise = this.connect();
-      }
-      await this.connectionPromise;
+  private async ensureConnected(): Promise<Redis> {
+    if (this.client) {
+      return this.client;
+    }
+    if (!this.connectionPromise) {
+      this.connectionPromise = this.connect();
     }
     return this.connectionPromise;
   }
@@ -242,8 +238,8 @@ class RedisService {
    */
   async del(key: string): Promise<void> {
     try {
-      await this.ensureConnected();
-      await this.getClient().del(key);
+      const client = await this.ensureConnected();
+      await client.del(key);
     } catch (error) {
       console.error({ service: "redis", key, err: error }, "Redis DEL failed");
       throw error;
@@ -255,8 +251,8 @@ class RedisService {
    */
   async exists(key: string): Promise<boolean> {
     try {
-      await this.ensureConnected();
-      const result = await this.getClient().exists(key);
+      const client = await this.ensureConnected();
+      const result = await client.exists(key);
       return result === 1;
     } catch (error) {
       console.error(
@@ -323,8 +319,8 @@ class RedisService {
   async clearOrderBook(marketId: string): Promise<void> {
     const pattern = `${this.keyPrefix}orderbook:${marketId}:*`;
     try {
-      await this.ensureConnected();
-      const keys = await this.getClient().keys(pattern);
+      const client = await this.ensureConnected();
+      const keys = await client.keys(pattern);
       if (keys.length > 0) {
         await client.del(...keys);
       }
@@ -344,9 +340,7 @@ class RedisService {
    */
   async healthCheck(): Promise<boolean> {
     try {
-      await this.ensureConnected();
-      const client = this.client;
-      if (!client) return false;
+      const client = await this.ensureConnected();
       const result = await client.ping();
       return result === "PONG";
     } catch (error) {
@@ -382,8 +376,7 @@ class RedisService {
     options?: { MKSTREAM?: boolean }
   ): Promise<string | void> {
     try {
-      await this.ensureConnected();
-      const client = this.getClient();
+      const client = await this.ensureConnected();
       const args = [subcommand, key, groupName, id];
       if (options?.MKSTREAM) {
         args.push("MKSTREAM");
@@ -423,7 +416,7 @@ class RedisService {
     limit?: string
   ): Promise<Array<[string, string[]]>> {
     try {
-      await this.ensureConnected();
+      const client = await this.ensureConnected();
       if (countArg && limit) {
         return await client.xrange(key, start, end, countArg, limit);
       } else {
@@ -449,7 +442,7 @@ class RedisService {
     limit?: string
   ): Promise<Array<[string, string[]]>> {
     try {
-      await this.ensureConnected();
+      const client = await this.ensureConnected();
       if (countArg && limit) {
         return await client.xrevrange(key, start, end, countArg, limit);
       } else {
@@ -475,8 +468,7 @@ class RedisService {
     options?: { COUNT?: number; BLOCK?: number }
   ): Promise<Array<[string, Array<[string, string[]]>]>> {
     try {
-      await this.ensureConnected();
-      const client = this.getClient();
+      const client = await this.ensureConnected();
       const args = ["GROUP", groupName, consumerName];
       if (options?.COUNT) {
         args.push("COUNT", String(options.COUNT));
@@ -504,8 +496,7 @@ class RedisService {
     ...messageIds: string[]
   ): Promise<number> {
     try {
-      await this.ensureConnected();
-      const client = this.getClient();
+      const client = await this.ensureConnected();
       return await (client.xack as any)(streamKey, groupName, ...messageIds);
     } catch (error) {
       console.error({ service: "redis", err: error }, "Redis XACK failed");
@@ -524,8 +515,7 @@ class RedisService {
     ...messageIds: string[]
   ): Promise<Array<[string, string[]]>> {
     try {
-      await this.ensureConnected();
-      const client = this.getClient();
+      const client = await this.ensureConnected();
       const args = [
         streamKey,
         groupName,
@@ -545,8 +535,8 @@ class RedisService {
    */
   async xinfo(subcommand: "STREAM", key: string): Promise<any> {
     try {
-      await this.ensureConnected();
-      return await this.getClient().xinfo(subcommand, key);
+      const client = await this.ensureConnected();
+      return await client.xinfo(subcommand, key);
     } catch (error) {
       console.error(
         { service: "redis", key, err: error },

@@ -101,6 +101,16 @@ async function bootstrap(): Promise<void> {
     });
   });
 
+  // BullMQ forwards Redis connection errors as "error" events. Without a
+  // listener, Node's default EventEmitter behavior is to throw and crash
+  // the process on the next transient Redis blip.
+  worker.on("error", (err) => {
+    logger.error("Settlement worker connection error", {
+      error: err.message,
+      component: "settlement-worker",
+    });
+  });
+
   const shutdown = createShutdown(logger, {
     timeoutMs: 30_000,
     component: "settlement-worker",

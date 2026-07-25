@@ -82,7 +82,7 @@ vi.mock("../workers/src/oracle/redis-submission-queue.js", () => ({
   }),
 }));
 
-import { poll } from "./main.js";
+import { poll, createOverlapGuardedPoll } from "./main.js";
 import { loadOracleConfig } from "./oracle-config.js";
 
 const RESOLVED_RESULT = {
@@ -193,5 +193,64 @@ describe("apps/oracle/main poll()", () => {
 
     await expect(poll()).rejects.toThrow("ORACLE_SECRET_KEY is required");
     expect(mockPrisma.market.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("createOverlapGuardedPoll", () => {
+  it("skips a tick that starts while a previous poll is still in flight", async () => {
+    let resolveFirst: () => void = () => {};
+    const first = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const pollFn = vi
+      .fn()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => Promise.resolve());
+
+    const guardedPoll = createOverlapGuardedPoll(pollFn, mockLogger as any);
+
+    const firstCall = guardedPoll();
+    const secondCall = guardedPoll(); // fires while the first is still pending
+
+    resolveFirst();
+    await Promise.all([firstCall, secondCall]);
+
+    expect(pollFn).toHaveBeenCalledTimes(1);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      "Skipping oracle poll because a previous poll is active"
+    );
+  });
+
+  it("allows the next tick to run once the previous poll has completed", async () => {
+    const pollFn = vi.fn().mockResolvedValue(undefined);
+    const guardedPoll = createOverlapGuardedPoll(pollFn, mockLogger as any);
+
+    await guardedPoll();
+    await guardedPoll();
+
+    expect(pollFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("catches and logs a poll failure instead of throwing", async () => {
+    const pollFn = vi.fn().mockRejectedValue(new Error("provider down"));
+    const guardedPoll = createOverlapGuardedPoll(pollFn, mockLogger as any);
+
+    await expect(guardedPoll()).resolves.toBeUndefined();
+    expect(mockLogger.error).toHaveBeenCalledWith("Poll cycle failed", {
+      error: "provider down",
+    });
+  });
+
+  it("allows a poll to run again after a previous cycle failed", async () => {
+    const pollFn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("provider down"))
+      .mockResolvedValueOnce(undefined);
+    const guardedPoll = createOverlapGuardedPoll(pollFn, mockLogger as any);
+
+    await guardedPoll();
+    await guardedPoll();
+
+    expect(pollFn).toHaveBeenCalledTimes(2);
   });
 });
