@@ -7,11 +7,11 @@ export {
 } from "./logRedactor.js";
 
 export { Logger, LoggerValidationError, LOG_LEVELS } from "./logger.js";
-export type { LogLevel } from "./logger.js";
+export type { LogLevel, ILogger } from "./logger.js";
 
 export type {
+  Env,
   NodeEnv,
-  LogLevel,
   BaseConfig,
   IndexerConfig,
   FinalizationConfig,
@@ -20,7 +20,10 @@ export type {
 } from "./config.js";
 
 export {
+  ConfigValidationError,
   loadBaseConfig,
   loadIndexerConfig,
   loadFinalizationConfig,
 } from "./config.js";
+
+export { resolveCorsAllowedOrigins } from "./cors.js";

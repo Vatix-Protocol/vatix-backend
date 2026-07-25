@@ -54,6 +54,27 @@ function isSensitiveHeader(name: string): boolean {
 // Re-export for use in tests
 export { isSensitiveHeader };
 
+/** Structured fields on every incoming-request log entry (see docs/logger.md). */
+export const REQUEST_LOG_FIELDS = [
+  "type",
+  "requestId",
+  "method",
+  "path",
+] as const;
+
+/** Optional field when a valid Stellar address is present on the request. */
+export const REQUEST_LOG_OPTIONAL_FIELDS = ["userAddress"] as const;
+
+/** Structured fields on every completed-request log entry (see docs/logger.md). */
+export const RESPONSE_LOG_FIELDS = [
+  "type",
+  "requestId",
+  "method",
+  "path",
+  "statusCode",
+  "durationMs",
+] as const;
+
 /**
  * Request logging middleware for Fastify.
  *
@@ -78,13 +99,18 @@ async function logger(fastify: FastifyInstance) {
         (request.headers["x-user-address"] as string | undefined) ||
         (request.headers["x-address"] as string | undefined);
 
+      const safeUserAddress =
+        userAddress !== undefined && /^G[A-Z2-7]{55}$/.test(userAddress)
+          ? userAddress
+          : undefined;
+
       request.log.info(
         {
           type: "request",
           requestId: request.id,
           method: request.method,
           path: request.url,
-          ...(userAddress ? { userAddress } : {}),
+          ...(safeUserAddress ? { userAddress: safeUserAddress } : {}),
         },
         "incoming request"
       );

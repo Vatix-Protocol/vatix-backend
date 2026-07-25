@@ -384,6 +384,34 @@ describe("OrderBook", () => {
       expect(orderBook.getBestAsk()).toBeNull();
     });
 
+    it("should export a snapshot with all price levels and metadata (#704)", () => {
+      orderBook.addOrder(createOrder("1", "bid", 50, 100, 1000));
+      orderBook.addOrder(createOrder("2", "bid", 55, 200, 2000));
+      orderBook.addOrder(createOrder("3", "ask", 60, 150, 3000));
+      orderBook.addOrder(createOrder("4", "ask", 55, 250, 4000));
+
+      const snap = orderBook.snapshot();
+
+      expect(snap.marketId).toBe(marketId);
+      expect(snap.outcome).toBe(outcome);
+      expect(snap.orderCount).toBe(4);
+      expect(snap.timestamp).toBeGreaterThan(0);
+
+      // Bids sorted high-to-low
+      expect(snap.bids.length).toBe(2);
+      expect(snap.bids[0].price).toBe(55);
+      expect(snap.bids[0].quantity).toBe(200);
+      expect(snap.bids[1].price).toBe(50);
+      expect(snap.bids[1].quantity).toBe(100);
+
+      // Asks sorted low-to-high
+      expect(snap.asks.length).toBe(2);
+      expect(snap.asks[0].price).toBe(55);
+      expect(snap.asks[0].quantity).toBe(250);
+      expect(snap.asks[1].price).toBe(60);
+      expect(snap.asks[1].quantity).toBe(150);
+    });
+
     it("should iterate orders in price-time priority", () => {
       orderBook.addOrder(createOrder("1", "bid", 55, 100, 1000));
       orderBook.addOrder(createOrder("2", "bid", 50, 100, 2000));
@@ -397,6 +425,35 @@ describe("OrderBook", () => {
 
       // Should be sorted: price desc, then time asc
       expect(orderIds).toEqual(["4", "1", "3", "2"]);
+    });
+
+    it("should enforce time priority tie-break at same price level", () => {
+      // Orders at same price: order1 (earliest) should be matched first
+      orderBook.addOrder(createOrder("order-early", "ask", 50, 100, 1000));
+      orderBook.addOrder(createOrder("order-late", "ask", 50, 100, 5000));
+
+      const bestAsk = orderBook.getBestAsk();
+      expect(bestAsk?.id).toBe("order-early");
+
+      // getOrdersAtPrice should maintain insertion order
+      const orders = orderBook.getOrdersAtPrice("ask", 50);
+      expect(orders[0].id).toBe("order-early");
+      expect(orders[1].id).toBe("order-late");
+    });
+
+    it("should enforce price-first then time-second priority across levels", () => {
+      // Lower ask price should come first despite later timestamp
+      orderBook.addOrder(createOrder("ask-2", "ask", 55, 100, 3000));
+      orderBook.addOrder(createOrder("ask-1", "ask", 50, 100, 5000));
+
+      const bestAsk = orderBook.getBestAsk();
+      expect(bestAsk?.id).toBe("ask-1"); // Lower price wins
+
+      const orderedIds: string[] = [];
+      for (const o of orderBook.iterateOrders("ask")) {
+        orderedIds.push(o.id);
+      }
+      expect(orderedIds).toEqual(["ask-1", "ask-2"]);
     });
   });
 });

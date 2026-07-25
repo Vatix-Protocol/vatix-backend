@@ -4,6 +4,7 @@ import {
   rateLimiter,
   heavyReadLimiter,
   writeLimiter,
+  adminLimiter,
   clearRateLimitStores,
 } from "./rateLimiter.js";
 
@@ -326,6 +327,105 @@ describe("quota headers", () => {
 
     expect(res.headers["ratelimit-limit"]).toBe("10");
     expect(res.headers["ratelimit-remaining"]).toBe("9");
+    await s.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Admin rate limiter
+// ---------------------------------------------------------------------------
+
+describe("adminLimiter", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    clearRateLimitStores();
+  });
+
+  it("allows requests under the admin limit", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "5");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+
+    const s = buildServer(adminLimiter);
+    const res = await s.inject({ method: "GET", url: "/test" });
+    expect(res.statusCode).toBe(200);
+    await s.close();
+  });
+
+  it("returns 429 when admin limit is exceeded", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "2");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+
+    const s = Fastify({ logger: false });
+    s.get("/admin/markets", { onRequest: [adminLimiter] }, async () => ({
+      ok: true,
+    }));
+
+    await exhaust(s, 2, "GET", "/admin/markets");
+    const res = await s.inject({ method: "GET", url: "/admin/markets" });
+
+    expect(res.statusCode).toBe(429);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("RATE_LIMITED");
+    expect(body.retryAfter).toBeGreaterThan(0);
+    await s.close();
+  });
+
+  it("returns 429 with Retry-After header on admin overflow", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "1");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+
+    const s = buildServer(adminLimiter);
+    await s.inject({ method: "GET", url: "/test" });
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    expect(res.statusCode).toBe(429);
+    expect(res.headers["retry-after"]).toBeDefined();
+    await s.close();
+  });
+
+  it("uses RATE_LIMIT_ADMIN_MAX env var", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "3");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+
+    const s = buildServer(adminLimiter);
+    await exhaust(s, 3, "GET");
+    const res = await s.inject({ method: "GET", url: "/test" });
+    expect(res.statusCode).toBe(429);
+    await s.close();
+  });
+
+  it("exposes its own limit in quota headers", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "30");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+
+    const s = buildServer(adminLimiter);
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    expect(res.headers["ratelimit-limit"]).toBe("30");
+    expect(res.headers["ratelimit-remaining"]).toBe("29");
+    await s.close();
+  });
+
+  it("admin counter is isolated from global counter", async () => {
+    vi.stubEnv("RATE_LIMIT_ADMIN_MAX", "1");
+    vi.stubEnv("RATE_LIMIT_ADMIN_WINDOW_MS", "60000");
+    vi.stubEnv("RATE_LIMIT_MAX", "100");
+
+    const s = Fastify({ logger: false });
+    s.get("/admin/markets", { onRequest: [adminLimiter] }, async () => ({
+      ok: true,
+    }));
+    s.get("/markets", { onRequest: [rateLimiter] }, async () => ({ ok: true }));
+
+    // Exhaust admin tier
+    await s.inject({ method: "GET", url: "/admin/markets" });
+    const adminRes = await s.inject({ method: "GET", url: "/admin/markets" });
+    expect(adminRes.statusCode).toBe(429);
+
+    // Global tier should be unaffected
+    const globalRes = await s.inject({ method: "GET", url: "/markets" });
+    expect(globalRes.statusCode).toBe(200);
+
     await s.close();
   });
 });

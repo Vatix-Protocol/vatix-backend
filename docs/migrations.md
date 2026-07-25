@@ -158,13 +158,13 @@ pnpm prisma:validate
 
 #### What it checks
 
-| Check | Description |
-|---|---|
-| Migration files present | Fails if `prisma/migrations/` contains no directories |
-| SQL readability | Fails if any `migration.sql` cannot be read |
-| Dangerous operations | Warns on `DROP TABLE`, `DROP COLUMN`, `DROP INDEX`, or bare `DELETE FROM` |
-| Schema sync | Runs `prisma migrate diff` and fails if schema and migrations diverge |
-| Client generation | Runs `prisma generate` and fails if the Prisma client cannot be built |
+| Check                   | Description                                                               |
+| ----------------------- | ------------------------------------------------------------------------- |
+| Migration files present | Fails if `prisma/migrations/` contains no directories                     |
+| SQL readability         | Fails if any `migration.sql` cannot be read                               |
+| Dangerous operations    | Warns on `DROP TABLE`, `DROP COLUMN`, `DROP INDEX`, or bare `DELETE FROM` |
+| Schema sync             | Runs `prisma migrate diff` and fails if schema and migrations diverge     |
+| Client generation       | Runs `prisma generate` and fails if the Prisma client cannot be built     |
 
 Exit code `0` means all checks passed; exit code `1` means at least one error was found. Warnings are printed but do not cause failure.
 

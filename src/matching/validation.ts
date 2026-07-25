@@ -35,6 +35,30 @@ export class OrderValidationError extends ValidationError {
  */
 export const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
 
+/**
+ * Sanitizes a raw user address string before validation or DB use.
+ *
+ * Steps applied in order:
+ *  1. Reject non-string values immediately (returns null — caller must check).
+ *  2. Strip leading/trailing ASCII whitespace (prevents length-check bypass).
+ *  3. Uppercase the result (Stellar keys are uppercase; prevents case-folding
+ *     bypass and ensures consistent storage).
+ *  4. Strip any ASCII control characters and null bytes that could be used for
+ *     log injection or query confusion (U+0000–U+001F, U+007F).
+ *
+ * Returns the sanitized string, or null when the input type is invalid.
+ * Callers should pass the return value to `validateUserAddress`.
+ */
+export function sanitizeUserAddress(address: unknown): string | null {
+  if (typeof address !== "string") return null;
+  return address
+    .trim()
+    .toUpperCase()
+    // Remove ASCII control characters (including null bytes, newlines, tabs)
+    // that have no place in a Stellar base32 public key.
+    .replace(/[\x00-\x1F\x7F]/g, "");
+}
+
 export function validateUserAddress(address: string): string | null {
   if (typeof address !== "string") {
     return "User address must be a string";
@@ -92,9 +116,30 @@ export function validateOutcome(outcome: unknown): string | null {
 }
 
 /**
+ * Minimum tick size for order prices.
+ * All prices must be exact multiples of this value (e.g. 0.01, 0.50, 0.99).
+ */
+export const TICK_SIZE = 0.01;
+
+/**
+ * Validates that a price aligns to the minimum tick size.
+ * Uses rounded integer arithmetic to avoid IEEE-754 floating-point drift.
+ *
+ * @param price - A number already confirmed to be in (0, 1).
+ */
+export function validateTickSize(price: number): string | null {
+  const ticks = Math.round(price / TICK_SIZE);
+  if (Math.abs(ticks * TICK_SIZE - price) > 1e-9) {
+    return `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`;
+  }
+  return null;
+}
+
+/**
  * Validates price
  * - Must be a number
  * - Must be > 0 and < 1 (exclusive range)
+ * - Must be aligned to TICK_SIZE increments
  */
 export function validatePrice(price: unknown): string | null {
   if (price === null || price === undefined) {
@@ -109,7 +154,7 @@ export function validatePrice(price: unknown): string | null {
     return "Price must be between 0 and 1 (exclusive)";
   }
 
-  return null;
+  return validateTickSize(price);
 }
 
 /**
@@ -190,7 +235,7 @@ export async function validateMarketState(
     where: { id: marketId },
   });
 
-  if (!market) {
+  if (!market || market.deletedAt !== null) {
     errors.marketId = "Market not found";
     return { valid: false, errors };
   }

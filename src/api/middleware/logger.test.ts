@@ -1,7 +1,26 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import crypto from "node:crypto";
 import Fastify, { FastifyInstance } from "fastify";
-import { requestLogger } from "./logger.js";
+import {
+  requestLogger,
+  REQUEST_LOG_FIELDS,
+  REQUEST_LOG_OPTIONAL_FIELDS,
+  RESPONSE_LOG_FIELDS,
+} from "./logger.js";
+
+function assertStructuredLog(
+  obj: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): void {
+  const allowed = new Set([...required, ...optional]);
+  for (const key of Object.keys(obj)) {
+    expect(allowed.has(key)).toBe(true);
+  }
+  for (const key of required) {
+    expect(obj).toHaveProperty(key);
+  }
+}
 
 describe("Request Logger Middleware", () => {
   let server: FastifyInstance;
@@ -105,23 +124,88 @@ describe("Request Logger Middleware", () => {
   });
 
   it("includes userAddress from route params when present", async () => {
+    const addr = "GABC2222222222222222222222222222222222222222222222222222";
     server.get("/user/:address", async () => ({ ok: true }));
-    await server.inject({ method: "GET", url: "/user/GABC123" });
+    await server.inject({ method: "GET", url: `/user/${addr}` });
 
     const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
-    expect(log![0].userAddress).toBe("GABC123");
+    expect(log![0].userAddress).toBe(addr);
   });
 
   it("includes userAddress from x-user-address header when present", async () => {
+    const addr = "GDEF2222222222222222222222222222222222222222222222222222";
     server.get("/test", async () => ({ ok: true }));
     await server.inject({
       method: "GET",
       url: "/test",
-      headers: { "x-user-address": "GDEF456" },
+      headers: { "x-user-address": addr },
     });
 
     const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
-    expect(log![0].userAddress).toBe("GDEF456");
+    expect(log![0].userAddress).toBe(addr);
+  });
+
+  it("returns 400 when x-user-address is not a valid Stellar address", async () => {
+    server.setErrorHandler((await import("./errorHandler.js")).errorHandler);
+    server.get("/test", async () => ({ ok: true }));
+    const response = await server.inject({
+      method: "GET",
+      url: "/test",
+      headers: { "x-user-address": "not-a-stellar-address" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+    expect(log![0]).not.toHaveProperty("userAddress");
+  });
+
+  it("returns 400 when route :address param is not a valid Stellar address", async () => {
+    server.setErrorHandler((await import("./errorHandler.js")).errorHandler);
+    server.get("/user/:address", async () => ({ ok: true }));
+    const response = await server.inject({
+      method: "GET",
+      url: "/user/INVALID",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+    expect(log![0]).not.toHaveProperty("userAddress");
+  });
+
+  describe("logger format contract (min-031)", () => {
+    it("request logs use only documented structured fields", async () => {
+      server.get("/test", async () => ({ ok: true }));
+      await server.inject({ method: "GET", url: "/test" });
+
+      const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+      expect(log).toBeDefined();
+      assertStructuredLog(
+        log![0] as Record<string, unknown>,
+        REQUEST_LOG_FIELDS,
+        REQUEST_LOG_OPTIONAL_FIELDS
+      );
+      expect(log![0].type).toBe("request");
+      expect(typeof log![0].requestId).toBe("string");
+      expect(typeof log![0].method).toBe("string");
+      expect(typeof log![0].path).toBe("string");
+      expect(typeof log![1]).toBe("string");
+    });
+
+    it("response logs use only documented structured fields with numeric statusCode and durationMs", async () => {
+      server.get("/test", async () => ({ ok: true }));
+      await server.inject({ method: "GET", url: "/test" });
+
+      const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "response");
+      expect(log).toBeDefined();
+      assertStructuredLog(
+        log![0] as Record<string, unknown>,
+        RESPONSE_LOG_FIELDS
+      );
+      expect(log![0].type).toBe("response");
+      expect(typeof log![0].statusCode).toBe("number");
+      expect(typeof log![0].durationMs).toBe("number");
+      expect(typeof log![1]).toBe("string");
+    });
   });
 
   it("honours X-Correlation-ID as the request ID when genReqId uses it", async () => {
