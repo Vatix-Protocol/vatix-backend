@@ -30,7 +30,7 @@ const IDEMPOTENCY_TTL_SECONDS = 86_400;
 
 async function bootstrap(): Promise<void> {
   const logLevel = process.env.LOG_LEVEL ?? "info";
-  const logger = createLogger(logLevel);
+  const logger = createLogger(logLevel as Parameters<typeof createLogger>[0]);
   const queueName = QUEUE_NAME();
 
   logger.info("BullMQ settlement worker started", { queue: queueName });

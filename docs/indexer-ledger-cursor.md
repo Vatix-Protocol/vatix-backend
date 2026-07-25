@@ -40,7 +40,8 @@ inserts no duplicate rows.
 | ---------------------------------------- | -------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
 | `INDEXER_CURSOR_KEY`                     | Optional | `ingestion` | Key used to namespace the cursor row. Change only when running multiple consumers against the same network. |
 | `INDEXER_CONTRACT_ID`                    | Required | —           | Soroban contract ID to ingest (also accepts `MARKET_CONTRACT_ID`).                                          |
-| `INDEXER_LEDGER_WINDOW_SIZE`             | Optional | `100`       | Ledgers scanned per ingestion tick.                                                                         |
+| `INDEXER_LEDGER_WINDOW_SIZE`             | Optional | `100`       | Ledgers scanned per ingestion tick (1–1000).                                                                |
+| `INDEXER_BATCH_SIZE`                     | Optional | `100`       | Max events fetched per RPC page (1–500).                                                                    |
 | `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | Optional | `10`        | Successful batches between cursor checkpoints.                                                              |
 
 ## Checkpoint flushing

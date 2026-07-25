@@ -48,7 +48,8 @@ describe("api-versioning.md matches route mounts", () => {
         (line) =>
           line.startsWith("| GET") ||
           line.startsWith("| POST") ||
-          line.startsWith("| PATCH")
+          line.startsWith("| PATCH") ||
+          line.startsWith("| DELETE")
       );
     expect(tableRows.length).toBe(CANONICAL_V1_ROUTES.length);
   });

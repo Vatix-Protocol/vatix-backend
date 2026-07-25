@@ -344,7 +344,9 @@ class RedisService {
   async healthCheck(): Promise<boolean> {
     try {
       await this.ensureConnected();
-      const result = await this.getClient().ping();
+      const client = this.client;
+      if (!client) return false;
+      const result = await client.ping();
       return result === "PONG";
     } catch (error) {
       console.error(

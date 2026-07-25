@@ -306,6 +306,7 @@ describe("Order Validation", () => {
         endTime: futureDate,
         createdAt: new Date(),
         updatedAt: new Date(),
+        deletedAt: null,
       });
 
       const result = await validateMarketState("market-123");
@@ -329,6 +330,7 @@ describe("Order Validation", () => {
         endTime: futureDate,
         createdAt: new Date(),
         updatedAt: new Date(),
+        deletedAt: null,
       });
 
       const result = await validateMarketState("market-123");
@@ -344,6 +346,7 @@ describe("Order Validation", () => {
         endTime: futureDate,
         createdAt: new Date(),
         updatedAt: new Date(),
+        deletedAt: null,
       });
 
       const result = await validateMarketState("market-123");
@@ -359,6 +362,7 @@ describe("Order Validation", () => {
         endTime: pastDate,
         createdAt: new Date(),
         updatedAt: new Date(),
+        deletedAt: null,
       });
 
       const result = await validateMarketState("market-123");
@@ -376,6 +380,7 @@ describe("Order Validation", () => {
         endTime: futureDate,
         createdAt: new Date(),
         updatedAt: new Date(),
+        deletedAt: null,
       });
 
       const result = await validateOrder(validOrder);
@@ -414,6 +419,7 @@ describe("Order Validation", () => {
         endTime: futureDate,
         createdAt: new Date(),
         updatedAt: new Date(),
+        deletedAt: null,
       });
 
       await expect(assertValidOrder(validOrder)).resolves.toBeUndefined();

@@ -80,7 +80,9 @@ describe("parseMarketCreatedChainEvent", () => {
   it("throws MarketCreatedParseError when topic is not market_created_event", () => {
     expect(() =>
       parseMarketCreatedChainEvent(
-        makeEvent({ topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[42]] })
+        makeEvent({
+          topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[42]],
+        })
       )
     ).toThrow(MarketCreatedParseError);
   });
@@ -119,7 +121,10 @@ describe("parseMarketCreatedEvents (batch)", () => {
   it("parses multiple valid events", () => {
     const events = [
       makeEvent({ id: "e1" }),
-      makeEvent({ id: "e2", topicsXdr: [XDR.topic.marketCreatedEvent, XDR.marketId[7]] }),
+      makeEvent({
+        id: "e2",
+        topicsXdr: [XDR.topic.marketCreatedEvent, XDR.marketId[7]],
+      }),
     ];
     const { markets, errors } = parseMarketCreatedEvents(events);
     expect(markets).toHaveLength(2);
@@ -128,7 +133,10 @@ describe("parseMarketCreatedEvents (batch)", () => {
 
   it("silently skips non-market-created events", () => {
     const events = [
-      makeEvent({ id: "e1", topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[42]] }),
+      makeEvent({
+        id: "e1",
+        topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[42]],
+      }),
       makeEvent({ id: "e2" }),
     ];
     const { markets, errors } = parseMarketCreatedEvents(events);
@@ -140,7 +148,10 @@ describe("parseMarketCreatedEvents (batch)", () => {
     const events = [
       makeEvent({ id: "e1" }),
       makeEvent({ id: "e2", valueXdr: "bad-xdr" }),
-      makeEvent({ id: "e3", topicsXdr: [XDR.topic.marketCreatedEvent, XDR.marketId[7]] }),
+      makeEvent({
+        id: "e3",
+        topicsXdr: [XDR.topic.marketCreatedEvent, XDR.marketId[7]],
+      }),
     ];
     const { markets, errors } = parseMarketCreatedEvents(events);
     expect(markets).toHaveLength(2);

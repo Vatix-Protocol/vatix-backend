@@ -52,12 +52,10 @@ export interface FinalizationJobResult {
 export type ShutdownSignal =
   import("../../../../packages/shared/src/shutdown.js").ShutdownSignal;
 
-/**
- * Async handler invoked when a shutdown signal is received.
- * @deprecated Import from "../../../../packages/shared/src/shutdown.js" instead.
+/** Async handler invoked when a shutdown signal is received.
+ * @deprecated Import from "packages/shared/src/shutdown.js" instead.
  */
-export type ShutdownHandler =
-  import("../../../../packages/shared/src/shutdown.js").ShutdownHandler;
+export type ShutdownHandler = (signal: ShutdownSignal) => Promise<void>;
 
 /** Payload shape for a finalization job enqueued via Redis or similar. */
 export interface FinalizationJobPayload {

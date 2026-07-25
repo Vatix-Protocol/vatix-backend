@@ -66,6 +66,10 @@ vi.mock("@stellar/stellar-sdk", () => ({
   xdr: {},
 }));
 
+vi.mock("../consumers/dead-letter.js", () => ({
+  logDeadLetter: vi.fn(),
+}));
+
 import { SubmissionWorker } from "./submission-worker.js";
 import type { QueuedSubmission } from "./redis-submission-queue.js";
 import { logDeadLetter } from "../consumers/dead-letter.js";

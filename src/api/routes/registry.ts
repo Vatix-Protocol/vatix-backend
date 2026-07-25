@@ -3,7 +3,7 @@
  * Keep in sync with src/index.ts registrations and docs/api-versioning.md.
  */
 export interface CanonicalRoute {
-  method: "GET" | "POST" | "PATCH";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   path: string;
   legacyAlias?: string;
   notes?: string;
