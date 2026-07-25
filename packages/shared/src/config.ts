@@ -227,6 +227,12 @@ export interface BaseConfig {
   corsAllowedOrigins: string[];
   /** Rate limiting tiers. */
   rateLimiting: RateLimitConfig;
+  /**
+   * Maximum entries retained per per-market audit stream (approximate trim).
+   * The global stream retains 10× this value.
+   * Configurable via AUDIT_STREAM_MAXLEN. Default: 100 000.
+   */
+  auditStreamMaxlen: number;
 }
 
 /**
@@ -296,6 +302,9 @@ export function loadBaseConfig(env: Env = processEnv): BaseConfig {
         }),
       },
     },
+    auditStreamMaxlen: requirePositiveInt("AUDIT_STREAM_MAXLEN", env, {
+      fallback: 100_000,
+    }),
   };
 }
 
