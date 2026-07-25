@@ -1,5 +1,6 @@
 import type {
   Market,
+  Order as PrismaOrder,
   UserPosition,
   MarketStatus,
   OrderSide,
@@ -10,6 +11,7 @@ import type {
 
 export type {
   Market,
+  PrismaOrder,
   UserPosition,
   MarketStatus,
   OrderSide,

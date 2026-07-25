@@ -7,7 +7,7 @@ import type { RawChainEvent } from "./types.js";
 
 const XDR = {
   topic: {
-    tradeExecuted: "AAAADwAAAA50cmFkZV9leGVjdXRlZAAA",
+    tradeExecuted: "AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA==",
     marketCreated: "AAAADwAAAA5tYXJrZXRfY3JlYXRlZAAA",
   },
   value: {

@@ -88,8 +88,8 @@ export class EventFetcher {
           startLedger,
           filters: [{ contractIds: [contractId] }],
           limit: pageLimit,
-          ...(cursor ? { cursor } : {}),
-        });
+          ...(cursor ? ({ cursor } as any) : {}),
+        } as any);
 
         this.telemetry.record(
           "indexer.rpc.page_fetched",
@@ -105,7 +105,7 @@ export class EventFetcher {
         if (isLast || !isTransientError(err)) {
           this.telemetry.record("indexer.rpc.error", 1, {
             attempt: String(attempt),
-            transient: String(isTransient(err)),
+            transient: String(isTransientError(err)),
           });
           throw err;
         }
@@ -128,11 +128,11 @@ export class EventFetcher {
       id: e.id,
       ledger: (e as any).ledger as number,
       ledgerClosedAt: (e as any).ledgerClosedAt as string,
-      contractId: e.contractId,
+      contractId: (e as any).contractId as string,
       type: e.type,
       pagingToken: (e as any).pagingToken as string,
-      valueXdr: e.value.xdr,
-      topicsXdr: e.topic.map((t) => t.xdr),
+      valueXdr: (e as any).value.xdr as string,
+      topicsXdr: (e as any).topic.map((t: any) => t.xdr) as string[],
     };
   }
 }

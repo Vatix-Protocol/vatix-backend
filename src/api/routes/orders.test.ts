@@ -2,24 +2,36 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
 import { ordersRoutes } from "./orders.js";
 import { errorHandler } from "../middleware/errorHandler.js";
+import { ValidationError } from "../middleware/errors.js";
 import type { PrismaClient } from "../../generated/prisma/client";
 import { clearRateLimitStores } from "../middleware/rateLimiter.js";
 
-const { mockAuditService, mockPrismaClient } = vi.hoisted(() => ({
-  mockAuditService: {
-    getWalletTradeHistory: vi.fn(),
-  },
-  mockPrismaClient: {
-    order: {
-      findMany: vi.fn(),
-      count: vi.fn(),
-      create: vi.fn(),
+const { mockAuditService, mockPrismaClient, mockMatchingService, mockRedis } =
+  vi.hoisted(() => ({
+    mockAuditService: {
+      getWalletTradeHistory: vi.fn(),
+      getTradeHistory: vi.fn(),
     },
-    market: {
-      findUnique: vi.fn(),
+    mockPrismaClient: {
+      order: {
+        findMany: vi.fn(),
+        count: vi.fn(),
+        create: vi.fn(),
+      },
+      market: {
+        findUnique: vi.fn(),
+      },
+    } as unknown as PrismaClient,
+    mockMatchingService: {
+      placeOrder: vi.fn(),
+      cancelOrder: vi.fn(),
     },
-  } as unknown as PrismaClient,
-}));
+    mockRedis: {
+      get: vi.fn(),
+      set: vi.fn(),
+      prefixed: vi.fn((key: string) => `vatix:${key}`),
+    },
+  }));
 
 vi.mock("../../services/prisma.js", () => ({
   getPrismaClient: () => mockPrismaClient,
@@ -28,6 +40,31 @@ vi.mock("../../services/prisma.js", () => ({
 vi.mock("../../services/audit.js", () => ({
   auditService: mockAuditService,
 }));
+
+vi.mock("../../services/redis.js", () => ({
+  redis: mockRedis,
+}));
+
+vi.mock("../../matching/matching-service.js", () => ({
+  matchingService: mockMatchingService,
+}));
+
+// Bypasses signature verification so route tests stay focused on business
+// logic. Signature-specific behaviour is covered in stellarAuth.test.ts.
+vi.mock("../middleware/stellarAuth.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../middleware/stellarAuth.js")
+  >("../middleware/stellarAuth.js");
+  return {
+    ...actual,
+    verifyStellarSignature: (
+      _req: unknown,
+      _reply: unknown,
+      done: () => void
+    ) => done(),
+    buildSignableMessage: actual.buildSignableMessage,
+  };
+});
 
 describe("GET /trades/user/:address", () => {
   let app: FastifyInstance;
@@ -103,7 +140,9 @@ describe("GET /trades/user/:address", () => {
     expect(body.trades).toHaveLength(2);
     expect(body.trades[0].id).toBe("trade-2");
     expect(body.trades[0].marketId).toBe("market-2");
+    expect(body.trades[0].timestampIso).toBe("2024-04-26T22:20:00.002Z");
     expect(body.trades[1].id).toBe("trade-1");
+    expect(body.trades[1].timestampIso).toBe("2024-04-26T22:20:00.001Z");
     expect(body.total).toBe(2);
     expect(body.hasNext).toBe(false);
     expect(body.page).toBe(1);
@@ -131,6 +170,7 @@ describe("GET /trades/user/:address", () => {
       validAddress,
       2,
       1,
+      undefined,
       undefined,
       undefined
     );
@@ -160,7 +200,8 @@ describe("GET /trades/user/:address", () => {
       1,
       20,
       Date.parse(from),
-      Date.parse(to)
+      Date.parse(to),
+      undefined
     );
   });
 
@@ -185,6 +226,177 @@ describe("GET /trades/user/:address", () => {
   });
 });
 
+describe("GET /trades", () => {
+  let app: FastifyInstance;
+  const originalCacheEnabled = process.env.TRADES_CACHE_ENABLED;
+
+  beforeEach(async () => {
+    clearRateLimitStores();
+    app = Fastify({ logger: false });
+    app.setErrorHandler(errorHandler);
+    await app.register(ordersRoutes);
+    vi.clearAllMocks();
+    delete process.env.TRADES_CACHE_ENABLED;
+  });
+
+  afterEach(async () => {
+    await app.close();
+    clearRateLimitStores();
+    if (originalCacheEnabled === undefined) {
+      delete process.env.TRADES_CACHE_ENABLED;
+    } else {
+      process.env.TRADES_CACHE_ENABLED = originalCacheEnabled;
+    }
+  });
+
+  const sampleHistory = {
+    trades: [
+      {
+        id: "1714170000002-0",
+        trade: {
+          id: "trade-2",
+          marketId: "market-2",
+          outcome: "NO",
+          buyerAddress:
+            "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW",
+          sellerAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          buyOrderId: "buy-2",
+          sellOrderId: "sell-2",
+          price: 0.67,
+          quantity: 12,
+          timestamp: 1714170000002,
+        },
+        loggedAt: "2026-04-27T14:00:02.000Z",
+      },
+    ],
+    total: 1,
+    hasNext: false,
+    page: 1,
+    limit: 20,
+  };
+
+  it("should return global trade listing with pagination metadata", async () => {
+    (
+      mockAuditService.getTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(sampleHistory);
+
+    const response = await app.inject({ method: "GET", url: "/trades" });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.trades).toHaveLength(1);
+    expect(body.trades[0].id).toBe("trade-2");
+    expect(body.total).toBe(1);
+    expect(body.hasNext).toBe(false);
+    expect(body.page).toBe(1);
+    expect(body.limit).toBe(20);
+    expect(mockAuditService.getTradeHistory).toHaveBeenCalledWith(
+      1,
+      20,
+      undefined,
+      undefined,
+      undefined
+    );
+  });
+
+  it("should pass page/limit/marketId/from/to filters through", async () => {
+    (
+      mockAuditService.getTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({ ...sampleHistory, page: 2, limit: 5 });
+
+    const from = "2026-04-27T00:00:00.000Z";
+    const to = "2026-04-27T23:59:59.999Z";
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/trades?page=2&limit=5&marketId=market-2&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockAuditService.getTradeHistory).toHaveBeenCalledWith(
+      2,
+      5,
+      Date.parse(from),
+      Date.parse(to),
+      "market-2"
+    );
+  });
+
+  it("should return 400 when from is after to", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/trades?from=2026-04-28T00:00:00.000Z&to=2026-04-27T00:00:00.000Z",
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.error).toContain("Invalid date range");
+  });
+
+  it("should not read or write the Redis cache when TRADES_CACHE_ENABLED is unset", async () => {
+    (
+      mockAuditService.getTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(sampleHistory);
+
+    const response = await app.inject({ method: "GET", url: "/trades" });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockRedis.get).not.toHaveBeenCalled();
+    expect(mockRedis.set).not.toHaveBeenCalled();
+  });
+
+  it("should serve from Redis cache on a hit when TRADES_CACHE_ENABLED=true", async () => {
+    process.env.TRADES_CACHE_ENABLED = "true";
+    (mockRedis.get as ReturnType<typeof vi.fn>).mockResolvedValue(
+      JSON.stringify(sampleHistory)
+    );
+
+    const response = await app.inject({ method: "GET", url: "/trades" });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body).toEqual(sampleHistory);
+    expect(mockAuditService.getTradeHistory).not.toHaveBeenCalled();
+    expect(mockRedis.set).not.toHaveBeenCalled();
+  });
+
+  it("should query Postgres and populate the cache on a miss when TRADES_CACHE_ENABLED=true", async () => {
+    process.env.TRADES_CACHE_ENABLED = "true";
+    (mockRedis.get as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (
+      mockAuditService.getTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(sampleHistory);
+
+    const response = await app.inject({ method: "GET", url: "/trades" });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockAuditService.getTradeHistory).toHaveBeenCalled();
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.any(Number)
+    );
+  });
+
+  it("should fall back to Postgres when Redis read fails", async () => {
+    process.env.TRADES_CACHE_ENABLED = "true";
+    (mockRedis.get as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("connection refused")
+    );
+    (
+      mockAuditService.getTradeHistory as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(sampleHistory);
+
+    const response = await app.inject({ method: "GET", url: "/trades" });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.trades).toHaveLength(1);
+    expect(mockAuditService.getTradeHistory).toHaveBeenCalled();
+  });
+});
+
 describe("GET /orders/user/:address", () => {
   let app: FastifyInstance;
 
@@ -204,7 +416,7 @@ describe("GET /orders/user/:address", () => {
     clearRateLimitStores();
   });
 
-  it("should return user orders sorted by newest first", async () => {
+  it("should return user orders sorted by newest first with no next cursor", async () => {
     const mockOrders = [
       {
         id: "order-2",
@@ -235,9 +447,6 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue(mockOrders);
-    (
-      mockPrismaClient.order.count as ReturnType<typeof vi.fn>
-    ).mockResolvedValue(2);
 
     const response = await app.inject({
       method: "GET",
@@ -248,8 +457,8 @@ describe("GET /orders/user/:address", () => {
 
     const body = JSON.parse(response.body);
     expect(body.orders).toHaveLength(2);
-    expect(body.total).toBe(2);
     expect(body.hasNext).toBe(false);
+    expect(body.nextCursor).toBeNull();
     expect(body.orders[0].id).toBe("order-2");
   });
 
@@ -257,9 +466,6 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue([]);
-    (
-      mockPrismaClient.order.count as ReturnType<typeof vi.fn>
-    ).mockResolvedValue(0);
 
     const response = await app.inject({
       method: "GET",
@@ -274,8 +480,7 @@ describe("GET /orders/user/:address", () => {
         status: "OPEN",
       },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      skip: 0,
-      take: 20,
+      take: 21,
     });
   });
 
@@ -283,9 +488,6 @@ describe("GET /orders/user/:address", () => {
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
     ).mockResolvedValue([]);
-    (
-      mockPrismaClient.order.count as ReturnType<typeof vi.fn>
-    ).mockResolvedValue(0);
 
     const response = await app.inject({
       method: "GET",
@@ -294,51 +496,71 @@ describe("GET /orders/user/:address", () => {
 
     const body = JSON.parse(response.body);
     expect(body.orders).toEqual([]);
-    expect(body.total).toBe(0);
     expect(body.hasNext).toBe(false);
+    expect(body.nextCursor).toBeNull();
   });
 
-  it("should support page and limit pagination with hasNext metadata", async () => {
+  it("should return nextCursor and hasNext=true when more items exist", async () => {
+    const limit = 2;
+    // limit+1 items returned signals another page exists
+    const mockOrders = Array.from({ length: limit + 1 }, (_, i) => ({
+      id: `order-${i + 1}`,
+      marketId: "market-1",
+      userAddress: validAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: "0.5",
+      quantity: 10,
+      filledQuantity: 0,
+      status: "OPEN",
+      createdAt: new Date(`2026-01-0${i + 1}T00:00:00Z`),
+    }));
+
     (
       mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
-    ).mockResolvedValue([
-      {
-        id: "order-3",
-        marketId: "market-1",
-        userAddress: validAddress,
-        side: "BUY",
-        outcome: "YES",
-        price: "0.55",
-        quantity: 10,
-        filledQuantity: 0,
-        status: "OPEN",
-        createdAt: new Date("2026-01-15T00:00:00Z"),
-      },
-    ]);
-    (
-      mockPrismaClient.order.count as ReturnType<typeof vi.fn>
-    ).mockResolvedValue(5);
+    ).mockResolvedValue(mockOrders);
 
     const response = await app.inject({
       method: "GET",
-      url: `/orders/user/${validAddress}?page=2&limit=2`,
+      url: `/orders/user/${validAddress}?limit=2`,
     });
 
     expect(response.statusCode).toBe(200);
-    expect(mockPrismaClient.order.findMany).toHaveBeenCalledWith({
-      where: {
-        userAddress: validAddress,
-      },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      skip: 2,
-      take: 2,
+    const body = JSON.parse(response.body);
+    expect(body.orders).toHaveLength(2);
+    expect(body.hasNext).toBe(true);
+    expect(typeof body.nextCursor).toBe("string");
+    expect(body.limit).toBe(2);
+  });
+
+  it("should return 400 for an invalid cursor", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/orders/user/${validAddress}?cursor=!!!notvalidbase64!!!`,
     });
 
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("should use a valid cursor to fetch the next page", async () => {
+    const cursor = Buffer.from(
+      JSON.stringify({ createdAt: "2026-01-15T00:00:00.000Z", id: "order-2" })
+    ).toString("base64url");
+
+    (
+      mockPrismaClient.order.findMany as ReturnType<typeof vi.fn>
+    ).mockResolvedValue([]);
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/orders/user/${validAddress}?cursor=${cursor}`,
+    });
+
+    expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
-    expect(body.page).toBe(2);
-    expect(body.limit).toBe(2);
-    expect(body.total).toBe(5);
-    expect(body.hasNext).toBe(true);
+    expect(body.orders).toEqual([]);
+    expect(body.hasNext).toBe(false);
+    expect(body.nextCursor).toBeNull();
   });
 
   it("should reject invalid Stellar address", async () => {
@@ -436,9 +658,18 @@ describe("POST /orders", () => {
       createdAt: new Date(),
     };
 
+    // Mock market for validation
     (
-      mockPrismaClient.order.create as ReturnType<typeof vi.fn>
-    ).mockResolvedValue(createdOrder);
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(validMarket);
+
+    (
+      mockMatchingService.placeOrder as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      order: createdOrder,
+      trades: [],
+      filledQuantity: 0,
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -453,6 +684,63 @@ describe("POST /orders", () => {
     expect(body.order.id).toBe("order-123");
     expect(body.order.side).toBe("BUY");
     expect(body.order.status).toBe("OPEN");
+    expect(body.trades).toEqual([]);
+    expect(body.filledQuantity).toBe(0);
+  });
+
+  it("normalizes trade timestamps to ISO-8601 in the response", async () => {
+    const newOrder = {
+      marketId: "market-1",
+      userAddress: validAddress,
+      side: "BUY" as const,
+      outcome: "YES" as const,
+      price: 0.6,
+      quantity: 100,
+    };
+
+    (
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(validMarket);
+
+    (
+      mockMatchingService.placeOrder as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      order: {
+        id: "order-123",
+        ...newOrder,
+        price: "0.6",
+        filledQuantity: 100,
+        status: "FILLED",
+        createdAt: new Date(),
+      },
+      trades: [
+        {
+          id: "trade-1",
+          marketId: "market-1",
+          outcome: "YES",
+          buyerAddress: validAddress,
+          sellerAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          buyOrderId: "order-123",
+          sellOrderId: "order-456",
+          price: 0.6,
+          quantity: 100,
+          timestamp: 1714170000002,
+        },
+      ],
+      filledQuantity: 100,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/orders",
+      payload: newOrder,
+    });
+
+    expect(response.statusCode).toBe(201);
+    const body = JSON.parse(response.body);
+    expect(body.trades[0].timestamp).toBe(1714170000002);
+    expect(body.trades[0].timestampIso).toBe("2024-04-26T22:20:00.002Z");
   });
 
   it("should reject order with invalid Stellar address", async () => {
@@ -681,9 +969,32 @@ describe("POST /orders", () => {
     expect(response.statusCode).toBe(400);
   });
 
+  it("should reject invalid input before creating a Prisma order", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/orders",
+      payload: {
+        marketId: "market-1",
+        userAddress: validAddress,
+        side: "BUY",
+        outcome: "YES",
+        price: "not-a-number",
+        quantity: 100,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mockPrismaClient.order.create).not.toHaveBeenCalled();
+  });
+
   it("should handle database errors gracefully", async () => {
+    // Mock market for validation
     (
-      mockPrismaClient.order.create as ReturnType<typeof vi.fn>
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(validMarket);
+
+    (
+      mockMatchingService.placeOrder as ReturnType<typeof vi.fn>
     ).mockRejectedValue(new Error("Database error"));
 
     const response = await app.inject({
@@ -700,5 +1011,98 @@ describe("POST /orders", () => {
     });
 
     expect(response.statusCode).toBe(500);
+  });
+});
+
+describe("DELETE /orders/:id — cancel order", () => {
+  let app: FastifyInstance;
+  const validAddress =
+    "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+
+  beforeEach(async () => {
+    clearRateLimitStores();
+    app = Fastify({ logger: false });
+    app.setErrorHandler(errorHandler);
+    await app.register(ordersRoutes);
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    clearRateLimitStores();
+  });
+
+  it("should cancel an open order and return 200", async () => {
+    const cancelledOrder = {
+      id: "order-123",
+      marketId: "market-1",
+      userAddress: validAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: "0.5",
+      quantity: 100,
+      filledQuantity: 0,
+      status: "CANCELLED",
+      createdAt: new Date().toISOString(),
+    };
+
+    (
+      mockMatchingService.cancelOrder as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(cancelledOrder);
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/orders/${cancelledOrder.id}`,
+      payload: { userAddress: validAddress },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.order.status).toBe("CANCELLED");
+    expect(body.order.id).toBe("order-123");
+  });
+
+  it("should return 400 when userAddress is missing", async () => {
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/orders/order-123",
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("should return 400 when cancelling a non-existent order", async () => {
+    (
+      mockMatchingService.cancelOrder as ReturnType<typeof vi.fn>
+    ).mockRejectedValue(
+      new ValidationError("Order not found", { orderId: "Order not found" })
+    );
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/orders/nonexistent",
+      payload: { userAddress: validAddress },
+    });
+
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("should return 400 when cancelling another user's order", async () => {
+    (
+      mockMatchingService.cancelOrder as ReturnType<typeof vi.fn>
+    ).mockRejectedValue(
+      new ValidationError("Order does not belong to this user", {
+        orderId: "Order does not belong to this user",
+      })
+    );
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/orders/order-123",
+      payload: { userAddress: validAddress },
+    });
+
+    expect(response.statusCode).toBe(400);
   });
 });

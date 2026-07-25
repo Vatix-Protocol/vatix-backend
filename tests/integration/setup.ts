@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { Client } from "pg";
 
 const TEST_DB_NAME = "vatix_integration_test";
@@ -8,6 +8,8 @@ const BASE_URL =
 const TEST_DB_URL = `${BASE_URL}/${TEST_DB_NAME}`;
 
 export async function setup() {
+  process.env.REDIS_URL ??= "redis://localhost:6379";
+
   // Create isolated test database
   const client = new Client({ connectionString: `${BASE_URL}/postgres` });
   await client.connect();
@@ -16,7 +18,11 @@ export async function setup() {
   await client.end();
 
   // Run migrations against the isolated DB
-  execSync("pnpm prisma migrate deploy", {
+  const prismaBin =
+    process.platform === "win32"
+      ? "node_modules/.bin/prisma.cmd"
+      : "node_modules/.bin/prisma";
+  execFileSync(prismaBin, ["migrate", "deploy"], {
     env: { ...process.env, DATABASE_URL: TEST_DB_URL },
     stdio: "pipe",
   });

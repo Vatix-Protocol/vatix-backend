@@ -81,3 +81,5 @@ function setupGracefulShutdown(): void {
 }
 
 setupGracefulShutdown();
+
+export { rateLimiter } from "../api/middleware/rateLimiter.js";

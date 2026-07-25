@@ -5,6 +5,14 @@ Backend services for the Vatix prediction market protocol on Stellar.
 ## Documentation
 
 - [Docker Compose Setup](docs/docker-compose.md)
+- [Database Schema](docs/schema.md)
+- [Dead Letter Log](docs/dead-letter-log.md)
+- [Environment Variable Validation](docs/env-validation.md)
+- [Indexer Metrics Log](docs/metrics-log.md)
+- [Prometheus Metrics](docs/metrics.md)
+- [Queue Consumer](docs/queue-consumer.md)
+
+> See [docs/schema.md](docs/schema.md) for the full Prisma schema reference (models, enums, indexes).
 
 ## Tech Stack
 
@@ -14,7 +22,7 @@ Node.js • TypeScript • Fastify • PostgreSQL • Prisma • Redis • Stell
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - pnpm 8+
 - Docker & Docker Compose
 
@@ -41,7 +49,7 @@ pnpm prisma:migrate dev
 pnpm dev
 ```
 
-Visit `http://localhost:3000/health` to verify.
+Visit `http://localhost:3000/v1/health` to verify.
 
 ## Development
 
@@ -82,6 +90,8 @@ docker compose down        # Stop containers
 | **Shared DB** | [`packages/db/`](packages/db/)   | Shared Prisma client and migration utilities                |
 
 See [docs/architecture.md](docs/architecture.md) for service boundaries and data flow.
+For details on external data retrieval, see [docs/price-fetcher.md](docs/price-fetcher.md).
+For oracle report signing and verification, see [docs/signature-helper.md](docs/signature-helper.md).
 
 ## Project Structure
 
@@ -127,10 +137,14 @@ docs/
 ## Environment Variables
 
 See `.env.example` for all options. Key variables:
+See [docs/env-validation.md](docs/env-validation.md) for full validation rules, types, and defaults.
 
 - `DATABASE_URL` - PostgreSQL connection
 - `REDIS_URL` - Redis connection
+- `API_KEY` - API key for protected endpoints
+- `ADMIN_TOKEN` - Admin bearer token for protected admin endpoints
 - `ORACLE_SECRET_KEY` - Oracle signing key (generate with `pnpm generate:keypair`)
+- `LOG_LEVEL` - Optional global log verbosity for shared logger
 
 ## Testing
 
@@ -171,8 +185,13 @@ See [docs/runbooks/incident-runbook.md](docs/runbooks/incident-runbook.md) for t
 Key endpoints with comprehensive test coverage:
 
 - `GET /v1/markets` - Market listing with pagination and filtering
-- `GET /v1/positions/:wallet` - Wallet position data with PnL calculations
-- Orders route docs: [docs/orders-route.md](docs/orders-route.md)
+- `GET /v1/wallets/:wallet/positions` - Wallet position data with PnL calculations
+- `GET /v1/health` - Health check with version and dependency status
+- `POST /v1/orders` - Place a new order (BUY/SELL) with CLOB matching
+- `DELETE /v1/orders/:id` - Cancel an open order and release locked collateral
+- `GET /v1/orders/user/:address` - List orders for a user
+- `GET /v1/trades/user/:address` - List trades for a user
+- `GET /v1/markets/:id/orderbook` - Get market order book depth
 
 ## License
 

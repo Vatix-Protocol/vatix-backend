@@ -34,9 +34,14 @@ export function requireEnv(
 
   if (missing.length === 0) return;
 
-  const list = missing.map((k) => `  - ${k}`).join("\n");
   console.error(
-    `[requireEnv] Missing required environment variable${missing.length > 1 ? "s" : ""}:\n${list}`
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      level: "error",
+      message: "Missing required environment variables",
+      missing,
+      count: missing.length,
+    })
   );
 
   process.exit(1);

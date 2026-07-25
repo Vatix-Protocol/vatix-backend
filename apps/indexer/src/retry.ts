@@ -35,15 +35,36 @@ export interface RetryOptions {
   retryDelayMs: number;
 }
 
+export class RetryValidationError extends Error {
+  readonly statusCode = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = "RetryValidationError";
+  }
+}
+
+function validateRetryOptions(options: RetryOptions): void {
+  if (!Number.isInteger(options.maxRetries) || options.maxRetries < 0) {
+    throw new RetryValidationError("maxRetries must be a non-negative integer");
+  }
+  if (!Number.isFinite(options.retryDelayMs) || options.retryDelayMs < 0) {
+    throw new RetryValidationError(
+      "retryDelayMs must be a non-negative number"
+    );
+  }
+}
+
 /**
  * Execute `fn` with bounded retries on transient errors.
  *
+ * @throws {RetryValidationError} When options are invalid (statusCode 400).
  * @throws The last error when retries are exhausted or the error is non-transient.
  */
 export async function withRetry<T>(
   fn: () => Promise<T>,
   options: RetryOptions
 ): Promise<T> {
+  validateRetryOptions(options);
   const { maxRetries, retryDelayMs } = options;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {

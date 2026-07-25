@@ -1,4 +1,5 @@
 import { getPrismaClient } from "../../../src/services/prisma.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
 
 export interface CursorStorageClient {
   loadCursor(): Promise<string | null>;
@@ -10,7 +11,8 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
 
   constructor(
     private readonly networkId: string,
-    private readonly cursorKey: string
+    private readonly cursorKey: string,
+    private readonly logger?: ILogger
   ) {}
 
   async loadCursor(): Promise<string | null> {
@@ -22,31 +24,42 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
         },
       },
       select: {
-        cursor: true,
+        cursorValue: true,
       },
     });
 
-    return row?.cursor ?? null;
+    const cursor = row?.cursorValue ?? null;
+    this.logger?.debug("Ledger cursor loaded", {
+      networkId: this.networkId,
+      cursorKey: this.cursorKey,
+      cursor,
+      found: cursor !== null,
+    });
+    return cursor;
   }
 
   async saveCursor(cursor: string): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
-      await tx.indexerCursor.upsert({
-        where: {
-          networkId_cursorKey: {
-            networkId: this.networkId,
-            cursorKey: this.cursorKey,
-          },
-        },
-        create: {
+    await this.prisma.indexerCursor.upsert({
+      where: {
+        networkId_cursorKey: {
           networkId: this.networkId,
           cursorKey: this.cursorKey,
-          cursor,
         },
-        update: {
-          cursor,
-        },
-      });
+      },
+      create: {
+        networkId: this.networkId,
+        cursorKey: this.cursorKey,
+        cursorValue: cursor,
+      },
+      update: {
+        cursorValue: cursor,
+      },
+    });
+    this.logger?.info("Indexer cursor saved", {
+      event: "indexer.cursor.saved",
+      cursorValue: cursor,
+      networkId: this.networkId,
+      cursorKey: this.cursorKey,
     });
   }
 }
