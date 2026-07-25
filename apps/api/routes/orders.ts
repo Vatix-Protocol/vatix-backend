@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../../src/services/prisma.js";
+import type { Prisma, OrderStatus } from "../../../src/generated/prisma/client";
 
 interface GetOrdersQuery {
   status?: string;
@@ -33,7 +34,9 @@ export async function ordersRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest<{ Querystring: GetOrdersQuery }>, reply) => {
       const { status, page = 1, limit = 20 } = request.query;
-      const where = status ? { status } : {};
+      const where: Prisma.OrderWhereInput = status
+        ? { status: status as OrderStatus }
+        : {};
       const skip = (page - 1) * limit;
 
       const [orders, total] = await Promise.all([

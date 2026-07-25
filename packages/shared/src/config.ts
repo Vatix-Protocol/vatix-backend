@@ -44,8 +44,7 @@ export type Env = Record<string, string | undefined>;
 const processEnv: Env =
   (
     (globalThis as Record<string, unknown>)["process"] as
-      | { env: Env }
-      | undefined
+      { env: Env } | undefined
   )?.env ?? {};
 
 // ---------------------------------------------------------------------------
@@ -159,8 +158,7 @@ function loadUrl(name: string, env: Env, allowedProtocols: string[]): string {
   // URL is available in Node.js >= 10 globally; no DOM lib needed at runtime.
   // We cast through unknown to satisfy strict TS without requiring lib: ["DOM"].
   const URLCtor = (globalThis as Record<string, unknown>)["URL"] as
-    | (new (input: string) => { protocol: string; hostname: string })
-    | undefined;
+    (new (input: string) => { protocol: string; hostname: string }) | undefined;
   if (!URLCtor) {
     throw new ConfigValidationError(
       "URL constructor is not available in this environment"
@@ -229,6 +227,12 @@ export interface BaseConfig {
   corsAllowedOrigins: string[];
   /** Rate limiting tiers. */
   rateLimiting: RateLimitConfig;
+  /**
+   * Maximum entries retained per per-market audit stream (approximate trim).
+   * The global stream retains 10× this value.
+   * Configurable via AUDIT_STREAM_MAXLEN. Default: 100 000.
+   */
+  auditStreamMaxlen: number;
 }
 
 /**
@@ -298,6 +302,9 @@ export function loadBaseConfig(env: Env = processEnv): BaseConfig {
         }),
       },
     },
+    auditStreamMaxlen: requirePositiveInt("AUDIT_STREAM_MAXLEN", env, {
+      fallback: 100_000,
+    }),
   };
 }
 
@@ -313,6 +320,8 @@ export interface IndexerConfig {
   ingestionIntervalMs: number;
   /** Max ledgers to scan per ingestion tick. */
   ledgerWindowSize: number;
+  /** Max events to fetch per RPC page. */
+  batchSize: number;
   networkId: string;
   cursorKey: string;
   checkpointFlushEveryBatches: number;
@@ -353,6 +362,11 @@ export function loadIndexerConfig(env: Env = processEnv): IndexerConfig {
     ),
     ledgerWindowSize: requirePositiveInt("INDEXER_LEDGER_WINDOW_SIZE", env, {
       fallback: 100,
+      max: 1000,
+    }),
+    batchSize: requirePositiveInt("INDEXER_BATCH_SIZE", env, {
+      fallback: 100,
+      max: 500,
     }),
     networkId: optionalString("INDEXER_NETWORK_ID", "mainnet", env),
     cursorKey: optionalString("INDEXER_CURSOR_KEY", "ingestion", env),

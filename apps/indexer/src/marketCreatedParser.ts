@@ -69,10 +69,7 @@ export function parseMarketCreatedChainEvent(
   }
 
   if (event.topicsXdr.length < 2) {
-    throw new MarketCreatedParseError(
-      "Missing market_id topic",
-      event.id
-    );
+    throw new MarketCreatedParseError("Missing market_id topic", event.id);
   }
 
   let marketIdRaw: unknown;
@@ -107,33 +104,13 @@ export function parseMarketCreatedChainEvent(
 
   const map = decoded as Record<string, unknown>;
 
-  const rawEvent = {
-    id:
-      typeof map.market_id === "string"
-        ? map.market_id
-        : String(map.market_id ?? ""),
-    question: typeof map.question === "string" ? map.question : undefined,
-    endTime: normalizeEndTime(map.end_time),
-    oracleAddress:
-      typeof map.oracle_address === "string" ? map.oracle_address : undefined,
-    status: typeof map.status === "string" ? map.status : undefined,
-  };
-
-  const result = parseMarketCreatedEvent(rawEvent);
-  if (!result.success || !result.data) {
-    throw new MarketCreatedParseError(
-      result.error ?? "Unknown parse error",
-      event.id
-    );
-  }
-
   return {
     eventId: event.id,
     ledger: event.ledger,
     ledgerClosedAt: event.ledgerClosedAt,
     contractId: event.contractId,
     marketId: String(marketIdRaw),
-    question: map.question,
+    question: String(map.question ?? ""),
     endTime: toIsoEndTime(map.end_time, event.id),
     oracleAddress: "",
     status: "ACTIVE",

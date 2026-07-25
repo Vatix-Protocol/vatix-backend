@@ -40,12 +40,27 @@ export const config = {
    */
   databaseUrl: env.DATABASE_URL,
   /**
+   * Read-only PostgreSQL connection string for analytics/reporting queries (#743).
+   * Intended to point at a read replica so heavy analytical queries don't
+   * compete with the primary's write/OLTP workload.
+   * Configured via ANALYTICS_DATABASE_URL — falls back to `databaseUrl` when unset.
+   * Never logged in full to avoid leaking credentials.
+   */
+  analyticsDatabaseUrl: env.ANALYTICS_DATABASE_URL,
+  /**
    * Admin bearer token for protected admin endpoints.
    * Configured via ADMIN_TOKEN.
    */
   get adminToken(): string {
     return process.env.ADMIN_TOKEN || "";
   },
+  /**
+   * Feature flag: whether the matching engine accepts and matches new orders (#744).
+   * When false, startup order-book hydration is skipped and placeOrder()
+   * rejects with 503 Service Unavailable. Order cancellation is unaffected.
+   * Configured via MATCHING_ENGINE_ENABLED (accepts "true" | "false", default: true).
+   */
+  matchingEngineEnabled: env.MATCHING_ENGINE_ENABLED,
   /**
    * Duration of the oracle resolution challenge window in seconds.
    * Must be a positive integer. All window boundary calculations use UTC.

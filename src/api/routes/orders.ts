@@ -4,9 +4,11 @@ import { getPrismaClient } from "../../services/prisma.js";
 import { ValidationError, NotFoundError } from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
 import { auditService } from "../../services/audit.js";
+import { redis } from "../../services/redis.js";
 import { matchingService } from "../../matching/matching-service.js";
 import {
   validateUserAddress,
+  sanitizeUserAddress,
   assertValidOrder,
   STELLAR_PUBLIC_KEY_REGEX,
   type OrderInput,
@@ -72,6 +74,29 @@ function decodeCursor(cursor: string): CursorPayload {
   } catch {
     throw new ValidationError("cursor is invalid or corrupted");
   }
+}
+
+// ---------------------------------------------------------------------------
+// Optional Redis cache layer for GET /trades
+// Disabled by default; enable with TRADES_CACHE_ENABLED=true. Read failures
+// fall back to Postgres so caching never affects availability of the route.
+// Key convention follows docs/api-versioning.md: <resource>:<version>:<id>
+// ---------------------------------------------------------------------------
+
+function isTradesCacheEnabled(): boolean {
+  return process.env.TRADES_CACHE_ENABLED === "true";
+}
+
+function getTradesCacheTtlSeconds(): number {
+  const raw = Number(process.env.TRADES_CACHE_TTL);
+  return Number.isInteger(raw) && raw > 0 ? raw : 15;
+}
+
+function buildTradesCacheKey(query: GetWalletTradesQuery): string {
+  const { page = 1, limit = 20, marketId, from, to } = query;
+  return redis.prefixed(
+    `trades:v1:${page}:${limit}:${marketId ?? "*"}:${from ?? "*"}:${to ?? "*"}`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -202,9 +227,10 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         Querystring: GetWalletTradesQuery;
       }>
     ) => {
-      const { address } = request.params;
+      const { address: rawAddress } = request.params;
       const { page = 1, limit = 20, from, to, marketId } = request.query;
 
+      const address = sanitizeUserAddress(rawAddress) ?? "";
       const addressError = validateUserAddress(address);
       if (addressError) {
         throw new ValidationError(addressError);
@@ -267,6 +293,143 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         page,
         limit,
       };
+    }
+  );
+
+  // GET /trades — Postgres-paginated global trade listing across all wallets.
+  // Same page/limit/from/to/marketId filters as /trades/user/:address, minus
+  // the wallet scope. Optionally cached in Redis (see isTradesCacheEnabled).
+  fastify.get<{
+    Querystring: GetWalletTradesQuery;
+  }>(
+    "/trades",
+    {
+      onRequest: [heavyReadLimiter],
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            page: {
+              type: "integer",
+              minimum: 1,
+            },
+            limit: {
+              type: "integer",
+              minimum: 1,
+              maximum: 100,
+            },
+            from: {
+              type: "string",
+              format: "date-time",
+              description:
+                "Inclusive UTC start timestamp (ISO-8601), e.g. 2026-04-27T00:00:00.000Z",
+            },
+            to: {
+              type: "string",
+              format: "date-time",
+              description:
+                "Inclusive UTC end timestamp (ISO-8601), e.g. 2026-04-27T23:59:59.999Z",
+            },
+            marketId: {
+              type: "string",
+              description: "Filter trades by market identifier",
+            },
+          },
+        },
+      },
+    },
+    async (request: FastifyRequest<{ Querystring: GetWalletTradesQuery }>) => {
+      const { page = 1, limit = 20, from, to, marketId } = request.query;
+
+      let fromMs: number | undefined;
+      let toMs: number | undefined;
+
+      if (from !== undefined) {
+        fromMs = Date.parse(from);
+        if (Number.isNaN(fromMs)) {
+          throw new ValidationError(
+            "from must be a valid UTC ISO-8601 timestamp"
+          );
+        }
+      }
+
+      if (to !== undefined) {
+        toMs = Date.parse(to);
+        if (Number.isNaN(toMs)) {
+          throw new ValidationError(
+            "to must be a valid UTC ISO-8601 timestamp"
+          );
+        }
+      }
+
+      if (fromMs !== undefined && toMs !== undefined && fromMs > toMs) {
+        throw new ValidationError(
+          "Invalid date range: from must be earlier than or equal to to"
+        );
+      }
+
+      const cacheEnabled = isTradesCacheEnabled();
+      const cacheKey = buildTradesCacheKey({ page, limit, marketId, from, to });
+
+      if (cacheEnabled) {
+        try {
+          const cached = await redis.get(cacheKey);
+          if (cached) {
+            return JSON.parse(cached) as TradeListResponse;
+          }
+        } catch (error) {
+          request.log.warn(
+            { err: error, cacheKey },
+            "Trades cache read failed; falling back to Postgres"
+          );
+        }
+      }
+
+      const { trades, total, hasNext } = await auditService.getTradeHistory(
+        page,
+        limit,
+        fromMs,
+        toMs,
+        marketId
+      );
+
+      const response: TradeListResponse = {
+        trades: trades.map((entry) => ({
+          id: entry.trade.id,
+          marketId: entry.trade.marketId,
+          outcome: entry.trade.outcome,
+          buyerAddress: entry.trade.buyerAddress,
+          sellerAddress: entry.trade.sellerAddress,
+          buyOrderId: entry.trade.buyOrderId,
+          sellOrderId: entry.trade.sellOrderId,
+          price: entry.trade.price,
+          quantity: entry.trade.quantity,
+          timestamp: entry.trade.timestamp,
+          timestampIso: new Date(entry.trade.timestamp).toISOString(),
+          loggedAt: entry.loggedAt,
+        })),
+        total,
+        hasNext,
+        page,
+        limit,
+      };
+
+      if (cacheEnabled) {
+        try {
+          await redis.set(
+            cacheKey,
+            JSON.stringify(response),
+            getTradesCacheTtlSeconds()
+          );
+        } catch (error) {
+          request.log.warn(
+            { err: error, cacheKey },
+            "Trades cache write failed"
+          );
+        }
+      }
+
+      return response;
     }
   );
 

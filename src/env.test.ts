@@ -64,3 +64,59 @@ describe("parseApiEnv", () => {
     expect(apiEnvSchema.shape.DATABASE_URL).toBeDefined();
   });
 });
+
+describe("parseApiEnv — MATCHING_ENGINE_ENABLED (#744)", () => {
+  it("defaults to true when omitted", () => {
+    const env = parseApiEnv(VALID_ENV);
+    expect(env.MATCHING_ENGINE_ENABLED).toBe(true);
+  });
+
+  it('parses "false" to boolean false', () => {
+    const env = parseApiEnv({ ...VALID_ENV, MATCHING_ENGINE_ENABLED: "false" });
+    expect(env.MATCHING_ENGINE_ENABLED).toBe(false);
+  });
+
+  it('parses "true" to boolean true', () => {
+    const env = parseApiEnv({ ...VALID_ENV, MATCHING_ENGINE_ENABLED: "true" });
+    expect(env.MATCHING_ENGINE_ENABLED).toBe(true);
+  });
+
+  it("throws on an invalid value", () => {
+    expect(() =>
+      parseApiEnv({ ...VALID_ENV, MATCHING_ENGINE_ENABLED: "yes" })
+    ).toThrow('MATCHING_ENGINE_ENABLED must be "true" or "false"');
+  });
+});
+
+describe("parseApiEnv — ANALYTICS_DATABASE_URL (#743)", () => {
+  it("is undefined when omitted", () => {
+    const env = parseApiEnv(VALID_ENV);
+    expect(env.ANALYTICS_DATABASE_URL).toBeUndefined();
+  });
+
+  it("is undefined when set to an empty string", () => {
+    const env = parseApiEnv({ ...VALID_ENV, ANALYTICS_DATABASE_URL: "" });
+    expect(env.ANALYTICS_DATABASE_URL).toBeUndefined();
+  });
+
+  it("accepts a valid postgresql:// URL", () => {
+    const url = "postgresql://reader:pass@replica.internal:5432/vatix";
+    const env = parseApiEnv({ ...VALID_ENV, ANALYTICS_DATABASE_URL: url });
+    expect(env.ANALYTICS_DATABASE_URL).toBe(url);
+  });
+
+  it("throws when set to an invalid scheme", () => {
+    expect(() =>
+      parseApiEnv({
+        ...VALID_ENV,
+        ANALYTICS_DATABASE_URL: "mysql://localhost/db",
+      })
+    ).toThrow("ANALYTICS_DATABASE_URL must use the postgresql://");
+  });
+
+  it("throws when set to a malformed URL", () => {
+    expect(() =>
+      parseApiEnv({ ...VALID_ENV, ANALYTICS_DATABASE_URL: "not-a-url" })
+    ).toThrow("ANALYTICS_DATABASE_URL is not a valid URL");
+  });
+});

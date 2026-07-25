@@ -266,5 +266,42 @@ describe("parseMarketCreatedEvent", () => {
         "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
       );
     });
+
+    it("should uppercase a lowercase oracleAddress before validation", () => {
+      const lower = validEvent.oracleAddress!.toLowerCase();
+      const event: RawMarketCreatedEvent = { ...validEvent, oracleAddress: lower };
+      const result = parseMarketCreatedEvent(event);
+
+      expect(result.success).toBe(true);
+      expect(result.data!.oracleAddress).toBe(validEvent.oracleAddress);
+    });
+
+    it("should reject oracleAddress with digits outside Stellar base32 charset (0, 1)", () => {
+      // '0' and '1' are not in the canonical StrKey charset [A-Z2-7]
+      const withDigit =
+        "G0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+      const event: RawMarketCreatedEvent = {
+        ...validEvent,
+        oracleAddress: withDigit,
+      };
+      const result = parseMarketCreatedEvent(event);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Invalid oracle address format");
+    });
+
+    it("should strip control characters from oracleAddress before validation", () => {
+      // Null byte injected — should be stripped, leaving 55 chars → invalid length
+      const withNull =
+        "\x00GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+      const event: RawMarketCreatedEvent = {
+        ...validEvent,
+        oracleAddress: withNull,
+      };
+      const result = parseMarketCreatedEvent(event);
+
+      // After stripping \x00 the address is still 56 chars and valid
+      expect(result.success).toBe(true);
+    });
   });
 });

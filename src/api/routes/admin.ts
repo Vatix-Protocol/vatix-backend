@@ -1,5 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
+import {
+  getAnalyticsPrismaClient,
+  isAnalyticsDatabaseConfigured,
+} from "../../services/analytics-prisma.js";
 import { requireAdmin } from "../middleware/adminGuard.js";
 import { requireApiKey } from "../middleware/apiKeyAuth.js";
 import {
@@ -24,6 +28,32 @@ export async function adminRoutes(fastify: FastifyInstance) {
       orderBy: { createdAt: "desc" },
     });
     success(reply, { markets, count: markets.length });
+  });
+
+  // GET /admin/analytics/summary - aggregate reporting stats (#743).
+  // Reads from the analytics (read-only) database connection so heavy
+  // aggregate queries don't compete with primary OLTP traffic. Falls back
+  // to the primary connection when ANALYTICS_DATABASE_URL is unset.
+  fastify.get("/admin/analytics/summary", async (_request, reply) => {
+    const analyticsPrisma = getAnalyticsPrismaClient();
+
+    const [marketsByStatus, totalTrades, tradeVolume] = await Promise.all([
+      analyticsPrisma.market.groupBy({
+        by: ["status"],
+        _count: { _all: true },
+      }),
+      analyticsPrisma.trade.count(),
+      analyticsPrisma.trade.aggregate({ _sum: { quantity: true } }),
+    ]);
+
+    success(reply, {
+      source: isAnalyticsDatabaseConfigured() ? "replica" : "primary",
+      marketsByStatus: Object.fromEntries(
+        marketsByStatus.map((row) => [row.status, row._count._all])
+      ),
+      totalTrades,
+      totalTradedQuantity: tradeVolume._sum.quantity ?? 0,
+    });
   });
 
   // PATCH /admin/markets/:id/status - update market status

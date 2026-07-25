@@ -8,7 +8,7 @@ const DEPRECATION_HEADERS = {
 };
 
 interface LegacyRoute {
-  method: "GET" | "POST" | "PATCH";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   url: string;
   canonical: string;
   paramMap?: Record<string, string>;

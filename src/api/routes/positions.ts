@@ -3,6 +3,7 @@ import { getPrismaClient } from "../../services/prisma.js";
 import {
   STELLAR_PUBLIC_KEY_REGEX,
   validateUserAddress,
+  sanitizeUserAddress,
 } from "../../matching/validation.js";
 import { NotFoundError, ValidationError } from "../middleware/errors.js";
 import { heavyReadLimiter } from "../middleware/rateLimiter.js";
@@ -260,6 +261,7 @@ export default async function positionsRouter(server: FastifyInstance) {
       const { includePnl = false } = request.query;
       const prisma = getPrismaClient();
 
+      const wallet = sanitizeUserAddress(rawWallet) ?? "";
       const addressError = validateUserAddress(wallet);
       if (addressError) {
         throw new ValidationError(addressError);

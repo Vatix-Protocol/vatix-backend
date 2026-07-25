@@ -41,24 +41,45 @@ function makeCandidate(
   };
 }
 
+/**
+ * Builds a mock tx object for $transaction. marketUpdateCount controls how
+ * many rows tx.market.updateMany() reports as matched — 0 simulates a market
+ * that was canceled/soft-deleted concurrently (see MarketNotEligibleError).
+ */
+function makeTx(marketUpdateCount = 1) {
+  const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
+  const marketUpdateMany = vi
+    .fn()
+    .mockResolvedValue({ count: marketUpdateCount });
+  const updateCandidate = vi.fn().mockResolvedValue({});
+  const positionUpdateMany = vi.fn().mockResolvedValue({ count: 2 });
+
+  const tx = {
+    resolution: { create },
+    market: { updateMany: marketUpdateMany },
+    resolutionCandidate: { update: updateCandidate },
+    userPosition: { updateMany: positionUpdateMany },
+  };
+
+  return {
+    tx,
+    create,
+    marketUpdateMany,
+    updateCandidate,
+    positionUpdateMany,
+  };
+}
+
 function makePrisma(
   candidates: FinalizationCandidate[] = [],
   resolutionError: boolean = false
 ) {
-  const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
-  const update = vi.fn().mockResolvedValue({});
-  const updateMany = vi.fn().mockResolvedValue({ count: 2 });
+  const { tx } = makeTx();
 
   const transaction = vi
     .fn()
     .mockImplementation(
       async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
-        const tx = {
-          resolution: { create },
-          market: { update },
-          resolutionCandidate: { update },
-          userPosition: { updateMany },
-        };
         return await fn(tx);
       }
     );
@@ -170,22 +191,12 @@ describe("FinalizationJob", () => {
           source: "chainlink",
         }),
       ];
-      const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
-      const update = vi.fn().mockResolvedValue({});
-      const updateMany = vi.fn().mockResolvedValue({ count: 2 });
-      const updateCandidate = vi.fn().mockResolvedValue({});
+      const { tx, create } = makeTx();
       const transaction = vi
         .fn()
         .mockImplementation(
-          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
-            const tx = {
-              resolution: { create },
-              market: { update },
-              resolutionCandidate: { update: updateCandidate },
-              userPosition: { updateMany },
-            };
-            return await fn(tx);
-          }
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
         );
       const prisma = {
         resolutionCandidate: {
@@ -206,26 +217,16 @@ describe("FinalizationJob", () => {
       });
     });
 
-    it("updates Market status to RESOLVED and sets outcome", async () => {
+    it("updates Market status to RESOLVED and sets outcome, guarded against canceled/deleted markets", async () => {
       const candidates = [
         makeCandidate({ marketId: "mkt-1", proposedOutcome: false }),
       ];
-      const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
-      const update = vi.fn().mockResolvedValue({});
-      const updateMany = vi.fn().mockResolvedValue({ count: 2 });
-      const updateCandidate = vi.fn().mockResolvedValue({});
+      const { tx, marketUpdateMany } = makeTx();
       const transaction = vi
         .fn()
         .mockImplementation(
-          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
-            const tx = {
-              resolution: { create },
-              market: { update },
-              resolutionCandidate: { update: updateCandidate },
-              userPosition: { updateMany },
-            };
-            return await fn(tx);
-          }
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
         );
       const prisma = {
         resolutionCandidate: {
@@ -237,8 +238,12 @@ describe("FinalizationJob", () => {
       const job = new FinalizationJob(prisma, makeLogger(), makeConfig(3600));
       await job.run();
 
-      expect(update).toHaveBeenCalledWith({
-        where: { id: "mkt-1" },
+      expect(marketUpdateMany).toHaveBeenCalledWith({
+        where: {
+          id: "mkt-1",
+          status: { not: "CANCELLED" },
+          deletedAt: null,
+        },
         data: expect.objectContaining({
           status: "RESOLVED",
           outcome: false,
@@ -248,22 +253,12 @@ describe("FinalizationJob", () => {
 
     it("updates resolution candidate status to ACCEPTED", async () => {
       const candidates = [makeCandidate({ id: "cand-1" })];
-      const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
-      const update = vi.fn().mockResolvedValue({});
-      const updateMany = vi.fn().mockResolvedValue({ count: 2 });
-      const updateCandidate = vi.fn().mockResolvedValue({});
+      const { tx, updateCandidate } = makeTx();
       const transaction = vi
         .fn()
         .mockImplementation(
-          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
-            const tx = {
-              resolution: { create },
-              market: { update },
-              resolutionCandidate: { update: updateCandidate },
-              userPosition: { updateMany },
-            };
-            return await fn(tx);
-          }
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
         );
       const prisma = {
         resolutionCandidate: {
@@ -283,22 +278,12 @@ describe("FinalizationJob", () => {
 
     it("settles UserPosition records for the market", async () => {
       const candidates = [makeCandidate({ marketId: "mkt-1" })];
-      const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
-      const update = vi.fn().mockResolvedValue({});
-      const updateMany = vi.fn().mockResolvedValue({ count: 3 });
-      const updateCandidate = vi.fn().mockResolvedValue({});
+      const { tx, positionUpdateMany } = makeTx();
       const transaction = vi
         .fn()
         .mockImplementation(
-          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
-            const tx = {
-              resolution: { create },
-              market: { update },
-              resolutionCandidate: { update: updateCandidate },
-              userPosition: { updateMany },
-            };
-            return await fn(tx);
-          }
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
         );
       const prisma = {
         resolutionCandidate: {
@@ -310,7 +295,7 @@ describe("FinalizationJob", () => {
       const job = new FinalizationJob(prisma, makeLogger(), makeConfig(3600));
       await job.run();
 
-      expect(updateMany).toHaveBeenCalledWith({
+      expect(positionUpdateMany).toHaveBeenCalledWith({
         where: { marketId: "mkt-1" },
         data: { isSettled: true },
       });
@@ -351,22 +336,12 @@ describe("FinalizationJob", () => {
 
     it("sets resolutionTime on the market", async () => {
       const candidates = [makeCandidate()];
-      const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
-      const update = vi.fn().mockResolvedValue({});
-      const updateMany = vi.fn().mockResolvedValue({ count: 2 });
-      const updateCandidate = vi.fn().mockResolvedValue({});
+      const { tx, marketUpdateMany } = makeTx();
       const transaction = vi
         .fn()
         .mockImplementation(
-          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
-            const tx = {
-              resolution: { create },
-              market: { update },
-              resolutionCandidate: { update: updateCandidate },
-              userPosition: { updateMany },
-            };
-            return await fn(tx);
-          }
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
         );
       const prisma = {
         resolutionCandidate: {
@@ -378,12 +353,104 @@ describe("FinalizationJob", () => {
       const job = new FinalizationJob(prisma, makeLogger(), makeConfig(3600));
       await job.run();
 
-      expect(update).toHaveBeenCalledWith({
-        where: { id: candidates[0].marketId },
+      expect(marketUpdateMany).toHaveBeenCalledWith({
+        where: expect.objectContaining({ id: candidates[0].marketId }),
         data: expect.objectContaining({
           resolutionTime: expect.any(Date),
         }),
       });
+    });
+  });
+
+  describe("canceled/soft-deleted market handling", () => {
+    it("excludes CANCELLED and soft-deleted markets from the candidate query", async () => {
+      const findMany = vi.fn().mockResolvedValue([]);
+      const prisma = {
+        resolutionCandidate: { findMany },
+        $transaction: vi.fn(),
+      } as unknown as PrismaClient;
+
+      const job = new FinalizationJob(prisma, makeLogger(), makeConfig(3600));
+      await job.run();
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            market: {
+              status: { not: "CANCELLED" },
+              deletedAt: null,
+            },
+          }),
+        })
+      );
+    });
+
+    it("skips (not errors) a candidate whose market was canceled/deleted concurrently", async () => {
+      const candidates = [
+        makeCandidate({ id: "cand-race", marketId: "mkt-race" }),
+      ];
+      // updateMany reports 0 rows matched — the market's status/deletedAt
+      // changed between the candidate query and the transaction.
+      const { tx, updateCandidate, positionUpdateMany } = makeTx(0);
+      const transaction = vi
+        .fn()
+        .mockImplementation(
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
+        );
+      const prisma = {
+        resolutionCandidate: {
+          findMany: vi.fn().mockResolvedValue(candidates),
+        },
+        $transaction: transaction,
+      } as unknown as PrismaClient;
+
+      const logger = makeLogger();
+      const job = new FinalizationJob(prisma, logger, makeConfig(3600));
+
+      const result = await job.run();
+
+      expect(result.finalizedCount).toBe(0);
+      expect(result.erroredCount).toBe(0);
+      expect(result.skippedCount).toBe(1);
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-race",
+        marketId: "mkt-race",
+        status: "skipped",
+      });
+      // Rolled back before touching the candidate or positions.
+      expect(updateCandidate).not.toHaveBeenCalled();
+      expect(positionUpdateMany).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        "Finalization candidate skipped: market canceled or deleted",
+        expect.objectContaining({
+          candidateId: "cand-race",
+          marketId: "mkt-race",
+        })
+      );
+    });
+
+    it("does not log a skipped candidate as an error", async () => {
+      const candidates = [makeCandidate({ id: "cand-race" })];
+      const { tx } = makeTx(0);
+      const transaction = vi
+        .fn()
+        .mockImplementation(
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
+        );
+      const prisma = {
+        resolutionCandidate: {
+          findMany: vi.fn().mockResolvedValue(candidates),
+        },
+        $transaction: transaction,
+      } as unknown as PrismaClient;
+
+      const logger = makeLogger();
+      const job = new FinalizationJob(prisma, logger, makeConfig(3600));
+      await job.run();
+
+      expect(logger.error).not.toHaveBeenCalled();
     });
   });
 
@@ -393,22 +460,12 @@ describe("FinalizationJob", () => {
         makeCandidate({ id: "cand-1", marketId: "mkt-1" }),
         makeCandidate({ id: "cand-2", marketId: "mkt-2" }),
       ];
-      const createOk = vi.fn().mockResolvedValue({ id: "resolution-1" });
-      const updateOk = vi.fn().mockResolvedValue({});
-      const updateManyOk = vi.fn().mockResolvedValue({ count: 2 });
-      const updateCandidateOk = vi.fn().mockResolvedValue({});
+      const { tx: okTx } = makeTx();
       const transaction = vi
         .fn()
         .mockImplementationOnce(
-          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
-            const tx = {
-              resolution: { create: createOk },
-              market: { update: updateOk },
-              resolutionCandidate: { update: updateCandidateOk },
-              userPosition: { updateMany: updateManyOk },
-            };
-            return await fn(tx);
-          }
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(okTx)
         )
         .mockRejectedValueOnce(new Error("DB write failed"));
 
@@ -488,6 +545,10 @@ describe("FinalizationJob", () => {
         where: {
           status: "PROPOSED",
           createdAt: { lte: expect.any(Date) },
+          market: {
+            status: { not: "CANCELLED" },
+            deletedAt: null,
+          },
         },
         select: {
           id: true,

@@ -157,6 +157,37 @@ describe("RedisService", () => {
       const isHealthy = await redis.healthCheck();
       expect(isHealthy).toBe(true);
     });
+
+    it("should reconnect for del/exists after a disconnect (regression: stale connectionPromise)", async () => {
+      const testKey = "test:reconnect:del-exists";
+      await redis.set(testKey, "value");
+      await redis.disconnect();
+
+      // Both del and exists must re-establish the connection rather than
+      // throwing on a null client or awaiting a stale, already-resolved
+      // connectionPromise left over from the previous connection.
+      const existed = await redis.exists(testKey);
+      expect(existed).toBe(true);
+
+      await redis.del(testKey);
+      const stillExists = await redis.exists(testKey);
+      expect(stillExists).toBe(false);
+    });
+
+    it("should not reuse a stale connectionPromise after disconnect", async () => {
+      await redis.healthCheck();
+      await redis.disconnect();
+
+      // Fire two operations concurrently right after disconnect — neither
+      // should throw on a null client, and both should observe a live
+      // connection rather than racing a stale promise.
+      const [existed, healthy] = await Promise.all([
+        redis.exists("test:concurrent-after-disconnect"),
+        redis.healthCheck(),
+      ]);
+      expect(existed).toBe(false);
+      expect(healthy).toBe(true);
+    });
   });
 
   // =========================================================================

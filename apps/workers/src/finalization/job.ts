@@ -31,6 +31,20 @@ export class FinalizationValidationError extends Error {
   }
 }
 
+/**
+ * Thrown inside the finalization transaction when the target market was
+ * canceled or soft-deleted after the candidate query ran (e.g. an admin
+ * canceled the market during the challenge window). Rolls back the
+ * transaction and is translated into a "skipped" result rather than
+ * "errored", since this is expected concurrent state, not a failure.
+ */
+class MarketNotEligibleError extends Error {
+  constructor(marketId: string) {
+    super(`Market ${marketId} is canceled or deleted; skipping finalization`);
+    this.name = "MarketNotEligibleError";
+  }
+}
+
 export class FinalizationJob {
   private readonly challengeWindowSeconds: number;
 
@@ -69,6 +83,10 @@ export class FinalizationJob {
         where: {
           status: "PROPOSED",
           createdAt: { lte: windowCutoff },
+          market: {
+            status: { not: "CANCELLED" },
+            deletedAt: null,
+          },
         },
         select: {
           id: true,
@@ -123,14 +141,22 @@ export class FinalizationJob {
             },
           });
 
-          await tx.market.update({
-            where: { id: candidate.marketId },
+          const marketUpdate = await tx.market.updateMany({
+            where: {
+              id: candidate.marketId,
+              status: { not: "CANCELLED" },
+              deletedAt: null,
+            },
             data: {
               status: "RESOLVED",
               outcome: candidate.proposedOutcome,
               resolutionTime: now,
             },
           });
+
+          if (marketUpdate.count === 0) {
+            throw new MarketNotEligibleError(candidate.marketId);
+          }
 
           await tx.resolutionCandidate.update({
             where: { id: candidate.id },
@@ -156,22 +182,40 @@ export class FinalizationJob {
           proposedOutcome: candidate.proposedOutcome,
         });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof MarketNotEligibleError) {
+          results.push({
+            candidateId: candidate.id,
+            marketId: candidate.marketId,
+            proposedOutcome: candidate.proposedOutcome,
+            status: "skipped",
+          });
 
-        results.push({
-          candidateId: candidate.id,
-          marketId: candidate.marketId,
-          proposedOutcome: candidate.proposedOutcome,
-          status: "errored",
-          error: message,
-        });
+          this.logger.info(
+            "Finalization candidate skipped: market canceled or deleted",
+            {
+              candidateId: candidate.id,
+              marketId: candidate.marketId,
+            }
+          );
+        } else {
+          const message =
+            error instanceof Error ? error.message : String(error);
 
-        this.logger.error("Finalization candidate failed", {
-          candidateId: candidate.id,
-          marketId: candidate.marketId,
-          proposedOutcome: candidate.proposedOutcome,
-          error: message,
-        });
+          results.push({
+            candidateId: candidate.id,
+            marketId: candidate.marketId,
+            proposedOutcome: candidate.proposedOutcome,
+            status: "errored",
+            error: message,
+          });
+
+          this.logger.error("Finalization candidate failed", {
+            candidateId: candidate.id,
+            marketId: candidate.marketId,
+            proposedOutcome: candidate.proposedOutcome,
+            error: message,
+          });
+        }
       }
     }
 

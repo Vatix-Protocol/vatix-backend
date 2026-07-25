@@ -3,7 +3,7 @@
  * Keep in sync with src/index.ts registrations and docs/api-versioning.md.
  */
 export interface CanonicalRoute {
-  method: "GET" | "POST" | "PATCH";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   path: string;
   legacyAlias?: string;
   notes?: string;
@@ -34,6 +34,11 @@ export const CANONICAL_V1_ROUTES: CanonicalRoute[] = [
     method: "GET",
     path: "/v1/orders/user/:address",
     legacyAlias: "/orders/user/:address",
+  },
+  {
+    method: "GET",
+    path: "/v1/trades",
+    notes: "Postgres-paginated trade listing; optional Redis cache layer",
   },
   {
     method: "GET",

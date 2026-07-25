@@ -20,6 +20,37 @@ interface FillStreamParams {
   wallet: string;
 }
 
+interface FillStreamQuerystring {
+  /** Explicit resume cursor (ISO timestamp), used when a client cannot set
+   *  request headers (e.g. EventSource does not expose Last-Event-ID on the
+   *  initial connect). Ignored if the Last-Event-ID header is present. */
+  since?: string;
+}
+
+/**
+ * Resolves the cursor a reconnecting client should resume from, so fills
+ * that occurred during a disconnect gap are not silently dropped.
+ *
+ * Browsers' native EventSource automatically resends the last received
+ * event's `id:` field as the `Last-Event-ID` header on reconnect, so that
+ * takes priority. The `?since=` query param is a fallback for clients that
+ * can't set headers. Falls back to `null` (caller should use "now") for a
+ * fresh connection or an unparseable cursor.
+ */
+export function parseResumeCursor(
+  lastEventIdHeader: string | string[] | undefined,
+  sinceQuery: string | undefined
+): Date | null {
+  const raw = Array.isArray(lastEventIdHeader)
+    ? lastEventIdHeader[0]
+    : (lastEventIdHeader ?? sinceQuery);
+
+  if (!raw) return null;
+
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 export interface OrderFillEvent {
   tradeId: string;
   marketId: string;
@@ -38,7 +69,7 @@ export async function fillsRoutes(fastify: FastifyInstance) {
   // Server-Sent Events stream of order fill notifications for a wallet.
   // Only fills that occur after the client connects are pushed — historical
   // fills are already served by GET /trades/user/:address.
-  fastify.get<{ Params: FillStreamParams }>(
+  fastify.get<{ Params: FillStreamParams; Querystring: FillStreamQuerystring }>(
     "/wallets/:wallet/fills/stream",
     {
       onRequest: [heavyReadLimiter],
@@ -53,9 +84,21 @@ export async function fillsRoutes(fastify: FastifyInstance) {
             },
           },
         },
+        querystring: {
+          type: "object",
+          properties: {
+            since: { type: "string" },
+          },
+        },
       },
     },
-    async (request: FastifyRequest<{ Params: FillStreamParams }>, reply) => {
+    async (
+      request: FastifyRequest<{
+        Params: FillStreamParams;
+        Querystring: FillStreamQuerystring;
+      }>,
+      reply
+    ) => {
       const { wallet } = request.params;
 
       const addressError = validateUserAddress(wallet);
@@ -71,10 +114,17 @@ export async function fillsRoutes(fastify: FastifyInstance) {
         "X-Accel-Buffering": "no",
       });
 
-      let since = new Date();
+      let since =
+        parseResumeCursor(
+          request.headers["last-event-id"],
+          request.query.since
+        ) ?? new Date();
 
-      const sendEvent = (event: string, data: unknown) => {
-        reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      const sendEvent = (event: string, data: unknown, id?: string) => {
+        const idLine = id ? `id: ${id}\n` : "";
+        reply.raw.write(
+          `${idLine}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+        );
       };
 
       sendEvent("connected", { wallet, since: since.toISOString() });
@@ -111,7 +161,7 @@ export async function fillsRoutes(fastify: FastifyInstance) {
             quantity: fill.quantity,
             tradedAt: fill.tradedAt.toISOString(),
           };
-          sendEvent("order_fill", event);
+          sendEvent("order_fill", event, fill.tradedAt.toISOString());
         }
       };
 

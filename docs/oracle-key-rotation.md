@@ -93,11 +93,11 @@ done
 
 ```bash
 # Query recent submissions
-SELECT 
+SELECT
   status,
   COUNT(*) as count,
   ROUND(100.0 * COUNT(*) / (
-    SELECT COUNT(*) FROM oracle_reports 
+    SELECT COUNT(*) FROM oracle_reports
     WHERE created_at > now() - interval '1 hour'
   ), 2) as percentage
 FROM oracle_reports
@@ -132,13 +132,14 @@ redis-cli -u $REDIS_URL XRANGE oracle:dead-letter - +
 ### Log Monitoring
 
 Watch for:
+
 - Signature verification errors: `Invalid signature`
 - Key loading errors: `ORACLE_SECRET_KEY not found`
 - Submission failures: `submission processing failed`
 
 ## Step 5: Retire Old Key (After Stable Period)
 
-1. **Wait for stable period**: 
+1. **Wait for stable period**:
    - Minimum 24-48 hours with new key in production
    - Zero errors related to signing
    - Confirm no in-flight submissions using old key
@@ -199,6 +200,7 @@ ERROR: Submission verification failed
 
 **Cause**: Worker still using old key or key mismatch  
 **Fix**:
+
 1. Verify ORACLE_SECRET_KEY is correctly set
 2. Restart worker: `kubectl rollout restart deployment/oracle-workers`
 3. Check logs: `kubectl logs -f deployment/oracle-workers`
@@ -211,6 +213,7 @@ ERROR: ORACLE_SECRET_KEY not found in environment variables
 
 **Cause**: Secrets not properly propagated  
 **Fix**:
+
 1. Verify secret exists: `aws secretsmanager get-secret-value --secret-id vatix/oracle-keys`
 2. Check environment variable binding: `kubectl describe pod <pod-name>`
 3. Restart with manual key injection: `export ORACLE_SECRET_KEY=... && pnpm workers:oracle:start`
@@ -218,11 +221,13 @@ ERROR: ORACLE_SECRET_KEY not found in environment variables
 ### Submission Latency Spike
 
 **Investigation**:
+
 1. Check Redis queue depth: `redis-cli -u $REDIS_URL XINFO STREAM oracle:submissions`
 2. Check worker logs: `kubectl logs -f deployment/oracle-workers`
 3. Check consumer lag: `redis-cli -u $REDIS_URL XINFO GROUPS oracle:submissions`
 
 **Resolution**:
+
 - Scale workers if queue is backing up
 - Check for network connectivity issues
 - Verify on-chain contract is responsive
