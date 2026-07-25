@@ -1,5 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../../../src/services/prisma.js";
+import type {
+  Prisma,
+  MarketStatus,
+} from "../../../../src/generated/prisma/client";
 
 interface GetMarketsQuery {
   status?: string;
@@ -34,7 +38,9 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       reply
     ) => {
       const { status, limit = 50 } = request.query;
-      const where = status ? { status } : {};
+      const where: Prisma.MarketWhereInput = status
+        ? { status: status as MarketStatus }
+        : {};
 
       const markets = await prisma.market.findMany({
         where,

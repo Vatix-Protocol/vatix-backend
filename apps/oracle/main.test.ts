@@ -7,26 +7,26 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const mockLogger = {
+const mockLogger = vi.hoisted(() => ({
   debug: vi.fn(),
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
-};
+}));
 
-const mockPrisma = {
+const mockPrisma = vi.hoisted(() => ({
   market: { findMany: vi.fn() },
   oracleReport: { create: vi.fn() },
-};
+}));
 
-const mockQueue = {
+const mockQueue = vi.hoisted(() => ({
   initialize: vi.fn().mockResolvedValue(undefined),
   enqueue: vi.fn().mockResolvedValue(true),
-};
+}));
 
-const mockOracleService = {
+const mockOracleService = vi.hoisted(() => ({
   resolve: vi.fn(),
-};
+}));
 
 vi.mock("../../src/services/prisma.js", () => ({
   getPrismaClient: () => mockPrisma,
@@ -51,7 +51,9 @@ vi.mock("./oracle-config.js", () => ({
 }));
 
 vi.mock("./oracle-service.js", () => ({
-  OracleService: vi.fn(() => mockOracleService),
+  OracleService: vi.fn().mockImplementation(function () {
+    return mockOracleService;
+  }),
 }));
 
 vi.mock("./primary-adapter.js", () => ({
@@ -75,7 +77,9 @@ vi.mock("./signature-helper.js", () => ({
 }));
 
 vi.mock("../workers/src/oracle/redis-submission-queue.js", () => ({
-  RedisSubmissionQueue: vi.fn(() => mockQueue),
+  RedisSubmissionQueue: vi.fn().mockImplementation(function () {
+    return mockQueue;
+  }),
 }));
 
 import { poll } from "./main.js";

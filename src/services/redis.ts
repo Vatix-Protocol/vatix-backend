@@ -92,16 +92,22 @@ class RedisService {
    */
   private getClient(): Redis {
     if (!this.client) {
-      // Connection not attempted or failed; initiate new connection attempt
-      this.connectionPromise = this.connect();
+      if (!this.connectionPromise) {
+        // Connection not attempted or failed; initiate new connection attempt
+        this.connectionPromise = this.connect();
+      }
     }
     return this.client!;
   }
 
   /**
-   * Wait for Redis connection to be established
+   * Wait for Redis connection to be established.
+   * Initiates a connection if one hasn't been started yet.
    */
   private async ensureConnected(): Promise<void> {
+    if (!this.client && !this.connectionPromise) {
+      this.connectionPromise = this.connect();
+    }
     if (this.connectionPromise) {
       await this.connectionPromise;
     }
@@ -337,7 +343,9 @@ class RedisService {
   async healthCheck(): Promise<boolean> {
     try {
       await this.ensureConnected();
-      const result = await this.getClient().ping();
+      const client = this.client;
+      if (!client) return false;
+      const result = await client.ping();
       return result === "PONG";
     } catch (error) {
       console.error(

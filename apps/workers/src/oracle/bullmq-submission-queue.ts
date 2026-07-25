@@ -97,17 +97,20 @@ export function createOracleSubmissionWorker(
     }
   );
 
-  worker.on("completed", (job) => {
+  worker.on("completed", (job: Job<SubmissionQueueItem, any, string>) => {
     logger.info("Oracle submission job completed", { jobId: job.id });
   });
 
-  worker.on("failed", (job, err) => {
-    logger.error("Oracle submission job failed", {
-      jobId: job?.id,
-      attempts: job?.attemptsMade,
-      error: err.message,
-    });
-  });
+  worker.on(
+    "failed",
+    (job: Job<SubmissionQueueItem, any, string> | undefined, err: Error) => {
+      logger.error("Oracle submission job failed", {
+        jobId: job?.id,
+        attempts: job?.attemptsMade,
+        error: err.message,
+      });
+    }
+  );
 
   return worker;
 }
