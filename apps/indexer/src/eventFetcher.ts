@@ -7,30 +7,11 @@ import type {
 } from "./types.js";
 import type { Telemetry } from "./telemetry.js";
 import { consoleTelemetry } from "./telemetry.js";
+import { isTransientError, sleep } from "./retry.js";
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const DEFAULT_PAGE_LIMIT = 100;
-
-const TRANSIENT_ERRORS = new Set([
-  "ECONNRESET",
-  "ECONNREFUSED",
-  "ETIMEDOUT",
-  "ENOTFOUND",
-  "socket hang up",
-]);
-
-function isTransient(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  return (
-    TRANSIENT_ERRORS.has((err as NodeJS.ErrnoException).code ?? "") ||
-    TRANSIENT_ERRORS.has(err.message)
-  );
-}
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export class EventFetcher {
   private readonly server: StellarRpc.Server;
@@ -107,8 +88,8 @@ export class EventFetcher {
           startLedger,
           filters: [{ contractIds: [contractId] }],
           limit: pageLimit,
-          ...(cursor ? { cursor } : {}),
-        });
+          ...(cursor ? ({ cursor } as any) : {}),
+        } as any);
 
         this.telemetry.record(
           "indexer.rpc.page_fetched",
@@ -121,10 +102,10 @@ export class EventFetcher {
         return response;
       } catch (err) {
         const isLast = attempt === maxRetries;
-        if (isLast || !isTransient(err)) {
+        if (isLast || !isTransientError(err)) {
           this.telemetry.record("indexer.rpc.error", 1, {
             attempt: String(attempt),
-            transient: String(isTransient(err)),
+            transient: String(isTransientError(err)),
           });
           throw err;
         }
@@ -147,11 +128,11 @@ export class EventFetcher {
       id: e.id,
       ledger: (e as any).ledger as number,
       ledgerClosedAt: (e as any).ledgerClosedAt as string,
-      contractId: e.contractId,
+      contractId: (e as any).contractId as string,
       type: e.type,
       pagingToken: (e as any).pagingToken as string,
-      valueXdr: e.value.xdr,
-      topicsXdr: e.topic.map((t) => t.xdr),
+      valueXdr: (e as any).value.xdr as string,
+      topicsXdr: (e as any).topic.map((t: any) => t.xdr) as string[],
     };
   }
 }

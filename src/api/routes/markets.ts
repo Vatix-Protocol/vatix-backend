@@ -3,13 +3,14 @@ import { getPrismaClient } from "../../services/prisma.js";
 import type { Market, MarketStatus, Outcome } from "../../types/index.js";
 import { heavyReadLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
-import { NotFoundError } from "../middleware/errors.js";
+import { MarketNotFoundError } from "../middleware/errors.js";
 import type {
   MarketDetailsDto,
   MarketListItemDto,
   MarketOrderBookDto,
   OrderBookLevelDto,
 } from "./market.dto.js";
+import { computeMarketEtag } from "./market.dto.js";
 
 interface GetMarketsQueryParams {
   status?: MarketStatus;
@@ -107,7 +108,10 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         limit = 50,
       } = request.query;
 
-      const whereClause = status ? { status } : {};
+      const whereClause = {
+        ...(status ? { status } : {}),
+        deletedAt: null,
+      };
 
       const orderBy = {
         [sort]: direction,
@@ -146,10 +150,11 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       const { id } = request.params;
 
       const market = await prisma.market.findUnique({ where: { id } });
-      if (!market) {
-        throw new NotFoundError(`Market not found: ${id}`);
+      if (!market || market.deletedAt !== null) {
+        throw new MarketNotFoundError(id);
       }
 
+      reply.header("etag", computeMarketEtag(market));
       success(reply, { market: toMarketDto(market) });
     }
   );
@@ -157,6 +162,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: GetMarketParams }>(
     "/markets/:id/orderbook",
     {
+      onRequest: [heavyReadLimiter],
       schema: {
         params: {
           type: "object",
@@ -172,8 +178,8 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       const { id } = request.params;
 
       const market = await prisma.market.findUnique({ where: { id } });
-      if (!market) {
-        throw new NotFoundError(`Market not found: ${id}`);
+      if (!market || market.deletedAt !== null) {
+        throw new MarketNotFoundError(id);
       }
 
       const openOrders = await prisma.order.findMany({

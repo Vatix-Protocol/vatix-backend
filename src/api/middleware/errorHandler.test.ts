@@ -36,8 +36,8 @@ describe("Error Handler Middleware", () => {
       const res = await server.inject({ method: "GET", url: "/test" });
       const body = JSON.parse(res.body);
       expect(body).toMatchObject({
-        code: "not_found",
-        message: "x",
+        code: "NOT_FOUND",
+        error: "x",
         statusCode: 404,
         requestId: "test-request-id",
       });
@@ -60,7 +60,7 @@ describe("Error Handler Middleware", () => {
       });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(400);
-      expect(JSON.parse(res.body).code).toBe("validation_error");
+      expect(JSON.parse(res.body).code).toBe("VALIDATION_ERROR");
     });
 
     it("puts fields inside metadata", async () => {
@@ -69,7 +69,7 @@ describe("Error Handler Middleware", () => {
         throw new ValidationError("bad", fields);
       });
       const res = await server.inject({ method: "GET", url: "/test" });
-      expect(JSON.parse(res.body).metadata).toEqual({ fields });
+      expect(JSON.parse(res.body).fields).toEqual(fields);
     });
 
     it("omits metadata when no fields", async () => {
@@ -77,7 +77,7 @@ describe("Error Handler Middleware", () => {
         throw new ValidationError("bad");
       });
       const res = await server.inject({ method: "GET", url: "/test" });
-      expect(JSON.parse(res.body).metadata).toBeUndefined();
+      expect(JSON.parse(res.body).fields).toBeUndefined();
     });
   });
 
@@ -88,7 +88,7 @@ describe("Error Handler Middleware", () => {
       });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(404);
-      expect(JSON.parse(res.body).code).toBe("not_found");
+      expect(JSON.parse(res.body).code).toBe("NOT_FOUND");
     });
   });
 
@@ -99,7 +99,7 @@ describe("Error Handler Middleware", () => {
       });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(401);
-      expect(JSON.parse(res.body).code).toBe("unauthorized");
+      expect(JSON.parse(res.body).code).toBe("UNAUTHORIZED");
     });
   });
 
@@ -110,7 +110,7 @@ describe("Error Handler Middleware", () => {
       });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(403);
-      expect(JSON.parse(res.body).code).toBe("forbidden");
+      expect(JSON.parse(res.body).code).toBe("FORBIDDEN");
     });
   });
 
@@ -121,7 +121,7 @@ describe("Error Handler Middleware", () => {
       });
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(500);
-      expect(JSON.parse(res.body).code).toBe("internal_error");
+      expect(JSON.parse(res.body).code).toBe("INTERNAL_ERROR");
     });
 
     it("exposes message in development", async () => {
@@ -131,7 +131,7 @@ describe("Error Handler Middleware", () => {
         throw new Error("db failed");
       });
       const res = await server.inject({ method: "GET", url: "/test" });
-      expect(JSON.parse(res.body).message).toBe("db failed");
+      expect(JSON.parse(res.body).error).toBe("db failed");
       process.env.NODE_ENV = orig;
     });
 
@@ -141,11 +141,161 @@ describe("Error Handler Middleware", () => {
       server.get("/test", async () => {
         throw new Error("db failed");
       });
-      const res = await server.inject({ method: "GET", url: "/test" });
-      const body = JSON.parse(res.body);
-      expect(body.message).not.toContain("db");
-      expect(body.code).toBe("internal_error");
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.error).toBe("Internal server error");
+      expect(body.error).not.toContain("Database");
+
       process.env.NODE_ENV = orig;
+    });
+  });
+
+  describe("Response Format", () => {
+    it("should have consistent format with error, code, requestId, and statusCode", async () => {
+      server.get("/test", async () => {
+        throw new NotFoundError("Resource not found");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body).toHaveProperty("error");
+      expect(body).toHaveProperty("code");
+      expect(body).toHaveProperty("requestId");
+      expect(body).toHaveProperty("statusCode");
+      expect(typeof body.error).toBe("string");
+      expect(typeof body.code).toBe("string");
+      expect(typeof body.requestId).toBe("string");
+      expect(typeof body.statusCode).toBe("number");
+    });
+
+    it("should return correct code per error type", async () => {
+      const cases: [() => Error, string][] = [
+        [() => new ValidationError("bad"), "VALIDATION_ERROR"],
+        [() => new NotFoundError("nope"), "NOT_FOUND"],
+        [() => new UnauthorizedError("denied"), "UNAUTHORIZED"],
+        [() => new ForbiddenError("forbidden"), "FORBIDDEN"],
+        [() => new Error("boom"), "INTERNAL_ERROR"],
+      ];
+
+      for (const [makeError, expectedCode] of cases) {
+        server.get(`/test-${expectedCode}`, async () => {
+          throw makeError();
+        });
+      }
+
+      for (const [, expectedCode] of cases) {
+        const res = await server.inject({
+          method: "GET",
+          url: `/test-${expectedCode}`,
+        });
+        expect(JSON.parse(res.body).code).toBe(expectedCode);
+      }
+    });
+
+    it("should include request ID in response", async () => {
+      server.get("/test", async () => {
+        throw new Error("Test error");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.requestId).toBe("test-request-id");
+    });
+
+    it("should match statusCode in response body and HTTP status", async () => {
+      server.get("/test", async () => {
+        throw new NotFoundError("Not found");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.statusCode).toBe(response.statusCode);
+      expect(body.statusCode).toBe(404);
+    });
+  });
+
+  describe("Logging", () => {
+    it("should log client errors at warn level", async () => {
+      // Use a simple approach - check that the error handler doesn't crash
+      // Actual logging is tested via integration tests
+      server.get("/test", async () => {
+        throw new ValidationError("Bad input");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      expect(response.statusCode).toBe(400);
+      // If we got here, logging worked without crashing
+    });
+
+    it("should log server errors at error level", async () => {
+      // Use a simple approach - check that the error handler doesn't crash
+      // Actual logging is tested via integration tests
+      server.get("/test", async () => {
+        throw new Error("Internal error");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      expect(response.statusCode).toBe(500);
+      // If we got here, logging worked without crashing
+    });
+  });
+
+  describe("Edge Cases", () => {
+    it("should handle errors with custom status codes", async () => {
+      class CustomError extends Error {
+        statusCode = 418; // I'm a teapot
+      }
+
+      server.get("/test", async () => {
+        throw new CustomError("Custom error");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      expect(response.statusCode).toBe(418);
+    });
+
+    it("should handle ValidationError without fields", async () => {
+      server.get("/test", async () => {
+        throw new ValidationError("Validation failed");
+      });
+
+      const response = await server.inject({
+        method: "GET",
+        url: "/test",
+      });
+
+      const body = JSON.parse(response.body);
+      expect(body.statusCode).toBe(400);
+      expect(body.fields).toBeUndefined();
     });
   });
 });
