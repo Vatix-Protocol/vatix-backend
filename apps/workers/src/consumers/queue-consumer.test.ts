@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   processJob,
+  JobTimeoutError,
   type QueueJob,
   type QueueConsumerConfig,
   type JobHandler,
@@ -175,5 +176,88 @@ describe("Queue Consumer — processJob", () => {
         error: "string error",
       })
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Timeout enforcement (reliability pass 038)
+  // -------------------------------------------------------------------------
+
+  it("rejects with JobTimeoutError when handler exceeds processingTimeoutMs", async () => {
+    vi.useFakeTimers();
+
+    // Handler that never resolves within the timeout window
+    const handler: JobHandler = vi
+      .fn()
+      .mockImplementation(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10_000))
+      );
+    const config = makeConfig({ processingTimeoutMs: 100 });
+    const job = makeJob();
+
+    const promise = processJob(logger, config, job, handler);
+
+    // Advance time past the timeout threshold
+    vi.advanceTimersByTime(150);
+
+    await expect(promise).rejects.toBeInstanceOf(JobTimeoutError);
+
+    vi.useRealTimers();
+  });
+
+  it("logs warn with timedOut context when handler times out", async () => {
+    vi.useFakeTimers();
+
+    const handler: JobHandler = vi
+      .fn()
+      .mockImplementation(
+        () => new Promise<void>((resolve) => setTimeout(resolve, 10_000))
+      );
+    const config = makeConfig({ processingTimeoutMs: 100 });
+    const job = makeJob();
+
+    const promise = processJob(logger, config, job, handler);
+    vi.advanceTimersByTime(150);
+
+    await expect(promise).rejects.toBeInstanceOf(JobTimeoutError);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Job processing timed out",
+      expect.objectContaining({
+        jobId: "job-1",
+        queue: "test-queue",
+        processingTimeoutMs: 100,
+      })
+    );
+
+    vi.useRealTimers();
+  });
+
+  it("does not trigger timeout when handler resolves before the deadline", async () => {
+    vi.useFakeTimers();
+
+    const handler: JobHandler = vi.fn().mockResolvedValue(undefined);
+    const config = makeConfig({ processingTimeoutMs: 5000 });
+    const job = makeJob();
+
+    const promise = processJob(logger, config, job, handler);
+
+    // Handler resolves synchronously (mocked), time does not matter
+    await promise;
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "Job processed successfully",
+      expect.objectContaining({ jobId: "job-1" })
+    );
+
+    vi.useRealTimers();
+  });
+
+  it("JobTimeoutError carries jobId and timeoutMs", () => {
+    const err = new JobTimeoutError("job-42", 3000);
+    expect(err.jobId).toBe("job-42");
+    expect(err.timeoutMs).toBe(3000);
+    expect(err.name).toBe("JobTimeoutError");
+    expect(err.message).toContain("job-42");
+    expect(err.message).toContain("3000");
   });
 });
