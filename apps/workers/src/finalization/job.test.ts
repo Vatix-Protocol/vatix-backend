@@ -560,4 +560,87 @@ describe("FinalizationJob", () => {
       });
     });
   });
+
+  describe("maxRunMs elapsed-time guard", () => {
+    it("processes all candidates when maxRunMs is 0 (disabled)", async () => {
+      const candidates = [
+        makeCandidate({ id: "c1", marketId: "m1" }),
+        makeCandidate({ id: "c2", marketId: "m2" }),
+      ];
+      const prisma = makePrisma(candidates);
+      const job = new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds: 3600,
+        maxRunMs: 0,
+      });
+
+      const result = await job.run();
+
+      expect(result.totalCandidates).toBe(2);
+      expect(result.finalizedCount).toBe(2);
+    });
+
+    it("stops early when elapsed time exceeds maxRunMs", async () => {
+      vi.useFakeTimers();
+      try {
+        const candidates = [
+          makeCandidate({ id: "c1", marketId: "m1" }),
+          makeCandidate({ id: "c2", marketId: "m2" }),
+          makeCandidate({ id: "c3", marketId: "m3" }),
+        ];
+
+        // Each $transaction call advances fake time by 200 ms
+        const { tx } = makeTx();
+        const transaction = vi.fn().mockImplementation(
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
+            await vi.advanceTimersByTimeAsync(200);
+            return fn(tx);
+          }
+        );
+        const prisma = {
+          resolutionCandidate: { findMany: vi.fn().mockResolvedValue(candidates) },
+          $transaction: transaction,
+        } as unknown as PrismaClient;
+
+        const logger = makeLogger();
+        // Allow only 300 ms → first candidate (200 ms) fits, second is blocked
+        const job = new FinalizationJob(prisma, logger, {
+          challengeWindowSeconds: 3600,
+          maxRunMs: 300,
+        });
+
+        const result = await job.run();
+
+        // Only the first candidate was processed before the guard triggered
+        expect(result.finalizedCount).toBe(1);
+        expect(result.totalCandidates).toBe(3);
+        expect(logger.warn).toHaveBeenCalledWith(
+          "Finalization job exceeded maxRunMs, stopping early",
+          expect.objectContaining({ maxRunMs: 300 })
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not stop early when all candidates finish within maxRunMs", async () => {
+      const candidates = [
+        makeCandidate({ id: "c1", marketId: "m1" }),
+        makeCandidate({ id: "c2", marketId: "m2" }),
+      ];
+      const prisma = makePrisma(candidates);
+      const logger = makeLogger();
+      const job = new FinalizationJob(prisma, logger, {
+        challengeWindowSeconds: 3600,
+        maxRunMs: 60_000,
+      });
+
+      const result = await job.run();
+
+      expect(result.finalizedCount).toBe(2);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        "Finalization job exceeded maxRunMs, stopping early",
+        expect.anything()
+      );
+    });
+  });
 });
