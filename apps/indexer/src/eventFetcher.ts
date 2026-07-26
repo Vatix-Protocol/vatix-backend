@@ -12,6 +12,12 @@ import { isTransientError, sleep } from "./retry.js";
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const DEFAULT_PAGE_LIMIT = 100;
+/**
+ * Default per-page RPC fetch timeout (ms). A single getEvents call that
+ * hangs longer than this is aborted and treated as a transient failure so
+ * the retry/backoff logic can take over.  Set fetchTimeoutMs: 0 to disable.
+ */
+const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 
 /**
  * Maximum consecutive RPC failures before the fetcher enters a disconnected
@@ -43,6 +49,7 @@ export class EventFetcher {
       maxRetries: DEFAULT_MAX_RETRIES,
       retryDelayMs: DEFAULT_RETRY_DELAY_MS,
       pageLimit: DEFAULT_PAGE_LIMIT,
+      fetchTimeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
       ...config,
     };
     this.server = new StellarRpc.Server(this.config.rpcUrl);
@@ -119,16 +126,40 @@ export class EventFetcher {
     startLedger: number,
     cursor?: string
   ): Promise<StellarRpc.Api.GetEventsResponse> {
-    const { maxRetries, retryDelayMs, pageLimit, contractId } = this.config;
+    const { maxRetries, retryDelayMs, pageLimit, contractId, fetchTimeoutMs } =
+      this.config;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const response = await this.server.getEvents({
+        const fetchCall = this.server.getEvents({
           startLedger,
           filters: [{ contractIds: [contractId] }],
           limit: pageLimit,
           ...(cursor ? ({ cursor } as any) : {}),
         } as any);
+
+        // Wrap with a per-page timeout when fetchTimeoutMs > 0 so a stalled
+        // RPC endpoint cannot block the ingestion loop indefinitely.
+        const response: StellarRpc.Api.GetEventsResponse =
+          fetchTimeoutMs > 0
+            ? await Promise.race([
+                fetchCall,
+                new Promise<never>((_, reject) =>
+                  setTimeout(
+                    () =>
+                      reject(
+                        Object.assign(
+                          new Error(
+                            `EventFetcher: getEvents timed out after ${fetchTimeoutMs}ms`
+                          ),
+                          { code: "ETIMEDOUT" }
+                        )
+                      ),
+                    fetchTimeoutMs
+                  )
+                ),
+              ])
+            : await fetchCall;
 
         // Success — reset the consecutive disconnection counter
         this.consecutiveDisconnections = 0;

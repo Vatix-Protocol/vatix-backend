@@ -276,4 +276,102 @@ describe("EventFetcher", () => {
       expect(fetcher.getConsecutiveDisconnections()).toBe(7);
     });
   });
-});
+
+  describe("per-page fetch timeout", () => {
+    it("aborts a hanging getEvents call after fetchTimeoutMs and treats it as transient", async () => {
+      vi.useFakeTimers();
+      try {
+        const mockServer = {
+          getEvents: vi.fn(
+            () =>
+              new Promise<never>(() => {
+                /* never resolves — simulates a hung RPC */
+              })
+          ),
+        };
+
+        const fetcher = new EventFetcher(
+          {
+            rpcUrl: "https://rpc.example.com",
+            contractId: "CTEST",
+            fetchTimeoutMs: 5_000,
+            maxRetries: 0,
+            retryDelayMs: 0,
+          },
+          telemetry
+        );
+        (fetcher as any).server = mockServer;
+
+        const fetchPromise = fetcher
+          .fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+          .catch((e) => e);
+
+        await vi.advanceTimersByTimeAsync(5_001);
+        const result = await fetchPromise;
+
+        expect(result).toBeInstanceOf(Error);
+        expect((result as Error).message).toMatch(/timed out/i);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("records a transient disconnection metric on timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const mockServer = {
+          getEvents: vi.fn(
+            () =>
+              new Promise<never>(() => {
+                /* never resolves */
+              })
+          ),
+        };
+
+        const fetcher = new EventFetcher(
+          {
+            rpcUrl: "https://rpc.example.com",
+            contractId: "CTEST",
+            fetchTimeoutMs: 3_000,
+            maxRetries: 0,
+            retryDelayMs: 0,
+          },
+          telemetry
+        );
+        (fetcher as any).server = mockServer;
+
+        const fetchPromise = fetcher
+          .fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+          .catch(() => {});
+
+        await vi.advanceTimersByTimeAsync(3_001);
+        await fetchPromise;
+
+        const disconnectionMetric = recorded.find(
+          (r) => r.metric === "indexer.rpc.disconnection"
+        );
+        expect(disconnectionMetric).toBeDefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("skips the timeout when fetchTimeoutMs is 0", async () => {
+      const server = makeMockServer([[makeEvent(1)]]);
+      const fetcher = new EventFetcher(
+        {
+          rpcUrl: "https://rpc.example.com",
+          contractId: "CTEST",
+          fetchTimeoutMs: 0,
+        },
+        telemetry
+      );
+      (fetcher as any).server = server;
+
+      const result = await fetcher.fetchByLedgerWindow({
+        startLedger: 1,
+        endLedger: 1,
+      });
+      expect(result.events).toHaveLength(1);
+    });
+  });
