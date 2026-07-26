@@ -98,6 +98,21 @@ class RedisService {
    * `null` and crashes the caller. Routing everything through the pending
    * `connectionPromise` makes those states resolve gracefully instead.
    */
+  /**
+   * Return the active Redis client instance.
+   * Throws if the client is not yet connected or has been closed.
+   * Always call `ensureConnected()` before using this method so
+   * the connection is guaranteed to be live.
+   */
+  private getClient(): Redis {
+    if (!this.client) {
+      throw new Error(
+        "Redis client is not connected. Call ensureConnected() first."
+      );
+    }
+    return this.client;
+  }
+
   private async ensureConnected(): Promise<Redis> {
     if (!this.client) {
       if (!this.connectionPromise) {
@@ -535,10 +550,13 @@ class RedisService {
    * Returns true when the key was set, false when it already existed.
    * When a TTL is provided, the key auto-expires after that many seconds (EX).
    */
-  async setnx(key: string, value: string, ttlSeconds?: number): Promise<boolean> {
+  async setnx(
+    key: string,
+    value: string,
+    ttlSeconds?: number
+  ): Promise<boolean> {
     try {
-      await this.ensureConnected();
-      const client = this.getClient();
+      const client = await this.ensureConnected();
       const result =
         ttlSeconds !== undefined
           ? await client.set(key, value, "EX", ttlSeconds, "NX")
