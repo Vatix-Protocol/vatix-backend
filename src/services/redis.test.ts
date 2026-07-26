@@ -315,6 +315,68 @@ describe("RedisService", () => {
   });
 
   // =========================================================================
+  // setnx — atomic SET NX with optional TTL (reliability pass 037)
+  // =========================================================================
+  describe("setnx", () => {
+    const key = "test:setnx:key";
+
+    afterEach(async () => {
+      await redis.del(key);
+    });
+
+    it("sets the key and returns true when the key does not exist", async () => {
+      const set = await redis.setnx(key, "val");
+      expect(set).toBe(true);
+      const stored = await redis.get(key);
+      expect(stored).toBe("val");
+    });
+
+    it("returns false when the key already exists and leaves the original value unchanged", async () => {
+      await redis.set(key, "original");
+      const set = await redis.setnx(key, "new-value");
+      expect(set).toBe(false);
+      const stored = await redis.get(key);
+      expect(stored).toBe("original");
+    });
+
+    it("applies TTL when ttlSeconds is provided", async () => {
+      const set = await redis.setnx(key, "expiring", 1);
+      expect(set).toBe(true);
+
+      const existsImmediately = await redis.exists(key);
+      expect(existsImmediately).toBe(true);
+
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+
+      const existsAfterTtl = await redis.exists(key);
+      expect(existsAfterTtl).toBe(false);
+    });
+
+    it("does not apply TTL when ttlSeconds is omitted", async () => {
+      const svc = new RedisService();
+      const testKey = "test:setnx:no-ttl";
+      await svc.setnx(testKey, "persistent");
+
+      // Key should still be present after a short wait
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const exists = await svc.exists(testKey);
+      expect(exists).toBe(true);
+
+      await svc.del(testKey);
+      await svc.disconnect();
+    });
+
+    it("succeeds as the very first operation on a cold instance (getClient resilience)", async () => {
+      const svc = new RedisService();
+      const testKey = "test:setnx:cold-start";
+      const set = await svc.setnx(testKey, "cold");
+      expect(set).toBe(true);
+      await svc.del(testKey);
+      await svc.disconnect();
+    });
+  });
+
+  // =========================================================================
   // Redis key prefix enforcement (closes #619)
   // =========================================================================
   describe("key prefix enforcement", () => {
