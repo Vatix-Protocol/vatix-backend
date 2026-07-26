@@ -161,4 +161,10 @@ export interface EventFetcherConfig {
   maxRetries?: number;
   retryDelayMs?: number;
   pageLimit?: number;
+  /**
+   * Per-page RPC fetch timeout in milliseconds. A getEvents call that takes
+   * longer than this is aborted with a TimeoutError (treated as transient).
+   * Set to 0 to disable. Defaults to 15 000 ms.
+   */
+  fetchTimeoutMs?: number;
 }
