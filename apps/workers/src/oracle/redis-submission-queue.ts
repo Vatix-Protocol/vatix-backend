@@ -37,6 +37,13 @@ export interface RedisSubmissionQueueConfig {
   logger: ILogger;
   /** Optional key prefix override. Falls back to REDIS_KEY_PREFIX env var (default: "vatix:"). */
   keyPrefix?: string;
+  /**
+   * Maximum number of entries to retain in the Redis stream (approximate,
+   * uses XADD MAXLEN ~ semantics). Older entries beyond this cap are trimmed
+   * by Redis automatically. Set to 0 to disable trimming (default: 0).
+   * Recommended production value: 10 000.
+   */
+  maxStreamLength?: number;
 }
 
 export interface QueuedSubmission extends SubmissionQueueItem {
@@ -54,6 +61,8 @@ export class RedisSubmissionQueue {
   private logger: ILogger;
   /** Fully-qualified Redis stream key (prefix + base name). */
   private streamKey: string;
+  /** Approximate maximum number of entries kept in the stream. 0 = unlimited. */
+  private maxStreamLength: number;
 
   constructor(config: RedisSubmissionQueueConfig) {
     this.redisClient = config.redisClient;
@@ -61,6 +70,7 @@ export class RedisSubmissionQueue {
     this.deduplicationTtlSeconds = config.deduplicationTtlSeconds ?? 86400;
     this.logger = config.logger;
     this.streamKey = buildStreamKey(config.keyPrefix);
+    this.maxStreamLength = config.maxStreamLength ?? 0;
   }
 
   /**
@@ -197,16 +207,35 @@ export class RedisSubmissionQueue {
       return false;
     }
 
-    const streamId = await this.redisClient.xadd(
-      this.streamKey,
-      "*",
-      "payload",
-      JSON.stringify(item),
-      "marketId",
-      marketId,
-      "payloadHash",
-      payloadHash
-    );
+    // Use XADD MAXLEN ~ to cap stream size when maxStreamLength is configured.
+    // The tilde (~) makes the trim approximate for better performance.
+    const xaddArgs: any[] =
+      this.maxStreamLength > 0
+        ? [
+            this.streamKey,
+            "MAXLEN",
+            "~",
+            String(this.maxStreamLength),
+            "*",
+            "payload",
+            JSON.stringify(item),
+            "marketId",
+            marketId,
+            "payloadHash",
+            payloadHash,
+          ]
+        : [
+            this.streamKey,
+            "*",
+            "payload",
+            JSON.stringify(item),
+            "marketId",
+            marketId,
+            "payloadHash",
+            payloadHash,
+          ];
+
+    const streamId = await this.redisClient.xadd(...xaddArgs);
 
     await this.markAsQueued(marketId, payloadHash, streamId);
     await this.markMarketInFlight(marketId, streamId);
@@ -220,6 +249,15 @@ export class RedisSubmissionQueue {
     });
 
     return true;
+  }
+
+  /**
+   * Return the current number of entries in the Redis stream.
+   * Useful for health checks and operational dashboards.
+   */
+  async getStreamLength(): Promise<number> {
+    const len = await this.redisClient.xlen(this.streamKey);
+    return typeof len === "number" ? len : 0;
   }
 
   /**
