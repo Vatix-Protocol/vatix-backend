@@ -318,3 +318,137 @@ describe("PollingIngestionLoop", () => {
     expect(storage.saveCursor).toHaveBeenCalledWith("110");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Stale / corrupted cursor detection (reliability pass 040)
+// ---------------------------------------------------------------------------
+describe("PollingIngestionLoop — stale cursor handling", () => {
+  let logger: ILogger;
+  let storage: CursorStorageClient;
+  let metrics: InternalIndexerMetricsService;
+  let eventFetcher: EventFetcher;
+  let batchWriter: BatchWriter;
+
+  beforeEach(() => {
+    logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      child: vi.fn().mockReturnValue({
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        child: vi.fn(),
+      }),
+    };
+    storage = {
+      loadCursor: vi.fn().mockResolvedValue(null),
+      saveCursor: vi.fn().mockResolvedValue(undefined),
+    };
+    metrics = {
+      setLatestIndexedLedgerSequence: vi.fn(),
+      getLatestIndexedLedgerSequence: vi.fn().mockReturnValue(0),
+      setLatestNetworkLedgerSequence: vi.fn(),
+      getLatestNetworkLedgerSequence: vi.fn().mockReturnValue(100),
+      getLag: vi.fn().mockReturnValue(100),
+      toLogFields: vi.fn().mockReturnValue({}),
+    } as unknown as InternalIndexerMetricsService;
+    eventFetcher = {
+      fetchByLedgerWindow: vi.fn().mockResolvedValue({
+        events: [],
+        latestLedger: 100,
+      }),
+    } as unknown as EventFetcher;
+    batchWriter = {
+      write: vi.fn().mockResolvedValue({ written: 0, skipped: 0, errors: [] }),
+      flush: vi.fn().mockResolvedValue(undefined),
+    };
+  });
+
+  function createLoop() {
+    return new PollingIngestionLoop(logger, storage, metrics, 5_000, 10, {
+      eventFetcher,
+      batchWriter,
+      contractId: "CTEST",
+      ledgerWindowSize: 100,
+    });
+  }
+
+  async function runIngest(loop: PollingIngestionLoop, cursor: string | null) {
+    return (
+      loop as unknown as {
+        ingestFromCursor(c: string | null): Promise<{
+          nextCursor: string;
+          lastIndexedLedgerSequence: number;
+          batchWriteSucceeded: boolean;
+        }>;
+      }
+    ).ingestFromCursor(cursor);
+  }
+
+  it("emits a warn log when cursor is a non-numeric string", async () => {
+    const loop = createLoop();
+    await runIngest(loop, "not-a-number");
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Stale or corrupted cursor detected — resetting to ledger 0",
+      expect.objectContaining({
+        cursor: "not-a-number",
+        action: "reset_to_zero",
+      })
+    );
+  });
+
+  it("emits a warn log when cursor is NaN (e.g. 'NaN')", async () => {
+    const loop = createLoop();
+    await runIngest(loop, "NaN");
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "Stale or corrupted cursor detected — resetting to ledger 0",
+      expect.objectContaining({ cursor: "NaN" })
+    );
+  });
+
+  it("does not emit a warn log for a valid numeric cursor", async () => {
+    const loop = createLoop();
+    await runIngest(loop, "42");
+
+    const warnCalls = (logger.warn as ReturnType<typeof vi.fn>).mock.calls;
+    const staleCursorWarns = warnCalls.filter((c) =>
+      String(c[0]).includes("Stale or corrupted cursor")
+    );
+    expect(staleCursorWarns).toHaveLength(0);
+  });
+
+  it("does not emit a warn log for a null cursor (fresh start)", async () => {
+    const loop = createLoop();
+    await runIngest(loop, null);
+
+    const warnCalls = (logger.warn as ReturnType<typeof vi.fn>).mock.calls;
+    const staleCursorWarns = warnCalls.filter((c) =>
+      String(c[0]).includes("Stale or corrupted cursor")
+    );
+    expect(staleCursorWarns).toHaveLength(0);
+  });
+
+  it("uses ledger 0 as the safe start when cursor is corrupted", async () => {
+    const loop = createLoop();
+    await runIngest(loop, "garbage-cursor");
+
+    // With safeCurrentSequence = 0, startLedger = 1
+    expect(eventFetcher.fetchByLedgerWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ startLedger: 1 })
+    );
+  });
+
+  it("processes normally after recovering from a corrupted cursor", async () => {
+    const loop = createLoop();
+    const result = await runIngest(loop, "corrupt!cursor");
+
+    // Should not throw — processing should complete
+    expect(result).toBeDefined();
+    expect(typeof result.nextCursor).toBe("string");
+  });
+});
