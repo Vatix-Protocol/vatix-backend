@@ -15,6 +15,7 @@ import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client/index.js";
 import { sanitizeForJson } from "./safeJson.js";
+import { sleep } from "./retry.js";
 
 export type BatchRecord =
   | { kind: "trade"; data: PersistedTrade }
@@ -43,6 +44,35 @@ const CHAIN_RESOLUTION_SOURCE_PREFIX = "chain:market_resolved";
 const UNKNOWN_OPERATOR_ADDRESS =
   "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
+/**
+ * Prisma/Postgres error codes that are safe to retry — the operation did not
+ * partially commit so repeating it is idempotent given the write-idempotency
+ * guarantees already in place.
+ *
+ * P1001 — Cannot reach database server
+ * P1008 — Operations timed out
+ * P1017 — Server closed the connection
+ * 40001 — Serialization failure (Postgres)
+ * 40P01 — Deadlock detected (Postgres)
+ */
+const RETRYABLE_PRISMA_CODES = new Set([
+  "P1001",
+  "P1008",
+  "P1017",
+  "40001",
+  "40P01",
+]);
+
+const BATCH_WRITE_MAX_RETRIES = 3;
+const BATCH_WRITE_RETRY_DELAY_MS = 200;
+
+function isBatchWriteRetryable(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code: string =
+    (err as any).code ?? (err as any).errorCode ?? "";
+  return RETRYABLE_PRISMA_CODES.has(code);
+}
+
 export class PrismaBatchWriter implements BatchWriter {
   private readonly prisma = getPrismaClient();
 
@@ -62,74 +92,109 @@ export class PrismaBatchWriter implements BatchWriter {
         }
       : undefined;
 
-    await this.prisma.$transaction(async (tx) => {
-      const keyedRecords = records.map((record) => ({
-        ...record,
-        idempotencyKey: record.data.idempotencyKey,
-      }));
-      const recordByKey = new Map(
-        records.map((record) => [record.data.idempotencyKey, record])
-      );
+    // Retry the transaction on transient DB errors (connection reset,
+    // serialisation failures, deadlocks). Each batch is idempotent thanks to
+    // the indexerProcessedEvent deduplication layer so retrying is safe.
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= BATCH_WRITE_MAX_RETRIES; attempt++) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          // Reset per-attempt counters inside the transaction so a retry
+          // starts from a clean slate.
+          written = 0;
+          skipped = 0;
+          errors.length = 0;
 
-      const deduped = await insertAllIfNew(
-        keyedRecords,
-        async (record) => {
-          const existing = await tx.indexerProcessedEvent.findUnique({
-            where: { idempotencyKey: record.idempotencyKey },
-          });
+          const keyedRecords = records.map((record) => ({
+            ...record,
+            idempotencyKey: record.data.idempotencyKey,
+          }));
+          const recordByKey = new Map(
+            records.map((record) => [record.data.idempotencyKey, record])
+          );
 
-          return existing ? null : record;
-        },
-        { logger: duplicateLogger }
-      );
+          const deduped = await insertAllIfNew(
+            keyedRecords,
+            async (record) => {
+              const existing = await tx.indexerProcessedEvent.findUnique({
+                where: { idempotencyKey: record.idempotencyKey },
+              });
 
-      skipped += deduped.duplicateCount;
-
-      for (const dedupedRecord of deduped.inserted) {
-        const record = recordByKey.get(dedupedRecord.idempotencyKey);
-        if (!record) {
-          continue;
-        }
-
-        try {
-          const result = await insertIfNew(
-            record.data,
-            async (persisted) =>
-              this.persistRecord(
-                tx,
-                record,
-                persisted as
-                  | PersistedTrade
-                  | PersistedResolution
-                  | PersistedCollateralDeposit
-                  | PersistedMarketCreated
-              ),
+              return existing ? null : record;
+            },
             { logger: duplicateLogger }
           );
 
-          if (result.status === "inserted") {
-            written += 1;
-          } else {
-            skipped += 1;
-          }
-        } catch (error) {
-          const serializedRecord = sanitizeForJson(record) as Record<
-            string,
-            unknown
-          >;
-          errors.push({
-            record: serializedRecord,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          this.logger?.warn("Failed to persist indexer batch record", {
-            record: serializedRecord,
-            error: sanitizeForJson(error),
-          });
-        }
-      }
-    });
+          skipped += deduped.duplicateCount;
 
-    return { written, skipped, errors };
+          for (const dedupedRecord of deduped.inserted) {
+            const record = recordByKey.get(dedupedRecord.idempotencyKey);
+            if (!record) {
+              continue;
+            }
+
+            try {
+              const result = await insertIfNew(
+                record.data,
+                async (persisted) =>
+                  this.persistRecord(
+                    tx,
+                    record,
+                    persisted as
+                      | PersistedTrade
+                      | PersistedResolution
+                      | PersistedCollateralDeposit
+                      | PersistedMarketCreated
+                  ),
+                { logger: duplicateLogger }
+              );
+
+              if (result.status === "inserted") {
+                written += 1;
+              } else {
+                skipped += 1;
+              }
+            } catch (error) {
+              const serializedRecord = sanitizeForJson(record) as Record<
+                string,
+                unknown
+              >;
+              errors.push({
+                record: serializedRecord,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              this.logger?.warn("Failed to persist indexer batch record", {
+                record: serializedRecord,
+                error: sanitizeForJson(error),
+              });
+            }
+          }
+        });
+
+        // Transaction succeeded — exit the retry loop
+        return { written, skipped, errors };
+      } catch (err) {
+        lastError = err;
+        const isLast = attempt === BATCH_WRITE_MAX_RETRIES;
+
+        if (!isLast && isBatchWriteRetryable(err)) {
+          const delay = BATCH_WRITE_RETRY_DELAY_MS * 2 ** attempt;
+          this.logger?.warn("Transient DB error in batch write, retrying", {
+            attempt: attempt + 1,
+            maxRetries: BATCH_WRITE_MAX_RETRIES,
+            delayMs: delay,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          await sleep(delay);
+          continue;
+        }
+
+        throw err;
+      }
+    }
+
+    // Unreachable — satisfies TypeScript
+    throw lastError;
   }
 
   async flush(): Promise<void> {
