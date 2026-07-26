@@ -6,6 +6,7 @@ import {
   rpc as StellarRpc,
   xdr,
 } from "@stellar/stellar-sdk";
+import { z } from "zod";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import {
   processJob,
@@ -14,10 +15,7 @@ import {
 } from "../consumers/queue-consumer.js";
 import { logDeadLetter } from "../consumers/dead-letter.js";
 import { withRetry } from "../../../oracle/retry-utils.js";
-import {
-  classifySettlementError,
-  annotateError,
-} from "./error-codes.js";
+import { classifySettlementError, annotateError } from "./error-codes.js";
 
 /** Retry config for individual Stellar RPC calls (getAccount, prepareTransaction,
  *  sendTransaction). Bounded and short-lived so a transient RPC blip is absorbed
@@ -27,6 +25,41 @@ const STELLAR_RPC_RETRY_CONFIG = {
   initialDelayMs: 500,
   maxDelayMs: 5_000,
 };
+
+/**
+ * Zod schema used to validate the raw job payload before processing.
+ * Any field that is missing, empty, or of the wrong type causes the job to be
+ * classified as INVALID_PAYLOAD and dead-lettered immediately (non-retryable).
+ */
+const SettlementPayloadSchema = z.object({
+  tradeId: z.string().min(1, "tradeId is required"),
+  marketId: z.string().min(1, "marketId is required"),
+  outcome: z.enum(["YES", "NO"], {
+    errorMap: () => ({ message: "outcome must be YES or NO" }),
+  }),
+  buyOrderId: z.string().min(1, "buyOrderId is required"),
+  sellOrderId: z.string().min(1, "sellOrderId is required"),
+  buyerAddress: z.string().min(1, "buyerAddress is required"),
+  sellerAddress: z.string().min(1, "sellerAddress is required"),
+  price: z
+    .string()
+    .min(1, "price is required")
+    .refine((v) => Number.isFinite(Number(v)) && Number(v) > 0, {
+      message: "price must be a positive numeric string",
+    }),
+  quantity: z
+    .string()
+    .min(1, "quantity is required")
+    .refine((v) => Number.isInteger(Number(v)) && Number(v) > 0, {
+      message: "quantity must be a positive integer string",
+    }),
+  timestamp: z
+    .string()
+    .min(1, "timestamp is required")
+    .refine((v) => Number.isFinite(Number(v)), {
+      message: "timestamp must be a numeric string",
+    }),
+});
 
 export interface SettlementJobPayload {
   tradeId: string;
@@ -120,7 +153,18 @@ export class SettlementWorker {
   }
 
   private async handleJob(job: QueueJob): Promise<void> {
-    const payload = job.payload as unknown as SettlementJobPayload;
+    // Validate the raw payload before touching any external resources.
+    // An invalid payload is a non-retryable client error — fail fast so the job
+    // is dead-lettered immediately rather than burning retry quota.
+    const parseResult = SettlementPayloadSchema.safeParse(job.payload);
+    if (!parseResult.success) {
+      const issues = parseResult.error.issues
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; ");
+      throw new Error(`invalid payload — ${issues}`);
+    }
+
+    const payload = parseResult.data as SettlementJobPayload;
     const { tradeId } = payload;
 
     const idempotencyKey = `settlement:processed:${tradeId}`;
