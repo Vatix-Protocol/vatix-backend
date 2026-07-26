@@ -13,6 +13,13 @@ export interface FinalizationJobConfig {
   /** How long (in seconds) a resolution candidate must sit in PROPOSED
    *  before it is eligible for finalization. Must be >= 0. */
   challengeWindowSeconds: number;
+  /**
+   * Maximum wall-clock time (ms) the job is allowed to run before it stops
+   * processing further candidates and returns a partial result.  This
+   * prevents a large backlog from blocking the scheduler for an unbounded
+   * amount of time.  Set to 0 to disable (no time limit).  Default: 0.
+   */
+  maxRunMs?: number;
 }
 
 export interface FinalizationCandidate {
@@ -47,6 +54,7 @@ class MarketNotEligibleError extends Error {
 
 export class FinalizationJob {
   private readonly challengeWindowSeconds: number;
+  private readonly maxRunMs: number;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -54,6 +62,7 @@ export class FinalizationJob {
     config: FinalizationJobConfig
   ) {
     this.challengeWindowSeconds = config.challengeWindowSeconds;
+    this.maxRunMs = config.maxRunMs ?? 0;
   }
 
   async run(): Promise<FinalizationJobResult> {
@@ -120,6 +129,17 @@ export class FinalizationJob {
     const results: FinalizationCandidateResult[] = [];
 
     for (const candidate of candidates) {
+      // Elapsed-time guard: stop processing if the job has exceeded maxRunMs.
+      // This prevents a large backlog from monopolising the scheduler slot.
+      if (this.maxRunMs > 0 && Date.now() - startedAt.getTime() >= this.maxRunMs) {
+        this.logger.warn("Finalization job exceeded maxRunMs, stopping early", {
+          maxRunMs: this.maxRunMs,
+          processedSoFar: results.length,
+          remainingCandidates: candidates.length - results.length,
+        });
+        break;
+      }
+
       this.logger.info("Finalization candidate eligible", {
         candidateId: candidate.id,
         marketId: candidate.marketId,
