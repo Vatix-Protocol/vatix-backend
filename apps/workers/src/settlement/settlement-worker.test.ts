@@ -374,6 +374,7 @@ describe("SettlementWorker — Stellar SDK invoke (executeOnChain)", () => {
     redisClient = {
       exists: vi.fn().mockResolvedValue(false),
       set: vi.fn().mockResolvedValue(undefined),
+      setnx: vi.fn().mockResolvedValue(true),
     };
     stellarWorker = new SettlementWorker(redisClient, logger, {
       maxAttempts: 3,
@@ -614,5 +615,147 @@ describe("SettlementWorker — Stellar SDK invoke (executeOnChain)", () => {
       // maxRetries: 3 => 1 initial attempt + 3 retries = 4 calls total.
       expect(mockGetAccount).toHaveBeenCalledTimes(4);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Payload validation tests (reliability pass 039)
+// ---------------------------------------------------------------------------
+describe("SettlementWorker — payload validation", () => {
+  let logger: ILogger;
+  let redisClient: SettlementRedisClient;
+  let worker: SettlementWorker;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      child: vi.fn(),
+    };
+    redisClient = {
+      exists: vi.fn().mockResolvedValue(false),
+      set: vi.fn().mockResolvedValue(undefined),
+      setnx: vi.fn().mockResolvedValue(true),
+    };
+    worker = new SettlementWorker(redisClient, logger, {
+      maxAttempts: 3,
+      processingTimeoutMs: 5_000,
+      idempotencyTtlSeconds: 86_400,
+    });
+  });
+
+  it("rejects with invalid payload error when tradeId is missing", async () => {
+    const job: QueueJob = {
+      id: "job-val-1",
+      attempts: 1,
+      payload: {
+        // tradeId intentionally omitted
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "0.65",
+        quantity: "100",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).rejects.toThrow("invalid payload");
+    expect(redisClient.setnx).not.toHaveBeenCalled();
+  });
+
+  it("rejects with invalid payload error when outcome is not YES or NO", async () => {
+    const job: QueueJob = {
+      id: "job-val-2",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-val-2",
+        marketId: "market-001",
+        outcome: "MAYBE",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "0.65",
+        quantity: "100",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).rejects.toThrow("invalid payload");
+    expect(redisClient.setnx).not.toHaveBeenCalled();
+  });
+
+  it("rejects with invalid payload error when price is not a positive number", async () => {
+    const job: QueueJob = {
+      id: "job-val-3",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-val-3",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "-0.5",
+        quantity: "100",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).rejects.toThrow("invalid payload");
+  });
+
+  it("rejects with invalid payload error when quantity is zero", async () => {
+    const job: QueueJob = {
+      id: "job-val-4",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-val-4",
+        marketId: "market-001",
+        outcome: "NO",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "0.50",
+        quantity: "0",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).rejects.toThrow("invalid payload");
+  });
+
+  it("proceeds normally when all payload fields are valid", async () => {
+    const job: QueueJob = {
+      id: "job-val-ok",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-val-ok",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "0.65",
+        quantity: "100",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).resolves.not.toThrow();
+    expect(redisClient.setnx).toHaveBeenCalledWith(
+      "settlement:processed:trade-val-ok",
+      "1",
+      86_400
+    );
   });
 });
