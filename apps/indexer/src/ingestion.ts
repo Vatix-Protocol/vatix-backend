@@ -209,10 +209,22 @@ export class PollingIngestionLoop implements IngestionLoop {
     this.logger.debug("Running ingestion tick", { cursor: currentCursor });
 
     const currentSequence = currentCursor ? Number(currentCursor) : 0;
-    const safeCurrentSequence =
-      Number.isFinite(currentSequence) && currentSequence >= 0
-        ? currentSequence
-        : 0;
+    const isValidCursor =
+      currentCursor === null ||
+      (Number.isFinite(currentSequence) && currentSequence >= 0);
+
+    if (!isValidCursor) {
+      this.logger.warn(
+        "Stale or corrupted cursor detected — resetting to ledger 0",
+        {
+          cursor: currentCursor,
+          parsedValue: currentSequence,
+          action: "reset_to_zero",
+        }
+      );
+    }
+
+    const safeCurrentSequence = isValidCursor ? currentSequence : 0;
 
     // Validate ledger window size bounds (Issue #711)
     if (this.deps.ledgerWindowSize < 1) {
