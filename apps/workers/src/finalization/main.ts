@@ -65,8 +65,31 @@ async function bootstrap(): Promise<void> {
     timeoutMs: 30_000,
     component: "finalization-worker",
     teardown: [
+      // Stop the scheduler first so no new polls are started.
       async () => {
         clearInterval(timer);
+      },
+      // Drain any in-flight poll before closing the DB connection.
+      // This ensures an active finalization transaction is never silently
+      // abandoned mid-flight on SIGTERM (acceptance: #777).
+      async () => {
+        if (activePollPromise) {
+          logger.info(
+            "Waiting for active finalization poll to complete before shutdown",
+            { component: "finalization-worker" }
+          );
+          // Best-effort drain — the outer createShutdown timeout will force-
+          // exit if this takes longer than the configured 30 s window.
+          await activePollPromise.catch((err: unknown) => {
+            logger.warn(
+              "In-flight finalization poll failed during graceful shutdown",
+              {
+                component: "finalization-worker",
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+          });
+        }
       },
       async () => {
         await disconnectPrisma();
