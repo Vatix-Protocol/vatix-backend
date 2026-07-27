@@ -1,5 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
-import { isTransientError, withRetry, RetryValidationError } from "./retry.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import {
+  isTransientError,
+  withRetry,
+  RetryValidationError,
+  jitteredBackoffMs,
+} from "./retry.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 // ─── isTransientError ────────────────────────────────────────────────────────
 
@@ -38,6 +45,39 @@ describe("isTransientError", () => {
     expect(isTransientError("string error")).toBe(false);
     expect(isTransientError(null)).toBe(false);
     expect(isTransientError(42)).toBe(false);
+  });
+});
+
+// ─── jitteredBackoffMs ─────────────────────────────────────────────────────────
+
+describe("jitteredBackoffMs", () => {
+  it("returns half the exponential delay when Math.random returns 0", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    expect(jitteredBackoffMs(100, 0)).toBe(50);
+    expect(jitteredBackoffMs(100, 2)).toBe(200);
+  });
+
+  it("approaches the full exponential delay as Math.random approaches 1", () => {
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    expect(jitteredBackoffMs(100, 0)).toBe(100);
+    expect(jitteredBackoffMs(100, 2)).toBe(400);
+  });
+
+  it("stays within [half, full] of the exponential delay", () => {
+    const base = 50;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const exponential = base * 2 ** attempt;
+      for (let i = 0; i < 20; i++) {
+        const delay = jitteredBackoffMs(base, attempt);
+        expect(delay).toBeGreaterThanOrEqual(exponential / 2);
+        expect(delay).toBeLessThanOrEqual(exponential);
+      }
+    }
+  });
+
+  it("returns 0 for a zero base delay regardless of attempt", () => {
+    expect(jitteredBackoffMs(0, 0)).toBe(0);
+    expect(jitteredBackoffMs(0, 5)).toBe(0);
   });
 });
 

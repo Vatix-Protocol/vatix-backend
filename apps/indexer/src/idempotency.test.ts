@@ -6,7 +6,11 @@ import {
   insertIfNew,
   insertAllIfNew,
 } from "./idempotency.js";
-import type { NormalizedTrade, NormalizedResolution } from "./types.js";
+import type {
+  NormalizedTrade,
+  NormalizedResolution,
+  NormalizedMarketCreated,
+} from "./types.js";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -40,6 +44,18 @@ const RESOLUTION: NormalizedResolution = {
   marketId: "market-xyz",
   outcome: "NO",
   oracleAddress: "GORACLE",
+};
+
+const MARKET_CREATED: NormalizedMarketCreated = {
+  eventId: "0000000010-0000000000-0000000001",
+  ledger: 10,
+  ledgerClosedAt: "2024-05-01T00:00:00Z",
+  contractId: CONTRACT,
+  marketId: "market-new",
+  question: "Will it rain tomorrow?",
+  endTime: "2024-12-31T00:00:00Z",
+  oracleAddress: "GORACLE",
+  status: "ACTIVE",
 };
 
 // ─── parseEventId ─────────────────────────────────────────────────────────────
@@ -164,6 +180,30 @@ describe("withIdempotencyKey", () => {
     expect(persisted.outcome).toBe(RESOLUTION.outcome);
   });
 
+  it("stamps a NormalizedMarketCreated with an idempotencyKey", () => {
+    const persisted = withIdempotencyKey(MARKET_CREATED);
+    expect(persisted.idempotencyKey).toMatch(/^[0-9a-f]{64}$/);
+    expect(persisted.marketId).toBe(MARKET_CREATED.marketId);
+  });
+
+  it("market-created key matches what generateIdempotencyKey produces independently", () => {
+    const expected = generateIdempotencyKey({
+      id: MARKET_CREATED.eventId,
+      contractId: MARKET_CREATED.contractId,
+    }).key;
+    expect(withIdempotencyKey(MARKET_CREATED).idempotencyKey).toBe(expected);
+  });
+
+  it("produces distinct keys for two different market-created events", () => {
+    const other: NormalizedMarketCreated = {
+      ...MARKET_CREATED,
+      eventId: "0000000011-0000000000-0000000001",
+    };
+    expect(withIdempotencyKey(MARKET_CREATED).idempotencyKey).not.toBe(
+      withIdempotencyKey(other).idempotencyKey
+    );
+  });
+
   it("key matches what generateIdempotencyKey produces independently", () => {
     const expected = generateIdempotencyKey({
       id: TRADE.eventId,
@@ -245,5 +285,29 @@ describe("insertIfNew", () => {
 
     expect(result).toEqual({ inserted: [later], duplicateCount: 1 });
     expect(upsert).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not insert a second market on a retried/duplicate market-created delivery (Issue #755)", async () => {
+    const persistedMarket = withIdempotencyKey(MARKET_CREATED);
+
+    // First delivery inserts the market; a retry (or duplicate RPC replay)
+    // of the same ledger/tx/event position must be a no-op, not a second
+    // market row.
+    const upsert = vi
+      .fn()
+      .mockResolvedValueOnce(persistedMarket)
+      .mockResolvedValueOnce(null);
+
+    const first = await insertIfNew(persistedMarket, upsert);
+    const second = await insertIfNew(persistedMarket, upsert);
+
+    expect(first.status).toBe("inserted");
+    expect(second.status).toBe("duplicate");
+    if (second.status === "duplicate") {
+      expect(second.key).toBe(persistedMarket.idempotencyKey);
+    }
+    expect(upsert).toHaveBeenCalledTimes(2);
+    expect(upsert).toHaveBeenNthCalledWith(1, persistedMarket);
+    expect(upsert).toHaveBeenNthCalledWith(2, persistedMarket);
   });
 });

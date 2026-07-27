@@ -6,11 +6,28 @@ import { InternalIndexerMetricsService } from "./metrics.js";
 import { PrismaCursorStorageClient } from "./storage.js";
 import { EventFetcher } from "./eventFetcher.js";
 import { PrismaBatchWriter } from "./batchWriter.js";
+import { checkStartupHealth } from "./startupHealth.js";
 import { disconnectPrisma } from "../../../src/services/prisma.js";
 
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
   const logger = createLogger(config.logLevel);
+
+  // Fail fast on missing required env (e.g. DATABASE_URL) before touching
+  // the database or starting the ingestion loop.
+  const health = checkStartupHealth({
+    cursor: null,
+    networkId: config.networkId,
+    cursorKey: config.cursorKey,
+    databaseUrl: process.env.DATABASE_URL,
+  });
+  if (!health.valid) {
+    logger.error("Indexer startup health check failed", {
+      errors: health.errors,
+    });
+    throw new Error(`Startup health check failed: ${health.errors.join("; ")}`);
+  }
+
   const metrics = new InternalIndexerMetricsService();
   const storage = new PrismaCursorStorageClient(
     config.networkId,

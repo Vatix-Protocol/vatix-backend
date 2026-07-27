@@ -7,7 +7,7 @@ import type {
 } from "./types.js";
 import type { Telemetry } from "./telemetry.js";
 import { consoleTelemetry } from "./telemetry.js";
-import { isTransientError, sleep } from "./retry.js";
+import { isTransientError, sleep, withRetry } from "./retry.js";
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
@@ -122,6 +122,10 @@ export class EventFetcher {
     return { events: allEvents, latestLedger };
   }
 
+  /**
+   * Fetch a single page, retrying transient RPC failures with the shared
+   * jittered-backoff policy in retry.ts (bounded by config.maxRetries).
+   */
   private async fetchPageWithRetry(
     startLedger: number,
     cursor?: string
@@ -129,80 +133,75 @@ export class EventFetcher {
     const { maxRetries, retryDelayMs, pageLimit, contractId, fetchTimeoutMs } =
       this.config;
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        const fetchCall = this.server.getEvents({
-          startLedger,
-          filters: [{ contractIds: [contractId] }],
-          limit: pageLimit,
-          ...(cursor ? ({ cursor } as any) : {}),
-        } as any);
+    let attempt = -1;
 
-        // Wrap with a per-page timeout when fetchTimeoutMs > 0 so a stalled
-        // RPC endpoint cannot block the ingestion loop indefinitely.
-        const response: StellarRpc.Api.GetEventsResponse =
-          fetchTimeoutMs > 0
-            ? await Promise.race([
-                fetchCall,
-                new Promise<never>((_, reject) =>
-                  setTimeout(
-                    () =>
-                      reject(
-                        Object.assign(
-                          new Error(
-                            `EventFetcher: getEvents timed out after ${fetchTimeoutMs}ms`
+    try {
+      return await withRetry(
+        async () => {
+          attempt++;
+          try {
+            const fetchCall = this.server.getEvents({
+              startLedger,
+              filters: [{ contractIds: [contractId] }],
+              limit: pageLimit,
+              ...(cursor ? ({ cursor } as any) : {}),
+            } as any);
+
+            // Wrap with a per-page timeout when fetchTimeoutMs > 0 so a
+            // stalled RPC endpoint cannot block the ingestion loop
+            // indefinitely.
+            const response: StellarRpc.Api.GetEventsResponse =
+              fetchTimeoutMs > 0
+                ? await Promise.race([
+                    fetchCall,
+                    new Promise<never>((_, reject) =>
+                      setTimeout(
+                        () =>
+                          reject(
+                            Object.assign(
+                              new Error(
+                                `EventFetcher: getEvents timed out after ${fetchTimeoutMs}ms`
+                              ),
+                              { code: "ETIMEDOUT" }
+                            )
                           ),
-                          { code: "ETIMEDOUT" }
-                        )
-                      ),
-                    fetchTimeoutMs
-                  )
-                ),
-              ])
-            : await fetchCall;
+                        fetchTimeoutMs
+                      )
+                    ),
+                  ])
+                : await fetchCall;
 
-        // Success — reset the consecutive disconnection counter
-        this.consecutiveDisconnections = 0;
+            // Success — reset the consecutive disconnection counter
+            this.consecutiveDisconnections = 0;
 
-        this.telemetry.record(
-          "indexer.rpc.page_fetched",
-          response.events.length,
-          {
-            attempt: String(attempt),
+            this.telemetry.record(
+              "indexer.rpc.page_fetched",
+              response.events.length,
+              {
+                attempt: String(attempt),
+              }
+            );
+
+            return response;
+          } catch (err) {
+            if (isTransientError(err)) {
+              this.consecutiveDisconnections++;
+              this.telemetry.record("indexer.rpc.disconnection", 1, {
+                consecutive: String(this.consecutiveDisconnections),
+              });
+            }
+            throw err;
           }
-        );
-
-        return response;
-      } catch (err) {
-        const isTransient = isTransientError(err);
-        const isLast = attempt === maxRetries;
-
-        if (isTransient) {
-          this.consecutiveDisconnections++;
-          this.telemetry.record("indexer.rpc.disconnection", 1, {
-            consecutive: String(this.consecutiveDisconnections),
-          });
-        }
-
-        if (isLast || !isTransient) {
-          this.telemetry.record("indexer.rpc.error", 1, {
-            attempt: String(attempt),
-            transient: String(isTransient),
-          });
-          throw err;
-        }
-
-        const delay = retryDelayMs * 2 ** attempt;
-        console.warn(
-          `[EventFetcher] transient error (attempt ${attempt + 1}), retrying in ${delay}ms`,
-          err
-        );
-        await sleep(delay);
-      }
+        },
+        { maxRetries, retryDelayMs }
+      );
+    } catch (err) {
+      this.telemetry.record("indexer.rpc.error", 1, {
+        attempt: String(attempt),
+        transient: String(isTransientError(err)),
+      });
+      throw err;
     }
-
-    // Unreachable — satisfies TypeScript
-    throw new Error("fetchPageWithRetry: exhausted retries");
   }
 
   private toRawEvent(e: StellarRpc.Api.EventResponse): RawChainEvent {
