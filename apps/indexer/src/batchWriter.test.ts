@@ -265,21 +265,53 @@ describe("PrismaBatchWriter", () => {
     expect(tx.market.upsert).toHaveBeenCalledTimes(1);
   });
 
-  it("collects per-record errors without aborting the transaction", async () => {
-    const tx = createMockTx();
-    tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
-    tx.indexedTrade.create.mockRejectedValue(new Error("fk violation"));
-    mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
+  describe("mid-batch failure rolls back the whole batch (Issue #756)", () => {
+    it("rejects write() instead of returning a partial result when a record fails to persist", async () => {
+      const tx = createMockTx();
+      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
+      tx.indexedTrade.create.mockRejectedValue(new Error("fk violation"));
+      mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
 
-    const writer = new PrismaBatchWriter();
-    const result = await writer.write([
-      { kind: "trade", data: withIdempotencyKey(TRADE) },
-    ]);
+      const writer = new PrismaBatchWriter();
+      await expect(
+        writer.write([{ kind: "trade", data: withIdempotencyKey(TRADE) }])
+      ).rejects.toThrow("fk violation");
+    });
 
-    expect(result.written).toBe(0);
-    expect(result.skipped).toBe(0);
-    expect(result.errors).toHaveLength(1);
-    expect(result.errors[0].error).toContain("fk violation");
+    it("stops processing subsequent records once one record fails (no partial commit)", async () => {
+      const tx = createMockTx();
+      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
+      tx.indexedTrade.create.mockRejectedValue(new Error("fk violation"));
+      mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
+
+      const writer = new PrismaBatchWriter();
+      await expect(
+        writer.write([
+          { kind: "trade", data: withIdempotencyKey(TRADE) },
+          { kind: "market_created", data: withIdempotencyKey(MARKET_CREATED) },
+        ])
+      ).rejects.toThrow("fk violation");
+
+      // The trade record failed first — the market_created record after it
+      // must never be attempted within the same (now-aborted) transaction.
+      expect(tx.market.upsert).not.toHaveBeenCalled();
+    });
+
+    it("does not retry a non-retryable mid-batch persist failure", async () => {
+      const tx = createMockTx();
+      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
+      tx.market.upsert.mockRejectedValue(new Error("constraint violation"));
+      mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
+
+      const writer = new PrismaBatchWriter();
+      await expect(
+        writer.write([
+          { kind: "market_created", data: withIdempotencyKey(MARKET_CREATED) },
+        ])
+      ).rejects.toThrow("constraint violation");
+
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("transient DB error retry", () => {
@@ -356,7 +388,12 @@ describe("PrismaBatchWriter", () => {
 
     it("logs a warning on each retry attempt", async () => {
       const warnSpy = vi.fn();
-      const logger = { warn: warnSpy, info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+      const logger = {
+        warn: warnSpy,
+        info: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      };
 
       const tx = createMockTx();
       tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);

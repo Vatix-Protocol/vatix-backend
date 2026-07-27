@@ -8,12 +8,12 @@ Test vectors: [`apps/indexer/fixtures/contract-event-vectors.json`](../apps/inde
 
 ## Event table
 
-| Event topic            | Payload shape            | Parser                         | Normalized type               | DB table(s)                                        |
-| ---------------------- | ------------------------ | ------------------------------ | ----------------------------- | -------------------------------------------------- |
-| `trade_executed`       | ScvMap (9 fields)        | `tradeParser.ts`               | `NormalizedTrade`             | `IndexedTrade`                                     |
-| `collateral_deposited` | ScvVec 3-tuple           | `collateralDepositedParser.ts` | `NormalizedCollateralDeposit` | `CollateralDeposit`                                |
-| `market_resolved`      | ScvVec 3-tuple or ScvMap | `resolutionParser.ts`          | `NormalizedResolution`        | `ResolutionCandidate`                              |
-| `market_created`       | pre-decoded JS object    | `market-created-parser.ts`     | `MarketCreatedEvent`          | `Market` (ingested outside `PollingIngestionLoop`) |
+| Event topic            | Payload shape            | Parser                         | Normalized type               | DB table(s)           |
+| ---------------------- | ------------------------ | ------------------------------ | ----------------------------- | --------------------- |
+| `trade_executed`       | ScvMap (9 fields)        | `tradeParser.ts`               | `NormalizedTrade`             | `IndexedTrade`        |
+| `collateral_deposited` | ScvVec 3-tuple           | `collateralDepositedParser.ts` | `NormalizedCollateralDeposit` | `CollateralDeposit`   |
+| `market_resolved`      | ScvVec 3-tuple or ScvMap | `resolutionParser.ts`          | `NormalizedResolution`        | `ResolutionCandidate` |
+| `market_created`       | ScvMap (topic + value)   | `marketCreatedParser.ts`       | `NormalizedMarketCreated`     | `Market`              |
 
 All events share the same topic encoding: **topic[0] = ScvSymbol** carrying the event name. Soroban's `#[contractevent]` macro derives that symbol from the event struct name including its literal `Event` suffix (e.g. `MarketCreatedEvent` → `market_created_event`) — see `contracts/market/src/events.rs`.
 
@@ -83,17 +83,20 @@ The contract does not publish an oracle address on this event, so `oracleAddress
 
 **Topic XDR:** `AAAADwAAABRtYXJrZXRfY3JlYXRlZF9ldmVudA==` (`market_created_event`)
 
-**Parser input:** Raw chain event (`RawChainEvent`), parsed by `apps/indexer/src/marketCreatedParser.ts` and run inside `PollingIngestionLoop` alongside the other three event types.
+**Parser input:** Raw chain event (`RawChainEvent`), parsed by `apps/indexer/src/marketCreatedParser.ts` and run inside `PollingIngestionLoop.ingestFromCursor()` alongside the other three event types — `parseMarketCreatedEvents()` normalizes each matching event into a `NormalizedMarketCreated`, exactly like `parseTradeEvents()`, `parseResolutionEvents()`, and `parseCollateralDepositedEvents()`.
 
-| Field           | Type                                    | Notes                                       |
-| --------------- | --------------------------------------- | ------------------------------------------- |
-| `id`            | `string`                                | Required                                    |
-| `question`      | `string`                                | Required, non-empty                         |
-| `endTime`       | `number \| string`                      | Unix seconds or ISO-8601; normalized to ISO |
-| `oracleAddress` | `string`                                | G-prefixed, 56 chars; trimmed               |
-| `status`        | `"ACTIVE" \| "RESOLVED" \| "CANCELLED"` | Default `"ACTIVE"`                          |
+| Field           | Type                                    | Notes                                                                         |
+| --------------- | --------------------------------------- | ----------------------------------------------------------------------------- |
+| `eventId`       | `string`                                | Stellar event id — `{ledger}-{txIndex}-{eventIndex}`                          |
+| `marketId`      | `string`                                | On-chain market identifier, used as `Market.id`                               |
+| `question`      | `string`                                | Decoded from the event value `ScvMap`                                         |
+| `endTime`       | `string`                                | Unix seconds or ISO-8601 input; normalized to ISO                             |
+| `oracleAddress` | `string`                                | Not published by the contract on this event; left `""` pending reconciliation |
+| `status`        | `"ACTIVE" \| "RESOLVED" \| "CANCELLED"` | Always `"ACTIVE"` for a freshly created market                                |
 
-**DB write:** `Market` row via `PrismaBatchWriter`, `upsert`-ed on `id` (create on first sight, update on replay — e.g. a status change). The parser itself returns `ParseResult<MarketCreatedEvent>` and does not write directly; the caller (the webhook/subscription handler, not `PollingIngestionLoop`) is responsible for passing the parsed result into `PrismaBatchWriter.write()`.
+**DB write:** `Market` row via `PrismaBatchWriter`, `upsert`-ed on `id` (create on first sight, update on replay — e.g. a status change). Like every other event kind, the normalized record is stamped with an idempotency key via `withIdempotencyKey()` before being handed to `PrismaBatchWriter.write()` — see [Idempotency key format](#idempotency-key-format) below.
+
+`apps/indexer/market-created-parser.ts` (no `src/` prefix) is an unused legacy parser kept only for its own test; it is not wired into `PollingIngestionLoop` or any other ingestion path.
 
 ---
 
@@ -116,11 +119,22 @@ PollingIngestionLoop.ingestFromCursor()
              ▼
         PrismaBatchWriter.write()
              │
+             ├── Market.upsert()           (market_created_event)
              ├── IndexedTrade              (trade_executed_event)
              ├── ResolutionCandidate       (market_resolved)
              └── CollateralDeposit         (collateral_deposited)
-
-Market.upsert()  ← market_created, via the out-of-band ingestion path described in §4
 ```
 
 Events with unrecognised topic symbols are silently skipped by each parser's `isXxxEvent` guard. Parse errors are collected per-event and logged as `warn` without dropping the rest of the batch.
+
+---
+
+## Idempotency key format
+
+Every normalized record — trade, resolution, collateral deposit, and market-created alike — is stamped with an idempotency key by `withIdempotencyKey()` (`apps/indexer/src/idempotency.ts`) before it reaches `PrismaBatchWriter.write()`:
+
+```
+key = SHA256(`${contractId}:${ledger}:${txIndex}:${eventIndex}`)
+```
+
+`ledger`, `txIndex`, and `eventIndex` are parsed from the Stellar event id (`{ledger}-{txIndex}-{eventIndex}`, e.g. `0000000042-0000000001-0000000003`), the same id every event kind — including `market_created` — carries. `PrismaBatchWriter` uses this key as the unique constraint on `IndexerProcessedEvent`, so a duplicate or retried delivery of the same event (same ledger, tx, and event position) is skipped as a no-op instead of writing a second row — e.g. a second `Market` for a replayed `market_created` event. See `apps/indexer/src/idempotency.test.ts` and `apps/indexer/src/batchWriter.test.ts` for the duplicate-delivery test coverage.

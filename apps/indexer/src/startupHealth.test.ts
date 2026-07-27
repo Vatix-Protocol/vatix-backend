@@ -5,6 +5,7 @@ const validInput = {
   cursor: "12345",
   networkId: "mainnet",
   cursorKey: "ingestion",
+  databaseUrl: "postgresql://user:pass@localhost:5432/vatix",
 };
 
 describe("checkStartupHealth", () => {
@@ -20,6 +21,29 @@ describe("checkStartupHealth", () => {
     const result = checkStartupHealth({ ...validInput, cursor: null });
     expect(result.status).toBe(200);
     expect(result.valid).toBe(true);
+  });
+
+  it("returns 400 when databaseUrl is missing", () => {
+    const result = checkStartupHealth({
+      ...validInput,
+      databaseUrl: undefined,
+    });
+    expect(result.status).toBe(400);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("DATABASE_URL"))).toBe(true);
+  });
+
+  it("returns 400 when databaseUrl is an empty string", () => {
+    const result = checkStartupHealth({ ...validInput, databaseUrl: "" });
+    expect(result.status).toBe(400);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes("DATABASE_URL"))).toBe(true);
+  });
+
+  it("returns 400 when databaseUrl is whitespace only", () => {
+    const result = checkStartupHealth({ ...validInput, databaseUrl: "   " });
+    expect(result.status).toBe(400);
+    expect(result.valid).toBe(false);
   });
 
   it("returns 400 when networkId is empty", () => {
@@ -69,8 +93,9 @@ describe("checkStartupHealth", () => {
       cursor: "bad",
       networkId: "",
       cursorKey: "",
+      databaseUrl: undefined,
     });
     expect(result.status).toBe(400);
-    expect(result.errors.length).toBeGreaterThanOrEqual(3);
+    expect(result.errors.length).toBeGreaterThanOrEqual(4);
   });
 });

@@ -375,3 +375,4 @@ describe("EventFetcher", () => {
       expect(result.events).toHaveLength(1);
     });
   });
+});
