@@ -16,6 +16,26 @@ We expose two main endpoints to monitor the state of the API server:
    - **Behavior:** Returns `200 OK` if the database is reachable and the index freshness is under the staleness threshold. Returns `503 Service Unavailable` if the database is unreachable or the indexer has stalled.
    - **Action on Failure:** Stop routing traffic to the container (remove it from the load balancer pool). Do **not** restart the container.
 
+### Workers Readiness Probe (`GET /ready`)
+
+Each worker process (`apps/workers/src/routes/ready.ts`) exposes its own `/ready` route, checked independently of the API's `/v1/ready`:
+
+- **Goal:** Determine if a queue consumer worker is able to reach its dependencies — Postgres and Redis (the queue/stream backend the consumer reads from). A worker that can't reach Redis can't consume or dead-letter jobs, so it should stop receiving traffic/orchestration signals even while the process itself is alive.
+- **Behavior:** Runs `SELECT 1` against Postgres and `redis.healthCheck()` (a `PING`) against Redis. Returns `200 OK` with `ready: true` only when both succeed. Returns `503 Service Unavailable` with `ready: false` if either dependency fails, with the failing dependency's `status` set to `"error"` and an `error` message attached.
+- **Response shape:**
+  ```json
+  {
+    "ready": true,
+    "service": "vatix-workers",
+    "timestamp": "2026-07-28T00:00:00.000Z",
+    "dependencies": {
+      "database": { "status": "ok" },
+      "redis": { "status": "ok" }
+    }
+  }
+  ```
+- **Action on Failure:** Stop routing traffic/orchestration signals to the worker (remove it from its pool). Do **not** restart the container — a Redis outage is external and restarting won't fix it.
+
 ---
 
 ## Configuration Reference

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { getPrismaClient } from "../../../../src/services/prisma.js";
+import { redis } from "../../../../src/services/redis.js";
 
 interface ReadyResponse {
   ready: boolean;
@@ -7,6 +8,7 @@ interface ReadyResponse {
   timestamp: string;
   dependencies: {
     database: { status: "ok" | "error"; error?: string };
+    redis: { status: "ok" | "error"; error?: string };
   };
 }
 
@@ -23,7 +25,20 @@ export async function readyRoutes(fastify: FastifyInstance) {
       dbError = err instanceof Error ? err.message : String(err);
     }
 
-    const ready = dbStatus === "ok";
+    let redisStatus: "ok" | "error" = "ok";
+    let redisError: string | undefined;
+
+    try {
+      const pong = await redis.healthCheck();
+      if (!pong) {
+        throw new Error("Redis PING did not return PONG");
+      }
+    } catch (err) {
+      redisStatus = "error";
+      redisError = err instanceof Error ? err.message : String(err);
+    }
+
+    const ready = dbStatus === "ok" && redisStatus === "ok";
 
     return reply.status(ready ? 200 : 503).send({
       ready,
@@ -33,6 +48,10 @@ export async function readyRoutes(fastify: FastifyInstance) {
         database: {
           status: dbStatus,
           ...(dbError ? { error: dbError } : {}),
+        },
+        redis: {
+          status: redisStatus,
+          ...(redisError ? { error: redisError } : {}),
         },
       },
     });
