@@ -65,6 +65,15 @@ export class EventFetcher {
   }
 
   /**
+   * Returns the sequence number and hash of the latest ledger from the RPC node.
+   * Used by the ingestion loop to detect chain reorganisations.
+   */
+  async getLatestLedgerInfo(): Promise<{ sequence: number; hash: string }> {
+    const info = await this.server.getLatestLedger();
+    return { sequence: info.sequence, hash: info.hash.id };
+  }
+
+  /**
    * Fetch all raw chain events within [startLedger, endLedger].
    * Handles multi-page responses and retries on transient failures.
    * Applies an extended ingestion backoff when the RPC endpoint has been

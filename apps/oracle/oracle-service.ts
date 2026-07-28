@@ -61,6 +61,8 @@ export interface OracleMetrics {
   totalAttempts: number;
   /** Total retry attempts across all primary resolutions */
   retryCount: number;
+  /** Total provider outage events — all providers (primary + fallback) failed */
+  totalOutageCount: number;
 }
 
 /**
@@ -97,6 +99,7 @@ export class OracleService {
     fallbackFailureCount: 0,
     totalAttempts: 0,
     retryCount: 0,
+    totalOutageCount: 0,
   };
 
   constructor(config: OracleServiceConfig) {
@@ -215,8 +218,12 @@ export class OracleService {
       return result;
     } catch (fallbackError) {
       this.metrics.fallbackFailureCount++;
-      this.logger.error("Fallback provider failed", {
+      this.metrics.totalOutageCount++;
+      this.logger.error("All providers unreachable — total provider outage", {
+        event: "oracle.total_outage",
         marketId: request.marketId,
+        primaryFailureCount: this.metrics.primaryFailureCount,
+        fallbackFailureCount: this.metrics.fallbackFailureCount,
         error:
           fallbackError instanceof Error
             ? fallbackError.message
@@ -266,6 +273,7 @@ export class OracleService {
       fallbackFailureCount: 0,
       totalAttempts: 0,
       retryCount: 0,
+      totalOutageCount: 0,
     };
   }
 

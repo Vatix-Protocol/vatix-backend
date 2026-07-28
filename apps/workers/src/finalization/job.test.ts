@@ -530,6 +530,64 @@ describe("FinalizationJob", () => {
     });
   });
 
+  describe("challenge window gating", () => {
+    it("skips a candidate that is still within the challenge window", async () => {
+      const recentCandidate = makeCandidate({
+        id: "recent",
+        createdAt: new Date(Date.now() - 1000), // created 1 second ago
+      });
+      const prisma = makePrisma([recentCandidate]);
+
+      // Challenge window of 1 hour → recent candidate is still within it
+      const job = new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds: 3600,
+      });
+      const result = await job.run();
+
+      expect(result.totalCandidates).toBe(1);
+      expect(result.finalizedCount).toBe(0);
+      expect(result.skippedCount).toBe(1);
+      expect(result.candidates[0].status).toBe("skipped");
+    });
+
+    it("finalizes a candidate that is past the challenge window", async () => {
+      const oldCandidate = makeCandidate({
+        id: "old",
+        createdAt: new Date(Date.now() - 7200_000), // created 2 hours ago
+      });
+      const prisma = makePrisma([oldCandidate]);
+
+      const job = new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds: 3600, // 1 hour window
+      });
+      const result = await job.run();
+
+      expect(result.totalCandidates).toBe(1);
+      expect(result.finalizedCount).toBe(1);
+      expect(result.skippedCount).toBe(0);
+    });
+
+    it("uses isChallengeWindowOpen utility for the per-candidate check", async () => {
+      // A candidate that is exactly at the edge of the window boundary:
+      // createdAt exactly challengeWindowSeconds ago → window JUST closed
+      const edgeCandidate = makeCandidate({
+        id: "edge",
+        createdAt: new Date(Date.now() - 3600_000), // created exactly 1 hour ago
+      });
+      const prisma = makePrisma([edgeCandidate]);
+
+      const job = new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds: 3600, // 1 hour window
+      });
+
+      // At the exact boundary (now >= opensAt && now < closesAt):
+      // closesAt = proposedAt + 3600s = now. Since the upper bound is
+      // exclusive (now < closesAt), the window is now closed → finalize.
+      const result = await job.run();
+      expect(result.finalizedCount).toBe(1);
+    });
+  });
+
   describe("CHALLENGED and REJECTED paths", () => {
     it("only queries PROPOSED candidates and ignores CHALLENGED/REJECTED", async () => {
       const findMany = vi.fn().mockResolvedValue([]);
