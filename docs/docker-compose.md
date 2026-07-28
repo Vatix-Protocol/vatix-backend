@@ -10,16 +10,17 @@ just the data layer (for host-run development) or the fully containerized stack.
 
 ## Services
 
-| Service               | Profiles                                | Container name              | Notes                               |
-| --------------------- | --------------------------------------- | --------------------------- | ----------------------------------- |
-| `postgres`            | _(default)_                             | `vatix-postgres`            | PostgreSQL 16                       |
-| `redis`               | _(default)_                             | `vatix-redis`               | Redis 7 — caching + job queues      |
-| `api`                 | `app`, `api`                            | `vatix-backend`             | Fastify HTTP API, port 3000         |
-| `indexer`             | `app`, `indexer`                        | `vatix-indexer`             | Stellar event indexer               |
-| `finalization-worker` | `app`, `workers`, `finalization-worker` | `vatix-finalization-worker` | Resolution finalization loop        |
-| `oracle-worker`       | `app`, `workers`, `oracle-worker`       | `vatix-oracle-worker`       | Oracle submission queue consumer    |
-| `settlement-worker`   | `app`, `workers`, `settlement-worker`   | `vatix-settlement-worker`   | Trade settlement queue consumer     |
-| `migrate`             | `tools`, `migrate`                      | `vatix-migrate`             | One-off `prisma migrate deploy` job |
+| Service               | Profiles                                | Container name              | Notes                                              |
+| --------------------- | --------------------------------------- | --------------------------- | -------------------------------------------------- |
+| `postgres`            | _(default)_                             | `vatix-postgres`            | PostgreSQL 16                                      |
+| `redis`               | _(default)_                             | `vatix-redis`               | Redis 7 — caching + job queues                     |
+| `api`                 | `app`, `api`                            | `vatix-backend`             | Fastify HTTP API, port 3000                        |
+| `indexer`             | `app`, `indexer`                        | `vatix-indexer`             | Stellar event indexer                              |
+| `finalization-worker` | `app`, `workers`, `finalization-worker` | `vatix-finalization-worker` | Resolution finalization loop                       |
+| `oracle-worker`       | `app`, `workers`, `oracle-worker`       | `vatix-oracle-worker`       | Oracle submission queue consumer                   |
+| `settlement-worker`   | `app`, `workers`, `settlement-worker`   | `vatix-settlement-worker`   | Trade settlement queue consumer                    |
+| `migrate`             | `tools`, `migrate`                      | `vatix-migrate`             | One-off `prisma migrate deploy` job                |
+| `load-test`           | `tools`, `load-test`                    | `vatix-load-test`           | One-off local order-placement load test (~100 rps) |
 
 Container names match the ones referenced in
 [`docs/runbooks/incident-runbook.md`](runbooks/incident-runbook.md), so
@@ -142,6 +143,44 @@ Add `-v` to also remove the `postgres_data` / `redis_data` volumes.
   ```bash
   docker compose --profile app up -d --build api
   ```
+
+## Load Testing (local only)
+
+`scripts/load-test-orders.ts` places signed synthetic orders against
+`POST /v1/orders` at a target rate (default ~100 rps) to exercise the API and
+matching engine under sustained write load.
+
+> ⚠️ **Local use only.** This places real rows in whatever database the
+> target API is backed by. It refuses to run against anything other than
+> `localhost` / `127.0.0.1` / the compose `api` service unless you pass
+> `--allow-remote` — never do that against a shared staging or production
+> environment.
+
+Run it via the `tools`/`load-test` compose profile once the API is up:
+
+```bash
+docker compose --profile api up -d --build      # start postgres + redis + api
+docker compose --profile tools run --rm load-test
+```
+
+Or against a host-run `pnpm dev` API, without Docker:
+
+```bash
+pnpm load-test:orders                    # defaults: ~100 rps for 30s
+pnpm load-test:orders -- --rps 50 --duration 10
+```
+
+The target API's default write rate limiter (10 req/60s per IP — see
+`src/api/middleware/rateLimiter.ts`) will throttle a single-IP load test
+almost immediately. To actually sustain the target rps for this local run,
+raise it just for that process:
+
+```bash
+RATE_LIMIT_WRITE_MAX=2000 RATE_LIMIT_WRITE_WINDOW_MS=1000 pnpm dev
+```
+
+See the header comment in `scripts/load-test-orders.ts` for the full option
+list (`--url`, `--market-id`, `--traders`, etc.) and prerequisites.
 
 ## Graceful shutdown
 

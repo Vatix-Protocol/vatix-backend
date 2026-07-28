@@ -44,6 +44,7 @@
     "matching:test": "vitest run src/matching",
     "prepare": "husky install",
     "generate:keypair": "tsx scripts/generate-keypair.ts",
+    "load-test:orders": "tsx scripts/load-test-orders.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

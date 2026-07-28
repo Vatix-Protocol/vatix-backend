@@ -23,10 +23,11 @@ Scripts that require environment variables will fail fast with a clear error if 
 
 ## Available Scripts
 
-| Script                   | pnpm alias              | Purpose                                            |
-| ------------------------ | ----------------------- | -------------------------------------------------- |
-| `generate-keypair.ts`    | `pnpm generate:keypair` | Generate a Stellar keypair for oracle signing      |
-| `validate-migrations.ts` | `pnpm prisma:validate`  | Validate Prisma migration files against the schema |
+| Script                   | pnpm alias              | Purpose                                                                                                                                                                |
+| ------------------------ | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `generate-keypair.ts`    | `pnpm generate:keypair` | Generate a Stellar keypair for oracle signing                                                                                                                          |
+| `validate-migrations.ts` | `pnpm prisma:validate`  | Validate Prisma migration files against the schema                                                                                                                     |
+| `load-test-orders.ts`    | `pnpm load-test:orders` | Local-only load test: places signed orders against `POST /v1/orders` at a target rps (see [docs/docker-compose.md](../docs/docker-compose.md#load-testing-local-only)) |
 
 ## Adding a Script
 

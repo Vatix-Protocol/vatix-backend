@@ -169,6 +169,29 @@ services:
       postgres:
         condition: service_healthy
 
+  # One-off local load test for order placement (~100 rps by default). LOCAL
+  # ONLY — see scripts/load-test-orders.ts for the safety guard and details.
+  # Usage:
+  #   docker compose --profile api up -d --build   # start the API first
+  #   docker compose --profile tools run --rm load-test
+  load-test:
+    build:
+      context: .
+      target: build
+    container_name: vatix-load-test
+    profiles: ["tools", "load-test"]
+    environment:
+      LOAD_TEST_BASE_URL: http://api:3000
+    command:
+      [
+        "node_modules/.bin/tsx",
+        "scripts/load-test-orders.ts",
+        "--url",
+        "http://api:3000",
+      ]
+    depends_on:
+      - api
+
 volumes:
   postgres_data:
   redis_data:
