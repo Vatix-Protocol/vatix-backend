@@ -67,6 +67,7 @@ vi.mock("bullmq", () => ({
 vi.mock("../shared/queue-config.js", () => ({
   DEFAULT_JOB_OPTIONS: {},
   redisConnectionFromEnv: () => ({ host: "localhost", port: 6379 }),
+  submissionQueueName: () => "oracle-submissions",
 }));
 
 import {

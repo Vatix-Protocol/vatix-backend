@@ -1,5 +1,6 @@
 import { redis } from "./redis.js";
 import type { Outcome } from "../types/index.js";
+import { settlementQueueName } from "../../apps/workers/src/shared/queue-config.js";
 
 export interface SettlementJob {
   tradeId: string;
@@ -18,9 +19,7 @@ class SettlementQueueProducer {
   private streamKey: string;
 
   constructor() {
-    const queueName = process.env.SETTLEMENT_QUEUE_NAME ?? "settlement-trades";
-    const keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
-    this.streamKey = `${keyPrefix}${queueName}`;
+    this.streamKey = settlementQueueName();
   }
 
   async enqueue(job: SettlementJob): Promise<void> {

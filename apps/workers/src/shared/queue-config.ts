@@ -1,7 +1,9 @@
 /**
- * Shared BullMQ job options for all queues (settlement + oracle submission).
+ * Shared BullMQ job options and queue-name helpers for all queues
+ * (settlement + oracle submission).
  *
  * Unified retry / backoff / DLQ configuration — ADR 001.
+ * Single source of truth for queue names — #779.
  *
  * @module apps/workers/src/shared/queue-config
  */
@@ -22,6 +24,34 @@ export const DEFAULT_JOB_OPTIONS: JobsOptions = {
   removeOnComplete: { count: 100 },
   removeOnFail: false,
 };
+
+/**
+ * Returns the fully-qualified BullMQ queue name for the settlement worker.
+ *
+ * Format: `${REDIS_KEY_PREFIX}${SETTLEMENT_QUEUE_NAME}`
+ *
+ * Evaluated at call-time so tests can override env vars without module-cache
+ * complications.
+ */
+export function settlementQueueName(): string {
+  const name = process.env.SETTLEMENT_QUEUE_NAME ?? "settlement-trades";
+  const prefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
+  return `${prefix}${name}`;
+}
+
+/**
+ * Returns the BullMQ queue name for the oracle submission worker.
+ *
+ * The oracle submission queue intentionally omits the key prefix because the
+ * BullMQ Worker is scoped to the oracle service and does not share a Redis
+ * keyspace with the settlement worker.
+ *
+ * Evaluated at call-time so tests can override env vars without module-cache
+ * complications.
+ */
+export function submissionQueueName(): string {
+  return process.env.SUBMISSION_QUEUE_NAME ?? "oracle-submissions";
+}
 
 /** Build a Redis connection config from the environment. */
 export function redisConnectionFromEnv(): {

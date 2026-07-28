@@ -19,14 +19,11 @@ import {
   type SettlementStellarConfig,
 } from "./settlement-worker.js";
 import type { QueueJob } from "../consumers/queue-consumer.js";
-import { redisConnectionFromEnv } from "../shared/queue-config.js";
+import {
+  redisConnectionFromEnv,
+  settlementQueueName,
+} from "../shared/queue-config.js";
 import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
-
-const QUEUE_NAME = (): string => {
-  const name = process.env.SETTLEMENT_QUEUE_NAME ?? "settlement-trades";
-  const prefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
-  return `${prefix}${name}`;
-};
 
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 30_000;
@@ -37,7 +34,7 @@ async function bootstrap(): Promise<void> {
     typeof createLogger
   >[0];
   const logger = createLogger(logLevel);
-  const queueName = QUEUE_NAME();
+  const queueName = settlementQueueName();
 
   logger.info("Settlement worker started (BullMQ)", {
     queue: queueName,

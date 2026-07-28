@@ -1,5 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { DEFAULT_JOB_OPTIONS, redisConnectionFromEnv } from "./queue-config.js";
+import {
+  DEFAULT_JOB_OPTIONS,
+  redisConnectionFromEnv,
+  settlementQueueName,
+  submissionQueueName,
+} from "./queue-config.js";
 
 // Regression coverage for #764: `bullmq` was used throughout apps/workers
 // (this module, the settlement consumer, and the oracle submission queue)
@@ -15,6 +20,76 @@ describe("queue-config", () => {
       backoff: { type: "exponential", delay: 1_000 },
       removeOnComplete: { count: 100 },
       removeOnFail: false,
+    });
+  });
+
+  describe("settlementQueueName", () => {
+    const originalSettlementName = process.env.SETTLEMENT_QUEUE_NAME;
+    const originalKeyPrefix = process.env.REDIS_KEY_PREFIX;
+
+    afterEach(() => {
+      if (originalSettlementName === undefined) {
+        delete process.env.SETTLEMENT_QUEUE_NAME;
+      } else {
+        process.env.SETTLEMENT_QUEUE_NAME = originalSettlementName;
+      }
+      if (originalKeyPrefix === undefined) {
+        delete process.env.REDIS_KEY_PREFIX;
+      } else {
+        process.env.REDIS_KEY_PREFIX = originalKeyPrefix;
+      }
+    });
+
+    it("returns the default prefixed queue name when env vars are unset", () => {
+      delete process.env.SETTLEMENT_QUEUE_NAME;
+      delete process.env.REDIS_KEY_PREFIX;
+      expect(settlementQueueName()).toBe("vatix:settlement-trades");
+    });
+
+    it("uses REDIS_KEY_PREFIX and SETTLEMENT_QUEUE_NAME when both are set", () => {
+      process.env.REDIS_KEY_PREFIX = "staging:";
+      process.env.SETTLEMENT_QUEUE_NAME = "my-settlement";
+      expect(settlementQueueName()).toBe("staging:my-settlement");
+    });
+
+    it("uses the default name with a custom prefix", () => {
+      process.env.REDIS_KEY_PREFIX = "prod:";
+      delete process.env.SETTLEMENT_QUEUE_NAME;
+      expect(settlementQueueName()).toBe("prod:settlement-trades");
+    });
+
+    it("uses the custom name with the default prefix", () => {
+      delete process.env.REDIS_KEY_PREFIX;
+      process.env.SETTLEMENT_QUEUE_NAME = "custom-settlement";
+      expect(settlementQueueName()).toBe("vatix:custom-settlement");
+    });
+  });
+
+  describe("submissionQueueName", () => {
+    const originalSubmissionName = process.env.SUBMISSION_QUEUE_NAME;
+
+    afterEach(() => {
+      if (originalSubmissionName === undefined) {
+        delete process.env.SUBMISSION_QUEUE_NAME;
+      } else {
+        process.env.SUBMISSION_QUEUE_NAME = originalSubmissionName;
+      }
+    });
+
+    it("returns the default queue name when SUBMISSION_QUEUE_NAME is unset", () => {
+      delete process.env.SUBMISSION_QUEUE_NAME;
+      expect(submissionQueueName()).toBe("oracle-submissions");
+    });
+
+    it("returns SUBMISSION_QUEUE_NAME when set", () => {
+      process.env.SUBMISSION_QUEUE_NAME = "custom-oracle-submissions";
+      expect(submissionQueueName()).toBe("custom-oracle-submissions");
+    });
+
+    it("does not include a key prefix (oracle queue is prefix-free by design)", () => {
+      process.env.SUBMISSION_QUEUE_NAME = "oracle-submissions";
+      const name = submissionQueueName();
+      expect(name).not.toContain(":");
     });
   });
 
