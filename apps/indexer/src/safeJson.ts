@@ -1,6 +1,26 @@
 type JsonLike =
   string | number | boolean | null | JsonLike[] | { [key: string]: JsonLike };
 
+/**
+ * Safely parse a JSON string without throwing on invalid input.
+ *
+ * Returns `{ ok: true, value }` on success and `{ ok: false, error }` on
+ * failure so callers are forced to handle the error path explicitly — there
+ * is no uncaught SyntaxError from event bodies.
+ */
+export function safeJsonParse<T = unknown>(
+  raw: string
+): { ok: true; value: T } | { ok: false; error: SyntaxError } {
+  try {
+    return { ok: true, value: JSON.parse(raw) as T };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof SyntaxError ? err : new SyntaxError(String(err)),
+    };
+  }
+}
+
 export function sanitizeForJson(
   value: unknown,
   seen = new WeakSet<object>()
