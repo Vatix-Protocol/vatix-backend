@@ -16,13 +16,10 @@ import { createLogger } from "../../../indexer/src/logger.js";
 import { disconnectPrisma } from "../../../../src/services/prisma.js";
 import { SettlementWorker } from "./settlement-worker.js";
 import type { QueueJob } from "../consumers/queue-consumer.js";
-import { redisConnectionFromEnv } from "../shared/queue-config.js";
-
-const QUEUE_NAME = (): string => {
-  const name = process.env.SETTLEMENT_QUEUE_NAME ?? "settlement-trades";
-  const prefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
-  return `${prefix}${name}`;
-};
+import {
+  redisConnectionFromEnv,
+  settlementQueueName,
+} from "../shared/queue-config.js";
 
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 30_000;
@@ -31,7 +28,7 @@ const IDEMPOTENCY_TTL_SECONDS = 86_400;
 async function bootstrap(): Promise<void> {
   const logLevel = process.env.LOG_LEVEL ?? "info";
   const logger = createLogger(logLevel as Parameters<typeof createLogger>[0]);
-  const queueName = QUEUE_NAME();
+  const queueName = settlementQueueName();
 
   logger.info("BullMQ settlement worker started", { queue: queueName });
 

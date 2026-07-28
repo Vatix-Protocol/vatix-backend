@@ -14,9 +14,8 @@ import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
 import {
   DEFAULT_JOB_OPTIONS,
   redisConnectionFromEnv,
+  submissionQueueName,
 } from "../shared/queue-config.js";
-
-const QUEUE_NAME = process.env.SUBMISSION_QUEUE_NAME ?? "oracle-submissions";
 
 function payloadHash(item: SubmissionQueueItem): string {
   return createHash("sha256")
@@ -35,7 +34,7 @@ export class BullMQSubmissionQueue {
 
   constructor(logger: ILogger) {
     this.logger = logger;
-    this.queue = new Queue<SubmissionQueueItem>(QUEUE_NAME, {
+    this.queue = new Queue<SubmissionQueueItem>(submissionQueueName(), {
       connection: redisConnectionFromEnv(),
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     });
@@ -96,7 +95,7 @@ export function createOracleSubmissionWorker(
   logger: ILogger
 ): Worker<SubmissionQueueItem> {
   const worker = new Worker<SubmissionQueueItem>(
-    QUEUE_NAME,
+    submissionQueueName(),
     async (job: Job<SubmissionQueueItem>) => {
       await handler(job.data, job.attemptsMade);
     },
