@@ -33,21 +33,34 @@ const message: DeadLetterMessage = {
   reason: "Max retries exceeded",
 };
 
-logDeadLetter(logger, message);
-// => logger.error("Job dead-lettered", { messageId, queue, reason, payloadType, timestamp })
+await logDeadLetter(logger, message);
+// => logger.error("Job dead-lettered", { messageId, queue, reason, payloadType, payloadHash, duplicate, timestamp })
+// => { duplicate: false }
 ```
 
 **Log fields emitted:**
 
-| Field         | Source                     | Description                              |
-| ------------- | -------------------------- | ---------------------------------------- |
-| `messageId`   | `message.id`               | Correlates with upstream job ID          |
-| `queue`       | `message.queue`            | Which queue the message came from        |
-| `reason`      | `message.reason`           | Why the message was dead-lettered        |
-| `payloadType` | `typeof message.payload`   | JS type of the payload (e.g. `"object"`) |
-| `timestamp`   | `new Date().toISOString()` | When the dead letter was recorded        |
+| Field         | Source                                       | Description                                                           |
+| ------------- | -------------------------------------------- | --------------------------------------------------------------------- |
+| `messageId`   | `message.id`                                 | Correlates with upstream job ID                                       |
+| `queue`       | `message.queue`                              | Which queue the message came from                                     |
+| `reason`      | `message.reason`                             | Why the message was dead-lettered                                     |
+| `payloadType` | `typeof message.payload`                     | JS type of the payload (e.g. `"object"`)                              |
+| `payloadHash` | SHA-256 of `JSON.stringify(message.payload)` | Stable content hash used for dedupe                                   |
+| `duplicate`   | dedupe check result                          | `true` if this exact payload+queue was already dead-lettered recently |
+| `timestamp`   | `new Date().toISOString()`                   | When the dead letter was recorded                                     |
 
 > **Note:** The `payload` value is intentionally **not** logged to avoid leaking sensitive data. `payloadType` gives operators enough context to distinguish missing payloads from structured ones. If you need payload details, inspect the dead letter store or enable `debug`-level logging upstream.
+
+## Dedupe via Payload Hash
+
+Every dead-lettered message is hashed (`sha256(JSON.stringify(payload))`) before it's persisted. `logDeadLetter` uses that hash to check a Redis key (`{prefix}dead-letter:dedupe:{queue}:{payloadHash}`) with a 24-hour TTL:
+
+- If the key already exists, the message is a **duplicate** — the same payload was already dead-lettered for that queue within the last 24 hours (e.g. a retried burst of the same failure).
+- The dedupe key is (re)written on every attempt, refreshing the TTL.
+- Both the Redis stream entry and the structured log record `payloadHash` and `duplicate`, so replays can filter out or collapse duplicates when triaging.
+- `logDeadLetter` returns `{ duplicate: boolean }` so callers can react (e.g. suppress alerting on known duplicates) if needed.
+- The dedupe check is best-effort: if Redis is unreachable, the check fails soft (logged via `logger.warn`, treated as non-duplicate) rather than blocking the dead-letter write itself.
 
 ## When Messages Are Dead-Lettered
 
@@ -61,7 +74,12 @@ A message is sent to the dead letter log when:
 A Vitest test file is colocated at `apps/workers/src/consumers/dead-letter.test.ts`. It verifies:
 
 - `logDeadLetter` calls `logger.error` exactly once
-- Structured fields (`messageId`, `queue`, `reason`, `payloadType`, `timestamp`) are present in the log output
+- Structured fields (`messageId`, `queue`, `reason`, `payloadType`, `payloadHash`, `duplicate`, `timestamp`) are present in the log output
+- The first dead-lettered occurrence of a payload+queue resolves `{ duplicate: false }`
+- A repeat insert of the same payload+queue resolves `{ duplicate: true }`
+- Different payloads hash differently, and identical payloads on different queues are not treated as duplicates of each other
+
+The Redis service (`src/services/redis.js`) is mocked in tests via `vi.mock` + `vi.hoisted`, so dedupe behavior is verified without requiring a live Redis connection.
 
 Run tests:
 
