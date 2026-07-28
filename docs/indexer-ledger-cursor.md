@@ -50,7 +50,62 @@ The cursor is not written to the database on every tick — frequent small write
 unnecessary load. Instead it is flushed after a configurable number of successful batches
 (`INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES`) and unconditionally on graceful shutdown.
 
-## Recovery
+## Reorg safety
+
+When the Stellar network undergoes a chain reorganisation, ledgers that were
+previously considered final may be replaced. The indexer detects reorgs and
+rewinds its cursor to a safe depth so that forked events are re-fetched from
+the canonical chain.
+
+### Detection mechanism
+
+1. After each successful ingestion tick the indexer calls the Stellar RPC
+   `getLatestLedger()` endpoint and stores the **sequence number** and **hash**
+   of the latest ledger in both memory and PostgreSQL (via
+   `PrismaCursorStorageClient.saveLedgerHash()`).
+
+2. On every subsequent tick, immediately after fetching the events window, the
+   indexer compares the latest ledger from the RPC response against the stored
+   values. A reorg is flagged when any of the following holds:
+
+   - **Sequence regressed**: The current latest ledger sequence is **lower**
+     than the last known sequence (the chain rolled back).
+   - **Hash mismatch at same sequence**: The sequence is unchanged but the
+     hash differs (the chain content changed without advancing the tip).
+
+3. When a reorg is detected, the cursor is rewound by
+   `ledgerWindowSize × 2` ledgers (never below 0). The current tick returns
+   immediately without processing events; the next tick re-fetches from the
+   rewound position.
+
+```typescript
+// apps/indexer/src/ingestion.ts (conceptual)
+const rewindLedgers = ledgerWindowSize * REORG_REWIND_DEPTH_MULTIPLIER;
+const safeSequence = Math.max(0, currentSeq - rewindLedgers);
+// → cursor set to safeSequence, next tick re-fetches from there
+```
+
+### Cursor hash persistence
+
+The hash is stored in the same `indexer_cursors` table using a derived cursor
+key (`${cursorKey}:ledger_hash`). This allows the reorg detection to survive
+a full restart of the indexer process. If no persisted hash is found on
+startup, detection is deferred until the first successful tick establishes a
+baseline.
+
+### Recovery
+
+After a reorg rewind the indexer re-processes the affected ledgers. Any events
+that were already persisted (trades, resolutions, deposits) are **skipped**
+via `indexer_processed_events` idempotency keys — duplicate rows are never
+inserted. Events that existed only on the forked branch are naturally absent
+from the new window and produce no dust in the database.
+
+```sql
+-- The ledger hash is stored under a derived key
+SELECT cursor_value FROM indexer_cursors
+WHERE network_id = 'testnet' AND cursor_key = 'ingestion:ledger_hash';
+```
 
 If the cursor row is absent (e.g. first run, or after manual deletion) the indexer starts from
 ledger 0 and scans forward. To reset the indexer to a specific ledger, delete or update the

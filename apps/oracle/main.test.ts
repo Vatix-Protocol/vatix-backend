@@ -157,6 +157,49 @@ describe("apps/oracle/main poll()", () => {
     expect(mockQueue.enqueue).not.toHaveBeenCalled();
   });
 
+  it("persists the provider confidence score on the OracleReport row", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue({
+      ...RESOLVED_RESULT,
+      confidence: 0.87,
+    });
+
+    await poll();
+
+    expect(mockPrisma.oracleReport.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          confidence: 0.87,
+          source: "GORACLE1",
+        }),
+      })
+    );
+  });
+
+  it("persists the confidence value from the fallback provider when primary fails", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue({
+      ...RESOLVED_RESULT,
+      source: "fallback-1",
+      confidence: 0.72,
+    });
+
+    await poll();
+
+    expect(mockPrisma.oracleReport.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          confidence: 0.72,
+          source: "GORACLE1", // source is oracleAddress, not provider name
+        }),
+      })
+    );
+  });
+
   it("logs and continues when one market fails to resolve, without aborting the batch", async () => {
     mockPrisma.market.findMany.mockResolvedValue([
       { id: "market-fail", oracleAddress: "GFAIL" },

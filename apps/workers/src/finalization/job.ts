@@ -4,6 +4,7 @@ import type {
   FinalizationJobResult,
   FinalizationCandidateResult,
 } from "./types.js";
+import { isChallengeWindowOpen } from "../../../../src/oracle/challengeWindow.js";
 
 /**
  * Configuration for a single FinalizationJob run.
@@ -138,6 +139,34 @@ export class FinalizationJob {
           remainingCandidates: candidates.length - results.length,
         });
         break;
+      }
+
+      // ── Challenge window verification ──────────────────────────────────
+      // Explicitly check that the candidate's challenge window has closed
+      // before finalizing.  This is a defense-in-depth check against clock
+      // skew or concurrent schedule edge cases; the query-level
+      // `createdAt: { lte: windowCutoff }` filter is the primary gate.
+      if (
+        isChallengeWindowOpen(
+          candidate.createdAt,
+          this.challengeWindowSeconds,
+          new Date()
+        )
+      ) {
+        this.logger.info("Candidate still within challenge window — skipping", {
+          candidateId: candidate.id,
+          marketId: candidate.marketId,
+          createdAt: candidate.createdAt.toISOString(),
+          challengeWindowSeconds: this.challengeWindowSeconds,
+        });
+
+        results.push({
+          candidateId: candidate.id,
+          marketId: candidate.marketId,
+          proposedOutcome: candidate.proposedOutcome,
+          status: "skipped",
+        });
+        continue;
       }
 
       this.logger.info("Finalization candidate eligible", {

@@ -15,6 +15,13 @@ import {
   MarketCreatedParseError,
 } from "./types.js";
 
+/**
+ * Number of ledgers to rewind when a chain reorganisation is detected.
+ * Rewinding by a full window ensures the indexer re-processes enough
+ * history to catch any forked events.
+ */
+const REORG_REWIND_DEPTH_MULTIPLIER = 2;
+
 export interface IngestionLoop {
   start(initialCursor: string | null): Promise<void>;
   stop(): Promise<void>;
@@ -45,6 +52,11 @@ export class PollingIngestionLoop implements IngestionLoop {
   private batchesSinceLastHeartbeat = 0;
   private lastHeartbeatLedgerSequence: number | null = null;
 
+  /** Last known latest ledger sequence for reorg detection. */
+  private lastKnownLatestLedger: number | null = null;
+  /** Last known latest ledger hash for reorg detection. */
+  private lastKnownLatestHash: string | null = null;
+
   constructor(
     private readonly logger: ILogger,
     private readonly storage: CursorStorageClient,
@@ -61,12 +73,25 @@ export class PollingIngestionLoop implements IngestionLoop {
       this.metrics.setLatestIndexedLedgerSequence(initialLedger);
     }
 
+    // Load persisted ledger hash for reorg detection on startup
+    try {
+      this.lastKnownLatestHash = await this.storage.loadLedgerHash();
+    } catch {
+      this.logger.warn(
+        "Failed to load persisted ledger hash — reorg detection will initialise on first tick",
+        {}
+      );
+    }
+
     this.logger.info("Indexer ingestion loop starting", {
       startCursor: initialCursor,
       intervalMs: this.intervalMs,
       checkpointFlushEveryBatches: this.checkpointFlushEveryBatches,
       ledgerWindowSize: this.deps.ledgerWindowSize,
       contractId: this.deps.contractId,
+      lastKnownHash: this.lastKnownLatestHash
+        ? `${this.lastKnownLatestHash.slice(0, 16)}…`
+        : null,
     });
 
     await this.tick();
@@ -172,6 +197,13 @@ export class PollingIngestionLoop implements IngestionLoop {
     }
 
     await this.storage.saveCursor(this.cursor);
+
+    // Persist the latest known ledger hash alongside the cursor so that
+    // reorg detection survives restarts.
+    if (this.lastKnownLatestHash) {
+      await this.storage.saveLedgerHash(this.lastKnownLatestHash);
+    }
+
     this.successfulBatchesSinceLastCheckpoint = 0;
     this.logger.debug("Persisted indexer checkpoint cursor", {
       cursor: this.cursor,
@@ -201,6 +233,21 @@ export class PollingIngestionLoop implements IngestionLoop {
 
     this.batchesSinceLastHeartbeat = 0;
     this.lastHeartbeatLedgerSequence = latestIndexedLedgerSequence;
+  }
+
+  /**
+   * Fetches the current latest ledger hash from the RPC node.
+   * Returns null on transient errors so that reorg detection degrades
+   * gracefully rather than throwing.
+   */
+  private async fetchLatestLedgerHash(): Promise<string | null> {
+    try {
+      const info = await this.deps.eventFetcher.getLatestLedgerInfo();
+      return info.hash;
+    } catch {
+      this.logger.warn("Failed to fetch latest ledger hash for reorg check", {});
+      return null;
+    }
   }
 
   private async ingestFromCursor(
@@ -250,6 +297,59 @@ export class PollingIngestionLoop implements IngestionLoop {
     // Track the latest network ledger for lag computation (Issue #713)
     if (latestLedger > 0) {
       this.metrics.setLatestNetworkLedgerSequence(latestLedger);
+    }
+
+    // ── Reorg detection ──────────────────────────────────────────────────
+    // After fetching the events window, check whether the chain has undergone
+    // a reorganisation by comparing the latest ledger sequence (and hash)
+    // against the last known values.  A reorg is detected when:
+    //   • The network's latest ledger sequence has decreased, OR
+    //   • The sequence is the same but the hash differs.
+    // On detection the cursor is rewound to a safe depth so that forked events
+    // are re-fetched and the canonical chain state is re-indexed.
+    if (latestLedger > 0 && this.lastKnownLatestLedger !== null) {
+      const reorgDetected =
+        latestLedger < this.lastKnownLatestLedger ||
+        (latestLedger === this.lastKnownLatestLedger &&
+          this.lastKnownLatestHash !== null &&
+          this.lastKnownLatestHash !== (await this.fetchLatestLedgerHash()));
+
+      if (reorgDetected) {
+        const rewindLedgers =
+          this.deps.ledgerWindowSize * REORG_REWIND_DEPTH_MULTIPLIER;
+        const currentSeq = Number(this.cursor ?? 0);
+        const safeSequence = Math.max(0, currentSeq - rewindLedgers);
+
+        this.logger.warn("Chain reorganisation detected — rewinding cursor", {
+          event: "indexer.reorg.detected",
+          lastKnownLatestLedger: this.lastKnownLatestLedger,
+          lastKnownLatestHash: this.lastKnownLatestHash,
+          currentLatestLedger: latestLedger,
+          cursorBefore: this.cursor,
+          rewindLedgers,
+          safeSequence,
+        });
+
+        this.metrics.setLatestIndexedLedgerSequence(safeSequence);
+        this.lastKnownLatestLedger = latestLedger;
+
+        return {
+          nextCursor: String(safeSequence),
+          lastIndexedLedgerSequence: safeSequence,
+          batchWriteSucceeded: false,
+        };
+      }
+    }
+
+    // Update known ledger info after successful fetch
+    if (latestLedger > 0) {
+      this.lastKnownLatestLedger = latestLedger;
+      try {
+        const ledgerInfo = await this.deps.eventFetcher.getLatestLedgerInfo();
+        this.lastKnownLatestHash = ledgerInfo.hash;
+      } catch {
+        // Non-fatal: hash tracking is best-effort for reorg detection
+      }
     }
 
     if (startLedger > latestLedger) {

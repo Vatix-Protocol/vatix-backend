@@ -83,6 +83,8 @@ describe("PollingIngestionLoop", () => {
     storage = {
       loadCursor: vi.fn().mockResolvedValue("10"),
       saveCursor: vi.fn().mockResolvedValue(undefined),
+      loadLedgerHash: vi.fn().mockResolvedValue(null),
+      saveLedgerHash: vi.fn().mockResolvedValue(undefined),
     };
     metrics = {
       setLatestIndexedLedgerSequence: vi.fn(),
@@ -94,6 +96,9 @@ describe("PollingIngestionLoop", () => {
     } as unknown as InternalIndexerMetricsService;
     eventFetcher = {
       fetchByLedgerWindow: vi.fn(),
+      getLatestLedgerInfo: vi
+        .fn()
+        .mockResolvedValue({ sequence: 200, hash: "abcd1234" }),
     } as unknown as EventFetcher;
     batchWriter = {
       write: vi.fn().mockResolvedValue({ written: 2, skipped: 0, errors: [] }),
@@ -346,6 +351,8 @@ describe("PollingIngestionLoop — stale cursor handling", () => {
     storage = {
       loadCursor: vi.fn().mockResolvedValue(null),
       saveCursor: vi.fn().mockResolvedValue(undefined),
+      loadLedgerHash: vi.fn().mockResolvedValue(null),
+      saveLedgerHash: vi.fn().mockResolvedValue(undefined),
     };
     metrics = {
       setLatestIndexedLedgerSequence: vi.fn(),
@@ -360,6 +367,9 @@ describe("PollingIngestionLoop — stale cursor handling", () => {
         events: [],
         latestLedger: 100,
       }),
+      getLatestLedgerInfo: vi
+        .fn()
+        .mockResolvedValue({ sequence: 100, hash: "efgh5678" }),
     } as unknown as EventFetcher;
     batchWriter = {
       write: vi.fn().mockResolvedValue({ written: 0, skipped: 0, errors: [] }),
@@ -450,5 +460,65 @@ describe("PollingIngestionLoop — stale cursor handling", () => {
     // Should not throw — processing should complete
     expect(result).toBeDefined();
     expect(typeof result.nextCursor).toBe("string");
+  });
+
+  describe("reorg detection", () => {
+    it("detects reorg when latest ledger sequence regresses", async () => {
+      const loop = createLoop();
+
+      // First tick establishes a baseline (latestLedger = 100)
+      let result = await runIngest(loop, "50");
+      expect(result.batchWriteSucceeded).toBe(true);
+
+      // Second tick returns a lower latestLedger → reorg detected
+      (
+        eventFetcher.fetchByLedgerWindow as ReturnType<typeof vi.fn>
+      ).mockResolvedValue({
+        events: [],
+        latestLedger: 80, // regressed from 100
+      });
+
+      result = await runIngest(loop, "50");
+      expect(result.batchWriteSucceeded).toBe(false);
+      expect(Number(result.nextCursor)).toBe(0); // rewound by 100 (windowSize 100 * 1)
+      expect(logger.warn).toHaveBeenCalledWith(
+        "Chain reorganisation detected — rewinding cursor",
+        expect.objectContaining({
+          event: "indexer.reorg.detected",
+        })
+      );
+    });
+
+    it("does not trigger reorg on normal progression", async () => {
+      const loop = createLoop();
+
+      await runIngest(loop, "50");
+
+      // Normal: latestLedger increased
+      (
+        eventFetcher.fetchByLedgerWindow as ReturnType<typeof vi.fn>
+      ).mockResolvedValue({
+        events: [],
+        latestLedger: 150,
+      });
+
+      const result = await runIngest(loop, "50");
+      expect(result.batchWriteSucceeded).toBe(true);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        "Chain reorganisation detected — rewinding cursor",
+        expect.anything()
+      );
+    });
+
+    it("skips reorg detection on first tick (no baseline)", async () => {
+      const loop = createLoop();
+
+      const result = await runIngest(loop, null);
+      expect(result.batchWriteSucceeded).toBe(true);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        "Chain reorganisation detected — rewinding cursor",
+        expect.anything()
+      );
+    });
   });
 });

@@ -293,6 +293,74 @@ describe("OracleService", () => {
     });
   });
 
+  describe("fail closed — total provider outage", () => {
+    it("does not call enqueue callback when both primary and fallback fail", async () => {
+      const failingPrimary = createMockAdapter("primary", true);
+      const failingFallback = createMockAdapter("fallback", true);
+      const enqueueCallback = vi.fn().mockResolvedValue(undefined);
+
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter: failingFallback,
+        enableFallback: true,
+        enqueueCallback,
+      });
+
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow("All providers failed");
+
+      // Enqueue must never be called when all providers fail
+      expect(enqueueCallback).not.toHaveBeenCalled();
+    });
+
+    it("increments totalOutageCount metric on total provider failure", async () => {
+      const failingPrimary = createMockAdapter("primary", true);
+      const failingFallback = createMockAdapter("fallback", true);
+
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter: failingFallback,
+        enableFallback: true,
+      });
+
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow();
+
+      const metrics = service.getMetrics();
+      expect(metrics.totalOutageCount).toBe(1);
+      expect(metrics.primaryFailureCount).toBe(1);
+      expect(metrics.fallbackFailureCount).toBe(1);
+    });
+
+    it("does not increment totalOutageCount when primary succeeds", async () => {
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        enableFallback: true,
+      });
+
+      await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      const metrics = service.getMetrics();
+      expect(metrics.totalOutageCount).toBe(0);
+      expect(metrics.primarySuccessCount).toBe(1);
+    });
+  });
+
   describe("enqueue callback", () => {
     it("should invoke enqueue callback on successful resolution", async () => {
       const enqueueCallback = vi.fn().mockResolvedValue(undefined);
