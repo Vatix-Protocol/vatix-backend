@@ -93,6 +93,21 @@ a full restart of the indexer process. If no persisted hash is found on
 startup, detection is deferred until the first successful tick establishes a
 baseline.
 
+### Test coverage
+
+`apps/indexer/src/ingestion.test.ts` (`reorg detection` → `synthetic reorg
+fixture — cursor rewind`) exercises this policy against a synthetic
+`SYNTHETIC_REORG_FIXTURE` of two competing forks (`forkA`/`forkB`) that
+report the **same ledger sequence with different hashes**:
+
+- Ingesting fork A establishes the sequence+hash baseline.
+- Ingesting fork B at the same sequence triggers the hash-mismatch branch
+  (not the sequence-regression branch, which is covered separately) and
+  rewinds the cursor without writing fork B's events.
+- Once the chain advances past the fork point, the next tick re-fetches and
+  persists fork B's canonical events — proving the rewind actually results
+  in re-ingestion of the winning fork, not just a cursor decrement.
+
 ### Recovery
 
 After a reorg rewind the indexer re-processes the affected ledgers. Any events
