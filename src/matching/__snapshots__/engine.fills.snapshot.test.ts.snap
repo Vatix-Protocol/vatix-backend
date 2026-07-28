@@ -1,0 +1,189 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`matchOrder fill scenarios (snapshots) > fully fills a taker order against a single resting maker 1`] = `
+{
+  "positionDeltas": [
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GTAKER00000000000000000000000000000000000000000001",
+      "yesSharesDelta": 100,
+    },
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GMAKER00000000000000000000000000000000000000000001",
+      "yesSharesDelta": -100,
+    },
+  ],
+  "remainingOrder": null,
+  "trades": [
+    {
+      "buyOrderId": "taker-1",
+      "buyerAddress": "GTAKER00000000000000000000000000000000000000000001",
+      "id": "trade_taker-1_maker-1_100_1700000000000",
+      "marketId": "market-snap",
+      "outcome": "YES",
+      "price": 0.5,
+      "quantity": 100,
+      "sellOrderId": "maker-1",
+      "sellerAddress": "GMAKER00000000000000000000000000000000000000000001",
+      "timestamp": 1700000000000,
+    },
+  ],
+}
+`;
+
+exports[`matchOrder fill scenarios (snapshots) > partially fills a taker order and leaves a remaining resting order 1`] = `
+{
+  "positionDeltas": [
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GTAKER00000000000000000000000000000000000000000002",
+      "yesSharesDelta": 40,
+    },
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GMAKER00000000000000000000000000000000000000000002",
+      "yesSharesDelta": -40,
+    },
+  ],
+  "remainingOrder": {
+    "id": "taker-1",
+    "marketId": "market-snap",
+    "outcome": "YES",
+    "price": 0.5,
+    "quantity": 60,
+    "side": "BUY",
+    "timestamp": 1700000000000,
+    "userAddress": "GTAKER00000000000000000000000000000000000000000002",
+  },
+  "trades": [
+    {
+      "buyOrderId": "taker-1",
+      "buyerAddress": "GTAKER00000000000000000000000000000000000000000002",
+      "id": "trade_taker-1_maker-1_40_1700000000000",
+      "marketId": "market-snap",
+      "outcome": "YES",
+      "price": 0.45,
+      "quantity": 40,
+      "sellOrderId": "maker-1",
+      "sellerAddress": "GMAKER00000000000000000000000000000000000000000002",
+      "timestamp": 1700000000000,
+    },
+  ],
+}
+`;
+
+exports[`matchOrder fill scenarios (snapshots) > returns no trades and the original order unchanged when nothing crosses 1`] = `
+{
+  "positionDeltas": [],
+  "remainingOrder": {
+    "id": "taker-1",
+    "marketId": "market-snap",
+    "outcome": "YES",
+    "price": 0.5,
+    "quantity": 100,
+    "side": "BUY",
+    "timestamp": 1700000000000,
+    "userAddress": "GTAKER00000000000000000000000000000000000000000004",
+  },
+  "trades": [],
+}
+`;
+
+exports[`matchOrder fill scenarios (snapshots) > skips a self-trade and matches the next resting order at the same price 1`] = `
+{
+  "positionDeltas": [
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GSAMEUSER0000000000000000000000000000000000000001",
+      "yesSharesDelta": 100,
+    },
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GMAKER00000000000000000000000000000000000000000006",
+      "yesSharesDelta": -100,
+    },
+  ],
+  "remainingOrder": null,
+  "trades": [
+    {
+      "buyOrderId": "taker-1",
+      "buyerAddress": "GSAMEUSER0000000000000000000000000000000000000001",
+      "id": "trade_taker-1_maker-1_100_1700000000000",
+      "marketId": "market-snap",
+      "outcome": "YES",
+      "price": 0.5,
+      "quantity": 100,
+      "sellOrderId": "maker-1",
+      "sellerAddress": "GMAKER00000000000000000000000000000000000000000006",
+      "timestamp": 1700000000000,
+    },
+  ],
+}
+`;
+
+exports[`matchOrder fill scenarios (snapshots) > sweeps multiple price levels in price-time priority 1`] = `
+{
+  "positionDeltas": [
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GTAKER00000000000000000000000000000000000000000003",
+      "yesSharesDelta": 90,
+    },
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GMAKER00000000000000000000000000000000000000000003",
+      "yesSharesDelta": -30,
+    },
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GMAKER00000000000000000000000000000000000000000004",
+      "yesSharesDelta": -50,
+    },
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GMAKER00000000000000000000000000000000000000000005",
+      "yesSharesDelta": -10,
+    },
+  ],
+  "remainingOrder": null,
+  "trades": [
+    {
+      "buyOrderId": "taker-1",
+      "buyerAddress": "GTAKER00000000000000000000000000000000000000000003",
+      "id": "trade_taker-1_maker-1_30_1700000000000",
+      "marketId": "market-snap",
+      "outcome": "YES",
+      "price": 0.4,
+      "quantity": 30,
+      "sellOrderId": "maker-1",
+      "sellerAddress": "GMAKER00000000000000000000000000000000000000000003",
+      "timestamp": 1700000000000,
+    },
+    {
+      "buyOrderId": "taker-1",
+      "buyerAddress": "GTAKER00000000000000000000000000000000000000000003",
+      "id": "trade_taker-1_maker-2_50_1700000000000",
+      "marketId": "market-snap",
+      "outcome": "YES",
+      "price": 0.45,
+      "quantity": 50,
+      "sellOrderId": "maker-2",
+      "sellerAddress": "GMAKER00000000000000000000000000000000000000000004",
+      "timestamp": 1700000000000,
+    },
+    {
+      "buyOrderId": "taker-1",
+      "buyerAddress": "GTAKER00000000000000000000000000000000000000000003",
+      "id": "trade_taker-1_maker-3_10_1700000000000",
+      "marketId": "market-snap",
+      "outcome": "YES",
+      "price": 0.5,
+      "quantity": 10,
+      "sellOrderId": "maker-3",
+      "sellerAddress": "GMAKER00000000000000000000000000000000000000000005",
+      "timestamp": 1700000000000,
+    },
+  ],
+}
+`;
