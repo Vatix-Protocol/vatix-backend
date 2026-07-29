@@ -57,6 +57,23 @@ Polls for `ACTIVE` markets with `endTime <= now()` and transitions them to `CANC
 - `orders_cancelled_on_expiry_total` — count of orders cancelled during sweep
 - `collateral_released_on_expiry_total` — total collateral released (in collateral units)
 
+### Reconciliation Worker (#880)
+
+Polls all `ACTIVE` and `RESOLVED` markets, detects divergence between indexed events (`IndexedTrade`, `CollateralDeposit`) and stored `UserPosition` rows, and optionally applies recovery by recomputing positions from source events.
+
+**Purpose**: Ensures that indexed on-chain events are correctly reflected in position tracking. Detects incomplete trades, missing deposits, and race conditions.
+
+| Config env var                    | Default | Description                                                      |
+| --------------------------------- | ------- | ---------------------------------------------------------------- |
+| `RECONCILIATION_INTERVAL_MS`      | `30000` | How often the job runs (ms). Minimum 1000.                       |
+| `RECONCILIATION_MAX_RUN_MS`       | `20000` | Max wall-clock time (ms) per poll before stopping. 0 = unlimited |
+| `AUTO_RECOVERY_ENABLED`           | `false` | Whether to automatically apply recovery for detected drift        |
+
+**Metrics emitted**:
+- `positions_reconciled_total` — count of wallets examined
+- `positions_drift_detected` — count of wallets with divergence
+- `positions_recovered_total` — count of successful recovery applications
+
 #### Queue Consumer Pattern
 
 The finalization worker uses a **poll-based** approach: it queries the database on each tick for candidates that satisfy the challenge window cutoff. Future workers for real-time settlement will instead subscribe to Redis Streams produced by the API after order matching.
