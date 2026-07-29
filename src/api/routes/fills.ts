@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
+import { fillsResumeService } from "../../services/fills-resume.js";
 import {
   validateUserAddress,
   STELLAR_PUBLIC_KEY_REGEX,
@@ -21,10 +22,10 @@ interface FillStreamParams {
 }
 
 interface FillStreamQuerystring {
-  /** Explicit resume cursor (ISO timestamp), used when a client cannot set
+  /** Explicit resume cursor (stream ID or ISO timestamp), used when a client cannot set
    *  request headers (e.g. EventSource does not expose Last-Event-ID on the
    *  initial connect). Ignored if the Last-Event-ID header is present. */
-  since?: string;
+  after?: string;
 }
 
 /**
@@ -33,22 +34,22 @@ interface FillStreamQuerystring {
  *
  * Browsers' native EventSource automatically resends the last received
  * event's `id:` field as the `Last-Event-ID` header on reconnect, so that
- * takes priority. The `?since=` query param is a fallback for clients that
+ * takes priority. The `?after=` query param is a fallback for clients that
  * can't set headers. Falls back to `null` (caller should use "now") for a
  * fresh connection or an unparseable cursor.
  */
 export function parseResumeCursor(
   lastEventIdHeader: string | string[] | undefined,
-  sinceQuery: string | undefined
-): Date | null {
+  afterQuery: string | undefined
+): string | null {
   const raw = Array.isArray(lastEventIdHeader)
     ? lastEventIdHeader[0]
-    : (lastEventIdHeader ?? sinceQuery);
+    : (lastEventIdHeader ?? afterQuery);
 
   if (!raw) return null;
 
-  const parsed = new Date(raw);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  // Use fillsResumeService to parse cursor (supports stream ID and ISO format)
+  return fillsResumeService.parseCursor(raw);
 }
 
 export interface OrderFillEvent {
@@ -106,6 +107,38 @@ export async function fillsRoutes(fastify: FastifyInstance) {
         throw new ValidationError(addressError);
       }
 
+      // Parse resume cursor from Last-Event-ID header or ?after= query
+      const rawCursor = parseResumeCursor(
+        request.headers["last-event-id"],
+        request.query.after
+      );
+
+      // If client provided a cursor, check for gaps
+      if (rawCursor) {
+        const gap = await fillsResumeService.detectGap(rawCursor);
+
+        if (gap.hasGap) {
+          // Return 410 Gone with recovery guidance
+          request.log.warn(
+            { wallet, cursor: rawCursor, reason: gap.reason },
+            "Fill stream cursor stale or trimmed"
+          );
+
+          return reply.status(410).send({
+            error: "stream_gap",
+            message:
+              "Requested resume cursor is stale or has been trimmed from the stream.",
+            reason: gap.reason,
+            suggestedCursor: gap.suggestedCursor,
+            guidance:
+              "Reconnect without Last-Event-ID to get current fills, or use suggestedCursor to catch up.",
+          });
+        }
+      }
+
+      // Determine starting cursor: use provided cursor or start from now
+      let currentCursor = rawCursor ?? `${Date.now()}-0`;
+
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
@@ -114,12 +147,6 @@ export async function fillsRoutes(fastify: FastifyInstance) {
         "X-Accel-Buffering": "no",
       });
 
-      let since =
-        parseResumeCursor(
-          request.headers["last-event-id"],
-          request.query.since
-        ) ?? new Date();
-
       const sendEvent = (event: string, data: unknown, id?: string) => {
         const idLine = id ? `id: ${id}\n` : "";
         reply.raw.write(
@@ -127,41 +154,77 @@ export async function fillsRoutes(fastify: FastifyInstance) {
         );
       };
 
-      sendEvent("connected", { wallet, since: since.toISOString() });
+      // Send connected event with bounds info for client reference
+      const bounds = await fillsResumeService.getReplayBounds(wallet);
+      sendEvent("connected", {
+        wallet,
+        cursor: currentCursor,
+        minCursor: bounds.minCursor,
+        maxCursor: bounds.maxCursor,
+        recordCount: bounds.recordCount,
+      });
 
-      const poll = async () => {
-        let fills;
+      // On reconnect with cursor, replay bounded window of missed fills
+      if (rawCursor && rawCursor !== currentCursor) {
         try {
-          fills = await prisma.trade.findMany({
-            where: {
-              tradedAt: { gt: since },
-              OR: [{ buyerAddress: wallet }, { sellerAddress: wallet }],
-            },
-            orderBy: { tradedAt: "asc" },
+          const { trades: replayed } =
+            await fillsResumeService.getTradesAfterCursor(wallet, rawCursor, 100);
+
+          if (replayed.length > 0) {
+            sendEvent("replay_start", { count: replayed.length });
+
+            for (const trade of replayed) {
+              const event: OrderFillEvent = {
+                tradeId: trade.tradeId,
+                marketId: trade.marketId,
+                outcome: trade.outcome,
+                side: trade.side,
+                orderId: trade.orderId,
+                counterpartyAddress: trade.counterpartyAddress,
+                price: trade.price,
+                quantity: trade.quantity,
+                tradedAt: trade.tradedAt.toISOString(),
+              };
+              sendEvent("order_fill", event, trade.streamId);
+            }
+
+            sendEvent("replay_end", { replayed: replayed.length });
+            currentCursor = replayed[replayed.length - 1].streamId;
+          }
+        } catch (error) {
+          request.log.error(
+            { wallet, cursor: rawCursor, error },
+            "Failed to replay fills"
+          );
+          sendEvent("replay_error", {
+            message: "Failed to replay missed fills",
           });
+        }
+      }
+
+      // Long-poll for new fills
+      const poll = async () => {
+        try {
+          const { trades: fills } =
+            await fillsResumeService.getTradesAfterCursor(wallet, currentCursor, 100);
+
+          for (const fill of fills) {
+            const event: OrderFillEvent = {
+              tradeId: fill.tradeId,
+              marketId: fill.marketId,
+              outcome: fill.outcome,
+              side: fill.side,
+              orderId: fill.orderId,
+              counterpartyAddress: fill.counterpartyAddress,
+              price: fill.price,
+              quantity: fill.quantity,
+              tradedAt: fill.tradedAt.toISOString(),
+            };
+            sendEvent("order_fill", event, fill.streamId);
+            currentCursor = fill.streamId;
+          }
         } catch (error) {
           request.log.error({ error }, "order fill stream poll failed");
-          return;
-        }
-
-        for (const fill of fills) {
-          if (fill.tradedAt > since) since = fill.tradedAt;
-
-          const isBuyer = fill.buyerAddress === wallet;
-          const event: OrderFillEvent = {
-            tradeId: fill.tradeId,
-            marketId: fill.marketId,
-            outcome: fill.outcome,
-            side: isBuyer ? "BUY" : "SELL",
-            orderId: isBuyer ? fill.buyOrderId : fill.sellOrderId,
-            counterpartyAddress: isBuyer
-              ? fill.sellerAddress
-              : fill.buyerAddress,
-            price: Number(fill.price),
-            quantity: fill.quantity,
-            tradedAt: fill.tradedAt.toISOString(),
-          };
-          sendEvent("order_fill", event, fill.tradedAt.toISOString());
         }
       };
 
