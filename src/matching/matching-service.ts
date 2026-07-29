@@ -120,95 +120,154 @@ class MatchingService {
   /**
    * Cancel an open order and release its locked collateral.
    *
+   * Runs under the same per-book mutex as `placeOrder` (#866) so a cancel
+   * can never interleave in-memory with a match for the same book on this
+   * instance. That mutex is a single-instance optimization only — the
+   * authoritative safety net is the version-conditioned UPDATE below: it
+   * conditions on the exact (version, status) this call read, so even a
+   * true concurrent writer (another process, or a match whose in-memory
+   * work raced ahead of its DB commit) can only ever have one of the two
+   * conflicting writes succeed. The loser gets OrderConflictError (409),
+   * a documented, retryable error code.
+   *
    * 1. Validates the order exists, belongs to the caller, and is cancellable.
-   * 2. Removes it from the in-memory order book (if present).
-   * 3. Updates the DB row to CANCELLED status.
-   * 4. Decrements the user's lockedCollateral for that market.
+   * 2. Updates the DB row to CANCELLED status, conditioned on version+status.
+   * 3. Decrements the user's lockedCollateral for that market (remaining
+   *    unfilled quantity only; never below zero).
+   * 4. Removes it from the in-memory order book, only after the DB commit.
    *
    * @returns The cancelled order row.
    */
   async cancelOrder(orderId: string, userAddress: string): Promise<any> {
     const prisma = getPrismaClient();
 
-    return prisma.$transaction(async (tx) => {
-      const order = await tx.order.findUnique({
-        where: { id: orderId },
+    // marketId/outcome are immutable once an order is created, so this
+    // lookup is safe to do before acquiring the per-book mutex — it only
+    // determines *which* mutex to take.
+    const orderRef = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { marketId: true, outcome: true },
+    });
+
+    if (!orderRef) {
+      throw new ValidationError("Order not found", {
+        orderId: "Order not found",
       });
+    }
 
-      if (!order) {
-        throw new ValidationError("Order not found", {
-          orderId: "Order not found",
-        });
-      }
+    const marketId = orderRef.marketId;
+    const outcome = orderRef.outcome as Outcome;
+    const bookKey = this.getBookKey(marketId, outcome);
 
-      if (order.userAddress !== userAddress) {
-        throw new ValidationError("Order does not belong to this user", {
-          orderId: "Order does not belong to this user",
-        });
-      }
+    return this.getOrCreateMutex(bookKey).run(async () => {
+      let cancelledOrder: any;
 
-      if (order.status !== "OPEN" && order.status !== "PARTIALLY_FILLED") {
-        throw new ValidationError(
-          `Order cannot be cancelled (status: ${order.status.toLowerCase()})`,
-          {
-            orderId: `Order cannot be cancelled (status: ${order.status.toLowerCase()})`,
+      try {
+        cancelledOrder = await prisma.$transaction(async (tx) => {
+          const order = await tx.order.findUnique({
+            where: { id: orderId },
+          });
+
+          if (!order) {
+            throw new ValidationError("Order not found", {
+              orderId: "Order not found",
+            });
           }
-        );
+
+          if (order.userAddress !== userAddress) {
+            throw new ValidationError("Order does not belong to this user", {
+              orderId: "Order does not belong to this user",
+            });
+          }
+
+          if (order.status !== "OPEN" && order.status !== "PARTIALLY_FILLED") {
+            throw new ValidationError(
+              `Order cannot be cancelled (status: ${order.status.toLowerCase()})`,
+              {
+                orderId: `Order cannot be cancelled (status: ${order.status.toLowerCase()})`,
+              }
+            );
+          }
+
+          // Conditional cancel: only applies if the row is still exactly the
+          // version/status we just read. Zero rows affected means a
+          // concurrent writer (fill or cancel) already landed first.
+          const cancelResult = await tx.order.updateMany({
+            where: {
+              id: orderId,
+              version: order.version,
+              status: { in: ["OPEN", "PARTIALLY_FILLED"] },
+            },
+            data: {
+              status: "CANCELLED",
+              version: { increment: 1 },
+            },
+          });
+
+          if (cancelResult.count === 0) {
+            throw new OrderConflictError(
+              "Order was concurrently filled or cancelled; please retry"
+            );
+          }
+
+          // Release locked collateral for the remaining unfilled quantity only.
+          const remainingQty = order.quantity - order.filledQuantity;
+          const collateralPerUnit =
+            order.side === "BUY"
+              ? Number(order.price)
+              : 1 - Number(order.price);
+          const collateralToRelease =
+            Math.round(collateralPerUnit * remainingQty * 1e8) / 1e8;
+
+          if (collateralToRelease > 0) {
+            const position = await tx.userPosition.findUnique({
+              where: {
+                marketId_userAddress: {
+                  marketId: order.marketId,
+                  userAddress,
+                },
+              },
+            });
+
+            if (position) {
+              // Never release more than is actually locked.
+              const newLocked = Math.max(
+                0,
+                Number(position.lockedCollateral) - collateralToRelease
+              );
+              await tx.userPosition.update({
+                where: {
+                  marketId_userAddress: {
+                    marketId: order.marketId,
+                    userAddress,
+                  },
+                },
+                data: {
+                  lockedCollateral: newLocked,
+                },
+              });
+            }
+          }
+
+          return { ...order, status: "CANCELLED", version: order.version + 1 };
+        });
+      } catch (error) {
+        if (error instanceof OrderConflictError) {
+          // Our in-memory book may be stale relative to the write that beat
+          // us (e.g. a fill applied by another instance) — evict it so the
+          // next operation for this book rehydrates fresh from the DB.
+          this.invalidateBook(marketId, outcome);
+        }
+        throw error;
       }
 
-      // 2. Remove from in-memory order book
-      const bookKey = this.getBookKey(order.marketId, order.outcome as Outcome);
+      // Only mutate the in-memory book once the cancel is durably committed.
       const book = this.books.get(bookKey);
       if (book) {
-        const bookSide = order.side === "BUY" ? "bid" : "ask";
         book.removeOrder(orderId);
       }
 
-      // 3. Update DB
-      const remainingQty = order.quantity - order.filledQuantity;
-
-      // 4. Release locked collateral (decrement)
-      const collateralPerUnit =
-        order.side === "BUY" ? Number(order.price) : 1 - Number(order.price);
-      const collateralToRelease =
-        Math.round(collateralPerUnit * remainingQty * 1e8) / 1e8;
-
-      const updatedOrder = await tx.order.update({
-        where: { id: orderId },
-        data: { status: "CANCELLED" },
-      });
-
-      if (collateralToRelease > 0) {
-        // Decrement lockedCollateral for this user+market
-        const position = await tx.userPosition.findUnique({
-          where: {
-            marketId_userAddress: {
-              marketId: order.marketId,
-              userAddress,
-            },
-          },
-        });
-
-        if (position) {
-          const newLocked = Math.max(
-            0,
-            Number(position.lockedCollateral) - collateralToRelease
-          );
-          await tx.userPosition.update({
-            where: {
-              marketId_userAddress: {
-                marketId: order.marketId,
-                userAddress,
-              },
-            },
-            data: {
-              lockedCollateral: newLocked,
-            },
-          });
-        }
-      }
-
-      return updatedOrder;
+      return cancelledOrder;
     });
   }
 
@@ -386,11 +445,30 @@ class MatchingService {
 
             const makerOrder = await tx.order.findUnique({
               where: { id: maker },
-              select: { quantity: true, filledQuantity: true },
+              select: {
+                quantity: true,
+                filledQuantity: true,
+                status: true,
+                version: true,
+              },
             });
 
             if (!makerOrder) {
               throw new Error(`Maker order not found: ${maker}`);
+            }
+
+            // The in-memory book that produced this match may be stale
+            // relative to the DB (e.g. the maker order was cancelled, or
+            // filled by another instance, after this book last hydrated).
+            // Reject rather than fill a maker order that is no longer open
+            // (#866) — no fill may commit against a canceled maker order.
+            if (
+              makerOrder.status !== "OPEN" &&
+              makerOrder.status !== "PARTIALLY_FILLED"
+            ) {
+              throw new OrderConflictError(
+                `Maker order ${maker} is no longer open (status: ${makerOrder.status.toLowerCase()}); please retry`
+              );
             }
 
             const newFilledQty = makerOrder.filledQuantity + trade.quantity;
@@ -404,13 +482,29 @@ class MatchingService {
               makerStatus = "FILLED";
             }
 
-            await tx.order.update({
-              where: { id: maker },
+            // Conditional update: only applies if the maker order is still
+            // exactly the version/status just read. Zero rows affected means
+            // a concurrent cancel (or another fill) beat this transaction to
+            // it — the whole placeOrder transaction rolls back, so there is
+            // one winner per maker order version and never a double-fill.
+            const makerUpdate = await tx.order.updateMany({
+              where: {
+                id: maker,
+                version: makerOrder.version,
+                status: { in: ["OPEN", "PARTIALLY_FILLED"] },
+              },
               data: {
                 filledQuantity: newFilledQty,
                 status: makerStatus,
+                version: { increment: 1 },
               },
             });
+
+            if (makerUpdate.count === 0) {
+              throw new OrderConflictError(
+                `Maker order ${maker} was concurrently modified; please retry`
+              );
+            }
           }
 
           // Persist trades as source of truth (idempotent on trade.id)

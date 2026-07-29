@@ -454,4 +454,169 @@ describe("Concurrent order placement — same order book", () => {
     );
     expect(makerFilledQty).toBe(totalFilled);
   });
+
+  // -------------------------------------------------------------------------
+  // Cancel-vs-match race integrity (#866)
+  // -------------------------------------------------------------------------
+
+  describe("cancel-vs-match race integrity", () => {
+    it("never lets a fill commit against a canceled maker order (parallel cancel + aggressive taker)", async () => {
+      const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+      const maker = addresses[2];
+      const restingQty = 100;
+      const price = 0.5;
+
+      const makerOrder = await testUtils.createTestOrder(market.id, maker, {
+        side: "SELL",
+        outcome: "YES",
+        price,
+        quantity: restingQty,
+        filledQuantity: 0,
+        status: "OPEN",
+      });
+
+      // Collateral locked by a SELL order is (1 - price) * quantity.
+      await testUtils.createTestPosition(market.id, maker, {
+        lockedCollateral: (1 - price) * restingQty,
+      });
+
+      // An aggressive taker sized to fully consume the maker in one shot —
+      // so if the match wins the race, the maker ends up terminally FILLED
+      // (not left PARTIALLY_FILLED, which would make a subsequent cancel of
+      // the remainder legitimate rather than a genuine conflict).
+      const takerPayload = {
+        marketId: market.id,
+        userAddress: addresses[0],
+        side: "BUY" as const,
+        outcome: "YES" as const,
+        price,
+        quantity: restingQty,
+      };
+
+      const [cancelRes, takerRes] = await Promise.all([
+        app.inject({
+          method: "DELETE",
+          url: `/v1/orders/${makerOrder.id}`,
+          payload: { userAddress: maker },
+        }),
+        app.inject({
+          method: "POST",
+          url: "/v1/orders",
+          headers: authHeaders(keypairs[0], takerPayload),
+          payload: takerPayload,
+        }),
+      ]);
+
+      expect(takerRes.statusCode).toBe(201);
+      const takerFilled = JSON.parse(takerRes.body).filledQuantity as number;
+
+      const finalMaker = await prisma.order.findUnique({
+        where: { id: makerOrder.id },
+      });
+      expect(finalMaker).not.toBeNull();
+
+      // No trade may ever be recorded against a canceled maker order.
+      const trades = await prisma.trade.findMany({
+        where: { sellOrderId: makerOrder.id },
+      });
+
+      if (finalMaker!.status === "CANCELLED") {
+        // Cancel won: the match must not have landed anything on this maker.
+        expect(cancelRes.statusCode).toBe(200);
+        expect(finalMaker!.filledQuantity).toBe(0);
+        expect(takerFilled).toBe(0);
+        expect(trades).toHaveLength(0);
+      } else {
+        // Match won first (aggressive size fully fills the maker in one
+        // shot), so the cancel attempt must not have succeeded.
+        expect(finalMaker!.status).toBe("FILLED");
+        expect(finalMaker!.filledQuantity).toBe(restingQty);
+        expect(takerFilled).toBe(restingQty);
+        expect(cancelRes.statusCode).not.toBe(200);
+        expect(trades).toHaveLength(1);
+      }
+    });
+
+    it("locked collateral never goes negative across many interleaved cancel/fill pairs on the same maker", async () => {
+      const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+      const maker = addresses[2];
+      const price = 0.5;
+      const restingQty = 40;
+      const numOrders = 4;
+
+      const makerOrders = [];
+      for (let i = 0; i < numOrders; i++) {
+        makerOrders.push(
+          await testUtils.createTestOrder(market.id, maker, {
+            side: "SELL",
+            outcome: "YES",
+            price,
+            quantity: restingQty,
+            filledQuantity: 0,
+            status: "OPEN",
+          })
+        );
+      }
+
+      await testUtils.createTestPosition(market.id, maker, {
+        lockedCollateral: (1 - price) * restingQty * numOrders,
+      });
+
+      // Race a cancel and an aggressive full-size taker against every maker
+      // order at once — all interleaved on the same book/mutex.
+      const operations = makerOrders.flatMap((o) => {
+        const takerPayload = {
+          marketId: market.id,
+          userAddress: addresses[0],
+          side: "BUY" as const,
+          outcome: "YES" as const,
+          price,
+          quantity: restingQty,
+        };
+        return [
+          app.inject({
+            method: "DELETE",
+            url: `/v1/orders/${o.id}`,
+            payload: { userAddress: maker },
+          }),
+          app.inject({
+            method: "POST",
+            url: "/v1/orders",
+            headers: authHeaders(keypairs[0], takerPayload),
+            payload: takerPayload,
+          }),
+        ];
+      });
+
+      await Promise.all(operations);
+
+      const position = await prisma.userPosition.findUnique({
+        where: {
+          marketId_userAddress: { marketId: market.id, userAddress: maker },
+        },
+      });
+
+      expect(position).not.toBeNull();
+      // Invariant: locked collateral must never go negative, regardless of
+      // how the cancels and fills interleaved.
+      expect(Number(position!.lockedCollateral)).toBeGreaterThanOrEqual(0);
+
+      // Every maker order must be internally consistent: a CANCELLED order
+      // was never subsequently filled, and every trade recorded against a
+      // maker is reflected in that maker's own filledQuantity.
+      const finalOrders = await prisma.order.findMany({
+        where: { id: { in: makerOrders.map((o) => o.id) } },
+      });
+      for (const order of finalOrders) {
+        const trades = await prisma.trade.findMany({
+          where: { sellOrderId: order.id },
+        });
+        const tradedQty = trades.reduce((sum, t) => sum + t.quantity, 0);
+        expect(order.filledQuantity).toBe(tradedQty);
+        if (order.status === "CANCELLED") {
+          expect(tradedQty).toBe(0);
+        }
+      }
+    });
+  });
 });
