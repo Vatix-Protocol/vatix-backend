@@ -51,6 +51,8 @@ async function bootstrap(): Promise<void> {
       batchWriter,
       contractId: config.contractId,
       ledgerWindowSize: config.ledgerWindowSize,
+      gapPauseThreshold: config.gapPauseThreshold,
+      backfillMaxLedgers: config.backfillMaxLedgers,
     }
   );
 
