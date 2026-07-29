@@ -16,6 +16,8 @@ import { getPrismaClient } from "../services/prisma.js";
 import {
   ValidationError,
   ServiceUnavailableError,
+  MarketNotFoundError,
+  MarketNotActiveError,
 } from "../api/middleware/errors.js";
 import { orderbookHydratedMarketsGauge } from "../services/metrics.js";
 
@@ -281,6 +283,11 @@ class MatchingService {
    * Rejects with 503 when the matching engine is disabled via
    * MATCHING_ENGINE_ENABLED=false (#744). Order cancellation is unaffected —
    * users can still withdraw resting orders while matching is paused.
+   *
+   * Re-checks market status inside the per-book mutex (#792), even though
+   * routes already call assertValidOrder before this. A market can flip to
+   * CANCELLED/RESOLVED while an order is queued behind the mutex, so the
+   * service itself must reject rather than trust the pre-check.
    */
   async placeOrder(input: OrderInput): Promise<PlaceOrderResult> {
     if (!isMatchingEngineEnabled()) {
@@ -291,6 +298,19 @@ class MatchingService {
 
     return this.getOrCreateMutex(bookKey).run(async () => {
       const prisma = getPrismaClient();
+
+      const market = await prisma.market.findUnique({
+        where: { id: input.marketId },
+      });
+
+      if (!market || market.deletedAt !== null) {
+        throw new MarketNotFoundError(input.marketId);
+      }
+
+      if (market.status !== "ACTIVE") {
+        throw new MarketNotActiveError(input.marketId, market.status);
+      }
+
       const book = await this.getOrHydrateBook(input.marketId, input.outcome);
 
       // Self-trade check
