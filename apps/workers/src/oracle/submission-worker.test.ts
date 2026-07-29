@@ -471,6 +471,61 @@ describe("SubmissionWorker", () => {
     });
   });
 
+  describe("Stellar network passphrase validation", () => {
+    it("rejects construction when the configured passphrase does not match the deployment network", () => {
+      expect(
+        () =>
+          new SubmissionWorker(mockQueue as any, mockPrisma as any, {
+            submissionMaxRetries: 3,
+            consumerName: "test-consumer",
+            logger: mockLogger,
+            stellar: TEST_STELLAR_CONFIG, // testnet passphrase
+            stellarNetwork: "mainnet",
+          })
+      ).toThrow(/does not match STELLAR_NETWORK="mainnet"/);
+    });
+
+    it("submits on-chain in test doubles when the passphrase matches the deployment network", async () => {
+      const submission = createTestSubmission();
+      stellarMocks.getAccount.mockResolvedValueOnce({
+        accountId: () => "GSOURCEACCOUNT",
+      });
+      stellarMocks.prepareTransaction.mockResolvedValueOnce({
+        sign: vi.fn(),
+      });
+      stellarMocks.sendTransaction.mockResolvedValueOnce({
+        status: "PENDING",
+        hash: "txhash-correct-network",
+      });
+      stellarMocks.getTransaction.mockResolvedValueOnce({
+        status: "SUCCESS",
+        ledger: 7,
+      });
+      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
+      mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
+        id: "candidate-1",
+      });
+      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
+
+      const stellarWorker = new SubmissionWorker(
+        mockQueue as any,
+        mockPrisma as any,
+        {
+          submissionMaxRetries: 3,
+          consumerName: "test-consumer",
+          logger: mockLogger,
+          stellar: TEST_STELLAR_CONFIG,
+          stellarNetwork: "testnet",
+        }
+      );
+
+      await stellarWorker.processSubmission(submission);
+
+      expect(stellarMocks.sendTransaction).toHaveBeenCalled();
+      expect(mockQueue.acknowledge).toHaveBeenCalledWith(submission);
+    });
+  });
+
   describe("Stellar RPC retry/backoff", () => {
     let stellarWorker: SubmissionWorker;
 
