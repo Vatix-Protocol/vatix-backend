@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { adminRoutes } from "../../src/api/routes/admin.js";
 import { computeMarketEtag } from "../../src/api/routes/market.dto.js";
 import { buildTestApp, resetRateLimits } from "./helpers/build-test-app.js";
-import { testUtils } from "../setup.js";
+import { testUtils, getTestPrismaClient } from "../setup.js";
 
 const API_KEY = "test-api-key";
 const ADMIN_TOKEN = "test-admin-token";
@@ -248,6 +248,28 @@ describe("PATCH /v1/admin/markets/:id/status", () => {
     expect(body.success).toBe(true);
     expect(body.data.market.id).toBe(market.id);
     expect(body.data.market.status).toBe("CANCELLED");
+  });
+
+  it("returns 409 for a transition the lifecycle matrix forbids", async () => {
+    const market = await testUtils.createTestMarket({ status: "RESOLVED" });
+
+    const res = await authed(
+      app,
+      "PATCH",
+      `/v1/admin/markets/${market.id}/status`,
+      {
+        status: "ACTIVE",
+      }
+    );
+    expect(res.statusCode).toBe(409);
+
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("market_invalid_transition");
+
+    const persisted = await getTestPrismaClient().market.findUnique({
+      where: { id: market.id },
+    });
+    expect(persisted?.status).toBe("RESOLVED");
   });
 
   it("returns 400 for an invalid status enum value", async () => {

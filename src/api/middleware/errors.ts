@@ -1,6 +1,8 @@
 // Custom error classes for Vatix Backend
 // Each class carries a stable `code` used in the API error envelope.
 
+import { MARKET_INVALID_TRANSITION_CODE } from "../../../packages/shared/src/marketLifecycle.js";
+
 export class AppError extends Error {
   statusCode: number;
   code: string;
@@ -52,6 +54,16 @@ export class PreconditionFailedError extends AppError {
     message = "Precondition failed: resource has been modified since the supplied ETag"
   ) {
     super(message, 412, "precondition_failed");
+  }
+}
+
+export class InvalidMarketTransitionError extends AppError {
+  constructor(from: string, to: string) {
+    super(
+      `Illegal market transition ${from} -> ${to}`,
+      409,
+      MARKET_INVALID_TRANSITION_CODE
+    );
   }
 }
 
