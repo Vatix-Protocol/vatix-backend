@@ -1,4 +1,5 @@
-import type { FastifyInstance } from "fastify";
+import { randomBytes } from "crypto";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import {
   getAnalyticsPrismaClient,
@@ -9,10 +10,13 @@ import { requireApiKey } from "../middleware/apiKeyAuth.js";
 import {
   MarketNotFoundError,
   PreconditionFailedError,
+  ValidationError,
 } from "../middleware/errors.js";
 import { adminLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
 import { computeMarketEtag } from "./market.dto.js";
+import { BreakGlassService } from "../../services/break-glass.js";
+import { createLogger } from "../../../apps/indexer/src/logger.js";
 
 export async function adminRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
@@ -110,6 +114,246 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
       reply.header("etag", computeMarketEtag(market));
       success(reply, { market });
+    }
+  );
+
+  // POST /admin/markets/:id/break-glass/halt - Initiate market halt
+  // Step 1: First admin initiates, gets an approval token
+  // Step 2: Second admin uses token to execute
+  fastify.post<{
+    Params: { id: string };
+    Body: { reason?: string };
+    Headers: { "x-approval-token"?: string };
+  }>(
+    "/admin/markets/:id/break-glass/halt",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+        body: {
+          type: "object",
+          properties: {
+            reason: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+      const { reason } = request.body;
+      const approvalToken = request.headers["x-approval-token"];
+      const actor = (request as any).adminKey || "unknown";
+      const requestId = randomBytes(16).toString("hex");
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      // If approval token provided, execute the halt
+      if (approvalToken) {
+        const result = await breakGlass.executeWithApproval(
+          {
+            marketId,
+            action: "halt",
+            actor,
+            requestId,
+            reason,
+            approvalToken,
+          },
+          actor
+        );
+        success(reply, result);
+      } else {
+        // Otherwise, initiate approval request
+        const approval = await breakGlass.initiateApproval({
+          marketId,
+          action: "halt",
+          initiator: actor,
+          requestId,
+          reason,
+        });
+        reply.status(202).send({
+          status: "approval_required",
+          requestId: approval.requestId,
+          token: approval.token,
+          expiresAt: approval.expiresAt.toISOString(),
+          message: "Second admin approval required. Use token in X-Approval-Token header.",
+        });
+      }
+    }
+  );
+
+  // POST /admin/markets/:id/break-glass/cancel-all - Initiate cancel all orders
+  fastify.post<{
+    Params: { id: string };
+    Body: { reason?: string };
+    Headers: { "x-approval-token"?: string };
+  }>(
+    "/admin/markets/:id/break-glass/cancel-all",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+        body: {
+          type: "object",
+          properties: {
+            reason: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+      const { reason } = request.body;
+      const approvalToken = request.headers["x-approval-token"];
+      const actor = (request as any).adminKey || "unknown";
+      const requestId = randomBytes(16).toString("hex");
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      if (approvalToken) {
+        const result = await breakGlass.executeWithApproval(
+          {
+            marketId,
+            action: "cancel-all",
+            actor,
+            requestId,
+            reason,
+            approvalToken,
+          },
+          actor
+        );
+        success(reply, result);
+      } else {
+        const approval = await breakGlass.initiateApproval({
+          marketId,
+          action: "cancel-all",
+          initiator: actor,
+          requestId,
+          reason,
+        });
+        reply.status(202).send({
+          status: "approval_required",
+          requestId: approval.requestId,
+          token: approval.token,
+          expiresAt: approval.expiresAt.toISOString(),
+          message: "Second admin approval required. Use token in X-Approval-Token header.",
+        });
+      }
+    }
+  );
+
+  // POST /admin/markets/:id/break-glass/resume - Resume a halted market
+  fastify.post<{
+    Params: { id: string };
+    Body: { reason?: string };
+    Headers: { "x-approval-token"?: string };
+  }>(
+    "/admin/markets/:id/break-glass/resume",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+        body: {
+          type: "object",
+          properties: {
+            reason: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+      const { reason } = request.body;
+      const approvalToken = request.headers["x-approval-token"];
+      const actor = (request as any).adminKey || "unknown";
+      const requestId = randomBytes(16).toString("hex");
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      if (approvalToken) {
+        const result = await breakGlass.executeWithApproval(
+          {
+            marketId,
+            action: "resume",
+            actor,
+            requestId,
+            reason,
+            approvalToken,
+          },
+          actor
+        );
+        success(reply, result);
+      } else {
+        const approval = await breakGlass.initiateApproval({
+          marketId,
+          action: "resume",
+          initiator: actor,
+          requestId,
+          reason,
+        });
+        reply.status(202).send({
+          status: "approval_required",
+          requestId: approval.requestId,
+          token: approval.token,
+          expiresAt: approval.expiresAt.toISOString(),
+          message: "Second admin approval required. Use token in X-Approval-Token header.",
+        });
+      }
+    }
+  );
+
+  // GET /admin/markets/:id/break-glass/audit - View break-glass audit log
+  fastify.get<{ Params: { id: string } }>(
+    "/admin/markets/:id/break-glass/audit",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      const auditLog = await breakGlass.getAuditLog(marketId);
+      success(reply, {
+        marketId,
+        actions: auditLog.map((action) => ({
+          id: action.id,
+          action: action.action,
+          actor: action.actor,
+          beforeStatus: action.beforeStatus,
+          afterStatus: action.afterStatus,
+          ordersCancelled: action.ordersCancelled,
+          collateralReleased: action.collateralReleased.toString(),
+          reason: action.reason,
+          createdAt: action.createdAt.toISOString(),
+        })),
+      });
     }
   );
 }
