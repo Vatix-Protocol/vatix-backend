@@ -262,6 +262,22 @@ class RedisService {
   }
 
   /**
+   * Atomically delete a key, reporting whether it existed.
+   * DEL returns the number of keys removed, so concurrent callers racing on the
+   * same key yield exactly one `true`.
+   */
+  async delIfExists(key: string): Promise<boolean> {
+    try {
+      const client = await this.ensureConnected();
+      const removed = await client.del(key);
+      return removed === 1;
+    } catch (error) {
+      console.error({ service: "redis", key, err: error }, "Redis DEL failed");
+      throw error;
+    }
+  }
+
+  /**
    * Check if a key exists
    */
   async exists(key: string): Promise<boolean> {
