@@ -5,6 +5,7 @@ import type {
   FinalizationCandidateResult,
 } from "./types.js";
 import { isChallengeWindowOpen } from "../../../../src/oracle/challengeWindow.js";
+import { RESOLVABLE_MARKET_STATUSES } from "../../../../packages/shared/src/marketLifecycle.js";
 
 /**
  * Configuration for a single FinalizationJob run.
@@ -94,7 +95,9 @@ export class FinalizationJob {
           status: "PROPOSED",
           createdAt: { lte: windowCutoff },
           market: {
-            status: { not: "CANCELLED" },
+            // Only markets in a lifecycle state that may still transition to
+            // RESOLVED are finalization candidates.
+            status: { in: [...RESOLVABLE_MARKET_STATUSES] },
             deletedAt: null,
           },
         },
@@ -132,7 +135,10 @@ export class FinalizationJob {
     for (const candidate of candidates) {
       // Elapsed-time guard: stop processing if the job has exceeded maxRunMs.
       // This prevents a large backlog from monopolising the scheduler slot.
-      if (this.maxRunMs > 0 && Date.now() - startedAt.getTime() >= this.maxRunMs) {
+      if (
+        this.maxRunMs > 0 &&
+        Date.now() - startedAt.getTime() >= this.maxRunMs
+      ) {
         this.logger.warn("Finalization job exceeded maxRunMs, stopping early", {
           maxRunMs: this.maxRunMs,
           processedSoFar: results.length,
@@ -193,7 +199,7 @@ export class FinalizationJob {
           const marketUpdate = await tx.market.updateMany({
             where: {
               id: candidate.marketId,
-              status: { not: "CANCELLED" },
+              status: { in: [...RESOLVABLE_MARKET_STATUSES] },
               deletedAt: null,
             },
             data: {

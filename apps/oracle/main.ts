@@ -15,6 +15,7 @@ import {
   disconnectPrisma,
 } from "../../src/services/prisma.js";
 import { redis } from "../../src/services/redis.js";
+import { RESOLVABLE_MARKET_STATUSES } from "../../packages/shared/src/marketLifecycle.js";
 import { createLogger } from "../indexer/src/logger.js";
 import { loadOracleConfig } from "./oracle-config.js";
 import { OracleService } from "./oracle-service.js";
@@ -69,9 +70,9 @@ export async function poll(): Promise<void> {
 
   await queue.initialize();
 
-  // Fetch all ACTIVE markets that have an oracle address
+  // Only markets in a resolvable lifecycle state may be submitted for resolution.
   const markets = await prisma.market.findMany({
-    where: { status: "ACTIVE" },
+    where: { status: { in: [...RESOLVABLE_MARKET_STATUSES] } },
     select: { id: true, oracleAddress: true },
   });
 
@@ -85,6 +86,17 @@ export async function poll(): Promise<void> {
 
     try {
       const result = await oracleService.resolve(request);
+
+      if (
+        typeof result.confidence !== "number" ||
+        !Number.isFinite(result.confidence) ||
+        result.confidence < 0 ||
+        result.confidence > 1
+      ) {
+        throw new Error(
+          `Resolved confidence ${result.confidence} is out of range [0, 1]`
+        );
+      }
 
       const report = signResolutionReport(
         {

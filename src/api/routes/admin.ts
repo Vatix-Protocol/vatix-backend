@@ -7,9 +7,14 @@ import {
 import { requireAdmin } from "../middleware/adminGuard.js";
 import { requireApiKey } from "../middleware/apiKeyAuth.js";
 import {
+  InvalidMarketTransitionError,
   MarketNotFoundError,
   PreconditionFailedError,
 } from "../middleware/errors.js";
+import {
+  canTransition,
+  type MarketLifecycleState,
+} from "../../../packages/shared/src/marketLifecycle.js";
 import { adminLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
 import { computeMarketEtag } from "./market.dto.js";
@@ -101,6 +106,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
         ifMatch !== computeMarketEtag(existing)
       ) {
         throw new PreconditionFailedError();
+      }
+
+      // The shared lifecycle matrix is the only place transitions are encoded.
+      if (
+        !canTransition(
+          existing.status as MarketLifecycleState,
+          status as MarketLifecycleState
+        )
+      ) {
+        throw new InvalidMarketTransitionError(existing.status, status);
       }
 
       const market = await prisma.market.update({

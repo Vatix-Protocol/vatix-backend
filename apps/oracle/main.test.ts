@@ -200,6 +200,43 @@ describe("apps/oracle/main poll()", () => {
     );
   });
 
+  it("rejects an out-of-range confidence score instead of inserting the OracleReport", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue({
+      ...RESOLVED_RESULT,
+      confidence: 1.5,
+    });
+
+    await poll();
+
+    expect(mockPrisma.oracleReport.create).not.toHaveBeenCalled();
+    expect(mockQueue.enqueue).not.toHaveBeenCalled();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      "Failed to resolve market",
+      expect.objectContaining({
+        marketId: "market-1",
+        error: expect.stringContaining("out of range"),
+      })
+    );
+  });
+
+  it("rejects a negative confidence score instead of inserting the OracleReport", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue({
+      ...RESOLVED_RESULT,
+      confidence: -0.1,
+    });
+
+    await poll();
+
+    expect(mockPrisma.oracleReport.create).not.toHaveBeenCalled();
+    expect(mockQueue.enqueue).not.toHaveBeenCalled();
+  });
+
   it("logs and continues when one market fails to resolve, without aborting the batch", async () => {
     mockPrisma.market.findMany.mockResolvedValue([
       { id: "market-fail", oracleAddress: "GFAIL" },

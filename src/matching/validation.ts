@@ -1,6 +1,10 @@
 import { ValidationError } from "../api/middleware/errors.js";
 import { getPrismaClient } from "../services/prisma.js";
 import type { OrderSide, Outcome } from "../types/index.js";
+import {
+  isTradable,
+  type MarketLifecycleState,
+} from "../../packages/shared/src/marketLifecycle.js";
 
 // Input type for order validation (what the API receives)
 export interface OrderInput {
@@ -51,12 +55,14 @@ export const STELLAR_PUBLIC_KEY_REGEX = /^G[A-Z2-7]{55}$/;
  */
 export function sanitizeUserAddress(address: unknown): string | null {
   if (typeof address !== "string") return null;
-  return address
-    .trim()
-    .toUpperCase()
-    // Remove ASCII control characters (including null bytes, newlines, tabs)
-    // that have no place in a Stellar base32 public key.
-    .replace(/[\x00-\x1F\x7F]/g, "");
+  return (
+    address
+      .trim()
+      .toUpperCase()
+      // Remove ASCII control characters (including null bytes, newlines, tabs)
+      // that have no place in a Stellar base32 public key.
+      .replace(/[\x00-\x1F\x7F]/g, "")
+  );
 }
 
 export function validateUserAddress(address: string): string | null {
@@ -222,7 +228,7 @@ export function validateOrderFields(order: OrderInput): ValidationResult {
 /**
  * Validates market state from database
  * - Market must exist
- * - Market status must be 'ACTIVE'
+ * - Market status must be tradable per the shared lifecycle matrix
  * - Market endTime must be in the future
  */
 export async function validateMarketState(
@@ -240,7 +246,7 @@ export async function validateMarketState(
     return { valid: false, errors };
   }
 
-  if (market.status !== "ACTIVE") {
+  if (!isTradable(market.status as MarketLifecycleState)) {
     errors.marketId = `Market is ${market.status.toLowerCase()}, orders cannot be placed`;
   }
 
