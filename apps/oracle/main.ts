@@ -87,6 +87,17 @@ export async function poll(): Promise<void> {
     try {
       const result = await oracleService.resolve(request);
 
+      if (
+        typeof result.confidence !== "number" ||
+        !Number.isFinite(result.confidence) ||
+        result.confidence < 0 ||
+        result.confidence > 1
+      ) {
+        throw new Error(
+          `Resolved confidence ${result.confidence} is out of range [0, 1]`
+        );
+      }
+
       const report = signResolutionReport(
         {
           marketId: market.id,

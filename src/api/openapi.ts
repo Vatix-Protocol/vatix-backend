@@ -196,6 +196,50 @@ export const openApiSpec = {
         },
       },
     },
+    "/v1/auth/challenge": {
+      post: {
+        summary: "Issue a signing challenge",
+        description:
+          "Returns a single-use nonce that must be included in the signed message and sent as the x-nonce header on the next mutating request. The nonce is stored in shared Redis with a TTL, so it is valid across API replicas exactly once.",
+        tags: ["Auth"],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["userAddress"],
+                properties: {
+                  userAddress: {
+                    type: "string",
+                    description:
+                      "Stellar public key (G...) requesting the challenge",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "201": {
+            description: "Challenge issued",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    nonce: { type: "string" },
+                    expiresAt: { type: "string", format: "date-time" },
+                    ttlSeconds: { type: "integer" },
+                  },
+                },
+              },
+            },
+          },
+          "401": { description: "Invalid userAddress" },
+        },
+      },
+    },
     "/v1/orders": {
       post: {
         summary: "Create an order",
@@ -217,6 +261,14 @@ export const openApiSpec = {
             required: true,
             description:
               "Unix timestamp in milliseconds (string). Must be within ±5 minutes of server time to prevent replay attacks.",
+            schema: { type: "string" },
+          },
+          {
+            name: "x-nonce",
+            in: "header",
+            required: true,
+            description:
+              "Single-use nonce obtained from POST /v1/auth/challenge and included in the signed message. Consumed atomically in shared Redis, so a captured request cannot be replayed against another API replica.",
             schema: { type: "string" },
           },
         ],

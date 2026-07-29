@@ -7,6 +7,10 @@ export interface DeadLetterMessage {
   queue: string;
   payload: unknown;
   reason: string;
+  /** Machine-readable error code (e.g. "STELLAR_TX_BAD_AUTH") classifying the failure, when known (#870). */
+  errorCode?: string;
+  /** Failure classification: "transient" | "fatal" | "invalid_input" (#870). */
+  classification?: string;
 }
 
 const DEAD_LETTER_STREAM_PREFIX = process.env.REDIS_KEY_PREFIX ?? "vatix:";
@@ -88,6 +92,10 @@ export async function logDeadLetter(
       payloadHash,
       "duplicate",
       String(duplicate),
+      "errorCode",
+      message.errorCode ?? "UNKNOWN",
+      "classification",
+      message.classification ?? "unknown",
       "timestamp",
       timestamp
     );
@@ -99,6 +107,8 @@ export async function logDeadLetter(
       payloadType: typeof message.payload,
       payloadHash,
       duplicate,
+      errorCode: message.errorCode,
+      classification: message.classification,
       timestamp,
       persisted: true,
       stream,
@@ -111,6 +121,8 @@ export async function logDeadLetter(
       payloadType: typeof message.payload,
       payloadHash,
       duplicate,
+      errorCode: message.errorCode,
+      classification: message.classification,
       timestamp,
       persisted: false,
       persistenceError: error instanceof Error ? error.message : String(error),

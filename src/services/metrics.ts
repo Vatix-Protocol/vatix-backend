@@ -26,3 +26,15 @@ export const orderbookHydratedMarketsGauge = new client.Gauge({
   help: "Number of (market, outcome) order books currently hydrated in memory",
   registers: [metricsRegistry],
 });
+
+/**
+ * Incremented by OracleService whenever every provider (primary + fallback)
+ * fails for a resolution request and the oracle fails closed — i.e. no
+ * OracleReport is written and nothing is submitted on-chain (#717 fail-closed
+ * behavior, #810 observability).
+ */
+export const oracleFailClosedTotal = new client.Counter({
+  name: "vatix_oracle_fail_closed_total",
+  help: "Total number of times the oracle failed closed after all providers were unreachable",
+  registers: [metricsRegistry],
+});

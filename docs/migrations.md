@@ -251,6 +251,8 @@ Prisma doesn't support automatic rollbacks. Manual rollback process:
 
 3. **Test rollback** thoroughly on staging
 
+For the full step-by-step procedure (pre-checks, backup, resolving the failed migration, post-checks), including current caveats for the soft-delete and trade index migrations and expand/contract rollback hazards, see [Migration Rollback Procedure](./migration-rollback.md).
+
 ## Migration Scripts
 
 The project includes several helpful scripts in `package.json`:

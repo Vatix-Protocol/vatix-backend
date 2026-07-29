@@ -20,6 +20,7 @@ import { Keypair } from "@stellar/stellar-sdk";
 import Redis from "ioredis";
 import { ordersRoutes } from "../../src/api/routes/orders.js";
 import { buildSignableMessage } from "../../src/api/middleware/stellarAuth.js";
+import { issueChallenge } from "../../src/api/middleware/nonceStore.js";
 import { buildTestApp, resetRateLimits } from "./helpers/build-test-app.js";
 import { testUtils } from "../setup.js";
 import {
@@ -37,7 +38,7 @@ const sellerKeypair = Keypair.random();
 const buyerAddress = buyerKeypair.publicKey();
 const sellerAddress = sellerKeypair.publicKey();
 
-function authHeaders(
+async function authHeaders(
   keypair: Keypair,
   body: {
     marketId: string;
@@ -47,12 +48,17 @@ function authHeaders(
     price: number;
     quantity: number;
   }
-): Record<string, string> {
+): Promise<Record<string, string>> {
   const timestamp = Date.now();
+  const { nonce } = await issueChallenge(keypair.publicKey());
   const sig = keypair
-    .sign(buildSignableMessage({ ...body, timestamp }))
+    .sign(buildSignableMessage({ ...body, nonce, timestamp }))
     .toString("base64");
-  return { "x-signature": sig, "x-timestamp": String(timestamp) };
+  return {
+    "x-signature": sig,
+    "x-timestamp": String(timestamp),
+    "x-nonce": nonce,
+  };
 }
 
 describe("Settlement queue: producer writes to Redis stream on trade match", () => {
@@ -98,7 +104,7 @@ describe("Settlement queue: producer writes to Redis stream on trade match", () 
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(sellerKeypair, sellPayload),
+      headers: await authHeaders(sellerKeypair, sellPayload),
       payload: sellPayload,
     });
 
@@ -114,7 +120,7 @@ describe("Settlement queue: producer writes to Redis stream on trade match", () 
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(buyerKeypair, buyPayload),
+      headers: await authHeaders(buyerKeypair, buyPayload),
       payload: buyPayload,
     });
 
@@ -161,7 +167,7 @@ describe("Settlement queue: producer writes to Redis stream on trade match", () 
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(buyerKeypair, buyPayload),
+      headers: await authHeaders(buyerKeypair, buyPayload),
       payload: buyPayload,
     });
 

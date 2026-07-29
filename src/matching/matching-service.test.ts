@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ValidationError,
   ServiceUnavailableError,
+  MarketNotActiveError,
+  MarketNotFoundError,
 } from "../api/middleware/errors.js";
 
 // Mock dependencies
@@ -52,6 +54,7 @@ const mockTx = {
   order: {
     findUnique: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
     create: vi.fn(),
   },
   trade: {
@@ -87,6 +90,7 @@ import {
   matchingService,
   isMatchingEngineEnabled,
 } from "./matching-service.js";
+import { matchOrder } from "./engine.js";
 import { orderbookHydratedMarketsGauge } from "../services/metrics.js";
 
 describe("MatchingService", () => {
@@ -97,6 +101,9 @@ describe("MatchingService", () => {
     mockPrismaClient.$transaction.mockImplementation(
       (cb: (tx: any) => Promise<any>) => cb(mockTx)
     );
+    // Default: conditional updates succeed (one row affected). Individual
+    // tests override this to simulate a version/status conflict.
+    mockTx.order.updateMany.mockResolvedValue({ count: 1 });
   });
 
   describe("cancelOrder", () => {
@@ -111,8 +118,18 @@ describe("MatchingService", () => {
       quantity: 100,
       filledQuantity: 0,
       status: "OPEN",
+      version: 0,
       createdAt: now,
     };
+
+    beforeEach(() => {
+      // Outer (non-transactional) pre-read used to pick the per-book mutex
+      // before entering the transaction (#866).
+      mockPrismaClient.order.findUnique.mockResolvedValue({
+        marketId: sampleOrder.marketId,
+        outcome: sampleOrder.outcome,
+      });
+    });
 
     it("should cancel an OPEN order and release collateral", async () => {
       mockTx.order.findUnique.mockResolvedValue(sampleOrder);
@@ -120,10 +137,6 @@ describe("MatchingService", () => {
         marketId: "market-1",
         userAddress: sampleOrder.userAddress,
         lockedCollateral: "50",
-      });
-      mockTx.order.update.mockResolvedValue({
-        ...sampleOrder,
-        status: "CANCELLED",
       });
 
       const result = await matchingService.cancelOrder(
@@ -135,9 +148,14 @@ describe("MatchingService", () => {
       expect(mockTx.order.findUnique).toHaveBeenCalledWith({
         where: { id: "order-1" },
       });
-      expect(mockTx.order.update).toHaveBeenCalledWith({
-        where: { id: "order-1" },
-        data: { status: "CANCELLED" },
+      // Conditional cancel: guarded on the version/status just read.
+      expect(mockTx.order.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "order-1",
+          version: 0,
+          status: { in: ["OPEN", "PARTIALLY_FILLED"] },
+        },
+        data: { status: "CANCELLED", version: { increment: 1 } },
       });
       // Collateral should be released: 100 * 0.5 = 50, so locked goes from 50 to 0
       expect(mockTx.userPosition.update).toHaveBeenCalledWith(
@@ -164,14 +182,17 @@ describe("MatchingService", () => {
       await expect(
         matchingService.cancelOrder("order-1", sampleOrder.userAddress)
       ).rejects.toThrow(ValidationError);
+      expect(mockTx.order.updateMany).not.toHaveBeenCalled();
     });
 
     it("should reject cancelling a non-existent order", async () => {
-      mockTx.order.findUnique.mockResolvedValue(null);
+      mockPrismaClient.order.findUnique.mockResolvedValue(null);
 
       await expect(
         matchingService.cancelOrder("nonexistent", sampleOrder.userAddress)
       ).rejects.toThrow(ValidationError);
+      // Rejected before ever entering the mutex/transaction.
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
     });
 
     it("should reject cancelling another user's order", async () => {
@@ -183,6 +204,7 @@ describe("MatchingService", () => {
           "GOTHER1234567890123456789012345678901234567890123456"
         )
       ).rejects.toThrow(ValidationError);
+      expect(mockTx.order.updateMany).not.toHaveBeenCalled();
     });
 
     it("should cancel a PARTIALLY_FILLED order and release remaining collateral", async () => {
@@ -198,10 +220,6 @@ describe("MatchingService", () => {
         userAddress: sampleOrder.userAddress,
         lockedCollateral: "35",
       });
-      mockTx.order.update.mockResolvedValue({
-        ...partiallyFilled,
-        status: "CANCELLED",
-      });
 
       const result = await matchingService.cancelOrder(
         "order-1",
@@ -215,6 +233,60 @@ describe("MatchingService", () => {
           data: expect.objectContaining({
             lockedCollateral: 0,
           }),
+        })
+      );
+    });
+
+    // -----------------------------------------------------------------------
+    // Optimistic-concurrency conflict path (#866)
+    // -----------------------------------------------------------------------
+
+    it("throws OrderConflictError when the order version no longer matches (already filled/cancelled concurrently)", async () => {
+      mockTx.order.findUnique.mockResolvedValue(sampleOrder);
+      // Simulate a concurrent writer (fill or cancel) winning the race: the
+      // conditional UPDATE affects zero rows.
+      mockTx.order.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        matchingService.cancelOrder("order-1", sampleOrder.userAddress)
+      ).rejects.toThrow(OrderConflictError);
+
+      // No collateral should be released for a cancel that didn't apply.
+      expect(mockTx.userPosition.update).not.toHaveBeenCalled();
+    });
+
+    it("invalidates the in-memory book on a version conflict", async () => {
+      mockTx.order.findUnique.mockResolvedValue(sampleOrder);
+      mockTx.order.updateMany.mockResolvedValue({ count: 0 });
+
+      const books: Map<string, unknown> = (matchingService as any).books;
+      books.set(`${sampleOrder.marketId}:${sampleOrder.outcome}`, {
+        removeOrder: vi.fn(),
+      });
+
+      await expect(
+        matchingService.cancelOrder("order-1", sampleOrder.userAddress)
+      ).rejects.toThrow(OrderConflictError);
+
+      expect(books.has(`${sampleOrder.marketId}:${sampleOrder.outcome}`)).toBe(
+        false
+      );
+    });
+
+    it("never releases negative collateral even if lockedCollateral is already below the release amount", async () => {
+      mockTx.order.findUnique.mockResolvedValue(sampleOrder);
+      mockTx.userPosition.findUnique.mockResolvedValue({
+        marketId: "market-1",
+        userAddress: sampleOrder.userAddress,
+        // Less than the 50 that would normally be released for this order.
+        lockedCollateral: "10",
+      });
+
+      await matchingService.cancelOrder("order-1", sampleOrder.userAddress);
+
+      expect(mockTx.userPosition.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ lockedCollateral: 0 }),
         })
       );
     });
@@ -258,6 +330,11 @@ describe("MatchingService", () => {
     });
 
     it("placeOrder proceeds normally when the flag is enabled (default)", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: null,
+      });
       mockPrismaClient.order.findMany.mockResolvedValue([]);
       mockTx.order.create.mockResolvedValue({
         id: "order-2",
@@ -270,6 +347,80 @@ describe("MatchingService", () => {
         matchingService.placeOrder(orderInput)
       ).resolves.toBeDefined();
       expect(mockTx.order.create).toHaveBeenCalled();
+    });
+  });
+
+  describe("placeOrder market status check (#792)", () => {
+    const orderInput = {
+      marketId: "market-1",
+      userAddress: "GUSER1234567890123456789012345678901234567890123456",
+      side: "BUY" as const,
+      outcome: "YES" as const,
+      price: 0.5,
+      quantity: 10,
+    };
+
+    it("rejects with MarketNotActiveError when the market is CANCELLED", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "CANCELLED",
+        deletedAt: null,
+      });
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MarketNotActiveError
+      );
+      // Rejected before any book/order state was touched.
+      expect(mockPrismaClient.order.findMany).not.toHaveBeenCalled();
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects with MarketNotActiveError when the market is RESOLVED", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "RESOLVED",
+        deletedAt: null,
+      });
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MarketNotActiveError
+      );
+    });
+
+    it("uses a stable error code regardless of the rejection reason", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "CANCELLED",
+        deletedAt: null,
+      });
+
+      const error = await matchingService
+        .placeOrder(orderInput)
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(MarketNotActiveError);
+      expect(error.code).toBe("market_not_active");
+      expect(error.statusCode).toBe(409);
+    });
+
+    it("rejects with MarketNotFoundError when the market does not exist", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue(null);
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MarketNotFoundError
+      );
+    });
+
+    it("rejects with MarketNotFoundError when the market is soft-deleted", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: new Date(),
+      });
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MarketNotFoundError
+      );
     });
   });
 

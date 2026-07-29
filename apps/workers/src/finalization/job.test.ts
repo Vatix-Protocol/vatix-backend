@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { FinalizationJob, FinalizationValidationError } from "./job.js";
 import type { FinalizationJobConfig, FinalizationCandidate } from "./job.js";
 import type {
@@ -588,6 +588,112 @@ describe("FinalizationJob", () => {
     });
   });
 
+  describe("challenge window boundaries (deterministic clock)", () => {
+    const NOW = new Date("2026-01-01T12:00:00.000Z");
+    const WINDOW_SECONDS = 3600; // 1 hour
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("passes a windowCutoff of now - challengeWindowSeconds to the candidate query", async () => {
+      const prisma = makePrisma([]);
+      const job = new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds: WINDOW_SECONDS,
+      });
+
+      await job.run();
+
+      expect(prisma.resolutionCandidate.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            createdAt: { lte: new Date("2026-01-01T11:00:00.000Z") },
+          }),
+        })
+      );
+    });
+
+    it("skips a candidate created 1ms after the cutoff (still inside the window)", async () => {
+      const candidate = makeCandidate({
+        id: "just-inside",
+        createdAt: new Date("2026-01-01T11:00:00.001Z"), // closes 1ms after NOW
+      });
+      const prisma = makePrisma([candidate]);
+      const job = new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds: WINDOW_SECONDS,
+      });
+
+      const result = await job.run();
+
+      expect(result.candidates[0].status).toBe("skipped");
+    });
+
+    it("finalizes a candidate whose window closes at exactly now (exclusive upper bound)", async () => {
+      const candidate = makeCandidate({
+        id: "exact-close",
+        createdAt: new Date("2026-01-01T11:00:00.000Z"), // closes exactly at NOW
+      });
+      const prisma = makePrisma([candidate]);
+      const job = new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds: WINDOW_SECONDS,
+      });
+
+      const result = await job.run();
+
+      expect(result.candidates[0].status).toBe("finalized");
+    });
+
+    it("finalizes a candidate created 1ms before the cutoff (just past the window)", async () => {
+      const candidate = makeCandidate({
+        id: "just-outside",
+        createdAt: new Date("2026-01-01T10:59:59.999Z"), // closes 1ms before NOW
+      });
+      const prisma = makePrisma([candidate]);
+      const job = new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds: WINDOW_SECONDS,
+      });
+
+      const result = await job.run();
+
+      expect(result.candidates[0].status).toBe("finalized");
+    });
+
+    it("skips a candidate proposed at exactly now (window just opened)", async () => {
+      const candidate = makeCandidate({
+        id: "just-opened",
+        createdAt: new Date(NOW),
+      });
+      const prisma = makePrisma([candidate]);
+      const job = new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds: WINDOW_SECONDS,
+      });
+
+      const result = await job.run();
+
+      expect(result.candidates[0].status).toBe("skipped");
+    });
+
+    it("finalizes immediately when challengeWindowSeconds is 0", async () => {
+      const candidate = makeCandidate({
+        id: "zero-window",
+        createdAt: new Date(NOW),
+      });
+      const prisma = makePrisma([candidate]);
+      const job = new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds: 0,
+      });
+
+      const result = await job.run();
+
+      expect(result.candidates[0].status).toBe("finalized");
+    });
+  });
+
   describe("CHALLENGED and REJECTED paths", () => {
     it("only queries PROPOSED candidates and ignores CHALLENGED/REJECTED", async () => {
       const findMany = vi.fn().mockResolvedValue([]);
@@ -648,14 +754,18 @@ describe("FinalizationJob", () => {
 
         // Each $transaction call advances fake time by 200 ms
         const { tx } = makeTx();
-        const transaction = vi.fn().mockImplementation(
-          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
-            await vi.advanceTimersByTimeAsync(200);
-            return fn(tx);
-          }
-        );
+        const transaction = vi
+          .fn()
+          .mockImplementation(
+            async (fn: (tx: Record<string, unknown>) => Promise<unknown>) => {
+              await vi.advanceTimersByTimeAsync(200);
+              return fn(tx);
+            }
+          );
         const prisma = {
-          resolutionCandidate: { findMany: vi.fn().mockResolvedValue(candidates) },
+          resolutionCandidate: {
+            findMany: vi.fn().mockResolvedValue(candidates),
+          },
           $transaction: transaction,
         } as unknown as PrismaClient;
 
