@@ -40,6 +40,23 @@ Polls for `ResolutionCandidate` rows that have passed the challenge window and p
 | `FINALIZATION_CHALLENGE_WINDOW_SECONDS` | `3600`  | How long (seconds) a candidate must be in `PROPOSED` status before it can be finalized. |
 | `FINALIZATION_LOG_LEVEL`                | `info`  | Log verbosity: `debug` \| `info` \| `warn` \| `error`.                                  |
 
+### Expiry Worker
+
+Polls for `ACTIVE` markets with `endTime <= now()` and transitions them to `CANCELLED` status. Cancels all remaining resting orders (`OPEN`/`PARTIALLY_FILLED`), releases locked collateral, and invalidates in-memory order books.
+
+**Production criticality**: Prevents stale liquidity from resting after expiry, avoids locked collateral incidents, and ensures no late matches race oracle flows.
+
+| Config env var              | Default | Description                                                      |
+| --------------------------- | ------- | ---------------------------------------------------------------- |
+| `EXPIRY_WORKER_INTERVAL_MS` | `60000` | How often the job runs (ms). Minimum 1000.                       |
+| `EXPIRY_WORKER_MAX_RUN_MS`  | `30000` | Max wall-clock time (ms) per poll before stopping. 0 = unlimited |
+| `LOG_LEVEL`                 | `info`  | Log verbosity: `debug` \| `info` \| `warn` \| `error`.           |
+
+**Metrics emitted**:
+- `markets_expired_total` — count of markets transitioned to CANCELLED
+- `orders_cancelled_on_expiry_total` — count of orders cancelled during sweep
+- `collateral_released_on_expiry_total` — total collateral released (in collateral units)
+
 #### Queue Consumer Pattern
 
 The finalization worker uses a **poll-based** approach: it queries the database on each tick for candidates that satisfy the challenge window cutoff. Future workers for real-time settlement will instead subscribe to Redis Streams produced by the API after order matching.
@@ -57,10 +74,16 @@ API (order match) ──xadd──▶ Redis Stream ──xreadgroup──▶ Wor
 ```
 apps/workers/
 ├── src/
-│   └── finalization/
-│       ├── config.ts    # Env-based config loader
-│       ├── job.ts       # FinalizationJob class
-│       └── main.ts      # Entry point / bootstrap
+│   ├── expiry/
+│   │   ├── config.ts    # Env-based config loader
+│   │   ├── job.ts       # ExpiryJob class
+│   │   ├── main.ts      # Entry point / bootstrap
+│   │   └── types.ts     # Type definitions
+│   ├── finalization/
+│   │   ├── config.ts    # Env-based config loader
+│   │   ├── job.ts       # FinalizationJob class
+│   │   └── main.ts      # Entry point / bootstrap
+│   └── ...
 └── README.md
 ```
 

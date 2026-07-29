@@ -4,6 +4,8 @@
   "description": "Workers application for Vatix protocol",
   "type": "module",
   "scripts": {
+    "expiry:dev": "tsx watch src/expiry/main.ts",
+    "expiry:start": "tsx src/expiry/main.ts",
     "finalization:dev": "tsx watch src/finalization/main.ts",
     "finalization:start": "tsx src/finalization/main.ts",
     "oracle:dev": "tsx watch src/oracle/main.ts",
