@@ -13,10 +13,14 @@ import "dotenv/config";
 import { Worker, type Job } from "bullmq";
 import { redis } from "../../../../src/services/redis.js";
 import { createLogger } from "../../../indexer/src/logger.js";
-import { disconnectPrisma } from "../../../../src/services/prisma.js";
+import {
+  getPrismaClient,
+  disconnectPrisma,
+} from "../../../../src/services/prisma.js";
 import {
   SettlementWorker,
   type SettlementStellarConfig,
+  type SettlementPrismaClient,
 } from "./settlement-worker.js";
 import type { QueueJob } from "../consumers/queue-consumer.js";
 import {
@@ -28,6 +32,11 @@ import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 30_000;
 const IDEMPOTENCY_TTL_SECONDS = 86_400;
+/** Permanent failures for the same tradeId before it is quarantined (#870). */
+const QUARANTINE_THRESHOLD = (() => {
+  const parsed = Number(process.env.SETTLEMENT_QUARANTINE_THRESHOLD);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+})();
 
 async function bootstrap(): Promise<void> {
   const logLevel = (process.env.LOG_LEVEL ?? "info") as Parameters<
@@ -59,12 +68,18 @@ async function bootstrap(): Promise<void> {
     );
   }
 
-  const settlementWorker = new SettlementWorker(redis, logger, {
-    maxAttempts: MAX_ATTEMPTS,
-    processingTimeoutMs: PROCESSING_TIMEOUT_MS,
-    idempotencyTtlSeconds: IDEMPOTENCY_TTL_SECONDS,
-    stellar,
-  });
+  const settlementWorker = new SettlementWorker(
+    redis,
+    logger,
+    {
+      maxAttempts: MAX_ATTEMPTS,
+      processingTimeoutMs: PROCESSING_TIMEOUT_MS,
+      idempotencyTtlSeconds: IDEMPOTENCY_TTL_SECONDS,
+      stellar,
+      quarantineThreshold: QUARANTINE_THRESHOLD,
+    },
+    getPrismaClient() as unknown as SettlementPrismaClient
+  );
 
   const worker = new Worker<Record<string, unknown>>(
     queueName,
