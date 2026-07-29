@@ -31,6 +31,7 @@ import {
   type DeadLetterMessage,
 } from "../consumers/dead-letter.js";
 import { withRetry } from "../../../oracle/retry-utils.js";
+import { assertPassphraseMatchesDeployment } from "./stellar-config.js";
 
 /** Retry config for individual Stellar RPC calls (getAccount, prepareTransaction,
  *  sendTransaction). Bounded and short-lived so a transient RPC blip is absorbed
@@ -53,6 +54,12 @@ export interface SubmissionWorkerConfig {
   consumerName: string;
   logger: ILogger;
   stellar?: OracleStellarConfig;
+  /**
+   * Deployment network id (e.g. "testnet" | "mainnet"), used to verify that
+   * `stellar.networkPassphrase` matches this deployment. Defaults to the
+   * STELLAR_NETWORK env var, then "testnet".
+   */
+  stellarNetwork?: string;
 }
 
 /**
@@ -77,6 +84,13 @@ export class SubmissionWorker {
     this.consumerName = config.consumerName;
     this.logger = config.logger;
     this.stellarConfig = config.stellar;
+
+    if (this.stellarConfig) {
+      assertPassphraseMatchesDeployment(
+        this.stellarConfig.networkPassphrase,
+        config.stellarNetwork ?? process.env.STELLAR_NETWORK ?? "testnet"
+      );
+    }
   }
 
   /**

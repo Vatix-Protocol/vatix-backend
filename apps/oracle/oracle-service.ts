@@ -17,6 +17,7 @@ import { withRetry, RetryConfig, isRetryableError } from "./retry-utils.js";
 import type { ILogger } from "../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "./submission-queue.js";
 import { SubmissionQueue } from "./submission-queue.js";
+import { oracleFailClosedTotal } from "../../src/services/metrics.js";
 
 /**
  * Callback invoked when a resolution succeeds and should be enqueued.
@@ -219,6 +220,7 @@ export class OracleService {
     } catch (fallbackError) {
       this.metrics.fallbackFailureCount++;
       this.metrics.totalOutageCount++;
+      oracleFailClosedTotal.inc();
       this.logger.error("All providers unreachable — total provider outage", {
         event: "oracle.total_outage",
         marketId: request.marketId,

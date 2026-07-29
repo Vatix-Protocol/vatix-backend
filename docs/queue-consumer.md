@@ -133,7 +133,42 @@ The settlement worker (`apps/workers/src/settlement/`) consumes the Redis settle
 
 ### Idempotency
 
-Before processing, the worker checks `settlement:processed:{tradeId}` in Redis. If the key exists the job is acknowledged and skipped. On successful processing the key is written with a 24-hour TTL so duplicate deliveries are silently discarded.
+Before processing, the worker atomically claims `settlement:processed:{tradeId}` in Redis via `SETNX`. If the key already exists the job is acknowledged and skipped. The lock is only meant to mark a _fully completed_ job — if the handler throws for any reason (transient RPC error, mid-transaction DB failure, permanent validation error), the lock is released (`DEL`) as part of error handling in `SettlementWorker.process()` before the error is re-thrown. This guarantees a legitimate retry (BullMQ redelivery) or a manual replay (`scripts/replay-dlq.ts`) actually reprocesses the trade instead of silently no-op'ing as "already processed" (#870).
+
+### Transactional Settlement Apply (#870)
+
+Once on-chain settlement succeeds (or immediately, if no Stellar config is present), the worker applies the terminal settlement state for that `tradeId` — `settlementStatus`, `settledAt`, `settlementTxHash` on the `trades` row — as a single Prisma transaction (`SettlementWorker.applySettlement`). The transaction reads the current row and writes the new state together; if the write fails partway through, the transaction rolls back and nothing is observably half-applied. The apply is idempotent: a trade already `SETTLED` is a no-op on redelivery.
+
+### Error Classification → Retry / Quarantine (#870)
+
+Every thrown error is classified via `classifySettlementError()` (`apps/workers/src/settlement/error-codes.ts`) into `transient`, `fatal`, or `invalid_input`. Only `transient` errors are retried by BullMQ's own backoff (`DEFAULT_JOB_OPTIONS`, 3 attempts). A `fatal` or `invalid_input` classification is **permanent**:
+
+- The job is dead-lettered immediately (not only after `maxAttempts`).
+- The worker throws a BullMQ `UnrecoverableError`, so the queue stops retrying immediately instead of burning the full backoff schedule on a message that cannot self-heal — this keeps a single poison job from occupying the worker's processing slot and delaying unrelated trades/markets behind it.
+- The trade's `settlementFailureCount` is incremented; once it reaches `quarantineThreshold` (default `1`, configurable via `SETTLEMENT_QUARANTINE_THRESHOLD`), the trade is marked `QUARANTINED` with `quarantinedAt` and `settlementErrorCode` set.
+
+A `QUARANTINED` trade is skipped on any future delivery (checked before the idempotency lock and before any Stellar RPC call) — quarantine is scoped to that one `tradeId`, so it never blocks jobs for other trades or markets.
+
+### Inspecting and Replaying Quarantined Trades
+
+Quarantined trades are queryable directly:
+
+```sql
+SELECT trade_id, market_id, settlement_status, settlement_error_code,
+       settlement_failure_count, quarantined_at
+FROM trades
+WHERE settlement_status = 'QUARANTINED'
+ORDER BY quarantined_at DESC;
+```
+
+The dead-letter entry for the same failure (Redis stream `{prefix}dead-letter:settlement`) carries the same `errorCode`/`classification` plus the original payload, for full context on why the trade was quarantined.
+
+To safely replay after fixing the root cause (e.g. correcting a bad payload upstream, restoring Stellar account funding):
+
+1. Confirm the underlying cause is resolved (check `settlement_error_code`).
+2. Reset the row so the worker will process it again: `UPDATE trades SET settlement_status = 'PENDING', settlement_failure_count = 0, quarantined_at = NULL WHERE trade_id = '<tradeId>';`
+3. Replay the dead-lettered job: `pnpm tsx scripts/replay-dlq.ts --queue settlement --dry-run` first to preview, then without `--dry-run` to re-enqueue.
+4. Since quarantine re-triggers after `quarantineThreshold` permanent failures, a replay that hits the same root cause will quarantine again — treat repeated quarantine of the same `tradeId` as a signal to escalate rather than keep replaying.
 
 ### Flow
 
@@ -143,19 +178,25 @@ MatchingService.placeOrder()
     └─ settlementQueue.enqueue(job)   ← fire-and-forget
            │
            ▼
-      Redis Stream (SETTLEMENT_QUEUE_NAME)
+      BullMQ queue (SETTLEMENT_QUEUE_NAME)
            │
            ▼
-      settlement consumer (XREADGROUP)
+      settlement consumer (BullMQ Worker)
            │
-           ├─ idempotency check (EXISTS settlement:processed:{tradeId})
+           ├─ quarantine check (trades.settlementStatus === QUARANTINED)
+           │       └─ quarantined → skip, ACK
+           │
+           ├─ idempotency check (SETNX settlement:processed:{tradeId})
            │       └─ already processed → ACK, skip
            │
            └─ processJob() → handler
-                   ├─ success → SET idempotency key → ACK
-                   └─ error
-                         ├─ attempts < maxAttempts → warn, leave PENDING
-                         └─ attempts >= maxAttempts → logDeadLetter(), ACK
+                   ├─ success → applySettlement() [Prisma tx] → ACK
+                   └─ error → classify (transient | fatal | invalid_input)
+                         ├─ transient, attempts < maxAttempts → release lock, warn, retry
+                         ├─ transient, attempts >= maxAttempts → release lock, logDeadLetter(), ACK
+                         └─ fatal | invalid_input (permanent) → release lock,
+                            recordPermanentFailure() [Prisma tx, may quarantine],
+                            logDeadLetter(), throw UnrecoverableError → ACK (no further retries)
 ```
 
 ## Related Documentation

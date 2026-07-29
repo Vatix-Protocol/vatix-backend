@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ValidationError,
   ServiceUnavailableError,
-  OrderConflictError,
+  MarketNotActiveError,
+  MarketNotFoundError,
 } from "../api/middleware/errors.js";
 
 // Mock dependencies
@@ -329,6 +330,11 @@ describe("MatchingService", () => {
     });
 
     it("placeOrder proceeds normally when the flag is enabled (default)", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: null,
+      });
       mockPrismaClient.order.findMany.mockResolvedValue([]);
       mockTx.order.create.mockResolvedValue({
         id: "order-2",
@@ -344,96 +350,77 @@ describe("MatchingService", () => {
     });
   });
 
-  describe("placeOrder — maker order conflict (#866)", () => {
+  describe("placeOrder market status check (#792)", () => {
     const orderInput = {
       marketId: "market-1",
-      userAddress: "GTAKER123456789012345678901234567890123456789012345A",
+      userAddress: "GUSER1234567890123456789012345678901234567890123456",
       side: "BUY" as const,
       outcome: "YES" as const,
       price: 0.5,
       quantity: 10,
     };
 
-    const trade = {
-      id: "trade-1",
-      marketId: "market-1",
-      outcome: "YES" as const,
-      buyerAddress: orderInput.userAddress,
-      sellerAddress: "GMAKER123456789012345678901234567890123456789012345A",
-      buyOrderId: "maker-order-1",
-      sellOrderId: "maker-order-1",
-      price: 0.5,
-      quantity: 10,
-      timestamp: Date.now(),
-    };
-
-    beforeEach(() => {
-      mockPrismaClient.order.findMany.mockResolvedValue([]);
-      mockTx.order.create.mockResolvedValue({
-        id: "taker-order-1",
-        ...orderInput,
-        status: "FILLED",
-        filledQuantity: orderInput.quantity,
-      });
-      vi.mocked(matchOrder).mockReturnValueOnce({
-        trades: [trade],
-        remainingOrder: null,
-        positionDeltas: [],
-      });
-    });
-
-    it("rolls back and rejects with OrderConflictError when the maker order is no longer open", async () => {
-      mockTx.order.findUnique.mockResolvedValue({
-        quantity: 10,
-        filledQuantity: 0,
+    it("rejects with MarketNotActiveError when the market is CANCELLED", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
         status: "CANCELLED",
-        version: 3,
+        deletedAt: null,
       });
 
       await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
-        OrderConflictError
+        MarketNotActiveError
       );
-      // Nothing else should have been written once the maker conflict fired.
-      expect(mockTx.trade.upsert).not.toHaveBeenCalled();
-      expect(mockTx.userPosition.upsert).not.toHaveBeenCalled();
+      // Rejected before any book/order state was touched.
+      expect(mockPrismaClient.order.findMany).not.toHaveBeenCalled();
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
     });
 
-    it("rolls back and rejects with OrderConflictError when the maker's updateMany affects zero rows", async () => {
-      mockTx.order.findUnique.mockResolvedValue({
-        quantity: 10,
-        filledQuantity: 0,
-        status: "OPEN",
-        version: 3,
+    it("rejects with MarketNotActiveError when the market is RESOLVED", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "RESOLVED",
+        deletedAt: null,
       });
-      mockTx.order.updateMany.mockResolvedValue({ count: 0 });
 
       await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
-        OrderConflictError
+        MarketNotActiveError
       );
-      expect(mockTx.trade.upsert).not.toHaveBeenCalled();
     });
 
-    it("invalidates the in-memory book so the next call rehydrates from the DB", async () => {
-      mockTx.order.findUnique.mockResolvedValue({
-        quantity: 10,
-        filledQuantity: 0,
-        status: "OPEN",
-        version: 3,
+    it("uses a stable error code regardless of the rejection reason", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "CANCELLED",
+        deletedAt: null,
       });
-      mockTx.order.updateMany.mockResolvedValue({ count: 0 });
 
-      const books: Map<string, unknown> = (matchingService as any).books;
-      books.set("market-1:YES", {
-        removeOrder: vi.fn(),
-        addOrder: vi.fn(),
-        getOrdersByUser: vi.fn().mockReturnValue([]),
+      const error = await matchingService
+        .placeOrder(orderInput)
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(MarketNotActiveError);
+      expect(error.code).toBe("market_not_active");
+      expect(error.statusCode).toBe(409);
+    });
+
+    it("rejects with MarketNotFoundError when the market does not exist", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue(null);
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MarketNotFoundError
+      );
+    });
+
+    it("rejects with MarketNotFoundError when the market is soft-deleted", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: new Date(),
       });
 
       await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
-        OrderConflictError
+        MarketNotFoundError
       );
-
-      expect(books.has("market-1:YES")).toBe(false);
     });
   });
 

@@ -61,14 +61,12 @@ export class ServiceUnavailableError extends AppError {
   }
 }
 
-/**
- * Thrown when an order's optimistic-concurrency version (or terminal status)
- * no longer matches what the caller read, because a concurrent cancel or
- * match already applied a conflicting write (#866). Retryable: the caller
- * should re-fetch current state and retry the operation.
- */
-export class OrderConflictError extends AppError {
-  constructor(message = "Order was concurrently modified; please retry") {
-    super(message, 409, "order_conflict");
+export class MarketNotActiveError extends AppError {
+  constructor(marketId: string, status: string) {
+    super(
+      `Market ${marketId} is ${status.toLowerCase()}, orders cannot be placed`,
+      409,
+      "market_not_active"
+    );
   }
 }
