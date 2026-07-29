@@ -3,6 +3,10 @@ import {
   type IndexerConfig as SharedIndexerConfig,
   ConfigValidationError,
 } from "../../../packages/shared/src/config.js";
+import {
+  loadStellarEndpoints,
+  type EndpointConfig,
+} from "../../../packages/shared/src/stellarTransport.js";
 
 export type { SharedIndexerConfig };
 
@@ -16,6 +20,7 @@ type Env = Record<string, string | undefined>;
 export interface ChainConfig {
   sorobanNetworkPassphrase: string;
   horizonUrl: string;
+  horizonUrls: string[];
 }
 
 export interface IngestionLoopConfig {
@@ -59,13 +64,10 @@ export function loadChainConfig(env: Env = process.env): ChainConfig {
     );
   }
 
-  const horizonUrl =
-    env["STELLAR_HORIZON_URL"] ??
-    (passphrase === KNOWN_PASSPHRASES.mainnet
-      ? "https://horizon.stellar.org"
-      : "https://horizon-testnet.stellar.org");
+  const { horizonUrls } = loadStellarEndpoints(env, passphrase);
+  const horizonUrl = horizonUrls[0];
 
-  return { sorobanNetworkPassphrase: passphrase, horizonUrl };
+  return { sorobanNetworkPassphrase: passphrase, horizonUrl, horizonUrls };
 }
 
 /** Unified indexer bootstrap config (shared env + chain parser env). */

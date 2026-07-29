@@ -1,7 +1,9 @@
 import { loadIndexerContractId } from "../../../../packages/shared/src/config.js";
+import { loadStellarEndpoints } from "../../../../packages/shared/src/stellarTransport.js";
 
 export interface ResolvedOracleStellarConfig {
   rpcUrl: string;
+  rpcUrls: string[];
   contractId: string;
   networkPassphrase: string;
   signerSecret: string;
@@ -67,9 +69,10 @@ export function assertPassphraseMatchesDeployment(
 export function resolveOracleStellarConfig(
   env: NodeJS.ProcessEnv
 ): ResolvedOracleStellarConfig | undefined {
-  const rpcUrl = env.STELLAR_RPC_URL;
   const networkPassphrase = env.SOROBAN_NETWORK_PASSPHRASE;
   const signerSecret = env.ORACLE_SECRET_KEY;
+
+  const { rpcUrls } = loadStellarEndpoints(env, networkPassphrase);
 
   let contractId: string | undefined;
   try {

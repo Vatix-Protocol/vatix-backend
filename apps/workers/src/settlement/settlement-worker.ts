@@ -98,6 +98,7 @@ export interface SettlementWorkerConfig {
 
 export interface SettlementStellarConfig {
   rpcUrl: string;
+  rpcUrls?: string[];
   contractId: string;
   networkPassphrase: string;
   signerSecret: string;

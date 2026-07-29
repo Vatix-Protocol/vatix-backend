@@ -156,7 +156,7 @@ export interface FetchEventsResult {
 }
 
 export interface EventFetcherConfig {
-  rpcUrl: string;
+  rpcUrl: string | string[];
   contractId: string;
   maxRetries?: number;
   retryDelayMs?: number;

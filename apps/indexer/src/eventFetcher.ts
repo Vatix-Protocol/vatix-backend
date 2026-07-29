@@ -8,6 +8,7 @@ import type {
 import type { Telemetry } from "./telemetry.js";
 import { consoleTelemetry } from "./telemetry.js";
 import { isTransientError, sleep, withRetry } from "./retry.js";
+import { StellarTransport } from "../../../packages/shared/src/stellarTransport.js";
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
@@ -38,6 +39,7 @@ export class EventFetcher {
   private readonly server: StellarRpc.Server;
   private readonly config: Required<EventFetcherConfig>;
   private readonly telemetry: Telemetry;
+  private readonly transport: StellarTransport;
   /** Tracks consecutive RPC failures to detect sustained disconnect. */
   private consecutiveDisconnections = 0;
 
@@ -52,8 +54,29 @@ export class EventFetcher {
       fetchTimeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
       ...config,
     };
-    this.server = new StellarRpc.Server(this.config.rpcUrl);
     this.telemetry = telemetry;
+
+    // Initialize transport for multi-endpoint failover
+    const horizonUrls = Array.isArray(this.config.rpcUrl)
+      ? this.config.rpcUrl
+      : [this.config.rpcUrl];
+
+    const logger = {
+      info: (msg: string, ctx?: any) =>
+        telemetry.record("indexer.transport.info", 1, ctx || {}),
+      warn: (msg: string, ctx?: any) =>
+        telemetry.record("indexer.transport.warn", 1, ctx || {}),
+      error: (msg: string, ctx?: any) =>
+        telemetry.record("indexer.transport.error", 1, ctx || {}),
+      debug: (msg: string, ctx?: any) =>
+        telemetry.record("indexer.transport.debug", 1, ctx || {}),
+    };
+
+    this.transport = new StellarTransport(horizonUrls, logger, {
+      timeoutMs: this.config.fetchTimeoutMs || DEFAULT_FETCH_TIMEOUT_MS,
+    });
+
+    this.server = new StellarRpc.Server(this.transport.getActiveEndpoint());
   }
 
   /**
@@ -134,6 +157,7 @@ export class EventFetcher {
   /**
    * Fetch a single page, retrying transient RPC failures with the shared
    * jittered-backoff policy in retry.ts (bounded by config.maxRetries).
+   * Uses StellarTransport for multi-endpoint failover and circuit breaking.
    */
   private async fetchPageWithRetry(
     startLedger: number,
@@ -149,36 +173,44 @@ export class EventFetcher {
         async () => {
           attempt++;
           try {
-            const fetchCall = this.server.getEvents({
-              startLedger,
-              filters: [{ contractIds: [contractId] }],
-              limit: pageLimit,
-              ...(cursor ? ({ cursor } as any) : {}),
-            } as any);
+            const response = await this.transport.execute(
+              async (url: string) => {
+                const server = new StellarRpc.Server(url);
+                const fetchCall = server.getEvents({
+                  startLedger,
+                  filters: [{ contractIds: [contractId] }],
+                  limit: pageLimit,
+                  ...(cursor ? ({ cursor } as any) : {}),
+                } as any);
 
-            // Wrap with a per-page timeout when fetchTimeoutMs > 0 so a
-            // stalled RPC endpoint cannot block the ingestion loop
-            // indefinitely.
-            const response: StellarRpc.Api.GetEventsResponse =
-              fetchTimeoutMs > 0
-                ? await Promise.race([
-                    fetchCall,
-                    new Promise<never>((_, reject) =>
-                      setTimeout(
-                        () =>
-                          reject(
-                            Object.assign(
-                              new Error(
-                                `EventFetcher: getEvents timed out after ${fetchTimeoutMs}ms`
+                // Wrap with a per-page timeout when fetchTimeoutMs > 0 so a
+                // stalled RPC endpoint cannot block the ingestion loop
+                // indefinitely.
+                const result: StellarRpc.Api.GetEventsResponse =
+                  fetchTimeoutMs > 0
+                    ? await Promise.race([
+                        fetchCall,
+                        new Promise<never>((_, reject) =>
+                          setTimeout(
+                            () =>
+                              reject(
+                                Object.assign(
+                                  new Error(
+                                    `EventFetcher: getEvents timed out after ${fetchTimeoutMs}ms`
+                                  ),
+                                  { code: "ETIMEDOUT" }
+                                )
                               ),
-                              { code: "ETIMEDOUT" }
-                            )
-                          ),
-                        fetchTimeoutMs
-                      )
-                    ),
-                  ])
-                : await fetchCall;
+                            fetchTimeoutMs
+                          )
+                        ),
+                      ])
+                    : await fetchCall;
+
+                return result;
+              },
+              "getEvents"
+            );
 
             // Success — reset the consecutive disconnection counter
             this.consecutiveDisconnections = 0;
