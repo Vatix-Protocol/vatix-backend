@@ -60,3 +60,15 @@ export class ServiceUnavailableError extends AppError {
     super(message, 503, "service_unavailable");
   }
 }
+
+/**
+ * Thrown when an order's optimistic-concurrency version (or terminal status)
+ * no longer matches what the caller read, because a concurrent cancel or
+ * match already applied a conflicting write (#866). Retryable: the caller
+ * should re-fetch current state and retry the operation.
+ */
+export class OrderConflictError extends AppError {
+  constructor(message = "Order was concurrently modified; please retry") {
+    super(message, 409, "order_conflict");
+  }
+}

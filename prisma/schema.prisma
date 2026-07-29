@@ -103,6 +103,10 @@ model Order {
   quantity       Int
   filledQuantity Int         @default(0) @map("filled_quantity")
   status         OrderStatus @default(OPEN)
+  /// Optimistic-concurrency counter (#866). Every status/filledQuantity write
+  /// increments this; writers condition their UPDATE on the version they
+  /// read so a cancel racing a match (or vice versa) can never both "win".
+  version        Int         @default(0)
   createdAt      DateTime    @default(now()) @map("created_at")
 
   market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
