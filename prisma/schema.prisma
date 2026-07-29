@@ -426,3 +426,41 @@ model CollateralDeposit {
   @@index([ledger])
   @@map("collateral_deposits")
 }
+
+/// Position reconciliation job tracking drift detection and recovery
+model PositionReconciliationJob {
+  id              String   @id @default(uuid())
+  marketId        String   @map("market_id")
+  wallet          String   @db.VarChar(56)
+  driftDetected   Boolean  @map("drift_detected")
+  divergence      Json     @map("divergence")
+  recoveryApplied Boolean  @default(false) @map("recovery_applied")
+  recoveryReason  String?  @map("recovery_reason")
+  createdAt       DateTime @default(now()) @map("created_at")
+  completedAt     DateTime? @map("completed_at")
+
+  @@index([marketId])
+  @@index([wallet])
+  @@index([driftDetected])
+  @@map("position_reconciliation_jobs")
+}
+
+/// Deposit reconciliation tracking: maps CollateralDeposit to UserPosition updates
+model DepositReconciliation {
+  id                     String   @id @default(uuid())
+  idempotencyKey         String   @unique @map("idempotency_key") @db.VarChar(64)
+  depositId              String   @map("deposit_id")
+  wallet                 String   @db.VarChar(56)
+  marketId               String   @map("market_id")
+  amountRaw              String   @map("amount_raw")
+  status                 String   @db.VarChar(32)
+  reconciliationAttempts Int      @default(0) @map("reconciliation_attempts")
+  lastAttemptAt          DateTime? @map("last_attempt_at")
+  appliedAt              DateTime? @map("applied_at")
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  @@index([marketId])
+  @@index([wallet])
+  @@index([status])
+  @@map("deposit_reconciliations")
+}

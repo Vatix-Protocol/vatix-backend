@@ -5,6 +5,7 @@ import {
   getAnalyticsPrismaClient,
   isAnalyticsDatabaseConfigured,
 } from "../../services/analytics-prisma.js";
+import { positionReconciliationService } from "../../services/position-reconciliation.js";
 import { requireAdmin } from "../middleware/adminGuard.js";
 import { requireApiKey } from "../middleware/apiKeyAuth.js";
 import {
