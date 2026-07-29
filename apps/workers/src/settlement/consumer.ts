@@ -24,6 +24,7 @@ import {
   settlementQueueName,
 } from "../shared/queue-config.js";
 import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
+import { loadStellarEndpoints } from "../../../../packages/shared/src/stellarTransport.js";
 
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 30_000;
@@ -40,20 +41,22 @@ async function bootstrap(): Promise<void> {
     queue: queueName,
   });
 
-  const rpcUrl = process.env.STELLAR_RPC_URL;
   const contractId = process.env.SETTLEMENT_CONTRACT_ID;
   const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE;
   const signerSecret = process.env.STELLAR_SECRET_KEY;
 
+  const { rpcUrls } = loadStellarEndpoints(process.env, networkPassphrase);
+  const rpcUrl = rpcUrls[0];
+
   const stellar: SettlementStellarConfig | undefined =
     rpcUrl && contractId && networkPassphrase && signerSecret
-      ? { rpcUrl, contractId, networkPassphrase, signerSecret }
+      ? { rpcUrl, rpcUrls, contractId, networkPassphrase, signerSecret }
       : undefined;
 
   if (!stellar) {
     logger.warn(
       "Stellar config incomplete — on-chain settlement disabled. " +
-        "Set STELLAR_RPC_URL, SETTLEMENT_CONTRACT_ID, SOROBAN_NETWORK_PASSPHRASE, " +
+        "Set STELLAR_RPC_URL (or STELLAR_RPC_URLS), SETTLEMENT_CONTRACT_ID, SOROBAN_NETWORK_PASSPHRASE, " +
         "and STELLAR_SECRET_KEY to enable.",
       { component: "settlement-worker" }
     );
