@@ -16,6 +16,12 @@ We use a validation layer that checks configurations immediately upon initializa
 - **Database Credentials:** `DATABASE_URL`
 - **Authentication Keys:** `JWT_SECRET`
 
+> **`NODE_ENV` is a closed enum:** only `development`, `test`, or `production`
+> are accepted (defaults to `development` when unset). Any other value —
+> typos like `staging` or `prod` included — fails validation and the process
+> exits before it can bind a port. See [env-validation.md](./env-validation.md)
+> for the exact error message and full schema.
+
 ## Local Setup
 
 1. **Copy the Template:** Always ensure your local `.env` file matches the structure defined in `.env.example`.

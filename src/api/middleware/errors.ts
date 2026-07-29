@@ -60,3 +60,13 @@ export class ServiceUnavailableError extends AppError {
     super(message, 503, "service_unavailable");
   }
 }
+
+export class MarketNotActiveError extends AppError {
+  constructor(marketId: string, status: string) {
+    super(
+      `Market ${marketId} is ${status.toLowerCase()}, orders cannot be placed`,
+      409,
+      "market_not_active"
+    );
+  }
+}

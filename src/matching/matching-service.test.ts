@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ValidationError,
   ServiceUnavailableError,
+  MarketNotActiveError,
+  MarketNotFoundError,
 } from "../api/middleware/errors.js";
 
 // Mock dependencies
@@ -258,6 +260,11 @@ describe("MatchingService", () => {
     });
 
     it("placeOrder proceeds normally when the flag is enabled (default)", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: null,
+      });
       mockPrismaClient.order.findMany.mockResolvedValue([]);
       mockTx.order.create.mockResolvedValue({
         id: "order-2",
@@ -270,6 +277,80 @@ describe("MatchingService", () => {
         matchingService.placeOrder(orderInput)
       ).resolves.toBeDefined();
       expect(mockTx.order.create).toHaveBeenCalled();
+    });
+  });
+
+  describe("placeOrder market status check (#792)", () => {
+    const orderInput = {
+      marketId: "market-1",
+      userAddress: "GUSER1234567890123456789012345678901234567890123456",
+      side: "BUY" as const,
+      outcome: "YES" as const,
+      price: 0.5,
+      quantity: 10,
+    };
+
+    it("rejects with MarketNotActiveError when the market is CANCELLED", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "CANCELLED",
+        deletedAt: null,
+      });
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MarketNotActiveError
+      );
+      // Rejected before any book/order state was touched.
+      expect(mockPrismaClient.order.findMany).not.toHaveBeenCalled();
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects with MarketNotActiveError when the market is RESOLVED", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "RESOLVED",
+        deletedAt: null,
+      });
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MarketNotActiveError
+      );
+    });
+
+    it("uses a stable error code regardless of the rejection reason", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "CANCELLED",
+        deletedAt: null,
+      });
+
+      const error = await matchingService
+        .placeOrder(orderInput)
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(MarketNotActiveError);
+      expect(error.code).toBe("market_not_active");
+      expect(error.statusCode).toBe(409);
+    });
+
+    it("rejects with MarketNotFoundError when the market does not exist", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue(null);
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MarketNotFoundError
+      );
+    });
+
+    it("rejects with MarketNotFoundError when the market is soft-deleted", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: new Date(),
+      });
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MarketNotFoundError
+      );
     });
   });
 

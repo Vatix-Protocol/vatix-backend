@@ -27,3 +27,6 @@ export {
 } from "./config.js";
 
 export { resolveCorsAllowedOrigins } from "./cors.js";
+
+export type { ErrorEnvelope, CreateErrorEnvelopeInput } from "./errors.js";
+export { createErrorEnvelope } from "./errors.js";
