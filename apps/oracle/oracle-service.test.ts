@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { OracleService } from "./oracle-service.js";
 import { PrimaryAdapter } from "./primary-adapter.js";
 import { FallbackAdapter } from "./fallback-adapter.js";
+import { oracleFailClosedTotal } from "../../src/services/metrics.js";
 import type {
   ProviderAdapter,
   ProviderResult,
@@ -340,6 +341,30 @@ describe("OracleService", () => {
       expect(metrics.totalOutageCount).toBe(1);
       expect(metrics.primaryFailureCount).toBe(1);
       expect(metrics.fallbackFailureCount).toBe(1);
+    });
+
+    it("emits the vatix_oracle_fail_closed_total prometheus counter on total provider failure", async () => {
+      const failingPrimary = createMockAdapter("primary", true);
+      const failingFallback = createMockAdapter("fallback", true);
+
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter: failingFallback,
+        enableFallback: true,
+      });
+
+      const before = (await oracleFailClosedTotal.get()).values[0]?.value ?? 0;
+
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow();
+
+      const after = (await oracleFailClosedTotal.get()).values[0]?.value ?? 0;
+      expect(after).toBe(before + 1);
     });
 
     it("does not increment totalOutageCount when primary succeeds", async () => {

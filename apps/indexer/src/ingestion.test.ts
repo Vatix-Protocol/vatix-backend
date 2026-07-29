@@ -55,6 +55,62 @@ function makeResolutionEvent(id: string): RawChainEvent {
   };
 }
 
+function makeForkResolutionEvent(
+  id: string,
+  ledger: number,
+  oracle: string
+): RawChainEvent {
+  const valueXdr = nativeToScVal({
+    market_id: "market-1",
+    outcome: "YES",
+    oracle,
+  }).toXDR("base64");
+
+  return {
+    id,
+    ledger,
+    ledgerClosedAt: "2024-01-01T00:00:00Z",
+    contractId: "CTEST",
+    type: "contract",
+    pagingToken: `token-${id}`,
+    valueXdr,
+    topicsXdr: [RESOLUTION_TOPIC],
+  };
+}
+
+/**
+ * Synthetic reorg fixture: two competing chain forks that report the same
+ * latest ledger sequence but a different ledger hash and a different
+ * resolution event for the same market/ledger. Used to exercise the
+ * hash-mismatch reorg branch (as opposed to a sequence regression) and to
+ * verify that the canonical fork's events are the ones re-ingested after the
+ * cursor rewinds.
+ */
+const SYNTHETIC_REORG_FIXTURE = {
+  forkA: {
+    hash: "hash-fork-a",
+    latestLedger: 100,
+    events: [
+      makeForkResolutionEvent(
+        "0000000050-0000000001-0000000000",
+        50,
+        "GORACLE_FORK_A"
+      ),
+    ],
+  },
+  forkB: {
+    hash: "hash-fork-b",
+    latestLedger: 100,
+    events: [
+      makeForkResolutionEvent(
+        "0000000050-0000000002-0000000000",
+        50,
+        "GORACLE_FORK_B"
+      ),
+    ],
+  },
+};
+
 function makeLogger(): ILogger {
   return {
     debug: vi.fn(),
@@ -519,6 +575,108 @@ describe("PollingIngestionLoop — stale cursor handling", () => {
         "Chain reorganisation detected — rewinding cursor",
         expect.anything()
       );
+    });
+
+    describe("synthetic reorg fixture — cursor rewind", () => {
+      const { forkA, forkB } = SYNTHETIC_REORG_FIXTURE;
+
+      it("detects a same-sequence hash-mismatch reorg and rewinds the cursor", async () => {
+        const loop = createLoop();
+
+        // Tick 1: ingest fork A and establish the sequence+hash baseline.
+        vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValueOnce({
+          events: forkA.events,
+          latestLedger: forkA.latestLedger,
+        });
+        vi.mocked(eventFetcher.getLatestLedgerInfo).mockResolvedValueOnce({
+          sequence: forkA.latestLedger,
+          hash: forkA.hash,
+        });
+        await (loop as unknown as { tick(): Promise<void> }).tick();
+
+        expect(batchWriter.write).toHaveBeenCalledWith(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "resolution",
+              data: expect.objectContaining({
+                oracleAddress: "GORACLE_FORK_A",
+              }),
+            }),
+          ])
+        );
+
+        // Tick 2: the network now reports fork B — same sequence, different hash.
+        vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValueOnce({
+          events: forkB.events,
+          latestLedger: forkB.latestLedger,
+        });
+        vi.mocked(eventFetcher.getLatestLedgerInfo).mockResolvedValueOnce({
+          sequence: forkB.latestLedger,
+          hash: forkB.hash,
+        });
+        await (loop as unknown as { tick(): Promise<void> }).tick();
+
+        expect(logger.warn).toHaveBeenCalledWith(
+          "Chain reorganisation detected — rewinding cursor",
+          expect.objectContaining({ event: "indexer.reorg.detected" })
+        );
+        // Fork B was not written blindly — the reorg tick only rewinds.
+        expect(batchWriter.write).toHaveBeenCalledTimes(1);
+
+        const cursorAfterReorg = (loop as unknown as { cursor: string }).cursor;
+        expect(Number(cursorAfterReorg)).toBeLessThan(forkA.latestLedger);
+      });
+
+      it("re-ingests the canonical fork's events once the cursor resumes past the rewind point", async () => {
+        const loop = createLoop();
+
+        vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValueOnce({
+          events: forkA.events,
+          latestLedger: forkA.latestLedger,
+        });
+        vi.mocked(eventFetcher.getLatestLedgerInfo).mockResolvedValueOnce({
+          sequence: forkA.latestLedger,
+          hash: forkA.hash,
+        });
+        await (loop as unknown as { tick(): Promise<void> }).tick();
+
+        vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValueOnce({
+          events: forkB.events,
+          latestLedger: forkB.latestLedger,
+        });
+        vi.mocked(eventFetcher.getLatestLedgerInfo).mockResolvedValueOnce({
+          sequence: forkB.latestLedger,
+          hash: forkB.hash,
+        });
+        await (loop as unknown as { tick(): Promise<void> }).tick(); // reorg tick — rewinds only
+
+        // Tick 3: the chain has since produced a new ledger on top of fork B
+        // (its tip is now canonical), so the latest sequence advances past
+        // the reorg point. Normal progression resumes from the rewound
+        // cursor and re-fetches fork B's canonical event for ledger 50.
+        vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValueOnce({
+          events: forkB.events,
+          latestLedger: forkB.latestLedger + 1,
+        });
+        vi.mocked(eventFetcher.getLatestLedgerInfo).mockResolvedValueOnce({
+          sequence: forkB.latestLedger + 1,
+          hash: "hash-fork-b-plus-one",
+        });
+        await (loop as unknown as { tick(): Promise<void> }).tick();
+
+        // tick 1 + tick 3 wrote; the reorg tick (2) wrote nothing.
+        expect(batchWriter.write).toHaveBeenCalledTimes(2);
+        expect(batchWriter.write).toHaveBeenLastCalledWith(
+          expect.arrayContaining([
+            expect.objectContaining({
+              kind: "resolution",
+              data: expect.objectContaining({
+                oracleAddress: "GORACLE_FORK_B",
+              }),
+            }),
+          ])
+        );
+      });
     });
   });
 });
