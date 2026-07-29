@@ -36,6 +36,34 @@ Examples:
 
 When the schema of a cached value changes (e.g. new field added to order book), increment the version segment (`orderbook:v2:<marketId>:<outcome>`) rather than performing a `FLUSHDB`.
 
+## Unsupported Versions
+
+Versioning is path-based, not header-based: there is no `Accept-Version` or
+`X-API-Version` request header negotiation. The version is the path prefix
+(`/v1/...`), and only `/v1` is currently mounted.
+
+Requesting any other version prefix (e.g. `/v2/markets`, `/v0/health`) does not
+match a route and falls through to the global 404 handler, which returns a
+clear, structured error rather than an empty or generic response:
+
+```http
+GET /v2/markets
+
+404 Not Found
+Content-Type: application/json
+
+{
+  "error": "Route GET /v2/markets not found",
+  "requestId": "<request-id>",
+  "statusCode": 404
+}
+```
+
+This is covered by the `"returns 404 for unsupported API versions"` case in
+`tests/integration/api-versioning.test.ts`. When a `/v2` (or later) API is
+introduced, add its routes under a new `{ prefix: "/v2" }` scope in
+`src/index.ts` alongside `/v1` — see [Adding a New Version](#adding-a-new-version) below.
+
 ## Adding a New Version
 
 1. Introduce the new route alongside the old one (`/v2/markets` + `/markets` kept for a deprecation window).

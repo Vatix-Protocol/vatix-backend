@@ -183,6 +183,28 @@ describe("Integration Tests: API versioning", () => {
     expect(response.statusCode).toBe(404);
   });
 
+  it("returns 404 for unsupported API versions", async () => {
+    const unsupportedRequests = [
+      { method: "GET", url: "/v2/markets" },
+      { method: "GET", url: "/v2/health" },
+      { method: "GET", url: "/v0/markets" },
+    ] as const;
+
+    for (const request of unsupportedRequests) {
+      const response = await app.inject(request);
+
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(
+        404
+      );
+      const body = JSON.parse(response.body);
+      expect(body).toEqual({
+        error: `Route ${request.method} ${request.url} not found`,
+        requestId: expect.any(String),
+        statusCode: 404,
+      });
+    }
+  });
+
   it("mounts OpenAPI at /v1/openapi.json with only /v1 path keys", async () => {
     const response = await app.inject({
       method: "GET",
