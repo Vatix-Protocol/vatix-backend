@@ -66,6 +66,15 @@ enum OracleReportStatus {
   FAILED
 }
 
+/// Lifecycle of a trade's on-chain settlement apply (#870).
+/// PENDING: not yet settled. SETTLED: settle_trade confirmed and applied.
+/// QUARANTINED: exhausted permanent-failure threshold; held for manual replay.
+enum SettlementStatus {
+  PENDING
+  SETTLED
+  QUARANTINED
+}
+
 model Market {
   id             String       @id @default(uuid())
   question       String
@@ -103,6 +112,10 @@ model Order {
   quantity       Int
   filledQuantity Int         @default(0) @map("filled_quantity")
   status         OrderStatus @default(OPEN)
+  /// Optimistic-concurrency counter (#866). Every status/filledQuantity write
+  /// increments this; writers condition their UPDATE on the version they
+  /// read so a cancel racing a match (or vice versa) can never both "win".
+  version        Int         @default(0)
   createdAt      DateTime    @default(now()) @map("created_at")
 
   market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
@@ -259,12 +272,21 @@ model Trade {
   tradedAt      DateTime @map("traded_at")
   createdAt     DateTime @default(now()) @map("created_at")
 
+  /// Settlement consumer apply state (#870) — set by apps/workers/src/settlement.
+  settlementStatus       SettlementStatus @default(PENDING) @map("settlement_status")
+  settledAt              DateTime?        @map("settled_at")
+  settlementTxHash       String?          @map("settlement_tx_hash") @db.VarChar(64)
+  settlementErrorCode    String?          @map("settlement_error_code") @db.VarChar(64)
+  settlementFailureCount Int              @default(0) @map("settlement_failure_count")
+  quarantinedAt          DateTime?        @map("quarantined_at")
+
   @@index([marketId])
   @@index([buyerAddress])
   @@index([sellerAddress])
   @@index([buyerAddress, tradedAt(sort: Desc)])
   @@index([sellerAddress, tradedAt(sort: Desc)])
   @@index([tradedAt(sort: Desc)])
+  @@index([settlementStatus])
   @@map("trades")
 }
 
@@ -305,6 +327,51 @@ model TradeStreamWatermark {
 
   @@map("trade_stream_watermarks")
 }
+
+/// Admin action audit log for break-glass operations.
+/// Every administrative halt/cancel-all/resume is logged durably for compliance.
+model AdminAction {
+  id              String   @id @default(uuid())
+  marketId        String   @map("market_id")
+  action          String   @db.VarChar(32) // "halt", "cancel-all", "resume"
+  actor           String   @db.VarChar(256) // Admin key identifier or user
+  beforeStatus    String   @map("before_status") @db.VarChar(16)
+  afterStatus     String   @map("after_status") @db.VarChar(16)
+  ordersCancelled Int      @map("orders_cancelled") @default(0)
+  collateralReleased Decimal @map("collateral_released") @default(0) @db.Decimal(20, 8)
+  requestId       String   @map("request_id") @db.VarChar(256) // Correlation ID
+  approvalToken   String?  @map("approval_token") @db.VarChar(256) // If dual-control used
+  reason          String?  @db.Text // Optional justification
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([marketId])
+  @@index([action])
+  @@index([createdAt(sort: Desc)])
+  @@map("admin_actions")
+}
+
+/// Dual-control approval tokens for break-glass operations.
+/// First admin initiates, second admin approves within time window.
+model AdminApprovalToken {
+  id            String   @id @default(uuid())
+  marketId      String   @map("market_id")
+  action        String   @db.VarChar(32) // "halt", "cancel-all", "resume"
+  initiator     String   @db.VarChar(256) // First admin key identifier
+  requestId     String   @map("request_id") @db.VarChar(256) // Correlation ID
+  tokenHash     String   @map("token_hash") @db.VarChar(64) // SHA256 of secret token
+  expiresAt     DateTime @map("expires_at") // Token expires after 15 min default
+  approvedBy    String?  @map("approved_by") @db.VarChar(256) // Second admin key if approved
+  approvedAt    DateTime? @map("approved_at")
+  reason        String?  @db.Text // Reason for break-glass action
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([marketId])
+  @@index([action])
+  @@index([expiresAt])
+  @@unique([requestId])
+  @@map("admin_approval_tokens")
+}
+
 
 /// On-chain trade events. Order rows are API/CLOB-owned (uuid PK); chain trades
 /// are stored here keyed by idempotencyKey until fill reconciliation exists.

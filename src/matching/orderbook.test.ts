@@ -412,6 +412,29 @@ describe("OrderBook", () => {
       expect(snap.asks[1].quantity).toBe(150);
     });
 
+    it("should reflect the resting remainder in a snapshot after a partial fill (#791)", () => {
+      orderBook.addOrder(createOrder("maker-1", "ask", 50, 100, 1000));
+
+      // Simulate a partial fill: taker only takes 40 of the 100 resting quantity,
+      // leaving 60 resting on the book at the same price level.
+      const filled = 40;
+      const updated = orderBook.updateOrderQuantity("maker-1", 100 - filled);
+
+      expect(updated).toBe(true);
+      expect(orderBook.getOrderCount()).toBe(1);
+
+      const resting = orderBook.getOrdersAtPrice("ask", 50);
+      expect(resting.length).toBe(1);
+      expect(resting[0].id).toBe("maker-1");
+      expect(resting[0].quantity).toBe(60);
+
+      const snap = orderBook.snapshot();
+      expect(snap.orderCount).toBe(1);
+      expect(snap.asks.length).toBe(1);
+      expect(snap.asks[0].price).toBe(50);
+      expect(snap.asks[0].quantity).toBe(60);
+    });
+
     it("should iterate orders in price-time priority", () => {
       orderBook.addOrder(createOrder("1", "bid", 55, 100, 1000));
       orderBook.addOrder(createOrder("2", "bid", 50, 100, 2000));

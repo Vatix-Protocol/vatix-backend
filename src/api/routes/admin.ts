@@ -1,4 +1,5 @@
-import type { FastifyInstance } from "fastify";
+import { randomBytes } from "crypto";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import {
   getAnalyticsPrismaClient,
@@ -8,13 +9,20 @@ import { positionReconciliationService } from "../../services/position-reconcili
 import { requireAdmin } from "../middleware/adminGuard.js";
 import { requireApiKey } from "../middleware/apiKeyAuth.js";
 import {
+  InvalidMarketTransitionError,
   MarketNotFoundError,
   PreconditionFailedError,
   ValidationError,
 } from "../middleware/errors.js";
+import {
+  canTransition,
+  type MarketLifecycleState,
+} from "../../../packages/shared/src/marketLifecycle.js";
 import { adminLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
 import { computeMarketEtag } from "./market.dto.js";
+import { BreakGlassService } from "../../services/break-glass.js";
+import { createLogger } from "../../../apps/indexer/src/logger.js";
 
 export async function adminRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
@@ -105,6 +113,16 @@ export async function adminRoutes(fastify: FastifyInstance) {
         throw new PreconditionFailedError();
       }
 
+      // The shared lifecycle matrix is the only place transitions are encoded.
+      if (
+        !canTransition(
+          existing.status as MarketLifecycleState,
+          status as MarketLifecycleState
+        )
+      ) {
+        throw new InvalidMarketTransitionError(existing.status, status);
+      }
+
       const market = await prisma.market.update({
         where: { id },
         data: { status: status as any },
@@ -115,12 +133,15 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // POST /admin/markets/:id/reconcile - on-demand position reconciliation
+  // POST /admin/markets/:id/break-glass/halt - Initiate market halt
+  // Step 1: First admin initiates, gets an approval token
+  // Step 2: Second admin uses token to execute
   fastify.post<{
     Params: { id: string };
-    Body: { wallet?: string; autoRecovery?: boolean };
+    Body: { reason?: string };
+    Headers: { "x-approval-token"?: string };
   }>(
-    "/admin/markets/:id/reconcile",
+    "/admin/markets/:id/break-glass/halt",
     {
       schema: {
         params: {
@@ -131,236 +152,223 @@ export async function adminRoutes(fastify: FastifyInstance) {
         body: {
           type: "object",
           properties: {
-            wallet: { type: "string" },
-            autoRecovery: { type: "boolean" },
+            reason: { type: "string" },
           },
         },
       },
     },
     async (request, reply) => {
       const { id: marketId } = request.params;
-      const { wallet, autoRecovery } = request.body;
+      const { reason } = request.body;
+      const approvalToken = request.headers["x-approval-token"];
+      const actor = (request as any).adminKey || "unknown";
+      const requestId = randomBytes(16).toString("hex");
 
-      const market = await prisma.market.findUnique({ where: { id: marketId } });
-      if (!market) {
-        throw new MarketNotFoundError(marketId);
-      }
-
-      if (wallet) {
-        // Reconcile single wallet
-        const result = await positionReconciliationService.reconcile(
-          wallet,
-          marketId,
-          autoRecovery ?? false
-        );
-        success(reply, {
-          marketId,
-          wallet,
-          hasDrift: result.hasDrift,
-          divergence: result.divergence,
-          recovered: result.recovered,
-          recoveryReason: result.recoveryReason,
-        });
-      } else {
-        // Reconcile entire market
-        const result = await positionReconciliationService.reconcileMarket(
-          marketId,
-          autoRecovery ?? false
-        );
-        success(reply, {
-          marketId,
-          totalWallets: result.totalWallets,
-          driftCount: result.driftCount,
-          recoveredCount: result.recoveredCount,
-          failedCount: result.failedCount,
-          duration: result.duration,
-        });
-      }
-    }
-  );
-
-  // GET /admin/markets/:id/reconciliation/status - view reconciliation history
-  fastify.get<{
-    Params: { id: string };
-    Querystring: { wallet?: string; limit?: string; offset?: string };
-  }>(
-    "/admin/markets/:id/reconciliation/status",
-    {
-      schema: {
-        params: {
-          type: "object",
-          required: ["id"],
-          properties: { id: { type: "string" } },
-        },
-        querystring: {
-          type: "object",
-          properties: {
-            wallet: { type: "string" },
-            limit: { type: "string" },
-            offset: { type: "string" },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id: marketId } = request.params;
-      const { wallet, limit: limitStr, offset: offsetStr } = request.query;
-
-      const limit = Math.min(parseInt(limitStr ?? "100", 10), 1000);
-      const offset = parseInt(offsetStr ?? "0", 10);
-
-      const where: any = { marketId };
-      if (wallet) {
-        where.wallet = wallet;
-      }
-
-      const [jobs, total] = await Promise.all([
-        prisma.positionReconciliationJob.findMany({
-          where,
-          orderBy: { createdAt: "desc" },
-          skip: offset,
-          take: limit,
-        }),
-        prisma.positionReconciliationJob.count({ where }),
-      ]);
-
-      success(reply, {
-        marketId,
-        jobs: jobs.map((j) => ({
-          id: j.id,
-          wallet: j.wallet,
-          driftDetected: j.driftDetected,
-          recoveryApplied: j.recoveryApplied,
-          recoveryReason: j.recoveryReason,
-          createdAt: j.createdAt.toISOString(),
-          completedAt: j.completedAt?.toISOString(),
-        })),
-        total,
-        limit,
-        offset,
-        hasMore: offset + limit < total,
-      });
-    }
-  );
-
-  // GET /admin/markets/:id/deposits/reconciliation - view deposit reconciliation
-  fastify.get<{
-    Params: { id: string };
-    Querystring: { wallet?: string; status?: string; limit?: string; offset?: string };
-  }>(
-    "/admin/markets/:id/deposits/reconciliation",
-    {
-      schema: {
-        params: {
-          type: "object",
-          required: ["id"],
-          properties: { id: { type: "string" } },
-        },
-        querystring: {
-          type: "object",
-          properties: {
-            wallet: { type: "string" },
-            status: { type: "string" },
-            limit: { type: "string" },
-            offset: { type: "string" },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id: marketId } = request.params;
-      const { wallet, status, limit: limitStr, offset: offsetStr } = request.query;
-
-      const limit = Math.min(parseInt(limitStr ?? "100", 10), 1000);
-      const offset = parseInt(offsetStr ?? "0", 10);
-
-      const where: any = { marketId };
-      if (wallet) {
-        where.wallet = wallet;
-      }
-      if (status) {
-        where.status = status;
-      }
-
-      const [reconciliations, total] = await Promise.all([
-        prisma.depositReconciliation.findMany({
-          where,
-          orderBy: { createdAt: "desc" },
-          skip: offset,
-          take: limit,
-        }),
-        prisma.depositReconciliation.count({ where }),
-      ]);
-
-      success(reply, {
-        marketId,
-        reconciliations: reconciliations.map((r) => ({
-          id: r.id,
-          depositId: r.depositId,
-          wallet: r.wallet,
-          amountRaw: r.amountRaw,
-          status: r.status,
-          reconciliationAttempts: r.reconciliationAttempts,
-          appliedAt: r.appliedAt?.toISOString(),
-          createdAt: r.createdAt.toISOString(),
-        })),
-        total,
-        limit,
-        offset,
-        hasMore: offset + limit < total,
-      });
-    }
-  );
-
-  // POST /admin/markets/:id/reconciliation/recover - trigger recovery for detected drift
-  fastify.post<{
-    Params: { id: string };
-    Body: { wallet?: string };
-  }>(
-    "/admin/markets/:id/reconciliation/recover",
-    {
-      schema: {
-        params: {
-          type: "object",
-          required: ["id"],
-          properties: { id: { type: "string" } },
-        },
-        body: {
-          type: "object",
-          properties: {
-            wallet: { type: "string" },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const { id: marketId } = request.params;
-      const { wallet } = request.body;
-
-      const market = await prisma.market.findUnique({ where: { id: marketId } });
-      if (!market) {
-        throw new MarketNotFoundError(marketId);
-      }
-
-      if (!wallet) {
-        throw new ValidationError(
-          "wallet is required for recovery operation"
-        );
-      }
-
-      const result = await positionReconciliationService.reconcile(
-        wallet,
-        marketId,
-        true // autoRecovery = true
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
       );
 
+      // If approval token provided, execute the halt
+      if (approvalToken) {
+        const result = await breakGlass.executeWithApproval(
+          {
+            marketId,
+            action: "halt",
+            actor,
+            requestId,
+            reason,
+            approvalToken,
+          },
+          actor
+        );
+        success(reply, result);
+      } else {
+        // Otherwise, initiate approval request
+        const approval = await breakGlass.initiateApproval({
+          marketId,
+          action: "halt",
+          initiator: actor,
+          requestId,
+          reason,
+        });
+        reply.status(202).send({
+          status: "approval_required",
+          requestId: approval.requestId,
+          token: approval.token,
+          expiresAt: approval.expiresAt.toISOString(),
+          message: "Second admin approval required. Use token in X-Approval-Token header.",
+        });
+      }
+    }
+  );
+
+  // POST /admin/markets/:id/break-glass/cancel-all - Initiate cancel all orders
+  fastify.post<{
+    Params: { id: string };
+    Body: { reason?: string };
+    Headers: { "x-approval-token"?: string };
+  }>(
+    "/admin/markets/:id/break-glass/cancel-all",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+        body: {
+          type: "object",
+          properties: {
+            reason: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+      const { reason } = request.body;
+      const approvalToken = request.headers["x-approval-token"];
+      const actor = (request as any).adminKey || "unknown";
+      const requestId = randomBytes(16).toString("hex");
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      if (approvalToken) {
+        const result = await breakGlass.executeWithApproval(
+          {
+            marketId,
+            action: "cancel-all",
+            actor,
+            requestId,
+            reason,
+            approvalToken,
+          },
+          actor
+        );
+        success(reply, result);
+      } else {
+        const approval = await breakGlass.initiateApproval({
+          marketId,
+          action: "cancel-all",
+          initiator: actor,
+          requestId,
+          reason,
+        });
+        reply.status(202).send({
+          status: "approval_required",
+          requestId: approval.requestId,
+          token: approval.token,
+          expiresAt: approval.expiresAt.toISOString(),
+          message: "Second admin approval required. Use token in X-Approval-Token header.",
+        });
+      }
+    }
+  );
+
+  // POST /admin/markets/:id/break-glass/resume - Resume a halted market
+  fastify.post<{
+    Params: { id: string };
+    Body: { reason?: string };
+    Headers: { "x-approval-token"?: string };
+  }>(
+    "/admin/markets/:id/break-glass/resume",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+        body: {
+          type: "object",
+          properties: {
+            reason: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+      const { reason } = request.body;
+      const approvalToken = request.headers["x-approval-token"];
+      const actor = (request as any).adminKey || "unknown";
+      const requestId = randomBytes(16).toString("hex");
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      if (approvalToken) {
+        const result = await breakGlass.executeWithApproval(
+          {
+            marketId,
+            action: "resume",
+            actor,
+            requestId,
+            reason,
+            approvalToken,
+          },
+          actor
+        );
+        success(reply, result);
+      } else {
+        const approval = await breakGlass.initiateApproval({
+          marketId,
+          action: "resume",
+          initiator: actor,
+          requestId,
+          reason,
+        });
+        reply.status(202).send({
+          status: "approval_required",
+          requestId: approval.requestId,
+          token: approval.token,
+          expiresAt: approval.expiresAt.toISOString(),
+          message: "Second admin approval required. Use token in X-Approval-Token header.",
+        });
+      }
+    }
+  );
+
+  // GET /admin/markets/:id/break-glass/audit - View break-glass audit log
+  fastify.get<{ Params: { id: string } }>(
+    "/admin/markets/:id/break-glass/audit",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      const auditLog = await breakGlass.getAuditLog(marketId);
       success(reply, {
         marketId,
-        wallet,
-        hasDrift: result.hasDrift,
-        recovered: result.recovered,
-        recoveryReason: result.recoveryReason,
-        divergence: result.divergence,
+        actions: auditLog.map((action) => ({
+          id: action.id,
+          action: action.action,
+          actor: action.actor,
+          beforeStatus: action.beforeStatus,
+          afterStatus: action.afterStatus,
+          ordersCancelled: action.ordersCancelled,
+          collateralReleased: action.collateralReleased.toString(),
+          reason: action.reason,
+          createdAt: action.createdAt.toISOString(),
+        })),
       });
     }
   );

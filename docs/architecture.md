@@ -66,6 +66,14 @@ Workers consume queue entries and perform background tasks such as trade settlem
 3. Indexer detects the on-chain event and writes a `ResolutionCandidate` to PostgreSQL
 4. Workers pick up the candidate, apply the challenge window, and settle positions
 
+### Market lifecycle
+
+Market status transitions (`ACTIVE → RESOLVED | CANCELLED`, both terminal) are
+defined once in `packages/shared/src/marketLifecycle.ts` and enforced by the
+admin status route, order validation, the oracle scheduler, the indexer parser
+and the finalization worker. See [docs/market-lifecycle.md](market-lifecycle.md)
+for the state diagram, transition matrix and per-path enforcement behaviour.
+
 ### Indexer cursor
 
 - The Indexer stores a `ledger_cursor` in PostgreSQL (`IndexerCursor` table) to resume from the last processed ledger after restarts.

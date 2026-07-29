@@ -15,6 +15,7 @@ import { marketsRoutes } from "./api/routes/markets.js";
 import { ordersRoutes } from "./api/routes/orders.js";
 import { fillsRoutes } from "./api/routes/fills.js";
 import { adminRoutes } from "./api/routes/admin.js";
+import { authRoutes } from "./api/routes/auth.js";
 import { healthRoutes } from "./api/routes/health.js";
 import { readyRoute } from "./api/routes/ready.js";
 import { metricsRoutes } from "./api/routes/metrics.js";
@@ -123,6 +124,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       await v1.register(positionsRouter);
       await v1.register(fillsRoutes);
       await v1.register(adminRoutes);
+      await v1.register(authRoutes);
       await v1.register(healthRoutes);
       await v1.register(readyRoute(options.readyDeps ?? createReadyDeps()));
 

@@ -17,6 +17,7 @@ This runbook provides step-by-step guidance for responding to common backend inc
 - [Incident 3: Database Incident](#incident-3-database-incident)
 - [Incident 4: Redis Failure](#incident-4-redis-failure)
 - [Incident 5: Oracle Resolution Failure](#incident-5-oracle-resolution-failure)
+- [Incident 6: Queue Backlog (Settlement / Oracle Submission)](#incident-6-queue-backlog-settlement--oracle-submission)
 - [Post-Incident Process](#post-incident-process)
 - [Useful Commands & Queries](#useful-commands--queries)
 - [Contact & Resources](#contact--resources)
@@ -710,6 +711,161 @@ WHERE market_id = '[MARKET_ID]'
 
 ---
 
+## Incident 6: Queue Backlog (Settlement / Oracle Submission)
+
+BullMQ backs both the settlement queue (`apps/workers/src/settlement/`) and
+the oracle submission queue (`apps/workers/src/oracle/`). Queue names and
+`REDIS_KEY_PREFIX` handling live in
+[`apps/workers/src/shared/queue-config.ts`](../../apps/workers/src/shared/queue-config.ts).
+For consumer/retry/dead-letter mechanics see
+[Queue Consumer](../queue-consumer.md) and [Dead Letter Log](../dead-letter-log.md).
+
+Default queue names (BullMQ prefixes every key with `bull:`):
+
+| Queue                | Name (env override)                                        | Example Redis key prefix           |
+| --------------------- | ----------------------------------------------------------- | ----------------------------------- |
+| Settlement            | `${REDIS_KEY_PREFIX}${SETTLEMENT_QUEUE_NAME}` (`vatix:settlement-trades`) | `bull:vatix:settlement-trades:*`   |
+| Oracle submission     | `${SUBMISSION_QUEUE_NAME}` (`oracle-submissions`)            | `bull:oracle-submissions:*`        |
+
+### Symptoms
+
+- Trades matched but not settling on-chain (settlement lag)
+- Oracle reports stuck in `pending`/`submitting` state
+- `waiting`/`delayed` job counts climbing in monitoring
+- Growing `failed` (dead-letter) count in worker logs
+
+### Detection — Redis CLI recipes
+
+Replace `<queue>` with the full queue key prefix from the table above
+(e.g. `vatix:settlement-trades` or `oracle-submissions`).
+
+```bash
+# Jobs waiting to be picked up
+redis-cli -u $REDIS_URL LLEN "bull:<queue>:wait"
+
+# Jobs currently being processed
+redis-cli -u $REDIS_URL LLEN "bull:<queue>:active"
+
+# Jobs awaiting a retry backoff window
+redis-cli -u $REDIS_URL ZCARD "bull:<queue>:delayed"
+
+# Jobs that exhausted all attempts (dead-letter candidates)
+redis-cli -u $REDIS_URL ZCARD "bull:<queue>:failed"
+
+# List the oldest 10 failed job IDs with their failure timestamp (score)
+redis-cli -u $REDIS_URL ZRANGE "bull:<queue>:failed" 0 9 WITHSCORES
+
+# Inspect a specific job's data/error (id from the ZRANGE output above)
+redis-cli -u $REDIS_URL HGETALL "bull:<queue>:<jobId>"
+
+# One-shot summary of all counts for a queue
+for state in wait active delayed failed; do
+  echo -n "$state: "
+  if [ "$state" = "delayed" ] || [ "$state" = "failed" ]; then
+    redis-cli -u $REDIS_URL ZCARD "bull:<queue>:$state"
+  else
+    redis-cli -u $REDIS_URL LLEN "bull:<queue>:$state"
+  fi
+done
+```
+
+Idempotency check for a specific stuck settlement trade
+(see [Queue Consumer § Idempotency](../queue-consumer.md#idempotency)):
+
+```bash
+redis-cli -u $REDIS_URL EXISTS "vatix:settlement:processed:<tradeId>"
+```
+
+### Response Steps
+
+#### Step 1: Confirm backlog scope
+
+Run the detection commands above for both queues. A `wait`/`delayed` count
+that keeps growing over several minutes (not just a momentary spike) means
+consumers aren't keeping up or have stopped.
+
+```bash
+docker ps | grep -E "worker|settlement|oracle"
+docker logs vatix-backend 2>&1 | grep -iE "settlement|oracle-submission" | tail -50
+```
+
+#### Step 2: Identify root cause
+
+- **Worker process down/crashed** — check `docker ps` / process manager for
+  the settlement or oracle submission worker.
+- **Downstream failure** — settlement jobs fail if Postgres or Stellar RPC is
+  unavailable; check Incident 3 and Incident 2 sections.
+- **Poison job** — a single malformed job can repeatedly fail and block
+  `active` if concurrency is low; check its payload via `HGETALL` above.
+
+#### Step 3: Remediation
+
+**A. Restart the affected worker (first attempt)**
+
+```bash
+docker restart vatix-settlement-worker
+# or, if run via pnpm/process manager:
+pm2 restart settlement-worker
+```
+
+**B. Re-run failed jobs once the root cause is fixed**
+
+BullMQ jobs must be retried through the API (not by editing Redis keys
+directly) so retry counters and locks stay consistent:
+
+```bash
+node -e '
+const { Queue } = require("bullmq");
+const q = new Queue("vatix:settlement-trades", { connection: { url: process.env.REDIS_URL } });
+(async () => {
+  const failed = await q.getFailed(0, 50);
+  for (const job of failed) await job.retry();
+  console.log(`retried ${failed.length} jobs`);
+  await q.close();
+})();
+'
+```
+
+**C. Escalate to manual settlement (last resort)**
+
+If the backlog is blocking trade settlement past the SEV threshold, follow
+the manual resolution pattern in
+[Incident 5, Step 2](#step-2-manual-resolution-if-automated-fails) with the
+relevant trade/order IDs, and log the intervention in `audit_log`.
+
+#### Step 4: Verify recovery
+
+```bash
+redis-cli -u $REDIS_URL LLEN "bull:vatix:settlement-trades:wait"
+redis-cli -u $REDIS_URL ZCARD "bull:vatix:settlement-trades:failed"
+```
+
+Counts should trend back to baseline (near zero `wait`, no growth in
+`failed`) within a few minutes of the fix.
+
+#### Step 5: Pager / escalation guidance
+
+Use the [Severity Decision Matrix](#severity-decision-matrix) alongside
+these queue-specific triggers:
+
+| Condition                                                     | Severity |
+| --------------------------------------------------------------- | -------- |
+| Settlement `wait` backlog > 5 min of throughput, still growing  | SEV-2    |
+| Oracle submission backlog delaying an active challenge window   | SEV-1    |
+| `failed` count growing but `wait`/`active` stable (isolated bad jobs) | SEV-3    |
+
+Follow the standard [Escalation Procedures](#escalation-procedures) for the
+resulting severity — no separate on-call path for queue incidents.
+
+#### Step 6: Prevention
+
+- [ ] Alert on `wait`/`delayed` count sustained above a threshold for >2 min
+- [ ] Alert on `failed` (dead-letter) count growth — see [Dead Letter Log](../dead-letter-log.md)
+- [ ] Dashboard the counts from the detection commands above (ties to #738)
+- [ ] Ensure worker processes are supervised/auto-restarted on crash
+
+---
+
 ## Post-Incident Process
 
 ### Immediate (Within 24 Hours)
@@ -920,11 +1076,13 @@ docker exec -it vatix-postgres psql -U postgres -d vatix -c \
 
 ### Documentation Links
 
-- [Testing Guide](./testing.md)
-- [Migration Guide](./migrations.md)
-- [Migration Rollback](./migration-rollback.md)
-- [Rate Limiting](./rate-limiting.md)
-- [Deployment Runbook](./deployment-runbook.md)
+- [Testing Guide](../testing.md)
+- [Migration Guide](../migrations.md)
+- [Migration Rollback](../migration-rollback.md)
+- [Rate Limiting](../rate-limiting.md)
+- [Deployment Runbook](../deployment-runbook.md)
+- [Queue Consumer](../queue-consumer.md)
+- [Dead Letter Log](../dead-letter-log.md)
 
 ---
 

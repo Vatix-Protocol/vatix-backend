@@ -2,6 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
 import { Keypair } from "@stellar/stellar-sdk";
 import { buildSignableMessage } from "./stellarAuth.js";
+
+// Nonce consumption is exercised in nonceStore.test.ts; here it always succeeds
+// so the signature checks stay the subject of these tests.
+const NONCE = "test-nonce";
+vi.mock("./nonceStore.js", () => ({
+  consumeNonce: vi.fn(async () => true),
+}));
 import type { PrismaClient } from "../../generated/prisma/client";
 
 // ---------------------------------------------------------------------------
@@ -67,11 +74,12 @@ function makeHeaders(
   ts = Date.now()
 ): Record<string, string> {
   const sig = keypair
-    .sign(buildSignableMessage({ ...body, timestamp: ts }))
+    .sign(buildSignableMessage({ ...body, nonce: NONCE, timestamp: ts }))
     .toString("base64");
   return {
     "x-signature": sig,
     "x-timestamp": String(ts),
+    "x-nonce": NONCE,
   };
 }
 
@@ -155,7 +163,7 @@ describe("POST /orders – Stellar wallet signature verification", () => {
   it("should return 401 when x-timestamp header is missing", async () => {
     const ts = Date.now();
     const sig = testKeypair
-      .sign(buildSignableMessage({ ...validBody, timestamp: ts }))
+      .sign(buildSignableMessage({ ...validBody, nonce: NONCE, timestamp: ts }))
       .toString("base64");
 
     const response = await app.inject({
@@ -174,7 +182,7 @@ describe("POST /orders – Stellar wallet signature verification", () => {
     const otherKeypair = Keypair.random();
     const ts = Date.now();
     const wrongSig = otherKeypair
-      .sign(buildSignableMessage({ ...validBody, timestamp: ts }))
+      .sign(buildSignableMessage({ ...validBody, nonce: NONCE, timestamp: ts }))
       .toString("base64");
 
     const response = await app.inject({
@@ -183,6 +191,7 @@ describe("POST /orders – Stellar wallet signature verification", () => {
       headers: {
         "x-signature": wrongSig,
         "x-timestamp": String(ts),
+        "x-nonce": NONCE,
       },
       payload: validBody,
     });
@@ -211,7 +220,9 @@ describe("POST /orders – Stellar wallet signature verification", () => {
     // Sign a body with a different price than what is actually sent
     const tamperedBody = { ...validBody, price: 0.1 };
     const sig = testKeypair
-      .sign(buildSignableMessage({ ...tamperedBody, timestamp: ts }))
+      .sign(
+        buildSignableMessage({ ...tamperedBody, nonce: NONCE, timestamp: ts })
+      )
       .toString("base64");
 
     const response = await app.inject({
@@ -220,6 +231,7 @@ describe("POST /orders – Stellar wallet signature verification", () => {
       headers: {
         "x-signature": sig,
         "x-timestamp": String(ts),
+        "x-nonce": NONCE,
       },
       payload: validBody, // original body – signature mismatch
     });
@@ -233,7 +245,9 @@ describe("POST /orders – Stellar wallet signature verification", () => {
     const ts = Date.now();
     const invalidBody = { ...validBody, userAddress: "not-a-stellar-address" };
     const sig = testKeypair
-      .sign(buildSignableMessage({ ...invalidBody, timestamp: ts }))
+      .sign(
+        buildSignableMessage({ ...invalidBody, nonce: NONCE, timestamp: ts })
+      )
       .toString("base64");
 
     const response = await app.inject({
@@ -242,6 +256,7 @@ describe("POST /orders – Stellar wallet signature verification", () => {
       headers: {
         "x-signature": sig,
         "x-timestamp": String(ts),
+        "x-nonce": NONCE,
       },
       payload: invalidBody,
     });
@@ -258,6 +273,7 @@ describe("POST /orders – Stellar wallet signature verification", () => {
       headers: {
         "x-signature": "!!!not-valid-base64!!!",
         "x-timestamp": String(Date.now()),
+        "x-nonce": NONCE,
       },
       payload: validBody,
     });

@@ -256,17 +256,34 @@ async function placeOrder(
     quantity,
   };
   const timestamp = Date.now();
-  const message = buildSignableMessage({ ...body, timestamp });
-  const signature = trader.keypair.sign(message).toString("base64");
 
   const start = performance.now();
   try {
+    // Every order needs a fresh single-use nonce from the challenge endpoint.
+    const challengeRes = await fetch(`${baseUrl}/v1/auth/challenge`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userAddress: trader.publicKey }),
+    });
+    if (!challengeRes.ok) {
+      await challengeRes.text();
+      return {
+        status: challengeRes.status,
+        latencyMs: performance.now() - start,
+      };
+    }
+    const { nonce } = (await challengeRes.json()) as { nonce: string };
+
+    const message = buildSignableMessage({ ...body, nonce, timestamp });
+    const signature = trader.keypair.sign(message).toString("base64");
+
     const res = await fetch(`${baseUrl}/v1/orders`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-signature": signature,
         "x-timestamp": String(timestamp),
+        "x-nonce": nonce,
       },
       body: JSON.stringify(body),
     });

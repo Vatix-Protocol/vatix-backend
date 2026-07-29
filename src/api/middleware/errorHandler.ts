@@ -9,6 +9,7 @@ import {
   ForbiddenError,
 } from "./errors.js";
 import type { ErrorResponse } from "../../types/errors.js";
+import { createErrorEnvelope } from "../../../packages/shared/src/errors.js";
 import { config } from "../../config.js";
 
 function resolveCode(error: Error, statusCode: number): string {
@@ -72,18 +73,16 @@ export function errorHandler(
     errorMessage = "Internal server error";
   }
 
-  const response: ErrorResponse = {
-    error: errorMessage,
+  const response: ErrorResponse = createErrorEnvelope({
     message: errorMessage,
     code: resolveCode(error, statusCode),
     requestId,
     statusCode,
-  };
-
-  // Add field details for ValidationError
-  if (error instanceof ValidationError && error.fields) {
-    response.fields = error.fields;
-  }
+    fields:
+      error instanceof ValidationError && error.fields
+        ? error.fields
+        : undefined,
+  });
 
   // Send error response
   reply.status(statusCode).send(response);
