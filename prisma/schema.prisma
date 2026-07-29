@@ -66,6 +66,15 @@ enum OracleReportStatus {
   FAILED
 }
 
+/// Lifecycle of a trade's on-chain settlement apply (#870).
+/// PENDING: not yet settled. SETTLED: settle_trade confirmed and applied.
+/// QUARANTINED: exhausted permanent-failure threshold; held for manual replay.
+enum SettlementStatus {
+  PENDING
+  SETTLED
+  QUARANTINED
+}
+
 model Market {
   id             String       @id @default(uuid())
   question       String
@@ -259,12 +268,21 @@ model Trade {
   tradedAt      DateTime @map("traded_at")
   createdAt     DateTime @default(now()) @map("created_at")
 
+  /// Settlement consumer apply state (#870) — set by apps/workers/src/settlement.
+  settlementStatus       SettlementStatus @default(PENDING) @map("settlement_status")
+  settledAt              DateTime?        @map("settled_at")
+  settlementTxHash       String?          @map("settlement_tx_hash") @db.VarChar(64)
+  settlementErrorCode    String?          @map("settlement_error_code") @db.VarChar(64)
+  settlementFailureCount Int              @default(0) @map("settlement_failure_count")
+  quarantinedAt          DateTime?        @map("quarantined_at")
+
   @@index([marketId])
   @@index([buyerAddress])
   @@index([sellerAddress])
   @@index([buyerAddress, tradedAt(sort: Desc)])
   @@index([sellerAddress, tradedAt(sort: Desc)])
   @@index([tradedAt(sort: Desc)])
+  @@index([settlementStatus])
   @@map("trades")
 }
 
