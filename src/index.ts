@@ -33,6 +33,7 @@ import { parseApiEnv } from "./env.js";
 import { corsPlugin } from "./api/middleware/cors.js";
 import { redis } from "./services/redis.js";
 import { walletRoutes } from "./api/routes/wallet.js";
+import { admissionControl } from "./api/middleware/admissionControl.js";
 
 // Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
 // Oversized requests are rejected with 413 Request Entity Too Large.
@@ -101,6 +102,18 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       done();
     } else {
       rateLimiter(request, reply, done);
+    }
+  });
+
+  // Apply admission control (load shedding) based on downstream lag
+  // Skips health/ready probes and admin operations
+  server.addHook("onRequest", async (request, reply) => {
+    const isHealthProbe =
+      request.url === "/v1/ready" ||
+      request.url === "/v1/health" ||
+      request.url === "/metrics";
+    if (!isHealthProbe) {
+      await admissionControl(request, reply);
     }
   });
 
