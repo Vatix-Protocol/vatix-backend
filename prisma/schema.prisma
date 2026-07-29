@@ -290,6 +290,44 @@ model Trade {
   @@map("trades")
 }
 
+/// Durable, hash-chained audit trail for trade compliance and forensics.
+/// Each entry is cryptographically linked to the previous entry via prevHash.
+/// Entries are archived from Redis streams before MAXLEN trim to prevent loss.
+model TradeAuditEvent {
+  id            String   @id @default(uuid())
+  tradeId       String   @map("trade_id") @db.VarChar(256)
+  marketId      String   @map("market_id")
+  payload       String   @map("payload") // JSON blob of Trade object
+  prevHash      String   @map("prev_hash") @db.VarChar(64) // SHA256 hex of previous entry (root: "0")
+  entryHash     String   @map("entry_hash") @db.VarChar(64) // SHA256 hex of payload + prevHash
+  streamId      String   @map("stream_id") // Redis stream entry ID
+  archivedAt    DateTime @default(now()) @map("archived_at")
+
+  // Watermark tracking: earliest unarchived Redis stream ID for this market
+  // Allows archiver to prevent trim before this point
+  // (denormalized here for fast access; also in dedicated table)
+
+  @@index([marketId])
+  @@index([tradeId])
+  @@index([archivedAt])
+  @@unique([streamId]) // Prevent duplicate archives of same Redis entry
+  @@map("trade_audit_events")
+}
+
+/// Watermark tracking per market: which Redis stream entries have been archived.
+/// Used by archiver worker to determine safe trim point and by logOrderMatch
+/// to detect when archival is lagging.
+model TradeStreamWatermark {
+  id                 String   @id @default(uuid())
+  marketId           String   @unique @map("market_id")
+  globalStreamId     String   @map("global_stream_id") // Latest archived in global stream
+  marketStreamId     String   @map("market_stream_id") // Latest archived in market stream
+  lastArchivedAt     DateTime @default(now()) @updatedAt @map("last_archived_at")
+  archiveInitiatedAt DateTime @map("archive_initiated_at") // Timestamp of most recent archival job
+
+  @@map("trade_stream_watermarks")
+}
+
 /// On-chain trade events. Order rows are API/CLOB-owned (uuid PK); chain trades
 /// are stored here keyed by idempotencyKey until fill reconciliation exists.
 model IndexedTrade {

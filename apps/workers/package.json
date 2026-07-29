@@ -4,6 +4,8 @@
   "description": "Workers application for Vatix protocol",
   "type": "module",
   "scripts": {
+    "audit-archiver:dev": "tsx watch src/audit-archiver/main.ts",
+    "audit-archiver:start": "tsx src/audit-archiver/main.ts",
     "expiry:dev": "tsx watch src/expiry/main.ts",
     "expiry:start": "tsx src/expiry/main.ts",
     "finalization:dev": "tsx watch src/finalization/main.ts",
