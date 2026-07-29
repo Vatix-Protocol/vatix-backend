@@ -904,3 +904,31 @@ export const openApiSpec = {
     },
   },
 } as const;
+
+/**
+ * Returns the OpenAPI spec served to clients. In production, paths tagged
+ * "Admin" (internal-only endpoints) are stripped so they never appear in
+ * the public /docs Swagger UI or /v1/openapi.json response — reducing the
+ * discoverable surface area for internal admin routes (#805, ties to #741).
+ * Non-production environments continue to see the full spec, including
+ * Admin routes, for local/dev testing.
+ */
+export function getOpenApiSpec(nodeEnv: string): typeof openApiSpec {
+  if (nodeEnv !== "production") {
+    return openApiSpec;
+  }
+
+  const publicPaths = Object.fromEntries(
+    Object.entries(openApiSpec.paths).filter(([, pathItem]) => {
+      const operations = Object.values(pathItem) as Array<{
+        tags?: readonly string[];
+      }>;
+      return !operations.some((op) => op?.tags?.includes("Admin"));
+    })
+  );
+
+  return {
+    ...openApiSpec,
+    paths: publicPaths,
+  } as typeof openApiSpec;
+}
