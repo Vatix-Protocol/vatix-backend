@@ -24,6 +24,7 @@ import type { FastifyInstance } from "fastify";
 import { Keypair } from "@stellar/stellar-sdk";
 import { ordersRoutes } from "../../src/api/routes/orders.js";
 import { buildSignableMessage } from "../../src/api/middleware/stellarAuth.js";
+import { issueChallenge } from "../../src/api/middleware/nonceStore.js";
 import { buildTestApp, resetRateLimits } from "./helpers/build-test-app.js";
 import { testUtils, getTestPrismaClient } from "../setup.js";
 import {
@@ -41,7 +42,7 @@ const keypairs = Array.from({ length: 5 }, () => Keypair.random());
 const addresses = keypairs.map((kp) => kp.publicKey());
 
 /** Build auth headers for a POST /v1/orders request. */
-function authHeaders(
+async function authHeaders(
   keypair: Keypair,
   body: {
     marketId: string;
@@ -51,12 +52,17 @@ function authHeaders(
     price: number;
     quantity: number;
   }
-): Record<string, string> {
+): Promise<Record<string, string>> {
   const timestamp = Date.now();
+  const { nonce } = await issueChallenge(keypair.publicKey());
   const sig = keypair
-    .sign(buildSignableMessage({ ...body, timestamp }))
+    .sign(buildSignableMessage({ ...body, nonce, timestamp }))
     .toString("base64");
-  return { "x-signature": sig, "x-timestamp": String(timestamp) };
+  return {
+    "x-signature": sig,
+    "x-timestamp": String(timestamp),
+    "x-nonce": nonce,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -113,13 +119,13 @@ describe("Concurrent order placement — same order book", () => {
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(keypairs[0], payload1),
+        headers: await authHeaders(keypairs[0], payload1),
         payload: payload1,
       }),
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(keypairs[1], payload2),
+        headers: await authHeaders(keypairs[1], payload2),
         payload: payload2,
       }),
     ]);
@@ -160,13 +166,13 @@ describe("Concurrent order placement — same order book", () => {
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(keypairs[0], payload1),
+        headers: await authHeaders(keypairs[0], payload1),
         payload: payload1,
       }),
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(keypairs[1], payload2),
+        headers: await authHeaders(keypairs[1], payload2),
         payload: payload2,
       }),
     ]);
@@ -220,13 +226,13 @@ describe("Concurrent order placement — same order book", () => {
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(keypairs[0], payload1),
+        headers: await authHeaders(keypairs[0], payload1),
         payload: payload1,
       }),
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(keypairs[1], payload2),
+        headers: await authHeaders(keypairs[1], payload2),
         payload: payload2,
       }),
     ]);
@@ -267,7 +273,7 @@ describe("Concurrent order placement — same order book", () => {
       return app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(kp, payload),
+        headers: await authHeaders(kp, payload),
         payload,
       });
     });
@@ -311,13 +317,13 @@ describe("Concurrent order placement — same order book", () => {
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(keypairs[0], payloadA),
+        headers: await authHeaders(keypairs[0], payloadA),
         payload: payloadA,
       }),
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(keypairs[1], payloadB),
+        headers: await authHeaders(keypairs[1], payloadB),
         payload: payloadB,
       }),
     ]);
@@ -370,13 +376,13 @@ describe("Concurrent order placement — same order book", () => {
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(keypairs[0], selfPayload),
+        headers: await authHeaders(keypairs[0], selfPayload),
         payload: selfPayload,
       }),
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(keypairs[1], legitimatePayload),
+        headers: await authHeaders(keypairs[1], legitimatePayload),
         payload: legitimatePayload,
       }),
     ]);
@@ -427,7 +433,7 @@ describe("Concurrent order placement — same order book", () => {
         return app.inject({
           method: "POST",
           url: "/v1/orders",
-          headers: authHeaders(kp, payload),
+          headers: await authHeaders(kp, payload),
           payload,
         });
       })

@@ -69,6 +69,11 @@ export const CANONICAL_V1_ROUTES: CanonicalRoute[] = [
     notes: "Requires API key and admin auth",
   },
   {
+    method: "POST",
+    path: "/v1/auth/challenge",
+    notes: "Issues a single-use signing nonce for Stellar wallet auth",
+  },
+  {
     method: "GET",
     path: "/v1/openapi.json",
     notes: "OpenAPI specification",
