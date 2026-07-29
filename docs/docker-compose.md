@@ -30,6 +30,13 @@ commands like `docker logs vatix-indexer` work as documented there.
 default — this preserves the original host-run development workflow below.
 Every application process lives behind a profile so you opt in explicitly.
 
+All application images (`api`, `indexer`, `finalization-worker`,
+`oracle-worker`, `settlement-worker`) run as the non-root `vatix` user
+(uid/gid `1001`), set in the Dockerfile `runtime` stage. CI's
+`docker-image-smoke` job builds the `api` and `indexer` images and asserts
+`id -u` inside each container is non-zero, then confirms `postgres`/`redis`
+healthchecks still pass with the stack up.
+
 ## Option A — Data layer only (host-run development)
 
 This is the original workflow: run infra in containers, run the app processes
