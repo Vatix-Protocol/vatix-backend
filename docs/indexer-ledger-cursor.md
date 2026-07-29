@@ -43,6 +43,8 @@ inserts no duplicate rows.
 | `INDEXER_LEDGER_WINDOW_SIZE`             | Optional | `100`       | Ledgers scanned per ingestion tick (1–1000).                                                                |
 | `INDEXER_BATCH_SIZE`                     | Optional | `100`       | Max events fetched per RPC page (1–500).                                                                    |
 | `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | Optional | `10`        | Successful batches between cursor checkpoints.                                                              |
+| `INDEXER_GAP_PAUSE_THRESHOLD`            | Optional | `1000`      | Gap size (in ledgers) that triggers fail-closed pause. Set to `0` to disable.                               |
+| `INDEXER_BACKFILL_MAX_LEDGERS`           | Optional | `500`       | Maximum ledgers re-fetched in a single backfill run. Larger gaps are clamped and warned.                    |
 
 ## Checkpoint flushing
 
@@ -148,4 +150,103 @@ WHERE network_id = 'testnet' AND cursor_key = 'ingestion';
 - `apps/indexer/src/storage.ts` — `PrismaCursorStorageClient` reads and writes the cursor
 - `apps/indexer/src/ingestion.ts` — `PollingIngestionLoop` drives fetch → parse → write
 - `apps/indexer/src/batchWriter.ts` — `PrismaBatchWriter` persists trades and resolutions
+- `apps/indexer/src/gapDetector.ts` — `GapDetector` detects and back-fills ledger gaps
 - `.env.example` — documents indexer environment variables
+
+---
+
+## Gap Detection and Watermark Reconciliation
+
+Reorg rewind handles forked-chain scenarios. Gap detection handles a different failure mode:
+ledgers that were **never ingested** — holes left by skipped ticks, partial batch failures,
+Horizon page omissions, or manual cursor edits.
+
+### Why gaps are production-critical
+
+Missing ledgers mean missing trades, deposits, and resolutions with no user-visible error. The
+gap detector provides the missing signal and automatically catches up within configurable bounds.
+
+### How it works
+
+After each successful ingestion batch the indexer runs two gap checks:
+
+**1. Cursor-level gap** (before parsing)
+
+Detects whether the cursor jumped non-contiguously. For example, if `lastIndexedLedger = 100`
+but `batchStartLedger = 150`, ledgers 101–149 were skipped. The detector triggers a back-fill
+for those ledgers before the current batch continues.
+
+```
+lastIndexedLedger = 100
+batchStartLedger  = 150
+→ gap: [101, 149] (49 ledgers)
+```
+
+**2. Within-window gap** (after successful batch write)
+
+Compares the set of ledger sequences present in the fetched events against the full
+`[startLedger, min(endLedger, networkTip)]` range. Any missing integer is flagged and
+back-filled. Ledgers beyond the network tip are ignored (they haven't been produced yet).
+
+```
+startLedger = 101, endLedger = 110, networkTip = 200
+seenLedgers = {101, 103, 104, 105, …, 110}  → 102 missing
+→ gap: [102, 110]
+```
+
+### Bounded back-fill
+
+Back-fills are performed by `GapDetector.runBackfill()`:
+
+1. The gap range is clamped to `INDEXER_BACKFILL_MAX_LEDGERS` (default: 500). Wider gaps are
+   partially back-filled; a `warn` log and the `indexer.gap.clamped` event are emitted.
+2. Events are fetched via the existing `EventFetcher.fetchByLedgerWindow()` call.
+3. Parsed events are written through `PrismaBatchWriter` → `withIdempotencyKey` →
+   `indexer_processed_events`. Duplicate rows are never inserted — the operation is fully
+   idempotent and safe to retry.
+4. Metrics counters `gapDetectedTotal` and `backfillLedgersTotal` are incremented.
+
+### Fail-closed threshold
+
+When the raw gap size meets or exceeds `INDEXER_GAP_PAUSE_THRESHOLD` (default: 1000 ledgers),
+the back-fill is **not** executed and the ingestion loop is fail-closed:
+
+- An `error` log with event `indexer.gap.pause` is emitted.
+- The `isPaused` flag is set on the loop instance.
+- All subsequent ticks are skipped and emit a `warn` log with event `indexer.gap.paused`.
+- The heartbeat log includes `isPaused: true`.
+
+Recovery requires an operator to investigate the root cause, optionally back-fill manually
+(e.g. by lowering `INDEXER_GAP_PAUSE_THRESHOLD` temporarily), and restart the process.
+
+Set `INDEXER_GAP_PAUSE_THRESHOLD=0` to disable fail-closed behaviour and allow unbounded
+back-fills (subject to `INDEXER_BACKFILL_MAX_LEDGERS` clamping).
+
+### Idempotency guarantee
+
+Back-fills use the same `PrismaBatchWriter` → `indexer_processed_events` deduplication path
+as normal ingestion. Each event is identified by its idempotency key
+(`SHA-256({contractId}:{ledger}:{txIndex}:{eventIndex})`). Running a back-fill twice, or
+running it after the events were already ingested by the normal flow, produces no duplicate
+rows — the `skipped` counter increments and `written` stays at 0.
+
+### Alert thresholds
+
+| Signal                    | Recommended condition                | Action                                                          |
+| ------------------------- | ------------------------------------ | --------------------------------------------------------------- |
+| `lag`                     | `lag > 500` for > 5 min              | Check RPC connectivity; review ingestion logs.                  |
+| `gapDetectedTotal`        | Any increment                        | Review `indexer.gap.*` events; verify backfill completed.       |
+| `indexer.gap.pause`       | Any occurrence                       | Immediate page; manual investigation required before restart.   |
+| `indexer.gap.clamped`     | Any occurrence                       | Increase `INDEXER_BACKFILL_MAX_LEDGERS` or investigate root cause. |
+
+See [Metrics Log](metrics-log.md) for full log event reference.
+
+### Test coverage
+
+- `apps/indexer/src/gapDetector.test.ts` — unit tests for `detectGap`, `detectCursorGap`,
+  `runBackfill` (including clamping, fail-closed, and metric increments).
+- `apps/indexer/src/gap-detection.fixture.test.ts` — integration fixture:
+  - Injected missing ledger detected within one poll cycle.
+  - Backfill re-fetches the missing event.
+  - Idempotency: second pass yields `written=0, skipped>0`.
+  - Fail-closed: loop pauses when gap exceeds threshold.

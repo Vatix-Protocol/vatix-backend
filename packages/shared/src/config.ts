@@ -326,6 +326,24 @@ export interface IndexerConfig {
   cursorKey: string;
   checkpointFlushEveryBatches: number;
   logLevel: LogLevel;
+  /**
+   * Number of ledgers gap that triggers a fail-closed pause of the ingestion
+   * loop. When the detected gap size (network tip minus last indexed ledger
+   * across a non-contiguous sequence) meets or exceeds this threshold, the
+   * loop emits a critical log and halts until an operator intervenes.
+   * Set to 0 to disable the fail-closed behaviour (gaps are back-filled without
+   * pausing regardless of size).
+   * Configurable via INDEXER_GAP_PAUSE_THRESHOLD. Default: 1000.
+   */
+  gapPauseThreshold: number;
+  /**
+   * Maximum number of ledgers that the gap backfill is allowed to re-fetch in
+   * a single catch-up run. Prevents unbounded back-filling when a very wide
+   * gap is detected. Any gap larger than this is clamped and a warning is
+   * emitted so the operator can widen the limit or investigate.
+   * Configurable via INDEXER_BACKFILL_MAX_LEDGERS. Default: 500.
+   */
+  backfillMaxLedgers: number;
 }
 
 /**
@@ -376,6 +394,14 @@ export function loadIndexerConfig(env: Env = processEnv): IndexerConfig {
       { fallback: 10 }
     ),
     logLevel: loadLogLevel("INDEXER_LOG_LEVEL", env, "info"),
+    gapPauseThreshold: requireNonNegativeNumber(
+      "INDEXER_GAP_PAUSE_THRESHOLD",
+      env,
+      1000
+    ),
+    backfillMaxLedgers: requirePositiveInt("INDEXER_BACKFILL_MAX_LEDGERS", env, {
+      fallback: 500,
+    }),
   };
 }
 

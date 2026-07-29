@@ -70,6 +70,8 @@ describe("InternalIndexerMetricsService", () => {
       latestIndexedLedgerSequence: 150,
       latestNetworkLedgerSequence: 200,
       lag: 50,
+      gapDetectedTotal: 0,
+      backfillLedgersTotal: 0,
     });
   });
 
@@ -84,6 +86,76 @@ describe("InternalIndexerMetricsService", () => {
       latestIndexedLedgerSequence: 98765,
       latestNetworkLedgerSequence: 100000,
       lag: 1235,
+      gapDetectedTotal: 0,
+      backfillLedgersTotal: 0,
     });
+  });
+
+  // ── Gap counter tests ────────────────────────────────────────────────────
+
+  it("gapDetectedTotal initializes to 0", () => {
+    const service = new InternalIndexerMetricsService();
+    expect(service.getGapDetectedTotal()).toBe(0);
+  });
+
+  it("incrementGapDetected increments by 1 by default", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementGapDetected();
+    expect(service.getGapDetectedTotal()).toBe(1);
+  });
+
+  it("incrementGapDetected increments by a custom count", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementGapDetected(3);
+    expect(service.getGapDetectedTotal()).toBe(3);
+  });
+
+  it("incrementGapDetected accumulates across multiple calls", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementGapDetected();
+    service.incrementGapDetected(2);
+    service.incrementGapDetected();
+    expect(service.getGapDetectedTotal()).toBe(4);
+  });
+
+  // ── Backfill ledger counter tests ────────────────────────────────────────
+
+  it("backfillLedgersTotal initializes to 0", () => {
+    const service = new InternalIndexerMetricsService();
+    expect(service.getBackfillLedgersTotal()).toBe(0);
+  });
+
+  it("incrementBackfillLedgers increments by the given count", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementBackfillLedgers(50);
+    expect(service.getBackfillLedgersTotal()).toBe(50);
+  });
+
+  it("incrementBackfillLedgers accumulates across multiple calls", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementBackfillLedgers(100);
+    service.incrementBackfillLedgers(25);
+    expect(service.getBackfillLedgersTotal()).toBe(125);
+  });
+
+  it("getSnapshot includes gap and backfill counters", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementGapDetected();
+    service.incrementGapDetected();
+    service.incrementBackfillLedgers(200);
+
+    const snapshot = service.getSnapshot();
+    expect(snapshot.gapDetectedTotal).toBe(2);
+    expect(snapshot.backfillLedgersTotal).toBe(200);
+  });
+
+  it("toLogFields includes gap and backfill counters", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementGapDetected(5);
+    service.incrementBackfillLedgers(300);
+
+    const log = service.toLogFields();
+    expect(log.gapDetectedTotal).toBe(5);
+    expect(log.backfillLedgersTotal).toBe(300);
   });
 });
