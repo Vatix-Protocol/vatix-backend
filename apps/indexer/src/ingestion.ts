@@ -3,6 +3,8 @@ import type { CursorStorageClient } from "./storage.js";
 import type { InternalIndexerMetricsService } from "./metrics.js";
 import type { BatchWriter, BatchRecord } from "./batchWriter.js";
 import type { EventFetcher } from "./eventFetcher.js";
+import type { Telemetry } from "./telemetry.js";
+import { consoleTelemetry } from "./telemetry.js";
 import { parseTradeEvents } from "./tradeParser.js";
 import { parseResolutionEvents } from "./resolutionParser.js";
 import { parseCollateralDepositedEvents } from "./collateralDepositedParser.js";
@@ -37,6 +39,7 @@ export interface IngestionDependencies {
   gapPauseThreshold?: number;
   /** @see GapDetectorConfig.backfillMaxLedgers */
   backfillMaxLedgers?: number;
+  telemetry?: Telemetry;
 }
 
 interface IngestionBatchResult {
@@ -72,6 +75,9 @@ export class PollingIngestionLoop implements IngestionLoop {
   /** GapDetector wired in for all ingestion ticks. */
   private readonly gapDetector: GapDetector;
 
+  /** Emits spans for the fetch/parse/write stages of each ingestion batch. */
+  private readonly telemetry: Telemetry;
+
   constructor(
     private readonly logger: ILogger,
     private readonly storage: CursorStorageClient,
@@ -80,6 +86,7 @@ export class PollingIngestionLoop implements IngestionLoop {
     private readonly checkpointFlushEveryBatches: number,
     private readonly deps: IngestionDependencies
   ) {
+    this.telemetry = deps.telemetry ?? consoleTelemetry;
     this.gapDetector = new GapDetector(
       {
         gapPauseThreshold: deps.gapPauseThreshold ?? 1000,
@@ -328,11 +335,15 @@ export class PollingIngestionLoop implements IngestionLoop {
     const startLedger = safeCurrentSequence + 1;
     const provisionalEnd = startLedger + this.deps.ledgerWindowSize - 1;
 
+    const fetchSpan = this.telemetry.startSpan("indexer.ingestion.fetch", {
+      contractId: this.deps.contractId,
+    });
     const { events, latestLedger } =
       await this.deps.eventFetcher.fetchByLedgerWindow({
         startLedger,
         endLedger: provisionalEnd,
       });
+    fetchSpan.end({ eventCount: String(events.length) });
 
     // Track the latest network ledger for lag computation (Issue #713)
     if (latestLedger > 0) {
@@ -454,12 +465,21 @@ export class PollingIngestionLoop implements IngestionLoop {
       }
     }
 
+    const parseSpan = this.telemetry.startSpan("indexer.ingestion.parse", {
+      contractId: this.deps.contractId,
+    });
     const { trades, errors: tradeErrors } = parseTradeEvents(events);
     const { resolutions, errors: resolutionErrors } =
       parseResolutionEvents(events);
     const { deposits, errors: depositErrors } =
       parseCollateralDepositedEvents(events);
     const { markets, errors: marketErrors } = parseMarketCreatedEvents(events);
+    parseSpan.end({
+      trades: String(trades.length),
+      resolutions: String(resolutions.length),
+      deposits: String(deposits.length),
+      markets: String(markets.length),
+    });
 
     for (const error of tradeErrors) {
       this.logger.warn("Trade parse error — skipping event", {
@@ -533,7 +553,15 @@ export class PollingIngestionLoop implements IngestionLoop {
       })),
     ];
 
+    const writeSpan = this.telemetry.startSpan("indexer.ingestion.write", {
+      contractId: this.deps.contractId,
+    });
     const writeResult = await this.deps.batchWriter.write(records);
+    writeSpan.end({
+      written: String(writeResult.written),
+      skipped: String(writeResult.skipped),
+      errors: String(writeResult.errors.length),
+    });
 
     if (writeResult.errors.length > 0) {
       this.logger.warn("Indexer batch write completed with errors", {
