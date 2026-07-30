@@ -29,6 +29,10 @@ import {
 } from "../shared/queue-config.js";
 import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
 import { loadStellarEndpoints } from "../../../../packages/shared/src/stellarTransport.js";
+import {
+  startOutboxPublisher,
+  stopOutboxPublisher,
+} from "../../../../src/services/outbox-publisher.js";
 
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 30_000;
@@ -49,6 +53,11 @@ async function bootstrap(): Promise<void> {
   logger.info("Settlement worker started (BullMQ)", {
     queue: queueName,
   });
+
+  // Recovery path for the transactional outbox (#outbox): drains any
+  // SettlementOutboxEvent rows left PENDING/FAILED after a crash or Redis
+  // outage between MatchingService's DB commit and its fast-path enqueue.
+  startOutboxPublisher();
 
   const contractId = process.env.SETTLEMENT_CONTRACT_ID;
   const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE;
@@ -130,6 +139,9 @@ async function bootstrap(): Promise<void> {
     timeoutMs: 30_000,
     component: "settlement-worker",
     teardown: [
+      async () => {
+        stopOutboxPublisher();
+      },
       async () => {
         await worker.close();
       },
