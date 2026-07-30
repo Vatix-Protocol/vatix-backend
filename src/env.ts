@@ -92,6 +92,11 @@ export const apiEnvSchema = z.object({
       .default(3000)
   ),
   DATABASE_URL: postgresUrlSchema,
+  /**
+   * Max size of the pg.Pool used by the Prisma adapter (#806, ties to #742).
+   * Recommended defaults documented in .env.example — tune per environment.
+   */
+  DATABASE_POOL_SIZE: positiveInt("DATABASE_POOL_SIZE").default(10),
   ORACLE_CHALLENGE_WINDOW_SECONDS: positiveInt(
     "ORACLE_CHALLENGE_WINDOW_SECONDS"
   ).default(86400),

@@ -40,6 +40,12 @@ export const config = {
    */
   databaseUrl: env.DATABASE_URL,
   /**
+   * Max connections in the pg.Pool backing the Prisma adapter (#806).
+   * Configured via DATABASE_POOL_SIZE (default: 10). See .env.example for
+   * recommended values per environment.
+   */
+  databasePoolSize: env.DATABASE_POOL_SIZE,
+  /**
    * Read-only PostgreSQL connection string for analytics/reporting queries (#743).
    * Intended to point at a read replica so heavy analytical queries don't
    * compete with the primary's write/OLTP workload.

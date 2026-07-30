@@ -65,6 +65,30 @@ describe("parseApiEnv", () => {
   });
 });
 
+describe("parseApiEnv — DATABASE_POOL_SIZE (#806)", () => {
+  it("defaults to 10 when omitted", () => {
+    const env = parseApiEnv(VALID_ENV);
+    expect(env.DATABASE_POOL_SIZE).toBe(10);
+  });
+
+  it("parses a configured pool size", () => {
+    const env = parseApiEnv({ ...VALID_ENV, DATABASE_POOL_SIZE: "25" });
+    expect(env.DATABASE_POOL_SIZE).toBe(25);
+  });
+
+  it("throws on non-integer DATABASE_POOL_SIZE", () => {
+    expect(() =>
+      parseApiEnv({ ...VALID_ENV, DATABASE_POOL_SIZE: "abc" })
+    ).toThrow("DATABASE_POOL_SIZE");
+  });
+
+  it("throws on DATABASE_POOL_SIZE below minimum (1)", () => {
+    expect(() =>
+      parseApiEnv({ ...VALID_ENV, DATABASE_POOL_SIZE: "0" })
+    ).toThrow("DATABASE_POOL_SIZE");
+  });
+});
+
 describe("parseApiEnv — MATCHING_ENGINE_ENABLED (#744)", () => {
   it("defaults to true when omitted", () => {
     const env = parseApiEnv(VALID_ENV);
