@@ -32,6 +32,7 @@ const RESOLUTION: NormalizedResolution = {
   marketId: "market-xyz",
   outcome: "NO",
   oracleAddress: "GORACLE",
+  confidenceScore: null,
 };
 
 const COLLATERAL_DEPOSIT: NormalizedCollateralDeposit = {
@@ -123,7 +124,31 @@ describe("PrismaBatchWriter", () => {
           proposedOutcome: false,
           status: "PROPOSED",
           operatorAddress: "GORACLE",
+          confidenceScore: null,
         }),
+      })
+    );
+  });
+
+  it("persists confidenceScore when present on resolution", async () => {
+    const tx = createMockTx();
+    tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
+    mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
+
+    const resolutionWithConfidence: NormalizedResolution = {
+      ...RESOLUTION,
+      eventId: "0000000099-0000000002-0000000001",
+      confidenceScore: 0.95,
+    };
+
+    const writer = new PrismaBatchWriter();
+    await writer.write([
+      { kind: "resolution", data: withIdempotencyKey(resolutionWithConfidence) },
+    ]);
+
+    expect(tx.resolutionCandidate.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ confidenceScore: 0.95 }),
       })
     );
   });

@@ -253,6 +253,7 @@ export class PrismaBatchWriter implements BatchWriter {
               ? resolution.oracleAddress
               : UNKNOWN_OPERATOR_ADDRESS,
           idempotencyKey: resolution.idempotencyKey,
+          confidenceScore: resolution.confidenceScore ?? null,
         },
       });
     } else if (record.kind === "collateral_deposited") {

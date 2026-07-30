@@ -44,6 +44,7 @@ const RESOLUTION: NormalizedResolution = {
   marketId: "market-xyz",
   outcome: "NO",
   oracleAddress: "GORACLE",
+  confidenceScore: null,
 };
 
 const MARKET_CREATED: NormalizedMarketCreated = {

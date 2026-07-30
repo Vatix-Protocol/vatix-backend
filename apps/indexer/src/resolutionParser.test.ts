@@ -217,6 +217,32 @@ describe("parseResolutionEvent", () => {
       expect((err as ResolutionParseError).eventId).toBe("bad-evt");
     }
   });
+
+  it("maps confidence field when present in real on-chain shape", () => {
+    const valueXdr = nativeToScVal({
+      outcome: true,
+      resolved_at: 1700000000n,
+      confidence: 0.95,
+    }).toXDR("base64");
+    const r = parseResolutionEvent(makeEvent({ valueXdr }));
+    expect(r.confidenceScore).toBe(0.95);
+  });
+
+  it("sets confidenceScore to null when confidence is absent (real on-chain shape)", () => {
+    const r = parseResolutionEvent(makeEvent());
+    expect(r.confidenceScore).toBeNull();
+  });
+
+  it("sets confidenceScore to null for tuple payload", () => {
+    const tupleXdr = nativeToScVal([42, true, 1_700_000_000n]).toXDR("base64");
+    const r = parseResolutionEvent(
+      makeEvent({
+        valueXdr: tupleXdr,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      })
+    );
+    expect(r.confidenceScore).toBeNull();
+  });
 });
 
 // ─── parseResolutionEvents (batch) ──────────────────────────────────────────
