@@ -109,6 +109,10 @@ await processJob(logger, config, job, async (j) => {
 
 The settlement worker (`apps/workers/src/settlement/`) consumes the Redis settlement queue populated by `MatchingService` after each order match. It uses `processJob()` with dead-letter support and enforces idempotency on `tradeId`.
 
+### Durable Delivery via Transactional Outbox
+
+`MatchingService.placeOrder` does not enqueue settlement jobs directly. Every trade is written together with an `OutboxEvent` row in the same DB transaction, and delivery to this queue happens via a fast path (immediately after commit) plus a background recovery loop (`src/services/outbox-publisher.ts`, started by this worker's `bootstrap()`) that retries any row still unpublished. This guarantees a committed trade is never silently dropped, even if Redis is down or the process crashes between commit and enqueue. See [ADR 003 — Transactional Outbox for Settlement Delivery](adr/003-settlement-outbox.md) for the full design, metrics, and operator recovery commands.
+
 ### Environment Variables
 
 | Variable                | Default             | Description                           |

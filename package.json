@@ -45,6 +45,7 @@
     "prepare": "husky install",
     "generate:keypair": "tsx scripts/generate-keypair.ts",
     "load-test:orders": "tsx scripts/load-test-orders.ts",
+    "replay:market": "tsx scripts/replay-market.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

@@ -138,10 +138,19 @@ model OracleReport {
   status              OracleReportStatus @default(PENDING)
   attempts            Int                @default(0)
   txHash              String?            @map("tx_hash") @db.VarChar(64)
+  /// Set immediately after the transaction is broadcast (sendTransaction
+  /// returns a hash), before confirmation is observed. Durable proof that a
+  /// tx is in flight, so a crash/restart between broadcast and confirmation
+  /// can be reconciled against the chain instead of blindly resubmitting.
+  broadcastAt         DateTime?          @map("broadcast_at")
+  /// Set once the broadcast tx is observed as confirmed on-chain. Used with
+  /// broadcastAt to derive submission confirmation latency.
+  confirmedAt         DateTime?          @map("confirmed_at")
   createdAt           DateTime           @default(now()) @map("created_at")
 
   market Market? @relation(fields: [marketId], references: [id], onDelete: SetNull)
 
+  @@unique([marketId, payloadHash])
   @@index([marketId])
   @@index([source])
   @@index([createdAt])
@@ -309,6 +318,45 @@ model Trade {
   @@index([tradedAt(sort: Desc)])
   @@index([settlementStatus])
   @@map("trades")
+}
+
+/// Lifecycle of an outbox row (transactional outbox pattern).
+/// PENDING: written in the same tx as the trade, not yet published to the
+/// settlement queue. PUBLISHED: publish confirmed. FAILED: a publish attempt
+/// errored; eligible for retry by the publisher loop until it succeeds.
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+/// Transactional outbox for settlement jobs (durable dual-write fix).
+///
+/// Written in the SAME Prisma transaction as the Trade upsert in
+/// MatchingService.placeOrder, so a committed trade and its outbox row are
+/// atomic — either both exist or neither does. A publisher loop
+/// (src/services/outbox-publisher.ts) drains PENDING/FAILED rows into the
+/// settlement queue and marks them PUBLISHED atomically. See
+/// docs/adr/003-settlement-outbox.md for the recovery flow.
+///
+/// `outbox_events` / `published_at IS NULL` is also the table+predicate the
+/// admission-control lag detector (src/services/lag-detector.ts) already
+/// queries for `outboxUnpublishedCount` — this model is that table.
+model OutboxEvent {
+  id            String       @id @default(uuid())
+  tradeId       String       @unique @map("trade_id") @db.VarChar(256)
+  payload       Json         @map("payload")
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  lastError     String?      @map("last_error")
+  nextAttemptAt DateTime     @default(now()) @map("next_attempt_at")
+  publishedAt   DateTime?    @map("published_at")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  @@index([status, nextAttemptAt])
+  @@index([createdAt])
+  @@map("outbox_events")
 }
 
 /// Durable, hash-chained audit trail for trade compliance and forensics.

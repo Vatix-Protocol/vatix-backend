@@ -10,9 +10,12 @@ import {
 } from "./engine.js";
 import { Mutex } from "./mutex.js";
 import { auditService } from "../services/audit.js";
-import { settlementQueue } from "../services/settlement-queue.js";
 import { redis } from "../services/redis.js";
 import { getPrismaClient } from "../services/prisma.js";
+import {
+  buildSettlementPayload,
+  publishOutboxRow,
+} from "../services/outbox-publisher.js";
 import {
   ValidationError,
   ServiceUnavailableError,
@@ -534,7 +537,14 @@ class MatchingService {
             }
           }
 
-          // Persist trades as source of truth (idempotent on trade.id)
+          // Persist trades as source of truth (idempotent on trade.id), and
+          // write a settlement outbox row in the SAME transaction (#outbox).
+          // The trade and its outbox row are committed atomically — either
+          // both exist or neither does — so a crash or Redis outage between
+          // commit and the post-commit enqueue below can never permanently
+          // drop settlement for a trade: the outbox-publisher loop
+          // (src/services/outbox-publisher.ts) will pick up any row still
+          // PENDING/FAILED and retry it with backoff.
           for (const trade of matchResult.trades) {
             await tx.trade.upsert({
               where: { tradeId: trade.id },
@@ -549,6 +559,15 @@ class MatchingService {
                 price: trade.price.toString(),
                 quantity: trade.quantity,
                 tradedAt: new Date(trade.timestamp),
+              },
+              update: {},
+            });
+
+            await tx.outboxEvent.upsert({
+              where: { tradeId: trade.id },
+              create: {
+                tradeId: trade.id,
+                payload: buildSettlementPayload(trade) as any,
               },
               update: {},
             });
@@ -623,38 +642,18 @@ class MatchingService {
       // 2. Log trades to audit before returning control to the caller
       await Promise.all(auditWrites);
 
-      // 3. Enqueue settlement jobs with proper error handling
-      const settlementErrors: Array<{ tradeId: string; error: Error }> = [];
+      // 3. Best-effort fast-path publish straight to the settlement queue.
+      // The trade is already durably queued via the outbox row written in
+      // the transaction above, so a failure here (Redis down, process
+      // crash, etc.) is NOT a lost settlement — it just falls back to the
+      // outbox-publisher's background drain loop, which retries with
+      // backoff until the row is marked PUBLISHED.
       for (const trade of matchResult.trades) {
-        try {
-          await settlementQueue.enqueue({
-            tradeId: trade.id,
-            marketId: trade.marketId,
-            outcome: trade.outcome,
-            buyOrderId: trade.buyOrderId,
-            sellOrderId: trade.sellOrderId,
-            buyerAddress: trade.buyerAddress,
-            sellerAddress: trade.sellerAddress,
-            price: trade.price,
-            quantity: trade.quantity,
-            timestamp: trade.timestamp,
-          });
-        } catch (error) {
-          const err = error instanceof Error ? error : new Error(String(error));
-          settlementErrors.push({ tradeId: trade.id, error: err });
-          console.error(
-            JSON.stringify({
-              level: "error",
-              component: "matching-service",
-              action: "settlement_enqueue_failed",
-              tradeId: trade.id,
-              buyOrderId: trade.buyOrderId,
-              sellOrderId: trade.sellOrderId,
-              message: err.message,
-              stack: err.stack,
-            })
-          );
-        }
+        await publishOutboxRow(prisma, {
+          tradeId: trade.id,
+          payload: buildSettlementPayload(trade),
+          attempts: 0,
+        });
       }
 
       // 4. Refresh Redis cache with proper error handling

@@ -145,6 +145,86 @@ The system prevents duplicate submissions through:
    - Prevents "stuck" submissions from blocking the queue indefinitely
    - Xclaim redelivers messages if worker crashes
 
+## Crash Safety & Submission State Machine (#996)
+
+Broadcasting a resolve_market transaction and durably recording its result
+are two separate operations. If the worker process crashes, is OOM-killed,
+or is redeployed between the two, the queue's at-least-once delivery
+guarantee means the submission will be redelivered — and naively retrying
+would rebuild and resend a brand new transaction, double-submitting the
+resolution.
+
+To make this crash-safe, every submission is tracked through a durable
+state machine on `OracleReport`, keyed by the unique pair
+`(market_id, payload_hash)` so every attempt for the same logical
+submission converges on one row instead of inserting a new one per retry:
+
+```
+                 ┌──────────┐
+   claim intent  │          │
+  ──────────────►│ PENDING  │
+                  │          │
+                  └────┬─────┘
+                       │ sendTransaction() returns a hash
+                       │ (persisted immediately — before
+                       │  confirmation is polled)
+                       ▼
+                  ┌──────────┐        getTransaction() → SUCCESS
+                  │          │───────────────────────────────────┐
+                  │SUBMITTED │                                    │
+                  │          │──────────┐                         ▼
+                  └────┬─────┘          │ definite            ┌───────────┐
+                       │                │ non-inclusion        │ CONFIRMED │
+                       │ ambiguous      │ (timebound expired,   └───────────┘
+                       │ (NOT_FOUND,    │ ledger rejected)
+                       │  still within  ▼
+                       │  timebound)  ┌──────────┐
+                       │   ▲          │ PENDING  │ (cleared txHash,
+                       └───┘          │(re-armed)│  ready to resubmit)
+                    re-check only,    └──────────┘
+                    never resubmit
+
+  max retries exceeded, from any non-CONFIRMED state
+                       │
+                       ▼
+                  ┌──────────┐
+                  │  FAILED  │  (dead-lettered)
+                  └──────────┘
+```
+
+**Key rules:**
+
+- **Durable intent before broadcast.** `claimSubmissionIntent` upserts the
+  `PENDING` row keyed by `(marketId, payloadHash)` before any chain call is
+  made, so even a submission that fails signature verification has a row to
+  record the failure against.
+- **Tx hash persisted the instant it's known.** The moment
+  `sendTransaction()` returns a hash, it's written to `oracle_reports.tx_hash`
+  with `status = SUBMITTED` and `broadcast_at = now()` — _before_ the worker
+  starts polling for confirmation. This is what closes the crash window: a
+  process death anywhere after this point leaves a durable, unambiguous
+  record that a specific transaction is in flight.
+- **Never resubmit while ambiguous.** If a submission is redelivered (retry,
+  redeploy, restart) and its row is already `SUBMITTED` with a `txHash`, the
+  worker checks that hash's on-chain status _before_ touching the chain
+  again. A fresh transaction is only ever built when the prior one is
+  either absent, or _definitely_ not included.
+- **"Definite" non-inclusion, not "not found yet".** Stellar transactions
+  carry a `setTimeout(30)` timebound. A `NOT_FOUND` result from
+  `getTransaction` is ambiguous — the tx may not have propagated to this RPC
+  node yet — until `broadcastAt + 30s` (plus a grace margin) has elapsed
+  network-wide, at which point the tx can never be included and it's safe to
+  clear the row for a fresh broadcast (`checkOnChainStatus` in
+  `apps/workers/src/oracle/submission-reconciliation.ts`).
+- **Startup reconciliation.** On boot, before processing any new jobs, the
+  worker calls `reconcileInFlightSubmissions()`, which re-checks every
+  `SUBMITTED` row against the chain and resolves it to `CONFIRMED` or clears
+  it for retry. This is what recovers a submission left ambiguous by a
+  crash in the previous process.
+- **Idempotent short-circuit.** If a redelivered submission's row is already
+  `CONFIRMED`, the worker acknowledges the queue message without touching
+  the chain at all.
+
 ## Persistence
 
 ### OracleReport Table
@@ -159,11 +239,16 @@ CREATE TABLE oracle_reports (
   source VARCHAR(256),         -- "oracle-service", "Chainlink", etc.
   confidence DECIMAL(5, 4),    -- 0.0-1.0
   candidate_resolution BOOLEAN, -- The proposed outcome
+  status OracleReportStatus DEFAULT 'PENDING', -- PENDING | SUBMITTED | CONFIRMED | FAILED
+  attempts INTEGER DEFAULT 0,
+  tx_hash VARCHAR(64),          -- set the instant sendTransaction() returns a hash
+  broadcast_at TIMESTAMP,       -- set alongside tx_hash, before confirmation is polled
+  confirmed_at TIMESTAMP,       -- set once confirmation is observed on-chain
   created_at TIMESTAMP DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX idx_oracle_reports_payload_hash_market
-ON oracle_reports(payload_hash, market_id);
+CREATE UNIQUE INDEX oracle_reports_market_id_payload_hash_key
+ON oracle_reports(market_id, payload_hash);
 ```
 
 ### ResolutionCandidate Table
@@ -227,6 +312,20 @@ Failed submissions that exceed `ORACLE_SUBMISSION_MAX_RETRIES` are:
 
 - **Error Rate**: Failed submissions / total submissions
   - Source: logs with level=error
+
+- **`vatix_oracle_submission_ambiguous_total`** (Counter, #996): Number of
+  broadcast submissions that could not be definitively classified as
+  confirmed or non-included — either the poll loop timed out, a redelivery
+  found an unconfirmed prior broadcast still within its timebound, or
+  startup reconciliation couldn't resolve a `SUBMITTED` row. A sustained
+  non-zero rate means submissions are piling up waiting on chain
+  confirmation and should be investigated (RPC health, network congestion).
+
+- **`vatix_oracle_submission_confirmation_latency_ms`** (Histogram, #996):
+  Time between a resolution tx being broadcast (`broadcast_at`) and its
+  confirmation being observed on-chain (`confirmed_at`). Both metrics are
+  registered on the shared Prometheus registry in `src/services/metrics.ts`
+  and scraped via the existing `/metrics` endpoint.
 
 ### Logging
 

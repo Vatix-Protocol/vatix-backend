@@ -70,6 +70,9 @@ const mockTx = {
   trade: {
     upsert: vi.fn(),
   },
+  outboxEvent: {
+    upsert: vi.fn(),
+  },
   userPosition: {
     findUnique: vi.fn(),
     update: vi.fn(),
@@ -92,6 +95,9 @@ const mockPrismaClient = {
     findUnique: vi.fn(),
     upsert: vi.fn(),
     update: vi.fn(),
+  },
+  outboxEvent: {
+    updateMany: vi.fn().mockResolvedValue({ count: 1 }),
   },
   $transaction: vi.fn((cb: (tx: any) => Promise<any>) => cb(mockTx)),
 };
