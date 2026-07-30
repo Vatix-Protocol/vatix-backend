@@ -482,6 +482,7 @@ export class PollingIngestionLoop implements IngestionLoop {
     });
 
     for (const error of tradeErrors) {
+      this.metrics.incrementParseError();
       this.logger.warn("Trade parse error — skipping event", {
         eventId: error.eventId,
         error: error.message,

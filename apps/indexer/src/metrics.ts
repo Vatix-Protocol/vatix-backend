@@ -7,6 +7,8 @@ export interface IndexerMetricsSnapshot {
   gapDetectedTotal: number;
   /** Total number of ledgers back-filled during gap catch-up since process start. */
   backfillLedgersTotal: number;
+  /** Total number of event parse errors (all parsers) since process start. */
+  parseErrorTotal: number;
 }
 
 /** Typed payload used when logging a metrics snapshot. */
@@ -17,6 +19,7 @@ export interface IndexerMetricsLog {
   lag: number | null;
   gapDetectedTotal: number;
   backfillLedgersTotal: number;
+  parseErrorTotal: number;
 }
 
 export class InternalIndexerMetricsService {
@@ -26,6 +29,8 @@ export class InternalIndexerMetricsService {
   private gapDetectedTotal = 0;
   /** Running total of ledgers back-filled since process start. */
   private backfillLedgersTotal = 0;
+  /** Running total of event parse errors (all parsers) since process start. */
+  private parseErrorTotal = 0;
 
   setLatestIndexedLedgerSequence(sequence: number): void {
     this.latestIndexedLedgerSequence = sequence;
@@ -81,6 +86,15 @@ export class InternalIndexerMetricsService {
     return this.backfillLedgersTotal;
   }
 
+  /** Increment the parse-error counter by `count` (defaults to 1). */
+  incrementParseError(count = 1): void {
+    this.parseErrorTotal += count;
+  }
+
+  getParseErrorTotal(): number {
+    return this.parseErrorTotal;
+  }
+
   getSnapshot(): IndexerMetricsSnapshot {
     return {
       latestIndexedLedgerSequence: this.latestIndexedLedgerSequence,
@@ -88,6 +102,7 @@ export class InternalIndexerMetricsService {
       lag: this.getLag(),
       gapDetectedTotal: this.gapDetectedTotal,
       backfillLedgersTotal: this.backfillLedgersTotal,
+      parseErrorTotal: this.parseErrorTotal,
     };
   }
 
@@ -99,6 +114,7 @@ export class InternalIndexerMetricsService {
       lag: this.getLag(),
       gapDetectedTotal: this.gapDetectedTotal,
       backfillLedgersTotal: this.backfillLedgersTotal,
+      parseErrorTotal: this.parseErrorTotal,
     };
   }
 }
