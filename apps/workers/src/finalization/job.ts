@@ -6,6 +6,7 @@ import type {
 } from "./types.js";
 import { isChallengeWindowOpen } from "../../../../src/oracle/challengeWindow.js";
 import { RESOLVABLE_MARKET_STATUSES } from "../../../../packages/shared/src/marketLifecycle.js";
+import { lockResolutionCandidate } from "./resolutionLock.js";
 
 /**
  * Configuration for a single FinalizationJob run.
@@ -51,6 +52,22 @@ class MarketNotEligibleError extends Error {
   constructor(marketId: string) {
     super(`Market ${marketId} is canceled or deleted; skipping finalization`);
     this.name = "MarketNotEligibleError";
+  }
+}
+
+/**
+ * Thrown inside the finalization transaction when the row lock reveals the
+ * candidate is no longer PROPOSED — e.g. a challenge write committed after
+ * the outer `findMany` ran but before this transaction acquired the lock.
+ * Rolls back and is translated into "skipped", not "errored": losing this
+ * race is expected, correct behavior, not a failure.
+ */
+class CandidateNotEligibleError extends Error {
+  constructor(candidateId: string, actualStatus: string) {
+    super(
+      `Candidate ${candidateId} is no longer PROPOSED (status=${actualStatus}); skipping finalization`
+    );
+    this.name = "CandidateNotEligibleError";
   }
 }
 
@@ -187,6 +204,20 @@ export class FinalizationJob {
         await this.prisma.$transaction(async (tx) => {
           const now = new Date();
 
+          // ── Mutual exclusion with the challenge/dispute path ────────────
+          // Lock the candidate row before touching anything else. A
+          // concurrent challenge write takes the same lock (see
+          // resolutionLock.ts); whichever transaction commits first wins,
+          // and the loser sees the post-commit status here and aborts.
+          const locked = await lockResolutionCandidate(tx, candidate.id);
+
+          if (!locked || locked.status !== "PROPOSED") {
+            throw new CandidateNotEligibleError(
+              candidate.id,
+              locked?.status ?? "MISSING"
+            );
+          }
+
           await tx.resolution.create({
             data: {
               marketId: candidate.marketId,
@@ -222,6 +253,17 @@ export class FinalizationJob {
             where: { marketId: candidate.marketId },
             data: { isSettled: true },
           });
+
+          await tx.resolutionAuditLog.create({
+            data: {
+              candidateId: candidate.id,
+              marketId: candidate.marketId,
+              action: "FINALIZE",
+              beforeStatus: "PROPOSED",
+              afterStatus: "ACCEPTED",
+              actor: "finalization-worker",
+            },
+          });
         });
 
         results.push({
@@ -250,6 +292,22 @@ export class FinalizationJob {
             {
               candidateId: candidate.id,
               marketId: candidate.marketId,
+            }
+          );
+        } else if (error instanceof CandidateNotEligibleError) {
+          results.push({
+            candidateId: candidate.id,
+            marketId: candidate.marketId,
+            proposedOutcome: candidate.proposedOutcome,
+            status: "skipped",
+          });
+
+          this.logger.info(
+            "Finalization candidate skipped: lost race to a concurrent challenge/status change",
+            {
+              candidateId: candidate.id,
+              marketId: candidate.marketId,
+              error: error.message,
             }
           );
         } else {

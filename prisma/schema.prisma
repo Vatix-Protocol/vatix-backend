@@ -138,10 +138,19 @@ model OracleReport {
   status              OracleReportStatus @default(PENDING)
   attempts            Int                @default(0)
   txHash              String?            @map("tx_hash") @db.VarChar(64)
+  /// Set immediately after the transaction is broadcast (sendTransaction
+  /// returns a hash), before confirmation is observed. Durable proof that a
+  /// tx is in flight, so a crash/restart between broadcast and confirmation
+  /// can be reconciled against the chain instead of blindly resubmitting.
+  broadcastAt         DateTime?          @map("broadcast_at")
+  /// Set once the broadcast tx is observed as confirmed on-chain. Used with
+  /// broadcastAt to derive submission confirmation latency.
+  confirmedAt         DateTime?          @map("confirmed_at")
   createdAt           DateTime           @default(now()) @map("created_at")
 
   market Market? @relation(fields: [marketId], references: [id], onDelete: SetNull)
 
+  @@unique([marketId, payloadHash])
   @@index([marketId])
   @@index([source])
   @@index([createdAt])
@@ -189,6 +198,27 @@ model ResolutionCandidate {
   @@index([marketId, status])
   @@index([source])
   @@map("resolution_candidates")
+}
+
+/// Audit trail for the mutually-exclusive finalize/challenge race on
+/// ResolutionCandidate rows (#issue: finalization/challenge concurrency).
+/// One row per winning transaction (finalize or challenge) — written inside
+/// the same DB transaction that performs the status transition, so it can
+/// never be recorded without the transition actually landing.
+model ResolutionAuditLog {
+  id           String   @id @default(uuid())
+  candidateId  String   @map("candidate_id")
+  marketId     String   @map("market_id")
+  action       String   @db.VarChar(16) // "FINALIZE" | "CHALLENGE"
+  beforeStatus String   @map("before_status") @db.VarChar(16)
+  afterStatus  String   @map("after_status") @db.VarChar(16)
+  actor        String   @db.VarChar(256) // "finalization-worker" or challenger identity
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([candidateId])
+  @@index([marketId])
+  @@index([createdAt(sort: Desc)])
+  @@map("resolution_audit_logs")
 }
 
 model Resolution {
@@ -290,27 +320,66 @@ model Trade {
   @@map("trades")
 }
 
+/// Lifecycle of an outbox row (transactional outbox pattern).
+/// PENDING: written in the same tx as the trade, not yet published to the
+/// settlement queue. PUBLISHED: publish confirmed. FAILED: a publish attempt
+/// errored; eligible for retry by the publisher loop until it succeeds.
+enum OutboxStatus {
+  PENDING
+  PUBLISHED
+  FAILED
+}
+
+/// Transactional outbox for settlement jobs (durable dual-write fix).
+///
+/// Written in the SAME Prisma transaction as the Trade upsert in
+/// MatchingService.placeOrder, so a committed trade and its outbox row are
+/// atomic — either both exist or neither does. A publisher loop
+/// (src/services/outbox-publisher.ts) drains PENDING/FAILED rows into the
+/// settlement queue and marks them PUBLISHED atomically. See
+/// docs/adr/003-settlement-outbox.md for the recovery flow.
+///
+/// `outbox_events` / `published_at IS NULL` is also the table+predicate the
+/// admission-control lag detector (src/services/lag-detector.ts) already
+/// queries for `outboxUnpublishedCount` — this model is that table.
+model OutboxEvent {
+  id            String       @id @default(uuid())
+  tradeId       String       @unique @map("trade_id") @db.VarChar(256)
+  payload       Json         @map("payload")
+  status        OutboxStatus @default(PENDING)
+  attempts      Int          @default(0)
+  lastError     String?      @map("last_error")
+  nextAttemptAt DateTime     @default(now()) @map("next_attempt_at")
+  publishedAt   DateTime?    @map("published_at")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  @@index([status, nextAttemptAt])
+  @@index([createdAt])
+  @@map("outbox_events")
+}
+
 /// Durable, hash-chained audit trail for trade compliance and forensics.
 /// Each entry is cryptographically linked to the previous entry via prevHash.
 /// Entries are archived from Redis streams before MAXLEN trim to prevent loss.
 model TradeAuditEvent {
-  id            String   @id @default(uuid())
-  tradeId       String   @map("trade_id") @db.VarChar(256)
-  marketId      String   @map("market_id")
-  payload       String   @map("payload") // JSON blob of Trade object
-  prevHash      String   @map("prev_hash") @db.VarChar(64) // SHA256 hex of previous entry (root: "0")
-  entryHash     String   @map("entry_hash") @db.VarChar(64) // SHA256 hex of payload + prevHash
-  streamId      String   @map("stream_id") // Redis stream entry ID
-  archivedAt    DateTime @default(now()) @map("archived_at")
+  id         String   @id @default(uuid())
+  tradeId    String   @map("trade_id") @db.VarChar(256)
+  marketId   String   @map("market_id")
+  payload    String   @map("payload") // JSON blob of Trade object
+  prevHash   String   @map("prev_hash") @db.VarChar(64) // SHA256 hex of previous entry (root: "0")
+  entryHash  String   @map("entry_hash") @db.VarChar(64) // SHA256 hex of payload + prevHash
+  streamId   String   @map("stream_id") // Redis stream entry ID
+  archivedAt DateTime @default(now()) @map("archived_at")
 
   // Watermark tracking: earliest unarchived Redis stream ID for this market
   // Allows archiver to prevent trim before this point
   // (denormalized here for fast access; also in dedicated table)
 
+  @@unique([streamId]) // Prevent duplicate archives of same Redis entry
   @@index([marketId])
   @@index([tradeId])
   @@index([archivedAt])
-  @@unique([streamId]) // Prevent duplicate archives of same Redis entry
   @@map("trade_audit_events")
 }
 
@@ -331,18 +400,18 @@ model TradeStreamWatermark {
 /// Admin action audit log for break-glass operations.
 /// Every administrative halt/cancel-all/resume is logged durably for compliance.
 model AdminAction {
-  id              String   @id @default(uuid())
-  marketId        String   @map("market_id")
-  action          String   @db.VarChar(32) // "halt", "cancel-all", "resume"
-  actor           String   @db.VarChar(256) // Admin key identifier or user
-  beforeStatus    String   @map("before_status") @db.VarChar(16)
-  afterStatus     String   @map("after_status") @db.VarChar(16)
-  ordersCancelled Int      @map("orders_cancelled") @default(0)
-  collateralReleased Decimal @map("collateral_released") @default(0) @db.Decimal(20, 8)
-  requestId       String   @map("request_id") @db.VarChar(256) // Correlation ID
-  approvalToken   String?  @map("approval_token") @db.VarChar(256) // If dual-control used
-  reason          String?  @db.Text // Optional justification
-  createdAt       DateTime @default(now()) @map("created_at")
+  id                 String   @id @default(uuid())
+  marketId           String   @map("market_id")
+  action             String   @db.VarChar(32) // "halt", "cancel-all", "resume"
+  actor              String   @db.VarChar(256) // Admin key identifier or user
+  beforeStatus       String   @map("before_status") @db.VarChar(16)
+  afterStatus        String   @map("after_status") @db.VarChar(16)
+  ordersCancelled    Int      @default(0) @map("orders_cancelled")
+  collateralReleased Decimal  @default(0) @map("collateral_released") @db.Decimal(20, 8)
+  requestId          String   @map("request_id") @db.VarChar(256) // Correlation ID
+  approvalToken      String?  @map("approval_token") @db.VarChar(256) // If dual-control used
+  reason             String?  @db.Text // Optional justification
+  createdAt          DateTime @default(now()) @map("created_at")
 
   @@index([marketId])
   @@index([action])
@@ -353,25 +422,24 @@ model AdminAction {
 /// Dual-control approval tokens for break-glass operations.
 /// First admin initiates, second admin approves within time window.
 model AdminApprovalToken {
-  id            String   @id @default(uuid())
-  marketId      String   @map("market_id")
-  action        String   @db.VarChar(32) // "halt", "cancel-all", "resume"
-  initiator     String   @db.VarChar(256) // First admin key identifier
-  requestId     String   @map("request_id") @db.VarChar(256) // Correlation ID
-  tokenHash     String   @map("token_hash") @db.VarChar(64) // SHA256 of secret token
-  expiresAt     DateTime @map("expires_at") // Token expires after 15 min default
-  approvedBy    String?  @map("approved_by") @db.VarChar(256) // Second admin key if approved
-  approvedAt    DateTime? @map("approved_at")
-  reason        String?  @db.Text // Reason for break-glass action
-  createdAt     DateTime @default(now()) @map("created_at")
+  id         String    @id @default(uuid())
+  marketId   String    @map("market_id")
+  action     String    @db.VarChar(32) // "halt", "cancel-all", "resume"
+  initiator  String    @db.VarChar(256) // First admin key identifier
+  requestId  String    @map("request_id") @db.VarChar(256) // Correlation ID
+  tokenHash  String    @map("token_hash") @db.VarChar(64) // SHA256 of secret token
+  expiresAt  DateTime  @map("expires_at") // Token expires after 15 min default
+  approvedBy String?   @map("approved_by") @db.VarChar(256) // Second admin key if approved
+  approvedAt DateTime? @map("approved_at")
+  reason     String?   @db.Text // Reason for break-glass action
+  createdAt  DateTime  @default(now()) @map("created_at")
 
+  @@unique([requestId])
   @@index([marketId])
   @@index([action])
   @@index([expiresAt])
-  @@unique([requestId])
   @@map("admin_approval_tokens")
 }
-
 
 /// On-chain trade events. Order rows are API/CLOB-owned (uuid PK); chain trades
 /// are stored here keyed by idempotencyKey until fill reconciliation exists.
@@ -429,14 +497,14 @@ model CollateralDeposit {
 
 /// Position reconciliation job tracking drift detection and recovery
 model PositionReconciliationJob {
-  id              String   @id @default(uuid())
-  marketId        String   @map("market_id")
-  wallet          String   @db.VarChar(56)
-  driftDetected   Boolean  @map("drift_detected")
-  divergence      Json     @map("divergence")
-  recoveryApplied Boolean  @default(false) @map("recovery_applied")
-  recoveryReason  String?  @map("recovery_reason")
-  createdAt       DateTime @default(now()) @map("created_at")
+  id              String    @id @default(uuid())
+  marketId        String    @map("market_id")
+  wallet          String    @db.VarChar(56)
+  driftDetected   Boolean   @map("drift_detected")
+  divergence      Json      @map("divergence")
+  recoveryApplied Boolean   @default(false) @map("recovery_applied")
+  recoveryReason  String?   @map("recovery_reason")
+  createdAt       DateTime  @default(now()) @map("created_at")
   completedAt     DateTime? @map("completed_at")
 
   @@index([marketId])
@@ -447,17 +515,17 @@ model PositionReconciliationJob {
 
 /// Deposit reconciliation tracking: maps CollateralDeposit to UserPosition updates
 model DepositReconciliation {
-  id                     String   @id @default(uuid())
-  idempotencyKey         String   @unique @map("idempotency_key") @db.VarChar(64)
-  depositId              String   @map("deposit_id")
-  wallet                 String   @db.VarChar(56)
-  marketId               String   @map("market_id")
-  amountRaw              String   @map("amount_raw")
-  status                 String   @db.VarChar(32)
-  reconciliationAttempts Int      @default(0) @map("reconciliation_attempts")
+  id                     String    @id @default(uuid())
+  idempotencyKey         String    @unique @map("idempotency_key") @db.VarChar(64)
+  depositId              String    @map("deposit_id")
+  wallet                 String    @db.VarChar(56)
+  marketId               String    @map("market_id")
+  amountRaw              String    @map("amount_raw")
+  status                 String    @db.VarChar(32)
+  reconciliationAttempts Int       @default(0) @map("reconciliation_attempts")
   lastAttemptAt          DateTime? @map("last_attempt_at")
   appliedAt              DateTime? @map("applied_at")
-  createdAt              DateTime @default(now()) @map("created_at")
+  createdAt              DateTime  @default(now()) @map("created_at")
 
   @@index([marketId])
   @@index([wallet])

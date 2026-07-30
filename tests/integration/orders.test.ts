@@ -13,6 +13,7 @@ import { ordersRoutes } from "../../src/api/routes/orders.js";
 import { buildSignableMessage } from "../../src/api/middleware/stellarAuth.js";
 import { issueChallenge } from "../../src/api/middleware/nonceStore.js";
 import { buildTestApp, resetRateLimits } from "./helpers/build-test-app.js";
+import { seedMarket, placeOrder } from "./helpers/market-order.js";
 import { testUtils, getTestPrismaClient } from "../setup.js";
 import {
   acquireDatabaseLock,
@@ -78,21 +79,14 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
   });
 
   it("returns 201 with order.id and status: OPEN for a valid payload on an ACTIVE market", async () => {
-    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+    const market = await seedMarket();
 
-    const payload = {
+    const res = await placeOrder(app, userKeypair, {
       marketId: market.id,
-      userAddress,
       side: "BUY",
       outcome: "YES",
       price: 0.5,
       quantity: 10,
-    };
-    const res = await app.inject({
-      method: "POST",
-      url: "/v1/orders",
-      headers: await authHeaders(userKeypair, payload),
-      payload,
     });
 
     expect(res.statusCode).toBe(201);

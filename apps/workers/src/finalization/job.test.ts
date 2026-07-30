@@ -45,20 +45,35 @@ function makeCandidate(
  * Builds a mock tx object for $transaction. marketUpdateCount controls how
  * many rows tx.market.updateMany() reports as matched — 0 simulates a market
  * that was canceled/soft-deleted concurrently (see MarketNotEligibleError).
+ * lockedStatus controls what the row-lock query (`SELECT ... FOR UPDATE`)
+ * reports as the candidate's current status — "PROPOSED" simulates the
+ * uncontended case; anything else simulates a concurrent challenge/finalize
+ * winning the race first (see CandidateNotEligibleError).
  */
-function makeTx(marketUpdateCount = 1) {
+function makeTx(
+  marketUpdateCount = 1,
+  lockedStatus: string | null = "PROPOSED"
+) {
   const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
   const marketUpdateMany = vi
     .fn()
     .mockResolvedValue({ count: marketUpdateCount });
   const updateCandidate = vi.fn().mockResolvedValue({});
   const positionUpdateMany = vi.fn().mockResolvedValue({ count: 2 });
+  const auditLogCreate = vi.fn().mockResolvedValue({});
+  const queryRaw = vi
+    .fn()
+    .mockResolvedValue(
+      lockedStatus === null ? [] : [{ id: "locked-row", status: lockedStatus }]
+    );
 
   const tx = {
     resolution: { create },
     market: { updateMany: marketUpdateMany },
     resolutionCandidate: { update: updateCandidate },
     userPosition: { updateMany: positionUpdateMany },
+    resolutionAuditLog: { create: auditLogCreate },
+    $queryRaw: queryRaw,
   };
 
   return {
@@ -67,6 +82,8 @@ function makeTx(marketUpdateCount = 1) {
     marketUpdateMany,
     updateCandidate,
     positionUpdateMany,
+    auditLogCreate,
+    queryRaw,
   };
 }
 
@@ -241,7 +258,7 @@ describe("FinalizationJob", () => {
       expect(marketUpdateMany).toHaveBeenCalledWith({
         where: {
           id: "mkt-1",
-          status: { not: "CANCELLED" },
+          status: { in: ["ACTIVE"] },
           deletedAt: null,
         },
         data: expect.objectContaining({
@@ -377,7 +394,7 @@ describe("FinalizationJob", () => {
         expect.objectContaining({
           where: expect.objectContaining({
             market: {
-              status: { not: "CANCELLED" },
+              status: { in: ["ACTIVE"] },
               deletedAt: null,
             },
           }),
@@ -710,7 +727,7 @@ describe("FinalizationJob", () => {
           status: "PROPOSED",
           createdAt: { lte: expect.any(Date) },
           market: {
-            status: { not: "CANCELLED" },
+            status: { in: ["ACTIVE"] },
             deletedAt: null,
           },
         },
@@ -720,6 +737,131 @@ describe("FinalizationJob", () => {
           proposedOutcome: true,
           source: true,
           createdAt: true,
+        },
+      });
+    });
+  });
+
+  describe("row-locking mutual exclusion with concurrent challenge", () => {
+    it("locks the candidate row with SELECT ... FOR UPDATE before writing", async () => {
+      const candidates = [makeCandidate({ id: "cand-1" })];
+      const { tx, queryRaw } = makeTx();
+      const transaction = vi
+        .fn()
+        .mockImplementation(
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
+        );
+      const prisma = {
+        resolutionCandidate: {
+          findMany: vi.fn().mockResolvedValue(candidates),
+        },
+        $transaction: transaction,
+      } as unknown as PrismaClient;
+
+      const job = new FinalizationJob(prisma, makeLogger(), makeConfig(3600));
+      await job.run();
+
+      expect(queryRaw).toHaveBeenCalledTimes(1);
+    });
+
+    it("skips (not errors) a candidate whose lock reveals it was CHALLENGED concurrently", async () => {
+      const candidates = [
+        makeCandidate({ id: "cand-race", marketId: "mkt-race" }),
+      ];
+      // The row lock reports CHALLENGED — a challenge write committed
+      // between the outer findMany and this transaction acquiring the lock.
+      const { tx, create, updateCandidate } = makeTx(1, "CHALLENGED");
+      const transaction = vi
+        .fn()
+        .mockImplementation(
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
+        );
+      const prisma = {
+        resolutionCandidate: {
+          findMany: vi.fn().mockResolvedValue(candidates),
+        },
+        $transaction: transaction,
+      } as unknown as PrismaClient;
+
+      const logger = makeLogger();
+      const job = new FinalizationJob(prisma, logger, makeConfig(3600));
+
+      const result = await job.run();
+
+      expect(result.finalizedCount).toBe(0);
+      expect(result.erroredCount).toBe(0);
+      expect(result.skippedCount).toBe(1);
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-race",
+        marketId: "mkt-race",
+        status: "skipped",
+      });
+      // Never created a Resolution or flipped status for a challenged candidate.
+      expect(create).not.toHaveBeenCalled();
+      expect(updateCandidate).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        "Finalization candidate skipped: lost race to a concurrent challenge/status change",
+        expect.objectContaining({
+          candidateId: "cand-race",
+          marketId: "mkt-race",
+        })
+      );
+    });
+
+    it("skips when the locked row is missing entirely", async () => {
+      const candidates = [makeCandidate({ id: "cand-gone" })];
+      const { tx, create } = makeTx(1, null);
+      const transaction = vi
+        .fn()
+        .mockImplementation(
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
+        );
+      const prisma = {
+        resolutionCandidate: {
+          findMany: vi.fn().mockResolvedValue(candidates),
+        },
+        $transaction: transaction,
+      } as unknown as PrismaClient;
+
+      const result = await new FinalizationJob(
+        prisma,
+        makeLogger(),
+        makeConfig(3600)
+      ).run();
+
+      expect(result.skippedCount).toBe(1);
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it("writes a ResolutionAuditLog entry on the finalize win path", async () => {
+      const candidates = [makeCandidate({ id: "cand-1", marketId: "mkt-1" })];
+      const { tx, auditLogCreate } = makeTx();
+      const transaction = vi
+        .fn()
+        .mockImplementation(
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
+        );
+      const prisma = {
+        resolutionCandidate: {
+          findMany: vi.fn().mockResolvedValue(candidates),
+        },
+        $transaction: transaction,
+      } as unknown as PrismaClient;
+
+      await new FinalizationJob(prisma, makeLogger(), makeConfig(3600)).run();
+
+      expect(auditLogCreate).toHaveBeenCalledWith({
+        data: {
+          candidateId: "cand-1",
+          marketId: "mkt-1",
+          action: "FINALIZE",
+          beforeStatus: "PROPOSED",
+          afterStatus: "ACCEPTED",
+          actor: "finalization-worker",
         },
       });
     });
