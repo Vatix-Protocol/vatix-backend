@@ -1,6 +1,7 @@
 import { getPrismaClient } from "./prisma.js";
 import type { UserPosition, Prisma } from "../generated/prisma/client/index.js";
 import { Decimal } from "@prisma/client/runtime/library.js";
+import { amountRawToDecimal } from "../../apps/indexer/src/decimalUtils.js";
 
 export interface ComputedPosition {
   yesShares: number;
@@ -76,7 +77,7 @@ export class PositionReconciliationService {
 
     // Apply deposit deltas
     for (const deposit of deposits) {
-      lockedCollateral = lockedCollateral.plus(new Decimal(deposit.amountRaw));
+      lockedCollateral = lockedCollateral.plus(amountRawToDecimal(deposit.amountRaw));
     }
 
     // Apply trade deltas
@@ -416,7 +417,7 @@ export class PositionReconciliationService {
             },
           });
 
-          const depositAmount = new Decimal(deposit.amountRaw);
+          const depositAmount = amountRawToDecimal(deposit.amountRaw);
 
           if (position && position.lockedCollateral.gte(depositAmount)) {
             // Deposit is reflected
