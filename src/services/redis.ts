@@ -588,6 +588,95 @@ class RedisService {
   }
 
   /**
+   * Atomically acquire the named lease if free, or renew it if this caller
+   * already holds it under `knownToken`. Implemented as a single Lua script
+   * so the GET-then-SET is one atomic Redis operation — a second instance
+   * can never observe the lock as free between this caller's check and its
+   * write (the classic distributed-lock TOCTOU bug).
+   *
+   * On a fresh acquisition, `fencingKey` is atomically incremented (INCR) to
+   * mint a new monotonically increasing fencing token; renewals reuse the
+   * caller's existing token and only extend the TTL. Returns the fencing
+   * token on success, or -1 if another holder currently owns the lease.
+   */
+  async acquireOrRenewLease(
+    lockKey: string,
+    fencingKey: string,
+    holderId: string,
+    ttlMs: number,
+    knownToken: number
+  ): Promise<number> {
+    const script = `
+local lockVal = redis.call('GET', KEYS[1])
+if lockVal == false then
+  local token = redis.call('INCR', KEYS[2])
+  redis.call('SET', KEYS[1], ARGV[1] .. ':' .. token, 'PX', ARGV[2])
+  return token
+elseif lockVal == ARGV[1] .. ':' .. ARGV[3] then
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  return tonumber(ARGV[3])
+else
+  return -1
+end
+`;
+    try {
+      const client = await this.ensureConnected();
+      const result = await (client.eval as any)(
+        script,
+        2,
+        lockKey,
+        fencingKey,
+        holderId,
+        String(ttlMs),
+        String(knownToken)
+      );
+      return Number(result);
+    } catch (error) {
+      console.error(
+        { service: "redis", lockKey, err: error },
+        "Redis acquireOrRenewLease failed"
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Best-effort compare-and-delete: removes the lease only if it is still
+   * held by (holderId, token). Used on graceful shutdown so the next holder
+   * doesn't have to wait out the full TTL; never deletes a lease another
+   * holder has since acquired.
+   */
+  async releaseLeaseIfHeld(
+    lockKey: string,
+    holderId: string,
+    token: number
+  ): Promise<boolean> {
+    const script = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+else
+  return 0
+end
+`;
+    try {
+      const client = await this.ensureConnected();
+      const result = await (client.eval as any)(
+        script,
+        1,
+        lockKey,
+        `${holderId}:${token}`
+      );
+      return Number(result) === 1;
+    } catch (error) {
+      console.error(
+        { service: "redis", lockKey, err: error },
+        "Redis releaseLeaseIfHeld failed"
+      );
+      return false;
+    }
+  }
+
+  /**
    * Get stream info
    */
   async xinfo(subcommand: "STREAM", key: string): Promise<any> {

@@ -199,6 +199,8 @@ Must be a positive integer, optionally within a bounded range.
 | `REDIS_RETRY_BASE_DELAY`                 | 1    | —       | `100`   |
 | `REDIS_RETRY_MAX_DELAY`                  | 1    | —       | `2000`  |
 | `REDIS_CONNECT_TIMEOUT`                  | 1    | —       | `5000`  |
+| `MATCHING_LEASE_TTL_MS`                  | 1    | —       | `15000` |
+| `MATCHING_LEASE_RENEW_INTERVAL_MS`       | 1    | —       | `5000`  |
 
 **Error example:**
 

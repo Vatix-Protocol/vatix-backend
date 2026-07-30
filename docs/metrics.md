@@ -26,10 +26,12 @@ GET /metrics
 
 ## Metrics
 
-| Metric                              | Type    | Description                                                                                       |
-| ----------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `vatix_process_*`, `vatix_nodejs_*` | various | Default Node.js process/runtime metrics from `prom-client`.                                       |
-| `vatix_orderbook_hydrated_markets`  | gauge   | Number of `(market, outcome)` order books currently held in memory by the matching engine (#746). |
+| Metric                                      | Type    | Description                                                                                       |
+| ------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `vatix_process_*`, `vatix_nodejs_*`         | various | Default Node.js process/runtime metrics from `prom-client`.                                       |
+| `vatix_orderbook_hydrated_markets`          | gauge   | Number of `(market, outcome)` order books currently held in memory by the matching engine (#746). |
+| `vatix_matching_leader`                     | gauge   | Whether this process currently holds the matching leader lease: `1` while held, `0` otherwise.    |
+| `vatix_matching_lease_renew_failures_total` | counter | Total failed matching leader lease acquire/renew attempts on this process.                        |
 
 ### `vatix_orderbook_hydrated_markets`
 
@@ -42,6 +44,14 @@ This complements the existing `orderbook.hydrated_markets` structured log
 line emitted once at cold start (see [Indexer Metrics Log](metrics-log.md)
 for the equivalent indexer pattern) — the gauge reflects the _current_ count
 at any point in time, not just the cold-start snapshot.
+
+### `vatix_matching_leader` / `vatix_matching_lease_renew_failures_total`
+
+Single-writer enforcement for the matching engine: exactly one API replica
+should report `vatix_matching_leader == 1` at a time (see
+[Scaling the API / Matching Leader Lease](deployment-runbook.md#scaling-the-api--matching-leader-lease)
+for alerting guidance and failover timing). Updated by
+`src/matching/leader-lease.ts` on every acquire, renew, and loss.
 
 ## Adding a new metric
 
