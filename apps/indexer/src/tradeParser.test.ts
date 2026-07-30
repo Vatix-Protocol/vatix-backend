@@ -143,7 +143,68 @@ describe("parseTradeEvent", () => {
   });
 });
 
-// ─── parseTradeEvents (batch) ────────────────────────────────────────────────
+// ─── Malformed payload fixture tests ────────────────────────────────────────
+
+describe("parseTradeEvent — malformed payloads", () => {
+  it("throws TradeParseError on completely empty string valueXdr", () => {
+    expect(() => parseTradeEvent(makeEvent({ valueXdr: "" }))).toThrow(
+      TradeParseError
+    );
+  });
+
+  it("throws TradeParseError on null-byte / binary garbage valueXdr", () => {
+    expect(() =>
+      parseTradeEvent(makeEvent({ valueXdr: "\x00\x01\x02\x03" }))
+    ).toThrow(TradeParseError);
+  });
+
+  it("throws TradeParseError on valid base64 that is not XDR", () => {
+    // "hello world" base64-encoded — valid base64 but not a valid ScVal
+    expect(() =>
+      parseTradeEvent(makeEvent({ valueXdr: "aGVsbG8gd29ybGQ=" }))
+    ).toThrow(TradeParseError);
+  });
+
+  it("throws TradeParseError when topicsXdr contains only whitespace", () => {
+    expect(() =>
+      parseTradeEvent(makeEvent({ topicsXdr: ["   "] }))
+    ).toThrow(TradeParseError);
+  });
+
+  it("throws TradeParseError when topicsXdr has wrong discriminator symbol", () => {
+    // ScvSymbol 'wrong_event' — valid XDR but wrong topic
+    expect(() =>
+      parseTradeEvent(
+        makeEvent({ topicsXdr: ["AAAADwAAAAt3cm9uZ19ldmVudA=="] })
+      )
+    ).toThrow(TradeParseError);
+  });
+
+  it("does not throw on malformed event in parseTradeEvents batch", () => {
+    const events = [
+      makeEvent({ id: "good", valueXdr: XDR.value.validBuy }),
+      makeEvent({ id: "bad-empty", valueXdr: "" }),
+      makeEvent({ id: "bad-garbage", valueXdr: "not!!base64@@" }),
+      makeEvent({ id: "bad-b64", valueXdr: "aGVsbG8gd29ybGQ=" }),
+    ];
+    expect(() => parseTradeEvents(events)).not.toThrow();
+    const { trades, errors } = parseTradeEvents(events);
+    expect(trades).toHaveLength(1);
+    expect(trades[0].eventId).toBe("good");
+    expect(errors).toHaveLength(3);
+    expect(errors.every((e) => e instanceof TradeParseError)).toBe(true);
+  });
+
+  it("collects eventId on every malformed-payload error", () => {
+    const events = [
+      makeEvent({ id: "evt-bad-1", valueXdr: "" }),
+      makeEvent({ id: "evt-bad-2", valueXdr: "aGVsbG8gd29ybGQ=" }),
+    ];
+    const { errors } = parseTradeEvents(events);
+    expect(errors.map((e) => e.eventId)).toEqual(["evt-bad-1", "evt-bad-2"]);
+  });
+});
+
 
 describe("parseTradeEvents", () => {
   it("parses multiple valid events", () => {
