@@ -2,11 +2,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ValidationError,
   ServiceUnavailableError,
+  MatchingUnavailableError,
   MarketNotActiveError,
   MarketNotFoundError,
+  OrderConflictError,
 } from "../api/middleware/errors.js";
 
 // Mock dependencies
+// Default to "we are the leader" so every pre-existing placeOrder test below
+// keeps exercising the matching path unchanged; leader-lease.test.ts covers
+// the LeaderLease class itself, this file only covers the placeOrder gate.
+const leaderLeaseMock = vi.hoisted(() => ({
+  isLeader: vi.fn(() => true),
+}));
+vi.mock("./leader-lease.js", () => ({ leaderLease: leaderLeaseMock }));
+
 vi.mock("../services/prisma.js", () => ({
   getPrismaClient: () => mockPrismaClient,
 }));
@@ -96,6 +106,7 @@ import { orderbookHydratedMarketsGauge } from "../services/metrics.js";
 describe("MatchingService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    leaderLeaseMock.isLeader.mockReturnValue(true);
     (matchingService as any).books?.clear();
     (matchingService as any).mutexes?.clear();
     mockPrismaClient.$transaction.mockImplementation(
@@ -326,6 +337,17 @@ describe("MatchingService", () => {
         ServiceUnavailableError
       );
       // Rejected before touching the database at all.
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("placeOrder rejects with MatchingUnavailableError (503) when this instance is not the matching leader", async () => {
+      leaderLeaseMock.isLeader.mockReturnValue(false);
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MatchingUnavailableError
+      );
+      // Rejected before touching the database at all — a non-leader must
+      // never queue behind (or race) the leader's in-flight work.
       expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
     });
 

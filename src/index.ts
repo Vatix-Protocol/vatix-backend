@@ -267,8 +267,24 @@ const start = async () => {
     // Hydrate in-memory order books from Postgres on cold start (#449).
     // This eliminates the race window where a restart leaves books empty
     // while open orders still exist in the database.
-    const { matchingService } = await import("./matching/matching-service.js");
-    await matchingService.hydrateAllActiveMarkets();
+    const { matchingService, isMatchingEngineEnabled } =
+      await import("./matching/matching-service.js");
+
+    if (isMatchingEngineEnabled()) {
+      // Single-writer enforcement: only the Redis lease holder may match
+      // orders (see src/matching/leader-lease.ts). Hydration only makes
+      // sense once this instance actually holds the lease — a standby
+      // instance has nothing useful to warm since placeOrder() will reject
+      // until it becomes leader. The first acquisition attempt below is
+      // awaited so a pod that wins the lease on boot serves warm books from
+      // its very first request; a pod that loses the race still comes up
+      // and serves health/read traffic while it retries in the background.
+      const { leaderLease } = await import("./matching/leader-lease.js");
+      await leaderLease.start({
+        onAcquired: () => matchingService.hydrateAllActiveMarkets(),
+        onLost: () => matchingService.invalidateAllBooks(),
+      });
+    }
 
     const port = config.port;
     await server.listen({ port, host: "0.0.0.0" });
@@ -335,11 +351,15 @@ const start = async () => {
         // Close server — stops accepting new connections, drains in-flight requests
         await server.close();
 
-        // Gracefully disconnect database and redis
+        // Gracefully disconnect database and redis, and release the
+        // matching leader lease (if held) so the next holder doesn't wait
+        // out the full lease TTL before taking over.
         const { disconnectPrisma } = await import("./services/prisma.js");
         const { disconnectAnalyticsPrisma } =
           await import("./services/analytics-prisma.js");
         const { redis } = await import("./services/redis.js");
+        const { leaderLease } = await import("./matching/leader-lease.js");
+        await leaderLease.release();
         await Promise.allSettled([
           disconnectPrisma(),
           disconnectAnalyticsPrisma(),

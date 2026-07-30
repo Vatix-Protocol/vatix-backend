@@ -52,6 +52,22 @@ All public HTTP routes are mounted under `/v1`. The canonical positions read is
 2. CLOB matching engine runs synchronously; fills are written in the same transaction
 3. Matched fills are enqueued to Redis for downstream settlement by Workers
 
+**Single-writer enforcement.** The API is horizontally scaled, but only one
+API process may match orders at a time — two processes both hydrating and
+matching against the same in-memory book would produce inconsistent books
+and double fills. Every API process competes for a Redis-backed leader lease
+with a monotonic fencing token (`src/matching/leader-lease.ts`). Only the
+current lease holder hydrates order books and accepts `POST /v1/orders`;
+every other process fails closed with `503 matching_unavailable`. On lease
+loss (handover or Redis partition) the losing process invalidates its
+in-memory books immediately rather than continuing to serve them as
+authoritative. See
+[Scaling the API / matching leader lease](deployment-runbook.md#scaling-the-api--matching-leader-lease)
+for operator-facing details and the `vatix_matching_leader` metric.
+Order cancellation is intentionally not gated by the lease — it is protected
+independently by version-conditioned (optimistic-concurrency) DB writes and
+stays available from any instance.
+
 ### Submission queue
 
 The API and Oracle submit asynchronous work into Redis-backed queues that are processed by the Workers service.

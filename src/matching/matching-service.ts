@@ -16,10 +16,13 @@ import { getPrismaClient } from "../services/prisma.js";
 import {
   ValidationError,
   ServiceUnavailableError,
+  MatchingUnavailableError,
   MarketNotFoundError,
   MarketNotActiveError,
+  OrderConflictError,
 } from "../api/middleware/errors.js";
 import { orderbookHydratedMarketsGauge } from "../services/metrics.js";
+import { leaderLease } from "./leader-lease.js";
 
 export interface PlaceOrderResult {
   order: any;
@@ -109,6 +112,19 @@ class MatchingService {
   private invalidateBook(marketId: string, outcome: Outcome): void {
     const bookKey = this.getBookKey(marketId, outcome);
     this.books.delete(bookKey);
+    this.syncHydratedMarketsGauge();
+  }
+
+  /**
+   * Drops every in-memory order book. Called when this instance loses the
+   * matching leader lease (see src/matching/leader-lease.ts): a non-leader
+   * must never serve its in-memory depth as authoritative, since another
+   * instance may already be matching against a book that has since diverged
+   * from this one. The next instance to become leader rehydrates fresh from
+   * Postgres before matching resumes.
+   */
+  invalidateAllBooks(): void {
+    this.books.clear();
     this.syncHydratedMarketsGauge();
   }
 
@@ -347,10 +363,21 @@ class MatchingService {
    * routes already call assertValidOrder before this. A market can flip to
    * CANCELLED/RESOLVED while an order is queued behind the mutex, so the
    * service itself must reject rather than trust the pre-check.
+   *
+   * Also rejects with 503 matching_unavailable when this instance does not
+   * currently hold the matching leader lease. Horizontal scale without this
+   * check would let two pods both match against the same book, producing
+   * inconsistent books and double fills — see src/matching/leader-lease.ts.
+   * Checked before acquiring the per-book mutex so a non-leader never even
+   * queues behind (or blocks) the leader's in-flight work.
    */
   async placeOrder(input: OrderInput): Promise<PlaceOrderResult> {
     if (!isMatchingEngineEnabled()) {
       throw new ServiceUnavailableError("Matching engine is disabled");
+    }
+
+    if (!leaderLease.isLeader()) {
+      throw new MatchingUnavailableError();
     }
 
     const bookKey = this.getBookKey(input.marketId, input.outcome);

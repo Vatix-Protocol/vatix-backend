@@ -38,3 +38,29 @@ export const oracleFailClosedTotal = new client.Counter({
   help: "Total number of times the oracle failed closed after all providers were unreachable",
   registers: [metricsRegistry],
 });
+
+/**
+ * Whether this process currently holds the matching leader lease: 1 while
+ * held, 0 otherwise (including before first acquisition and after loss).
+ * Only the lease holder is allowed to match orders — see
+ * src/matching/leader-lease.ts. Alert if no process reports 1 for an
+ * extended period, or if more than one process reports 1 simultaneously
+ * (the latter would indicate a fencing bug, not a healthy state).
+ */
+export const matchingLeaderGauge = new client.Gauge({
+  name: "vatix_matching_leader",
+  help: "Whether this process currently holds the matching leader lease (1) or not (0)",
+  registers: [metricsRegistry],
+});
+
+/**
+ * Incremented every time this process fails to acquire or renew the
+ * matching leader lease, whether because another instance holds it or
+ * because Redis was unreachable. A rising rate on the current leader
+ * indicates it is at risk of losing (or has lost) matching authority.
+ */
+export const matchingLeaseRenewFailuresTotal = new client.Counter({
+  name: "vatix_matching_lease_renew_failures_total",
+  help: "Total number of failed matching leader lease acquire/renew attempts",
+  registers: [metricsRegistry],
+});

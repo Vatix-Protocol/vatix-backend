@@ -73,6 +73,20 @@ export class ServiceUnavailableError extends AppError {
   }
 }
 
+export class OrderConflictError extends AppError {
+  constructor(message = "Order was concurrently modified; please retry") {
+    super(message, 409, "order_conflict");
+  }
+}
+
+export class MatchingUnavailableError extends AppError {
+  constructor(
+    message = "This instance does not currently hold the matching leader lease"
+  ) {
+    super(message, 503, "matching_unavailable");
+  }
+}
+
 export class MarketNotActiveError extends AppError {
   constructor(marketId: string, status: string) {
     super(
