@@ -23,11 +23,12 @@ Scripts that require environment variables will fail fast with a clear error if 
 
 ## Available Scripts
 
-| Script                   | pnpm alias              | Purpose                                                                                                                                                                |
-| ------------------------ | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `generate-keypair.ts`    | `pnpm generate:keypair` | Generate a Stellar keypair for oracle signing                                                                                                                          |
-| `validate-migrations.ts` | `pnpm prisma:validate`  | Validate Prisma migration files against the schema                                                                                                                     |
-| `load-test-orders.ts`    | `pnpm load-test:orders` | Local-only load test: places signed orders against `POST /v1/orders` at a target rps (see [docs/docker-compose.md](../docs/docker-compose.md#load-testing-local-only)) |
+| Script                   | pnpm alias              | Purpose                                                                                                                                                                                                                   |
+| ------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `generate-keypair.ts`    | `pnpm generate:keypair` | Generate a Stellar keypair for oracle signing                                                                                                                                                                             |
+| `validate-migrations.ts` | `pnpm prisma:validate`  | Validate Prisma migration files against the schema                                                                                                                                                                        |
+| `load-test-orders.ts`    | `pnpm load-test:orders` | Local-only load test: places signed orders against `POST /v1/orders` at a target rps (see [docs/docker-compose.md](../docs/docker-compose.md#load-testing-local-only))                                                    |
+| `replay-market.ts`       | `pnpm replay:market`    | Read-only forensics: replays a market+outcome's order/trade history through the matching engine and diffs it against ledger truth and the Redis depth cache (see [docs/replay-forensics.md](../docs/replay-forensics.md)) |
 
 ## Adding a Script
 

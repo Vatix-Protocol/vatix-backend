@@ -38,3 +38,17 @@ export const oracleFailClosedTotal = new client.Counter({
   help: "Total number of times the oracle failed closed after all providers were unreachable",
   registers: [metricsRegistry],
 });
+
+/**
+ * Incremented by scripts/replay-market.ts whenever a market+outcome replay
+ * detects a divergence between ledger truth and the replayed book (or its
+ * cached Redis depth snapshot). Intended to be run on a sample of markets
+ * continuously in staging so a regression in matching/fill accounting shows
+ * up as a metric trend rather than only being found during an incident
+ * postmortem.
+ */
+export const replayDivergenceTotal = new client.Counter({
+  name: "vatix_replay_divergence_total",
+  help: "Total number of market+outcome replays that found a divergence from ledger truth",
+  registers: [metricsRegistry],
+});
