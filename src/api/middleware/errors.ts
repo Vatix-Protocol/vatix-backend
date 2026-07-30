@@ -82,3 +82,10 @@ export class MarketNotActiveError extends AppError {
     );
   }
 }
+
+/** Optimistic-concurrency conflict on an order (version/status raced). Retryable (409). */
+export class OrderConflictError extends AppError {
+  constructor(message = "Order was concurrently modified; please retry") {
+    super(message, 409, "order_conflict");
+  }
+}

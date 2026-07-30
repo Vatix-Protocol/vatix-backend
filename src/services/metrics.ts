@@ -38,3 +38,32 @@ export const oracleFailClosedTotal = new client.Counter({
   help: "Total number of times the oracle failed closed after all providers were unreachable",
   registers: [metricsRegistry],
 });
+
+/**
+ * Settlement outbox metrics (transactional outbox pattern for
+ * MatchingService.placeOrder -> settlement queue delivery).
+ * Updated by src/services/outbox-publisher.ts after each drain cycle.
+ */
+export const settlementOutboxDepthGauge = new client.Gauge({
+  name: "vatix_settlement_outbox_depth",
+  help: "Number of settlement outbox rows not yet PUBLISHED (PENDING + FAILED)",
+  registers: [metricsRegistry],
+});
+
+export const settlementOutboxLagSecondsGauge = new client.Gauge({
+  name: "vatix_settlement_outbox_lag_seconds",
+  help: "Age in seconds of the oldest unpublished settlement outbox row",
+  registers: [metricsRegistry],
+});
+
+export const settlementOutboxPublishFailuresTotal = new client.Counter({
+  name: "vatix_settlement_outbox_publish_failures_total",
+  help: "Total number of failed attempts to publish an outbox row to the settlement queue",
+  registers: [metricsRegistry],
+});
+
+export const settlementOutboxOrphanedTradesGauge = new client.Gauge({
+  name: "vatix_settlement_outbox_orphaned_trades",
+  help: "Number of outbox rows that have failed to publish at least OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD times",
+  registers: [metricsRegistry],
+});
