@@ -21,7 +21,7 @@ import { readyRoute } from "./api/routes/ready.js";
 import { metricsRoutes } from "./api/routes/metrics.js";
 import { createReadyDeps } from "./api/deps/ready-deps.js";
 import { registerDeprecatedAliases } from "./api/routes/legacy.js";
-import { openApiSpec } from "./api/openapi.js";
+import { getOpenApiSpec } from "./api/openapi.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
 import {
@@ -142,7 +142,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       await v1.register(readyRoute(options.readyDeps ?? createReadyDeps()));
 
       v1.get("/openapi.json", async (_request, reply) => {
-        return reply.status(200).send(openApiSpec);
+        const nodeEnv = process.env.NODE_ENV || "development";
+        return reply.status(200).send(getOpenApiSpec(nodeEnv));
       });
     },
     { prefix: "/v1" }
