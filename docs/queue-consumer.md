@@ -203,6 +203,68 @@ MatchingService.placeOrder()
                             logDeadLetter(), throw UnrecoverableError → ACK (no further retries)
 ```
 
+## Operating a Consumer: Start / Stop / Replay
+
+### Start
+
+```bash
+# Settlement worker
+pnpm workers:settlement:start        # one-shot
+pnpm workers:settlement:dev          # watch mode, local dev
+
+# Oracle submission worker
+pnpm workers:oracle:start
+pnpm workers:oracle:dev
+```
+
+### Stop
+
+Workers shut down gracefully on `SIGTERM`/`SIGINT` — send the signal (e.g.
+`Ctrl+C` locally, or the orchestrator's standard stop signal in production)
+and the process finishes in-flight jobs before exiting. See
+[Graceful Shutdown](graceful-shutdown.md).
+
+### DLQ Replay Examples
+
+Dead-lettered jobs live in Redis streams (`{REDIS_KEY_PREFIX}dead-letter:{queue}`)
+and are replayed with `scripts/replay-dlq.ts`:
+
+```bash
+# Preview every DLQ entry across all queues, without re-enqueuing
+pnpm tsx scripts/replay-dlq.ts --dry-run
+
+# Replay only the settlement DLQ
+pnpm tsx scripts/replay-dlq.ts --queue settlement
+
+# Replay at most 10 entries from the oracle submission DLQ
+pnpm tsx scripts/replay-dlq.ts --queue submission --limit 10
+
+# Combine: preview the first 5 settlement entries before replaying for real
+pnpm tsx scripts/replay-dlq.ts --queue settlement --limit 5 --dry-run
+```
+
+A successful replay re-enqueues the job to its original queue and removes the
+dead-letter entry; a job that fails again is dead-lettered again on its next
+terminal failure. For settlement specifically, reset any `QUARANTINED` trade
+row first — see [Inspecting and Replaying Quarantined Trades](#inspecting-and-replaying-quarantined-trades)
+above.
+
+### Health Probes
+
+Workers don't expose their own HTTP probes; consumer liveness is inferred from
+the API's readiness endpoint, which checks the shared Redis/DB dependencies
+the workers also rely on:
+
+```bash
+curl -s http://localhost:3000/v1/ready
+curl -s http://localhost:3000/v1/health
+```
+
+`/v1/health` confirms the HTTP server is alive; `/v1/ready` additionally checks
+database and indexer health before traffic is routed. Neither endpoint is
+rate-limited (see [RATE_LIMIT_POLICY.md](../RATE_LIMIT_POLICY.md)), so they are
+safe to poll frequently from an orchestrator or monitoring probe.
+
 ## Related Documentation
 
 - [Dead Letter Log](dead-letter-log.md) — What happens after max retries
