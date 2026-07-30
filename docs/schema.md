@@ -154,7 +154,13 @@ CLOB-engine trade records. Written atomically with order fills; `trade_id` is th
 | `traded_at`      | `DateTime`      | When the trade occurred          |
 | `created_at`     | `DateTime`      | Auto-set on insert               |
 
-Indexes: `market_id`, `buyer_address`, `seller_address`, `(buyer_address, traded_at DESC)`, `(seller_address, traded_at DESC)`
+Indexes: `market_id`, `buyer_address`, `seller_address`, `(buyer_address, traded_at DESC)`, `(seller_address, traded_at DESC)`, `(traded_at DESC)`, `settlement_status`
+
+The unfiltered `(traded_at DESC)` index (`trades_traded_at_idx`) backs
+`AuditService.getTradeHistory`'s recent-trades query (`ORDER BY traded_at DESC`
+with no wallet filter). See
+[`tests/integration/trades-index.test.ts`](../tests/integration/trades-index.test.ts)
+for an `EXPLAIN`-based assertion that this index is used.
 
 ### `IndexedTrade`
 
