@@ -40,40 +40,30 @@ export const oracleFailClosedTotal = new client.Counter({
 });
 
 /**
- * Incremented whenever a broadcast oracle resolution transaction cannot be
- * definitively classified as confirmed or non-included (e.g. the worker
- * crashed/restarted before confirmation was observed, or the RPC node has
- * not yet indexed the tx and its timebound has not yet expired). Ambiguous
- * submissions are held for reconciliation rather than resubmitted, since
- * resubmitting an ambiguous tx risks double-submitting a resolution (#996).
+ * Settlement outbox metrics (transactional outbox pattern for
+ * MatchingService.placeOrder -> settlement queue delivery).
+ * Updated by src/services/outbox-publisher.ts after each drain cycle.
  */
-export const oracleSubmissionAmbiguousTotal = new client.Counter({
-  name: "vatix_oracle_submission_ambiguous_total",
-  help: "Total number of oracle submissions left in an ambiguous (unconfirmed, non-resubmittable) state pending reconciliation",
+export const settlementOutboxDepthGauge = new client.Gauge({
+  name: "vatix_settlement_outbox_depth",
+  help: "Number of settlement outbox rows not yet PUBLISHED (PENDING + FAILED)",
   registers: [metricsRegistry],
 });
 
-/**
- * Time between a resolution tx being broadcast (sendTransaction returning a
- * hash) and its confirmation being observed on-chain, in milliseconds (#996).
- */
-export const oracleSubmissionConfirmationLatency = new client.Histogram({
-  name: "vatix_oracle_submission_confirmation_latency_ms",
-  help: "Latency between oracle resolution tx broadcast and observed on-chain confirmation, in milliseconds",
-  buckets: [500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 120000],
+export const settlementOutboxLagSecondsGauge = new client.Gauge({
+  name: "vatix_settlement_outbox_lag_seconds",
+  help: "Age in seconds of the oldest unpublished settlement outbox row",
   registers: [metricsRegistry],
 });
 
-/**
- * Incremented by scripts/replay-market.ts whenever a market+outcome replay
- * detects a divergence between ledger truth and the replayed book (or its
- * cached Redis depth snapshot). Intended to be run on a sample of markets
- * continuously in staging so a regression in matching/fill accounting shows
- * up as a metric trend rather than only being found during an incident
- * postmortem.
- */
-export const replayDivergenceTotal = new client.Counter({
-  name: "vatix_replay_divergence_total",
-  help: "Total number of market+outcome replays that found a divergence from ledger truth",
+export const settlementOutboxPublishFailuresTotal = new client.Counter({
+  name: "vatix_settlement_outbox_publish_failures_total",
+  help: "Total number of failed attempts to publish an outbox row to the settlement queue",
+  registers: [metricsRegistry],
+});
+
+export const settlementOutboxOrphanedTradesGauge = new client.Gauge({
+  name: "vatix_settlement_outbox_orphaned_trades",
+  help: "Number of outbox rows that have failed to publish at least OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD times",
   registers: [metricsRegistry],
 });
