@@ -461,6 +461,8 @@ model IndexedTrade {
 
   @@index([marketId])
   @@index([ledger])
+  @@index([traderAddress])
+  @@index([counterpartyAddress])
   @@map("indexed_trades")
 }
 
