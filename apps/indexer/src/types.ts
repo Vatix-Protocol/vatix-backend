@@ -56,6 +56,8 @@ export interface NormalizedResolution {
   outcome: ResolutionOutcome;
   /** Stellar address of the oracle that submitted the resolution. */
   oracleAddress: string;
+  /** Confidence score in [0, 1] reported by the source. Null when absent. */
+  confidenceScore: number | null;
 }
 
 export class ResolutionParseError extends Error {

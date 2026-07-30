@@ -56,6 +56,7 @@ interface ResolutionPayload {
   marketId: string;
   outcome: ResolutionOutcome;
   oracleAddress: string;
+  confidenceScore: number | null;
 }
 
 function marketIdFromTopic(topicsXdr: string[], eventId: string): string {
@@ -96,6 +97,7 @@ function parseResolutionPayload(
       marketId: String(decoded[0]),
       outcome: toResolutionOutcome(decoded[1], eventId),
       oracleAddress: "",
+      confidenceScore: null,
     };
   }
 
@@ -114,10 +116,14 @@ function parseResolutionPayload(
     if (oracleAddress === "") {
       throw new ResolutionParseError('Missing field "oracle"', eventId);
     }
+    const rawConfidence = map.confidence;
+    const confidenceScore =
+      typeof rawConfidence === "number" ? rawConfidence : null;
     return {
       marketId: String(field(map, "market_id", eventId)),
       outcome: toResolutionOutcome(field(map, "outcome", eventId), eventId),
       oracleAddress,
+      confidenceScore,
     };
   }
 
@@ -125,10 +131,14 @@ function parseResolutionPayload(
   // outcome: bool, resolved_at: u64 }. market_id arrives via topics[1], not
   // the value map. The contract does not publish an oracle address on this
   // event, so oracleAddress is left empty pending reconciliation.
+  const rawConfidence = map.confidence;
+  const confidenceScore =
+    typeof rawConfidence === "number" ? rawConfidence : null;
   return {
     marketId: marketIdFromTopic(topicsXdr, eventId),
     outcome: toResolutionOutcome(field(map, "outcome", eventId), eventId),
     oracleAddress: "",
+    confidenceScore,
   };
 }
 
@@ -168,6 +178,7 @@ export function parseResolutionEvent(
     marketId: payload.marketId,
     outcome: payload.outcome,
     oracleAddress: payload.oracleAddress,
+    confidenceScore: payload.confidenceScore,
   };
 }
 
