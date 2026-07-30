@@ -39,7 +39,11 @@ export interface NormalizedCollateralDeposit {
   account: string;
   /** Numeric market identifier (u32 cast to string for DB compat). */
   marketId: string;
-  /** Deposit amount in base units (i128). */
+  /**
+   * Deposit amount in base units (i128, 7 implicit decimal places).
+   * e.g. 10_000_000n == 1.0 collateral unit.
+   * Use `amountRawToDecimal(amountRaw)` to convert to a Prisma Decimal.
+   */
   amountRaw: bigint;
 }
 
