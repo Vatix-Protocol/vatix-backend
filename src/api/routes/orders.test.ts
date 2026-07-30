@@ -689,6 +689,48 @@ describe("POST /orders", () => {
     expect(body.filledQuantity).toBe(0);
   });
 
+  it("should return 429 with RATE_LIMITED body once the write limit is exceeded", async () => {
+    (
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue(validMarket);
+    (
+      mockMatchingService.placeOrder as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      order: { id: "order-1", status: "OPEN" },
+      trades: [],
+      filledQuantity: 0,
+    });
+
+    const newOrder = {
+      marketId: "market-1",
+      userAddress: validAddress,
+      side: "BUY" as const,
+      outcome: "YES" as const,
+      price: 0.6,
+      quantity: 100,
+    };
+
+    // Default write tier allows 10 req/min (see RATE_LIMIT_POLICY.md); the
+    // 11th request in the same window must be rejected.
+    let last;
+    for (let i = 0; i < 11; i++) {
+      last = await app.inject({
+        method: "POST",
+        url: "/orders",
+        payload: newOrder,
+      });
+    }
+
+    expect(last!.statusCode).toBe(429);
+    expect(last!.headers["retry-after"]).toBeDefined();
+    const body = JSON.parse(last!.body);
+    expect(body).toMatchObject({
+      error: "Too Many Requests",
+      code: "RATE_LIMITED",
+      statusCode: 429,
+    });
+  });
+
   it("normalizes trade timestamps to ISO-8601 in the response", async () => {
     const newOrder = {
       marketId: "market-1",
