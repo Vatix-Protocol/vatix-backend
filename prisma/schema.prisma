@@ -138,10 +138,19 @@ model OracleReport {
   status              OracleReportStatus @default(PENDING)
   attempts            Int                @default(0)
   txHash              String?            @map("tx_hash") @db.VarChar(64)
+  /// Set immediately after the transaction is broadcast (sendTransaction
+  /// returns a hash), before confirmation is observed. Durable proof that a
+  /// tx is in flight, so a crash/restart between broadcast and confirmation
+  /// can be reconciled against the chain instead of blindly resubmitting.
+  broadcastAt         DateTime?          @map("broadcast_at")
+  /// Set once the broadcast tx is observed as confirmed on-chain. Used with
+  /// broadcastAt to derive submission confirmation latency.
+  confirmedAt         DateTime?          @map("confirmed_at")
   createdAt           DateTime           @default(now()) @map("created_at")
 
   market Market? @relation(fields: [marketId], references: [id], onDelete: SetNull)
 
+  @@unique([marketId, payloadHash])
   @@index([marketId])
   @@index([source])
   @@index([createdAt])

@@ -2,7 +2,14 @@
  * Oracle Submission Worker
  *
  * Polls the Redis queue and submits signed oracle resolutions on-chain.
- * Implements retry logic, persistence, and graceful shutdown.
+ * Implements retry logic, crash-safe persistence, and graceful shutdown.
+ *
+ * Crash safety (#996): every submission is tracked through a durable
+ * PENDING -> SUBMITTED -> CONFIRMED|FAILED state machine keyed by
+ * (marketId, payloadHash) — see ./submission-reconciliation.ts. The tx hash
+ * is persisted immediately after broadcast, *before* confirmation is
+ * polled, so a crash in that window leaves a durable record a restart can
+ * reconcile against the chain instead of blindly resubmitting.
  *
  * @module apps/workers/src/oracle/submission-worker
  */
@@ -32,6 +39,17 @@ import {
 } from "../consumers/dead-letter.js";
 import { withRetry } from "../../../oracle/retry-utils.js";
 import { assertPassphraseMatchesDeployment } from "./stellar-config.js";
+import {
+  checkOnChainStatus,
+  claimSubmissionIntent,
+  computePayloadHash,
+  recordBroadcast,
+  recordConfirmed,
+  recordFailed,
+  resetForRetry,
+  type OracleReportRow,
+} from "./submission-reconciliation.js";
+import { oracleSubmissionAmbiguousTotal } from "../../../../src/services/metrics.js";
 
 /** Retry config for individual Stellar RPC calls (getAccount, prepareTransaction,
  *  sendTransaction). Bounded and short-lived so a transient RPC blip is absorbed
@@ -41,6 +59,18 @@ const STELLAR_RPC_RETRY_CONFIG = {
   initialDelayMs: 500,
   maxDelayMs: 5_000,
 };
+
+/** Thrown when a broadcast tx's on-chain status cannot yet be determined.
+ *  Never triggers a resubmission — only the normal queue retry/backoff, which
+ *  re-checks chain status (cheap) rather than sending a new transaction. */
+class AmbiguousSubmissionError extends Error {
+  constructor(marketId: string, txHash: string) {
+    super(
+      `resolve_market submission is ambiguous (unconfirmed): marketId=${marketId} hash=${txHash}`
+    );
+    this.name = "AmbiguousSubmissionError";
+  }
+}
 
 export interface OracleStellarConfig {
   rpcUrl: string;
@@ -97,7 +127,10 @@ export class SubmissionWorker {
    * Process a single queued submission.
    */
   async processSubmission(submission: QueuedSubmission): Promise<void> {
-    const { id, request, result, attempts } = submission;
+    const { id, request, attempts } = submission;
+    const report = this.createSignedReport(submission);
+    const payloadHash = computePayloadHash(report.payload);
+    const key = { marketId: request.marketId, payloadHash };
 
     try {
       this.logger.info("Processing oracle submission", {
@@ -107,10 +140,31 @@ export class SubmissionWorker {
         maxAttempts: this.maxRetries,
       });
 
-      // Create signed report from the result
-      const report = this.createSignedReport(submission);
+      // Durable intent: claim (or fetch) the state-machine row for this
+      // exact (marketId, payloadHash) *before* doing anything else, so every
+      // retry/redelivery of the same logical submission — including ones
+      // that fail signature verification — converges on one row instead of
+      // the failure path finding no row to update.
+      const intent = await claimSubmissionIntent(this.prisma, {
+        marketId: request.marketId,
+        payloadHash,
+        source: request.oracleAddress,
+        candidateResolution: report.payload.outcome,
+        createdAt: new Date(report.payload.timestamp),
+      });
 
-      // Verify signature before submission (defensive check)
+      if (intent.status === "CONFIRMED") {
+        // Already confirmed by a prior attempt (e.g. broadcast succeeded,
+        // then the worker crashed before acking the queue message). Do not
+        // touch the chain again — just acknowledge and move on.
+        this.logger.info(
+          "Oracle submission already confirmed, skipping resubmission",
+          { id, marketId: request.marketId, txHash: intent.txHash }
+        );
+        await this.queue.acknowledge(submission);
+        return;
+      }
+
       if (!verifyResolutionReport(report)) {
         this.logger.error("Signature verification failed", {
           id,
@@ -120,13 +174,29 @@ export class SubmissionWorker {
         throw new Error("Signature verification failed");
       }
 
-      // Submit on-chain via Stellar SDK
-      const txHash = await this.submitOnChain(report, request.oracleAddress);
+      if (
+        intent.status === "SUBMITTED" &&
+        intent.txHash &&
+        this.stellarConfig
+      ) {
+        // A previous attempt broadcast a tx we never confirmed (crash, or a
+        // slow/timed-out poll). Check the chain before doing anything else —
+        // resubmitting here would risk a double resolve_market call.
+        await this.reconcileBeforeResubmit(
+          request.marketId,
+          payloadHash,
+          intent
+        );
+      } else {
+        await this.broadcastAndConfirm(
+          report,
+          request.oracleAddress,
+          payloadHash,
+          attempts + 1
+        );
+      }
 
-      // Update database on success
-      await this.updateOnSuccess(submission, report, txHash);
-
-      // Acknowledge in queue
+      await this.updateOnSuccess(submission, report, payloadHash);
       await this.queue.acknowledge(submission);
 
       this.logger.info("Oracle submission processed successfully", {
@@ -148,7 +218,6 @@ export class SubmissionWorker {
           error: errorMessage,
         });
 
-        // Update attempts and nack for retry
         const updated: QueuedSubmission = {
           ...submission,
           attempts: nextAttempt,
@@ -156,7 +225,7 @@ export class SubmissionWorker {
           lastError: errorMessage,
         };
 
-        await this.updateAttempt(updated);
+        await this.updateAttempt(key, nextAttempt);
         await this.queue.nack(updated, this.consumerName);
       } else {
         this.logger.error(
@@ -170,9 +239,9 @@ export class SubmissionWorker {
           }
         );
 
-        // Dead-letter: mark as failed in database
         await this.updateOnFailure(
           { ...submission, attempts: nextAttempt },
+          key,
           errorMessage
         );
         await this.queue.acknowledge(submission); // Remove from active queue
@@ -183,7 +252,55 @@ export class SubmissionWorker {
   }
 
   /**
-   * Create a signed resolution report from a queued submission.
+   * Checks a previously-broadcast, unconfirmed tx against the chain instead
+   * of blindly resubmitting. Only a definite (timebound-expired) non-
+   * inclusion clears the row for a fresh broadcast; anything else is left
+   * ambiguous and surfaced via metrics for reconciliation.
+   */
+  private async reconcileBeforeResubmit(
+    marketId: string,
+    payloadHash: string,
+    intent: OracleReportRow
+  ): Promise<string> {
+    const txHash = intent.txHash!;
+    const server = new StellarRpc.Server(this.stellarConfig!.rpcUrl);
+
+    const result = await checkOnChainStatus(server, txHash, intent.broadcastAt);
+
+    if (result === "CONFIRMED") {
+      await recordConfirmed(this.prisma, { marketId, payloadHash, txHash });
+      this.logger.info("Prior oracle submission confirmed on recheck", {
+        marketId,
+        txHash,
+      });
+      return txHash;
+    }
+
+    if (result === "FAILED") {
+      await resetForRetry(this.prisma, {
+        marketId,
+        payloadHash,
+        attempts: intent.attempts,
+      });
+      this.logger.warn(
+        "Prior oracle submission definitely not included, resubmitting",
+        { marketId, txHash }
+      );
+      throw new Error(
+        `previous resolve_market tx ${txHash} not included, cleared for resubmission`
+      );
+    }
+
+    oracleSubmissionAmbiguousTotal.inc();
+    throw new AmbiguousSubmissionError(marketId, txHash);
+  }
+
+  /**
+   * Create a signed resolution report from a queued submission. Uses the
+   * result's own timestamp (set once, at enqueue time) rather than minting a
+   * fresh one per attempt — a stable payload is required both for signature
+   * verification (the payload was signed with this exact timestamp) and for
+   * the payload hash to stay constant across retries/redeliveries (#996).
    */
   private createSignedReport(
     submission: SubmissionQueueItem
@@ -194,7 +311,7 @@ export class SubmissionWorker {
       payload: {
         marketId: request.marketId,
         outcome: result.outcome,
-        timestamp: new Date().toISOString(),
+        timestamp: result.timestamp,
       },
       signature: result.signature || "",
       publicKey: result.publicKey || "",
@@ -202,13 +319,15 @@ export class SubmissionWorker {
   }
 
   /**
-   * Submit the signed resolution on-chain by invoking resolve_market on the
-   * Soroban contract. Falls back to a warn-only path when stellar config is
-   * absent (e.g. in local dev without chain access).
+   * Broadcasts the signed resolution by invoking resolve_market on the
+   * Soroban contract, persists the tx hash the instant it's known, then
+   * polls for confirmation.
    */
-  private async submitOnChain(
+  private async broadcastAndConfirm(
     report: SignedResolutionReport,
-    oracleAddress: string
+    oracleAddress: string,
+    payloadHash: string,
+    attempts: number
   ): Promise<string | undefined> {
     if (!report.payload.marketId || !report.signature || !report.publicKey) {
       throw new Error("Invalid report: missing required fields");
@@ -230,9 +349,10 @@ export class SubmissionWorker {
 
     const { rpcUrl, contractId, networkPassphrase, signerSecret } =
       this.stellarConfig;
+    const marketId = report.payload.marketId;
 
     this.logger.debug("Invoking resolve_market on-chain", {
-      marketId: report.payload.marketId,
+      marketId,
       oracleAddress,
       outcome: report.payload.outcome,
       contractId,
@@ -244,7 +364,7 @@ export class SubmissionWorker {
 
     const onRpcRetry = (error: Error, attempt: number, delayMs: number) => {
       this.logger.warn("Retrying Stellar RPC call for resolve_market", {
-        marketId: report.payload.marketId,
+        marketId,
         attempt,
         delayMs,
         error: error.message,
@@ -292,8 +412,18 @@ export class SubmissionWorker {
     }
 
     this.logger.info("resolve_market submitted, awaiting confirmation", {
-      marketId: report.payload.marketId,
+      marketId,
       hash: sendResult.hash,
+    });
+
+    // Persist the tx hash immediately — before polling for confirmation.
+    // This is the durable record a restart reconciles against if the
+    // process crashes anywhere between here and observing confirmation.
+    await recordBroadcast(this.prisma, {
+      marketId,
+      payloadHash,
+      txHash: sendResult.hash,
+      attempts,
     });
 
     // Poll until confirmed or failed
@@ -304,54 +434,61 @@ export class SubmissionWorker {
       const txStatus = await server.getTransaction(sendResult.hash);
       if (txStatus.status === StellarRpc.Api.GetTransactionStatus.SUCCESS) {
         this.logger.info("resolve_market confirmed on-chain", {
-          marketId: report.payload.marketId,
+          marketId,
           hash: sendResult.hash,
           ledger: txStatus.ledger,
+        });
+        await recordConfirmed(this.prisma, {
+          marketId,
+          payloadHash,
+          txHash: sendResult.hash,
         });
         return sendResult.hash;
       }
       if (txStatus.status === StellarRpc.Api.GetTransactionStatus.FAILED) {
+        await resetForRetry(this.prisma, {
+          marketId,
+          payloadHash,
+          attempts,
+        });
         throw new Error(
           `resolve_market transaction failed on-chain: hash=${sendResult.hash}`
         );
       }
     }
 
-    throw new Error(
-      `resolve_market not confirmed after ${MAX_POLL_ATTEMPTS}s: hash=${sendResult.hash}`
-    );
+    // Timed out waiting for confirmation. The tx hash is already durably
+    // persisted (recordBroadcast above), so this is ambiguous, not failed —
+    // leave the row as SUBMITTED and let the next attempt (or startup
+    // reconciliation) re-check the chain rather than resubmitting.
+    oracleSubmissionAmbiguousTotal.inc();
+    throw new AmbiguousSubmissionError(marketId, sendResult.hash);
   }
 
   /**
-   * Update database on successful submission.
+   * Update database on successful submission (or the CONFIRMED state was
+   * already recorded by broadcastAndConfirm — this only upserts the
+   * ResolutionCandidate, which isn't part of the submission state machine).
    */
   private async updateOnSuccess(
     submission: QueuedSubmission,
     report: SignedResolutionReport,
-    txHash?: string
+    payloadHash: string
   ): Promise<void> {
     const { request } = submission;
-    const { marketId, outcome, timestamp } = report.payload;
+    const { marketId, outcome } = report.payload;
 
     try {
-      const payloadHash = this.computePayloadHash(report.payload);
+      if (!this.stellarConfig) {
+        // Off-chain fallback path: no chain to confirm against, so the
+        // state machine has no SUBMITTED phase to pass through — mark
+        // confirmed directly, mirroring the previous behavior.
+        await this.prisma.oracleReport.update({
+          where: { marketId_payloadHash: { marketId, payloadHash } },
+          data: { status: "CONFIRMED", txHash: null, confidence: 1.0 },
+        });
+      }
 
-      // Create or update OracleReport
-      await this.prisma.oracleReport.create({
-        data: {
-          payloadHash,
-          source: request.oracleAddress,
-          confidence: 1.0, // Full confidence on successful submission
-          marketId,
-          candidateResolution: outcome,
-          status: "CONFIRMED",
-          attempts: submission.attempts + 1,
-          txHash,
-          createdAt: new Date(timestamp),
-        },
-      });
-
-      // Upsert ResolutionCandidate
       await this.prisma.resolutionCandidate.upsert({
         where: {
           idempotencyKey: `${marketId}:${request.oracleAddress}`,
@@ -384,24 +521,30 @@ export class SubmissionWorker {
   }
 
   /**
-   * Update attempts for retry.
+   * Bumps the attempt count (and confidence) for a retry without disturbing
+   * status/txHash — an in-flight SUBMITTED row must stay intact so the next
+   * attempt reconciles against the same tx instead of losing track of it.
    */
-  private async updateAttempt(submission: QueuedSubmission): Promise<void> {
-    const { request } = submission;
-
+  private async updateAttempt(
+    key: { marketId: string; payloadHash: string },
+    attempts: number
+  ): Promise<void> {
     try {
-      await this.prisma.oracleReport.updateMany({
-        where: { marketId: request.marketId },
+      await this.prisma.oracleReport.update({
+        where: {
+          marketId_payloadHash: {
+            marketId: key.marketId,
+            payloadHash: key.payloadHash,
+          },
+        },
         data: {
-          confidence: Math.max(0, 1.0 - submission.attempts * 0.2),
-          status: "SUBMITTED",
-          attempts: submission.attempts,
+          confidence: Math.max(0, 1.0 - attempts * 0.2),
+          attempts,
         },
       });
     } catch (error) {
       this.logger.warn("Failed to update attempt count", {
-        id: submission.id,
-        marketId: request.marketId,
+        marketId: key.marketId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -416,6 +559,7 @@ export class SubmissionWorker {
    */
   private async updateOnFailure(
     submission: QueuedSubmission,
+    key: { marketId: string; payloadHash: string },
     errorMessage: string
   ): Promise<void> {
     const { request } = submission;
@@ -435,13 +579,9 @@ export class SubmissionWorker {
     logDeadLetter(this.logger, deadLetterMessage);
 
     try {
-      await this.prisma.oracleReport.updateMany({
-        where: { marketId: request.marketId },
-        data: {
-          candidateResolution: null,
-          status: "FAILED",
-          attempts: submission.attempts,
-        },
+      await recordFailed(this.prisma, {
+        ...key,
+        attempts: submission.attempts,
       });
 
       await this.prisma.resolutionCandidate.updateMany({
@@ -464,14 +604,5 @@ export class SubmissionWorker {
         error: error instanceof Error ? error.message : String(error),
       });
     }
-  }
-
-  /**
-   * Compute payload hash (same as queue).
-   */
-  private computePayloadHash(payload: unknown): string {
-    const crypto = require("crypto");
-    const normalized = JSON.stringify(payload);
-    return crypto.createHash("sha256").update(normalized).digest("hex");
   }
 }

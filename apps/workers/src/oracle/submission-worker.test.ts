@@ -10,7 +10,7 @@ vi.mock("../../../oracle/signature-helper.js", () => ({
   ),
 }));
 
-// Mocks for the Stellar SDK calls made by SubmissionWorker.submitOnChain().
+// Mocks for the Stellar SDK calls made by SubmissionWorker.broadcastAndConfirm().
 // Exposed via vi.hoisted so individual tests can configure return values.
 const stellarMocks = vi.hoisted(() => ({
   sign: vi.fn(),
@@ -81,24 +81,44 @@ const TEST_STELLAR_CONFIG = {
   signerSecret: "SBTESTSECRETKEY",
 };
 
-// Mock Prisma
-const mockPrisma = {
-  oracleReport: {
-    create: vi.fn(),
-    upsert: vi.fn(),
-    updateMany: vi.fn(),
-  },
-  resolutionCandidate: {
-    upsert: vi.fn(),
-    updateMany: vi.fn(),
-  },
-};
+/** In-memory stand-in for the oracle_reports row this worker upserts/updates,
+ *  keyed by marketId — enough for these tests since each uses one market. */
+function makeReportStore() {
+  const rows = new Map<string, Record<string, unknown>>();
 
-// Mock queue
-const mockQueue = {
-  acknowledge: vi.fn(),
-  nack: vi.fn(),
-};
+  return {
+    rows,
+    upsert: vi.fn(async (args: any) => {
+      const key = args.where.marketId_payloadHash.marketId;
+      const existing = rows.get(key);
+      if (existing) return existing;
+      const created = {
+        id: `report-${key}`,
+        status: "PENDING",
+        txHash: null,
+        attempts: 0,
+        broadcastAt: null,
+        confirmedAt: null,
+        ...args.create,
+      };
+      rows.set(key, created);
+      return created;
+    }),
+    update: vi.fn(async (args: any) => {
+      const key = args.where.marketId_payloadHash.marketId;
+      const existing = rows.get(key) ?? {
+        status: "PENDING",
+        txHash: null,
+        attempts: 0,
+        broadcastAt: null,
+        confirmedAt: null,
+      };
+      const updated = { ...existing, ...args.data };
+      rows.set(key, updated);
+      return updated;
+    }),
+  };
+}
 
 // Mock logger
 const mockLogger = {
@@ -129,7 +149,7 @@ const createTestSubmission = (): QueuedSubmission => ({
     confidence: 0.9,
     confidenceMetadata: { score: 0.9, method: "test" },
     sourceMetadata: { provider: "Chainlink" },
-    timestamp: new Date().toISOString(),
+    timestamp: "2026-01-01T00:00:00.000Z",
   },
   status: "pending",
   enqueuedAt: new Date().toISOString(),
@@ -140,9 +160,29 @@ const createTestSubmission = (): QueuedSubmission => ({
 
 describe("SubmissionWorker", () => {
   let worker: SubmissionWorker;
+  let mockPrisma: ReturnType<typeof buildMockPrisma>;
+  let mockQueue: {
+    acknowledge: ReturnType<typeof vi.fn>;
+    nack: ReturnType<typeof vi.fn>;
+  };
+
+  function buildMockPrisma() {
+    return {
+      oracleReport: makeReportStore(),
+      resolutionCandidate: {
+        upsert: vi.fn(),
+        updateMany: vi.fn(),
+      },
+    };
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPrisma = buildMockPrisma();
+    mockQueue = {
+      acknowledge: vi.fn().mockResolvedValue(undefined),
+      nack: vi.fn().mockResolvedValue(undefined),
+    };
     worker = new SubmissionWorker(mockQueue as any, mockPrisma as any, {
       submissionMaxRetries: 3,
       consumerName: "test-consumer",
@@ -153,17 +193,13 @@ describe("SubmissionWorker", () => {
   describe("processSubmission", () => {
     it("should process successful submission", async () => {
       const submission = createTestSubmission();
-      mockPrisma.oracleReport.create.mockResolvedValueOnce({
-        id: "report-1",
-      });
       mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
         id: "candidate-1",
       });
-      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
 
       await worker.processSubmission(submission);
 
-      expect(mockPrisma.oracleReport.create).toHaveBeenCalled();
+      expect(mockPrisma.oracleReport.upsert).toHaveBeenCalled();
       expect(mockPrisma.resolutionCandidate.upsert).toHaveBeenCalled();
       expect(mockQueue.acknowledge).toHaveBeenCalledWith(submission);
       expect(mockLogger.info).toHaveBeenCalledWith(
@@ -172,29 +208,38 @@ describe("SubmissionWorker", () => {
       );
     });
 
-    it("persists status, attempts, and tx hash on success", async () => {
+    it("persists CONFIRMED status with null tx hash off-chain", async () => {
       const submission = createTestSubmission();
-      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
       mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
         id: "candidate-1",
       });
-      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
 
       await worker.processSubmission(submission);
 
-      expect(mockPrisma.oracleReport.create).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          status: "CONFIRMED",
-          attempts: submission.attempts + 1,
-          txHash: undefined,
-        }),
-      });
+      const row = mockPrisma.oracleReport.rows.get("market-1");
+      expect(row).toMatchObject({ status: "CONFIRMED", txHash: null });
     });
 
-    it("persists SUBMITTED status and attempt count when retrying", async () => {
+    it("does not re-claim a new row on retry — same (marketId, payloadHash) reuses one row", async () => {
       const submission = createTestSubmission();
-      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
-      mockQueue.nack.mockResolvedValueOnce(undefined);
+      mockPrisma.resolutionCandidate.upsert.mockResolvedValue({
+        id: "candidate-1",
+      });
+
+      await worker.processSubmission(submission);
+      await worker.processSubmission(submission);
+
+      // Only one row was ever created for this (marketId, payloadHash).
+      expect(mockPrisma.oracleReport.rows.size).toBe(1);
+      // Second call short-circuits on the already-CONFIRMED row.
+      expect(mockLogger.info).toHaveBeenCalledWith(
+        "Oracle submission already confirmed, skipping resubmission",
+        expect.any(Object)
+      );
+    });
+
+    it("persists attempt count when retrying after a signature failure", async () => {
+      const submission = createTestSubmission();
 
       await expect(
         worker.processSubmission({
@@ -203,50 +248,31 @@ describe("SubmissionWorker", () => {
         })
       ).rejects.toThrow();
 
-      expect(mockPrisma.oracleReport.updateMany).toHaveBeenCalledWith({
-        where: { marketId: submission.request.marketId },
-        data: expect.objectContaining({
-          status: "SUBMITTED",
-          attempts: submission.attempts + 1,
-        }),
-      });
+      const row = mockPrisma.oracleReport.rows.get("market-1");
+      expect(row).toMatchObject({ attempts: submission.attempts + 1 });
+      expect(mockQueue.nack).toHaveBeenCalled();
     });
 
     it("persists FAILED status when max attempts are exceeded", async () => {
       const submission = createTestSubmission();
       submission.attempts = 2;
-
-      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
-      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
+      const invalidSubmission = {
+        ...submission,
+        result: { ...submission.result, signature: "" },
+      };
 
       await expect(
-        worker.processSubmission({
-          ...submission,
-          result: { ...submission.result, signature: "" },
-        })
+        worker.processSubmission(invalidSubmission)
       ).rejects.toThrow();
 
-      expect(mockPrisma.oracleReport.updateMany).toHaveBeenCalledWith({
-        where: { marketId: submission.request.marketId },
-        data: expect.objectContaining({
-          status: "FAILED",
-          attempts: 3,
-        }),
-      });
+      const row = mockPrisma.oracleReport.rows.get("market-1");
+      expect(row).toMatchObject({ status: "FAILED", attempts: 3 });
+      expect(mockQueue.acknowledge).toHaveBeenCalledWith(invalidSubmission);
     });
 
     it("should retry on first failure", async () => {
       const submission = createTestSubmission();
-      const error = new Error("Network error");
 
-      // Mock successful DB writes but then throw on submission
-      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({
-        count: 1,
-      });
-      mockQueue.nack.mockResolvedValueOnce(undefined);
-
-      // Create an override for processSubmission to simulate network error
-      // We'll do this by checking the error flow directly
       await expect(
         worker.processSubmission({
           ...submission,
@@ -254,7 +280,6 @@ describe("SubmissionWorker", () => {
         })
       ).rejects.toThrow();
 
-      // Should have nacked for retry
       expect(mockQueue.nack).toHaveBeenCalled();
       expect(mockLogger.warn).toHaveBeenCalledWith(
         "Oracle submission processing failed, will retry",
@@ -266,11 +291,6 @@ describe("SubmissionWorker", () => {
       const submission = createTestSubmission();
       submission.attempts = 2; // Will exceed maxRetries of 3 on next attempt
 
-      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({
-        count: 1,
-      });
-      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
-
       await expect(
         worker.processSubmission({
           ...submission,
@@ -278,7 +298,6 @@ describe("SubmissionWorker", () => {
         })
       ).rejects.toThrow();
 
-      // Should acknowledge (remove from active queue)
       expect(mockQueue.acknowledge).toHaveBeenCalled();
       expect(mockLogger.error).toHaveBeenCalledWith(
         "Oracle submission processing failed, max attempts exceeded",
@@ -288,12 +307,8 @@ describe("SubmissionWorker", () => {
 
     it("should call logDeadLetter with structured fields when max retries exceeded", async () => {
       const submission = createTestSubmission();
-      // Set attempts to maxRetries - 1 so next attempt pushes it over the limit
       submission.attempts = 2;
-
-      mockPrisma.oracleReport.updateMany.mockResolvedValue({ count: 1 });
       mockPrisma.resolutionCandidate.updateMany.mockResolvedValue({ count: 1 });
-      mockQueue.acknowledge.mockResolvedValue(undefined);
 
       await expect(
         worker.processSubmission({
@@ -319,17 +334,12 @@ describe("SubmissionWorker", () => {
 
     it("should handle Prisma errors gracefully", async () => {
       const submission = createTestSubmission();
-      mockPrisma.oracleReport.create.mockRejectedValueOnce(
+      mockPrisma.oracleReport.upsert.mockRejectedValueOnce(
         new Error("DB error")
       );
 
       await expect(worker.processSubmission(submission)).rejects.toThrow(
         "DB error"
-      );
-
-      expect(mockLogger.error).toHaveBeenCalledWith(
-        "Failed to persist oracle submission",
-        expect.any(Object)
       );
     });
   });
@@ -337,11 +347,9 @@ describe("SubmissionWorker", () => {
   describe("submitOnChain (Stellar SDK invocation)", () => {
     it("does not touch the Stellar SDK when no stellar config is provided", async () => {
       const submission = createTestSubmission();
-      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
       mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
         id: "candidate-1",
       });
-      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
 
       await worker.processSubmission(submission);
 
@@ -369,11 +377,9 @@ describe("SubmissionWorker", () => {
         status: "SUCCESS",
         ledger: 42,
       });
-      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
       mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
         id: "candidate-1",
       });
-      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
 
       const stellarWorker = new SubmissionWorker(
         mockQueue as any,
@@ -398,6 +404,110 @@ describe("SubmissionWorker", () => {
       expect(stellarMocks.sendTransaction).toHaveBeenCalled();
       expect(stellarMocks.getTransaction).toHaveBeenCalledWith("txhash123");
       expect(mockQueue.acknowledge).toHaveBeenCalledWith(submission);
+
+      const row = mockPrisma.oracleReport.rows.get("market-1");
+      expect(row).toMatchObject({ status: "CONFIRMED", txHash: "txhash123" });
+    });
+
+    it("persists the tx hash immediately on broadcast, before confirmation is known (#996)", async () => {
+      vi.useFakeTimers();
+      try {
+        const submission = createTestSubmission();
+        stellarMocks.getAccount.mockResolvedValueOnce({
+          accountId: () => "GSOURCEACCOUNT",
+        });
+        stellarMocks.prepareTransaction.mockResolvedValueOnce({
+          sign: vi.fn(),
+        });
+        stellarMocks.sendTransaction.mockResolvedValueOnce({
+          status: "PENDING",
+          hash: "txhash-broadcast",
+        });
+        // Never resolves confirmation within this test — we only care that
+        // the hash lands in storage the moment sendTransaction returns.
+        stellarMocks.getTransaction.mockResolvedValue({ status: "NOT_FOUND" });
+
+        const stellarWorker = new SubmissionWorker(
+          mockQueue as any,
+          mockPrisma as any,
+          {
+            submissionMaxRetries: 3,
+            consumerName: "test-consumer",
+            logger: mockLogger,
+            stellar: TEST_STELLAR_CONFIG,
+          }
+        );
+
+        const processPromise = stellarWorker.processSubmission(submission);
+
+        // Nothing in the chain up to recordBroadcast uses a timer (it's all
+        // awaited promises), so flushing microtasks is enough to reach it —
+        // well before the confirmation poll loop's first 1s sleep.
+        await vi.advanceTimersByTimeAsync(0);
+
+        const row = mockPrisma.oracleReport.rows.get("market-1");
+        expect(row).toMatchObject({
+          status: "SUBMITTED",
+          txHash: "txhash-broadcast",
+        });
+
+        // Attach the rejection expectation before draining timers so the
+        // rejection is never observed as "unhandled" mid-drain.
+        const expectation =
+          expect(processPromise).rejects.toThrow(/ambiguous/i);
+        // Drain the 30 * 1s poll loop so the ambiguous-timeout error fires.
+        await vi.advanceTimersByTimeAsync(30_000);
+        await expectation;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("on redelivery, checks the chain instead of resubmitting when a broadcast is already unconfirmed", async () => {
+      const submission = createTestSubmission();
+      mockPrisma.oracleReport.rows.set("market-1", {
+        id: "report-market-1",
+        status: "SUBMITTED",
+        txHash: "txhash-prior",
+        attempts: 1,
+        broadcastAt: new Date(),
+        confirmedAt: null,
+      });
+      stellarMocks.getTransaction.mockResolvedValueOnce({
+        status: "SUCCESS",
+        ledger: 99,
+      });
+      mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
+        id: "candidate-1",
+      });
+
+      const stellarWorker = new SubmissionWorker(
+        mockQueue as any,
+        mockPrisma as any,
+        {
+          submissionMaxRetries: 3,
+          consumerName: "test-consumer",
+          logger: mockLogger,
+          stellar: TEST_STELLAR_CONFIG,
+        }
+      );
+
+      await stellarWorker.processSubmission({ ...submission, attempts: 1 });
+
+      // No new transaction was ever broadcast — only the prior hash was
+      // re-checked against the chain.
+      expect(stellarMocks.sendTransaction).not.toHaveBeenCalled();
+      expect(stellarMocks.getTransaction).toHaveBeenCalledWith("txhash-prior");
+      expect(mockQueue.acknowledge).toHaveBeenCalledWith({
+        ...submission,
+        attempts: 1,
+      });
+
+      const row = mockPrisma.oracleReport.rows.get("market-1");
+      expect(row).toMatchObject({
+        status: "CONFIRMED",
+        txHash: "txhash-prior",
+      });
     });
 
     it("retries when sendTransaction reports an ERROR status", async () => {
@@ -412,8 +522,6 @@ describe("SubmissionWorker", () => {
         status: "ERROR",
         hash: "txhash-err",
       });
-      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
-      mockQueue.nack.mockResolvedValueOnce(undefined);
 
       const stellarWorker = new SubmissionWorker(
         mockQueue as any,
@@ -449,8 +557,6 @@ describe("SubmissionWorker", () => {
       stellarMocks.getTransaction.mockResolvedValueOnce({
         status: "FAILED",
       });
-      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
-      mockQueue.nack.mockResolvedValueOnce(undefined);
 
       const stellarWorker = new SubmissionWorker(
         mockQueue as any,
@@ -468,6 +574,10 @@ describe("SubmissionWorker", () => {
       );
 
       expect(mockQueue.nack).toHaveBeenCalled();
+
+      // Definite on-chain failure clears the row for a fresh broadcast.
+      const row = mockPrisma.oracleReport.rows.get("market-1");
+      expect(row).toMatchObject({ status: "PENDING", txHash: null });
     });
   });
 
@@ -501,11 +611,9 @@ describe("SubmissionWorker", () => {
         status: "SUCCESS",
         ledger: 7,
       });
-      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
       mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
         id: "candidate-1",
       });
-      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
 
       const stellarWorker = new SubmissionWorker(
         mockQueue as any,
@@ -561,11 +669,9 @@ describe("SubmissionWorker", () => {
         status: "SUCCESS",
         ledger: 1,
       });
-      mockPrisma.oracleReport.create.mockResolvedValueOnce({ id: "report-1" });
       mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
         id: "candidate-1",
       });
-      mockQueue.acknowledge.mockResolvedValueOnce(undefined);
 
       const processPromise = stellarWorker.processSubmission(submission);
       await vi.runAllTimersAsync();
@@ -586,8 +692,6 @@ describe("SubmissionWorker", () => {
       stellarMocks.getAccount.mockRejectedValue(
         new Error("400 Bad Request: invalid account")
       );
-      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
-      mockQueue.nack.mockResolvedValueOnce(undefined);
 
       const processPromise = stellarWorker.processSubmission(submission);
       const expectation =
@@ -603,8 +707,6 @@ describe("SubmissionWorker", () => {
       stellarMocks.getAccount.mockRejectedValue(
         new Error("ECONNRESET: connection reset")
       );
-      mockPrisma.oracleReport.updateMany.mockResolvedValueOnce({ count: 1 });
-      mockQueue.nack.mockResolvedValueOnce(undefined);
 
       const processPromise = stellarWorker.processSubmission(submission);
       const expectation = expect(processPromise).rejects.toThrow("ECONNRESET");
