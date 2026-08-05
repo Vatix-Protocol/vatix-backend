@@ -261,7 +261,7 @@ describe("Concurrent order placement — same order book", () => {
     const concurrency = 5;
     const priceIncrement = 0.01;
 
-    const requests = keypairs.slice(0, concurrency).map((kp, i) => {
+    const requests = keypairs.slice(0, concurrency).map(async (kp, i) => {
       const payload = {
         marketId: market.id,
         userAddress: addresses[i],
@@ -421,7 +421,7 @@ describe("Concurrent order placement — same order book", () => {
     ];
 
     const responses = await Promise.all(
-      buyers.map(({ kp, addr }) => {
+      buyers.map(async ({ kp, addr }) => {
         const payload = {
           marketId: market.id,
           userAddress: addr,

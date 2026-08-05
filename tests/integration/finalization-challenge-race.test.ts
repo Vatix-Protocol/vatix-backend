@@ -210,8 +210,11 @@ describe("Finalization vs. challenge race (DB-level locking)", () => {
       const result = await job.run();
 
       expect(result.finalizedCount).toBe(0);
-      expect(result.skippedCount).toBe(1);
+      // Already CHALLENGED candidates are excluded by the PROPOSED query gate,
+      // so the job has nothing to skip inside the finalize path.
+      expect(result.skippedCount).toBe(0);
       expect(result.erroredCount).toBe(0);
+      expect(result.totalCandidates).toBe(0);
 
       await assertNoSplitBrain(candidate.id, market.id);
 
@@ -257,7 +260,8 @@ describe("Finalization vs. challenge race (DB-level locking)", () => {
         ),
       ]);
 
-      expect(finalizeResult.candidates[0]?.status).toBe("skipped");
+      expect(finalizeResult.totalCandidates).toBe(0);
+      expect(finalizeResult.candidates).toHaveLength(0);
       expect(challenged.status).toBe("CHALLENGED");
 
       await assertNoSplitBrain(candidate.id, market.id);

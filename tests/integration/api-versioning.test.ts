@@ -34,6 +34,7 @@ vi.mock("../../src/services/prisma.js", () => {
           oracleAddress: "G" + "A".repeat(55),
           status: "ACTIVE",
           outcome: null,
+          deletedAt: null,
           createdAt: new Date(),
           updatedAt: new Date(),
         }),

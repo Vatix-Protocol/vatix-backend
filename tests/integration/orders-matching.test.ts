@@ -522,7 +522,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
       payload: p1,
     });
 
-    // Second fill: 30 more shares
+    // Second fill: 30 more shares (DB seed bypasses the in-memory book)
     await testUtils.createTestOrder(market.id, maker2Address, {
       side: "SELL",
       outcome: "YES",
@@ -531,6 +531,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
       filledQuantity: 0,
       status: "OPEN",
     });
+    matchingService.invalidateAllBooks();
     const p2 = {
       marketId: market.id,
       userAddress: takerAddress,
