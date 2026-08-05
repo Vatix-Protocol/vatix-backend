@@ -6,7 +6,7 @@ import { getPrismaClient } from "../../src/services/prisma.js";
 
 describe("Fills SSE Stream with Resume Tokens", () => {
   let server: FastifyInstance;
-  const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DU";
+  const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DUX";
   const marketId = "market123";
   const counterparty =
     "GBYKXVJ5T4BBTQ3Z3FBPVX5GZZ3LW3ZDFGXK7NJFQRQJZC5Z7YGRP6Z";

@@ -53,11 +53,12 @@ describe("FillsResumeService", () => {
 
   describe("detectGap", () => {
     it("should detect valid cursor (no gap)", async () => {
+      const cursor = `${Date.now()}-0`;
       vi.mocked(redis.xrange).mockResolvedValue([
-        ["1234567890-0", ["tradeId", "123", "outcome", "YES"]],
+        [cursor, ["tradeId", "123", "outcome", "YES"]],
       ]);
 
-      const result = await fillsResumeService.detectGap("1234567890-0");
+      const result = await fillsResumeService.detectGap(cursor);
 
       expect(result.hasGap).toBe(false);
     });
@@ -104,7 +105,7 @@ describe("FillsResumeService", () => {
 
   describe("getTradesAfterCursor", () => {
     it("should retrieve trades after cursor", async () => {
-      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DU";
+      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DUX";
       const cursor = "1234567890000-0";
 
       const mockTrades = [
@@ -137,7 +138,7 @@ describe("FillsResumeService", () => {
     });
 
     it("should return empty array if no trades", async () => {
-      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DU";
+      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DUX";
       const cursor = "1234567890000-0";
 
       mockPrisma.trade.findMany.mockResolvedValue([]);
@@ -155,7 +156,7 @@ describe("FillsResumeService", () => {
 
   describe("getReplayBounds", () => {
     it("should return replay bounds for wallet", async () => {
-      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DU";
+      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DUX";
 
       mockPrisma.trade.findFirst
         .mockResolvedValueOnce({ tradedAt: new Date("2026-07-29T12:00:00Z") }) // First
@@ -171,7 +172,7 @@ describe("FillsResumeService", () => {
     });
 
     it("should handle empty wallet history", async () => {
-      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DU";
+      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DUX";
 
       mockPrisma.trade.findFirst.mockResolvedValue(null);
       mockPrisma.trade.count.mockResolvedValue(0);

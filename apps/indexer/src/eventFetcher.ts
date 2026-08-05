@@ -177,8 +177,14 @@ export class EventFetcher {
           try {
             const response = await this.transport.execute(
               async (url: string) => {
-                const server = new StellarRpc.Server(url);
-                const fetchCall = server.getEvents({
+                // Prefer an injected mock server (unit tests replace this.server
+                // with a stub). In production, rebuild the RPC client whenever
+                // transport fails over to a different endpoint URL.
+                const isRealServer = this.server instanceof StellarRpc.Server;
+                if (!this.server || isRealServer) {
+                  this.server = new StellarRpc.Server(url);
+                }
+                const fetchCall = this.server.getEvents({
                   startLedger,
                   filters: [{ contractIds: [contractId] }],
                   limit: pageLimit,

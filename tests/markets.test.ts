@@ -81,7 +81,9 @@ describe("GET /markets", () => {
     await app.inject({ method: "GET", url: "/markets?status=ACTIVE" });
 
     expect(mockPrisma.market.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { status: "ACTIVE" } })
+      expect.objectContaining({
+        where: { status: "ACTIVE", deletedAt: null },
+      })
     );
   });
 
@@ -128,6 +130,7 @@ describe("GET /markets/:id", () => {
       outcome: null,
       createdAt: new Date("2026-01-01T00:00:00Z"),
       updatedAt: new Date("2026-01-01T00:00:00Z"),
+      deletedAt: null,
     };
 
     (

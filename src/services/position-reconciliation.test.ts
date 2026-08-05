@@ -44,7 +44,7 @@ describe("PositionReconciliationService", () => {
 
   describe("reconcile", () => {
     it("should detect no drift when position matches events", async () => {
-      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DU";
+      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DUX";
       const marketId = "market123";
 
       mockPrisma.userPosition.findUnique.mockResolvedValue({
@@ -81,7 +81,7 @@ describe("PositionReconciliationService", () => {
     });
 
     it("should detect drift when position differs from events", async () => {
-      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DU";
+      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DUX";
       const marketId = "market123";
 
       mockPrisma.userPosition.findUnique.mockResolvedValue({
@@ -118,7 +118,7 @@ describe("PositionReconciliationService", () => {
     });
 
     it("should apply recovery when autoRecovery=true", async () => {
-      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DU";
+      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DUX";
       const marketId = "market123";
 
       mockPrisma.userPosition.findUnique.mockResolvedValue({
@@ -162,7 +162,7 @@ describe("PositionReconciliationService", () => {
     });
 
     it("should create position if it doesn't exist", async () => {
-      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DU";
+      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DUX";
       const marketId = "market123";
 
       mockPrisma.userPosition.findUnique.mockResolvedValue(null);

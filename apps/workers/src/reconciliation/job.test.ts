@@ -1,14 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ReconciliationJob } from "./job.js";
-import { positionReconciliationService } from "../../../src/services/position-reconciliation.js";
-import { getPrismaClient } from "../../../src/services/prisma.js";
-import type ILogger from "../../../packages/shared/src/logger.js";
+import { positionReconciliationService } from "../../../../src/services/position-reconciliation.js";
+import { getPrismaClient } from "../../../../src/services/prisma.js";
+import type { ILogger } from "../../../../packages/shared/src/logger.js";
 
 const mockLogger: ILogger = {
   debug: vi.fn(),
   info: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
+  child: vi.fn(function (this: ILogger) {
+    return this;
+  }),
 };
 
 const mockPrisma = {
@@ -17,11 +20,11 @@ const mockPrisma = {
   },
 };
 
-vi.mock("../../../src/services/prisma.js", () => ({
+vi.mock("../../../../src/services/prisma.js", () => ({
   getPrismaClient: () => mockPrisma,
 }));
 
-vi.mock("../../../src/services/position-reconciliation.js");
+vi.mock("../../../../src/services/position-reconciliation.js");
 
 describe("ReconciliationJob", () => {
   beforeEach(() => {
