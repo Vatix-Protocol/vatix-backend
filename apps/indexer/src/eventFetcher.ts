@@ -36,7 +36,7 @@ const MAX_CONSECUTIVE_DISCONNECTIONS = 5;
 const DISCONNECTED_BACKOFF_MS = 10_000;
 
 export class EventFetcher {
-  private readonly server: StellarRpc.Server;
+  private server: StellarRpc.Server;
   private readonly config: Required<EventFetcherConfig>;
   private readonly telemetry: Telemetry;
   private readonly transport: StellarTransport;
