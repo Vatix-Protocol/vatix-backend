@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import fastify from "fastify";
 import { fillsRoutes, parseResumeCursor } from "./fills";
 import { errorHandler } from "../middleware/errorHandler";
+import { fillsResumeService } from "../../services/fills-resume.js";
 
 const VALID_WALLET = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
 
@@ -28,12 +29,32 @@ vi.mock("../middleware/rateLimiter", () => ({
   heavyReadLimiter: async () => {},
 }));
 
+vi.mock("../../services/fills-resume.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../services/fills-resume.js")>();
+  return {
+    ...actual,
+    fillsResumeService: {
+      parseCursor: actual.fillsResumeService.parseCursor.bind(
+        actual.fillsResumeService
+      ),
+      detectGap: vi.fn().mockResolvedValue({ hasGap: false }),
+      getReplayBounds: vi.fn().mockResolvedValue({
+        minCursor: null,
+        maxCursor: null,
+        recordCount: 0,
+      }),
+      getTradesAfterCursor: vi.fn().mockResolvedValue({ trades: [] }),
+    },
+  };
+});
+
 describe("parseResumeCursor", () => {
   it("returns null when neither header nor query param is set", () => {
     expect(parseResumeCursor(undefined, undefined)).toBeNull();
   });
 
-  it("prefers Last-Event-ID header over the since query param", () => {
+  it("prefers Last-Event-ID header over the after query param", () => {
     const result = parseResumeCursor(
       "2026-01-01T00:00:00.000Z",
       "2025-01-01T00:00:00.000Z"
@@ -41,7 +62,7 @@ describe("parseResumeCursor", () => {
     expect(result).toBe(`${new Date("2026-01-01T00:00:00.000Z").getTime()}-0`);
   });
 
-  it("falls back to the since query param when no header is present", () => {
+  it("falls back to the after query param when no header is present", () => {
     const result = parseResumeCursor(undefined, "2026-02-02T00:00:00.000Z");
     expect(result).toBe(`${new Date("2026-02-02T00:00:00.000Z").getTime()}-0`);
   });
@@ -107,14 +128,14 @@ describe("Fills stream route", () => {
     await disconnect(getCapturedRequest());
 
     expect(connectedEvent.wallet).toBe(VALID_WALLET);
-    expect(new Date(connectedEvent.since).getTime()).toBeGreaterThanOrEqual(
-      beforeConnect
-    );
+    const cursorMs = Number(String(connectedEvent.cursor).split("-")[0]);
+    expect(cursorMs).toBeGreaterThanOrEqual(beforeConnect);
   });
 
   it("resumes from the Last-Event-ID header instead of resetting to now", async () => {
     const { app, getCapturedRequest } = await createTestServer();
     const cursor = "2026-01-01T00:00:00.000Z";
+    const expected = fillsResumeService.parseCursor(cursor);
 
     const response = await app.inject({
       method: "GET",
@@ -126,23 +147,24 @@ describe("Fills stream route", () => {
     const connectedEvent = await readFirstSseEvent(response.stream());
     await disconnect(getCapturedRequest());
 
-    expect(connectedEvent.since).toBe(cursor);
+    expect(connectedEvent.cursor).toBe(expected);
   });
 
-  it("resumes from the ?since= query param when no header is present", async () => {
+  it("resumes from the ?after= query param when no header is present", async () => {
     const { app, getCapturedRequest } = await createTestServer();
     const cursor = "2026-02-02T00:00:00.000Z";
+    const expected = fillsResumeService.parseCursor(cursor);
 
     const response = await app.inject({
       method: "GET",
-      url: `/wallets/${VALID_WALLET}/fills/stream?since=${encodeURIComponent(cursor)}`,
+      url: `/wallets/${VALID_WALLET}/fills/stream?after=${encodeURIComponent(cursor)}`,
       payloadAsStream: true,
     });
 
     const connectedEvent = await readFirstSseEvent(response.stream());
     await disconnect(getCapturedRequest());
 
-    expect(connectedEvent.since).toBe(cursor);
+    expect(connectedEvent.cursor).toBe(expected);
   });
 
   it("falls back to now for an unparseable resume cursor instead of erroring", async () => {
@@ -160,9 +182,8 @@ describe("Fills stream route", () => {
     const connectedEvent = await readFirstSseEvent(response.stream());
     await disconnect(getCapturedRequest());
 
-    expect(new Date(connectedEvent.since).getTime()).toBeGreaterThanOrEqual(
-      beforeConnect
-    );
+    const cursorMs = Number(String(connectedEvent.cursor).split("-")[0]);
+    expect(cursorMs).toBeGreaterThanOrEqual(beforeConnect);
   });
 });
 

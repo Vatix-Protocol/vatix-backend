@@ -57,6 +57,7 @@ const validMarket = {
   question: "Will it rain tomorrow?",
   status: "ACTIVE",
   endTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
+  deletedAt: null,
   createdAt: new Date(),
   updatedAt: new Date(),
 };

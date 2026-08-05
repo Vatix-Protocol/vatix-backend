@@ -228,21 +228,23 @@ describe("EventFetcher", () => {
         const fetcher = makeFetcher(mockServer, telemetry);
         (fetcher as any).config.maxRetries = 0;
         (fetcher as any).config.retryDelayMs = 0;
+        (fetcher as any).config.fetchTimeoutMs = 0;
         // Set consecutive disconnections above threshold
         (fetcher as any).consecutiveDisconnections = 5;
 
-        // Start the fetch (will hit the backoff sleep first)
-        const fetchPromise = fetcher.fetchByLedgerWindow({
-          startLedger: 1,
-          endLedger: 5,
-        });
+        // Attach rejection handler before advancing timers so a fast failure
+        // cannot surface as an unhandled rejection between settle and await.
+        const fetchPromise = fetcher
+          .fetchByLedgerWindow({
+            startLedger: 1,
+            endLedger: 5,
+          })
+          .catch(() => undefined);
 
         // Advance past the DISCONNECTED_BACKOFF_MS (10_000ms) sleep so the
         // fetch proceeds, fails, and the promise settles.
         await vi.advanceTimersByTimeAsync(10_001);
-
-        // Suppress the expected rejection to avoid unhandled rejection warning
-        await fetchPromise.catch(() => {});
+        await fetchPromise;
 
         const backoffMetric = recorded.find(
           (r) => r.metric === "indexer.rpc.disconnected_backoff"

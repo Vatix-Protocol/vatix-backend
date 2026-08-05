@@ -8,7 +8,7 @@ import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { RawChainEvent } from "./types.js";
 import { nativeToScVal } from "@stellar/stellar-sdk";
 
-const TRADE_TOPIC = "AAAADwAAAA50cmFkZV9leGVjdXRlZAAA";
+const TRADE_TOPIC = "AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA==";
 const RESOLUTION_TOPIC = "AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=";
 
 function makeTradeEvent(id: string): RawChainEvent {
@@ -149,6 +149,7 @@ describe("PollingIngestionLoop", () => {
       getLatestNetworkLedgerSequence: vi.fn().mockReturnValue(200),
       getLag: vi.fn().mockReturnValue(190),
       toLogFields: vi.fn().mockReturnValue({}),
+      incrementParseError: vi.fn(),
     } as unknown as InternalIndexerMetricsService;
     eventFetcher = {
       fetchByLedgerWindow: vi.fn(),
@@ -272,6 +273,7 @@ describe("PollingIngestionLoop", () => {
       events: [],
       latestLedger: 500,
     });
+    vi.mocked(metrics.getLatestIndexedLedgerSequence).mockReturnValue(0);
 
     const loop = createLoop(2);
     (loop as unknown as { cursor: string | null }).cursor = "0";

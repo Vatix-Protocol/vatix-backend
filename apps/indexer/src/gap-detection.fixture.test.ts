@@ -37,7 +37,7 @@ import { nativeToScVal } from "@stellar/stellar-sdk";
 // Event fixtures
 // ---------------------------------------------------------------------------
 
-const TRADE_TOPIC = "AAAADwAAAA50cmFkZV9leGVjdXRlZAAA";
+const TRADE_TOPIC = "AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA==";
 
 function makeTradeEvent(id: string, ledger: number): RawChainEvent {
   const valueXdr = nativeToScVal({
@@ -140,7 +140,12 @@ describe("Gap detection fixture — cursor jumped past unprocessed ledgers", () 
         .fn()
         .mockImplementation(
           async ({ startLedger }: { startLedger: number }) => ({
-            events: [makeTradeEvent(`evt-${startLedger}`, startLedger)],
+            events: [
+              makeTradeEvent(
+                `${String(startLedger).padStart(10, "0")}-0000000001-0000000000`,
+                startLedger
+              ),
+            ],
             latestLedger: 300,
           })
         ),
@@ -206,10 +211,9 @@ describe("Gap detection fixture — cursor jumped past unprocessed ledgers", () 
     expect(eventFetcher.fetchByLedgerWindow).toHaveBeenCalledTimes(2);
 
     const calls = vi.mocked(eventFetcher.fetchByLedgerWindow).mock.calls;
-    // First call = backfill
-    expect(calls[0][0]).toEqual({ startLedger: 51, endLedger: 100 });
-    // Second call = normal batch
-    expect(calls[1][0]).toMatchObject({ startLedger: 101 });
+    // First call = provisional tip window; gap backfill runs after detection
+    expect(calls[0][0]).toMatchObject({ startLedger: 101 });
+    expect(calls[1][0]).toEqual({ startLedger: 51, endLedger: 100 });
   });
 
   it("backfill persists the missing event (written > 0 on first pass)", async () => {
@@ -217,9 +221,12 @@ describe("Gap detection fixture — cursor jumped past unprocessed ledgers", () 
     await runIngest(loop, "100");
 
     expect(writtenKeys.size).toBeGreaterThan(0);
-    // The event from the backfill range should be stored
-    const backfillKey = [...writtenKeys].find((k) => k.includes("evt-51"));
-    expect(backfillKey).toBeDefined();
+    // Tip window + gap backfill each write a distinct idempotency key
+    expect(writtenKeys.size).toBeGreaterThanOrEqual(2);
+    expect(eventFetcher.fetchByLedgerWindow).toHaveBeenCalledWith({
+      startLedger: 51,
+      endLedger: 100,
+    });
   });
 
   it("backfill is idempotent: second pass writes nothing new", async () => {

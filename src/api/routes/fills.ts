@@ -88,7 +88,7 @@ export async function fillsRoutes(fastify: FastifyInstance) {
         querystring: {
           type: "object",
           properties: {
-            since: { type: "string" },
+            after: { type: "string" },
           },
         },
       },

@@ -43,6 +43,16 @@ function toResolutionOutcome(
   );
 }
 
+/** scValToNative often yields bigint for u32/u64; coerce to a finite number. */
+function toConfidenceScore(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "bigint") {
+    const asNumber = Number(value);
+    return Number.isFinite(asNumber) ? asNumber : null;
+  }
+  return null;
+}
+
 function isResolutionEvent(topicsXdr: string[]): boolean {
   if (topicsXdr.length === 0) return false;
   try {
@@ -116,9 +126,7 @@ function parseResolutionPayload(
     if (oracleAddress === "") {
       throw new ResolutionParseError('Missing field "oracle"', eventId);
     }
-    const rawConfidence = map.confidence;
-    const confidenceScore =
-      typeof rawConfidence === "number" ? rawConfidence : null;
+    const confidenceScore = toConfidenceScore(map.confidence);
     return {
       marketId: String(field(map, "market_id", eventId)),
       outcome: toResolutionOutcome(field(map, "outcome", eventId), eventId),
@@ -131,9 +139,7 @@ function parseResolutionPayload(
   // outcome: bool, resolved_at: u64 }. market_id arrives via topics[1], not
   // the value map. The contract does not publish an oracle address on this
   // event, so oracleAddress is left empty pending reconciliation.
-  const rawConfidence = map.confidence;
-  const confidenceScore =
-    typeof rawConfidence === "number" ? rawConfidence : null;
+  const confidenceScore = toConfidenceScore(map.confidence);
   return {
     marketId: marketIdFromTopic(topicsXdr, eventId),
     outcome: toResolutionOutcome(field(map, "outcome", eventId), eventId),
