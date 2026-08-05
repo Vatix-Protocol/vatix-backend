@@ -98,12 +98,9 @@ export class FillsResumeService {
         const latest = await this.getLatestAvailableCursor();
 
         if (!oldest) {
-          // Stream is empty
-          return {
-            hasGap: true,
-            reason: "cursor_unknown",
-            suggestedCursor: undefined,
-          };
+          // Empty audit stream: nothing has been trimmed, so a resume cursor
+          // is not a gap — allow the client to continue from the requested point.
+          return { hasGap: false };
         }
 
         // Check if cursor is before oldest (trimmed due to MAXLEN)
@@ -145,10 +142,8 @@ export class FillsResumeService {
       return { hasGap: false };
     } catch (error) {
       console.error("Failed to detect gap:", error);
-      return {
-        hasGap: true,
-        reason: "cursor_unknown",
-      };
+      // Fail open on Redis errors: prefer reconnecting over 410 storms.
+      return { hasGap: false };
     }
   }
 

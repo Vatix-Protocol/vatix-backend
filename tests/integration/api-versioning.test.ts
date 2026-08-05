@@ -73,6 +73,13 @@ vi.mock("../../src/services/prisma.js", () => {
           },
         }),
       },
+      outboxEvent: {
+        count: async () => 0,
+      },
+      resolutionCandidate: {
+        count: async () => 0,
+        findMany: async () => [],
+      },
     }),
   };
 });
@@ -284,7 +291,10 @@ describe("Integration Tests: API versioning", () => {
       if ("streaming" in check && check.streaming) continue;
       const response = await app.inject(check);
       expect(response.statusCode, `${check.method} ${check.url}`).not.toBe(404);
-      expect(check.expected).toContain(response.statusCode);
+      expect(
+        check.expected,
+        `${check.method} ${check.url} body=${response.body.slice(0, 200)}`
+      ).toContain(response.statusCode);
     }
   });
 });

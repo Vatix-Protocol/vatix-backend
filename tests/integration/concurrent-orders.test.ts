@@ -508,7 +508,7 @@ describe("Concurrent order placement — same order book", () => {
         app.inject({
           method: "POST",
           url: "/v1/orders",
-          headers: authHeaders(keypairs[0], takerPayload),
+          headers: await authHeaders(keypairs[0], takerPayload),
           payload: takerPayload,
         }),
       ]);
@@ -588,7 +588,7 @@ describe("Concurrent order placement — same order book", () => {
           app.inject({
             method: "POST",
             url: "/v1/orders",
-            headers: authHeaders(keypairs[0], takerPayload),
+            headers: await authHeaders(keypairs[0], takerPayload),
             payload: takerPayload,
           }),
         ];

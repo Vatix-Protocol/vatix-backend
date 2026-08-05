@@ -92,9 +92,28 @@ describe("FillsResumeService", () => {
       expect(result.reason).toBe("cursor_trimmed");
     });
 
-    it("should detect unknown cursor", async () => {
+    it("allows resume when the audit stream is empty", async () => {
       vi.mocked(redis.xrange).mockResolvedValue([]); // Cursor not found
       vi.mocked(redis.xrevrange).mockResolvedValue([]); // Stream empty
+
+      const result = await fillsResumeService.detectGap("1234567890-0");
+
+      expect(result.hasGap).toBe(false);
+    });
+
+    it("should detect unknown cursor when stream has data but cursor is absent", async () => {
+      vi.mocked(redis.xrevrange).mockResolvedValue([
+        ["1234567999-0", ["data"]],
+      ]);
+      vi.mocked(redis.xrange).mockImplementation(async (_key, start, end) => {
+        if (start === "unknown-cursor" && end === "unknown-cursor") {
+          return [];
+        }
+        if (start === "-" && end === "+") {
+          return [["1234567900-0", ["data"]]];
+        }
+        return [];
+      });
 
       const result = await fillsResumeService.detectGap("unknown-cursor");
 
