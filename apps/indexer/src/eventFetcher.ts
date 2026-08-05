@@ -193,27 +193,35 @@ export class EventFetcher {
 
                 // Wrap with a per-page timeout when fetchTimeoutMs > 0 so a
                 // stalled RPC endpoint cannot block the ingestion loop
-                // indefinitely.
-                const result: StellarRpc.Api.GetEventsResponse =
-                  fetchTimeoutMs > 0
-                    ? await Promise.race([
-                        fetchCall,
-                        new Promise<never>((_, reject) =>
-                          setTimeout(
-                            () =>
-                              reject(
-                                Object.assign(
-                                  new Error(
-                                    `EventFetcher: getEvents timed out after ${fetchTimeoutMs}ms`
-                                  ),
-                                  { code: "ETIMEDOUT" }
-                                )
-                              ),
-                            fetchTimeoutMs
-                          )
-                        ),
-                      ])
-                    : await fetchCall;
+                // indefinitely. Always clear the timer when fetchCall settles
+                // so a fast rejection cannot leave an unhandled timeout later.
+                let result: StellarRpc.Api.GetEventsResponse;
+                if (fetchTimeoutMs > 0) {
+                  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+                  try {
+                    result = await Promise.race([
+                      fetchCall,
+                      new Promise<never>((_, reject) => {
+                        timeoutId = setTimeout(
+                          () =>
+                            reject(
+                              Object.assign(
+                                new Error(
+                                  `EventFetcher: getEvents timed out after ${fetchTimeoutMs}ms`
+                                ),
+                                { code: "ETIMEDOUT" }
+                              )
+                            ),
+                          fetchTimeoutMs
+                        );
+                      }),
+                    ]);
+                  } finally {
+                    if (timeoutId !== undefined) clearTimeout(timeoutId);
+                  }
+                } else {
+                  result = await fetchCall;
+                }
 
                 return result;
               },

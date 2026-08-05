@@ -8,6 +8,8 @@ const VALID_WALLET = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
 const mockPrisma = {
   trade: {
     findMany: vi.fn().mockResolvedValue([]),
+    findFirst: vi.fn().mockResolvedValue(null),
+    count: vi.fn().mockResolvedValue(0),
   },
 };
 

@@ -222,10 +222,10 @@ describe("parseResolutionEvent", () => {
     const valueXdr = nativeToScVal({
       outcome: true,
       resolved_at: 1700000000n,
-      confidence: 0.95,
+      confidence: 95,
     }).toXDR("base64");
     const r = parseResolutionEvent(makeEvent({ valueXdr }));
-    expect(r.confidenceScore).toBe(0.95);
+    expect(r.confidenceScore).toBe(95);
   });
 
   it("sets confidenceScore to null when confidence is absent (real on-chain shape)", () => {

@@ -347,6 +347,7 @@ describe("MatchingService", () => {
     });
 
     it("placeOrder rejects with MatchingUnavailableError (503) when this instance is not the matching leader", async () => {
+      process.env.MATCHING_LEASE_ENFORCED = "true";
       leaderLeaseMock.isLeader.mockReturnValue(false);
 
       await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
@@ -355,6 +356,7 @@ describe("MatchingService", () => {
       // Rejected before touching the database at all — a non-leader must
       // never queue behind (or race) the leader's in-flight work.
       expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
+      process.env.MATCHING_LEASE_ENFORCED = "false";
     });
 
     it("placeOrder proceeds normally when the flag is enabled (default)", async () => {

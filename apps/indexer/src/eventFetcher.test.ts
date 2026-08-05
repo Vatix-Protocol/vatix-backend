@@ -29,9 +29,17 @@ function makeFetcher(mockServer: any, telemetry: Telemetry) {
     { rpcUrl: "https://rpc.example.com", contractId: "CTEST" },
     telemetry
   );
-  // Inject mock server
-  (fetcher as any).server = mockServer;
+  injectMockRpc(fetcher, mockServer);
   return fetcher;
+}
+
+function injectMockRpc(fetcher: EventFetcher, mockServer: any) {
+  (fetcher as any).server = mockServer;
+  (fetcher as any).transport = {
+    execute: async (fn: (url: string) => Promise<unknown>) =>
+      fn("https://rpc.example.com"),
+    getActiveEndpoint: () => "https://rpc.example.com",
+  };
 }
 
 describe("EventFetcher", () => {
@@ -74,7 +82,7 @@ describe("EventFetcher", () => {
       { rpcUrl: "https://rpc.example.com", contractId: "CTEST", pageLimit: 2 },
       telemetry
     );
-    (fetcher as any).server = server;
+    injectMockRpc(fetcher, server);
 
     const result = await fetcher.fetchByLedgerWindow({
       startLedger: 10,
@@ -103,7 +111,7 @@ describe("EventFetcher", () => {
       },
       telemetry
     );
-    (fetcher as any).server = mockServer;
+    injectMockRpc(fetcher, mockServer);
 
     const result = await fetcher.fetchByLedgerWindow({
       startLedger: 5,
@@ -129,7 +137,7 @@ describe("EventFetcher", () => {
       },
       telemetry
     );
-    (fetcher as any).server = mockServer;
+    injectMockRpc(fetcher, mockServer);
 
     await expect(
       fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
@@ -300,7 +308,7 @@ describe("EventFetcher", () => {
           },
           telemetry
         );
-        (fetcher as any).server = mockServer;
+        injectMockRpc(fetcher, mockServer);
 
         const fetchPromise = fetcher
           .fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
@@ -338,7 +346,7 @@ describe("EventFetcher", () => {
           },
           telemetry
         );
-        (fetcher as any).server = mockServer;
+        injectMockRpc(fetcher, mockServer);
 
         const fetchPromise = fetcher
           .fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
@@ -366,7 +374,7 @@ describe("EventFetcher", () => {
         },
         telemetry
       );
-      (fetcher as any).server = server;
+      injectMockRpc(fetcher, server);
 
       const result = await fetcher.fetchByLedgerWindow({
         startLedger: 1,

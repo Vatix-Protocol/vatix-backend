@@ -379,7 +379,10 @@ class MatchingService {
       throw new ServiceUnavailableError("Matching engine is disabled");
     }
 
-    if (!leaderLease.isLeader() && process.env.NODE_ENV !== "test") {
+    if (
+      !leaderLease.isLeader() &&
+      process.env.MATCHING_LEASE_ENFORCED !== "false"
+    ) {
       throw new MatchingUnavailableError();
     }
 

@@ -103,12 +103,13 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
 
       - name: Run unit tests
-        run: pnpm test:run
+        run: pnpm exec vitest run --exclude 'tests/integration/**' --exclude '**/*.integration.test.ts'
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
           REDIS_URL: redis://localhost:6379
           NODE_ENV: test
           ADMIN_TOKEN: test-admin-token
+          MATCHING_LEASE_ENFORCED: "false"
 
       - name: Run integration tests
         run: pnpm test:integration
@@ -116,6 +117,8 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
           REDIS_URL: redis://localhost:6379
           NODE_ENV: test
+          ADMIN_TOKEN: test-admin-token
+          MATCHING_LEASE_ENFORCED: "false"
 
       - name: Build
         run: pnpm build
