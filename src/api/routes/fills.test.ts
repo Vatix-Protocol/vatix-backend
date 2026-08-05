@@ -36,12 +36,12 @@ describe("parseResumeCursor", () => {
       "2026-01-01T00:00:00.000Z",
       "2025-01-01T00:00:00.000Z"
     );
-    expect(result?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+    expect(result).toBe(`${new Date("2026-01-01T00:00:00.000Z").getTime()}-0`);
   });
 
   it("falls back to the since query param when no header is present", () => {
     const result = parseResumeCursor(undefined, "2026-02-02T00:00:00.000Z");
-    expect(result?.toISOString()).toBe("2026-02-02T00:00:00.000Z");
+    expect(result).toBe(`${new Date("2026-02-02T00:00:00.000Z").getTime()}-0`);
   });
 
   it("takes the first value when Last-Event-ID is sent as an array", () => {
@@ -49,7 +49,7 @@ describe("parseResumeCursor", () => {
       ["2026-03-03T00:00:00.000Z", "2026-04-04T00:00:00.000Z"],
       undefined
     );
-    expect(result?.toISOString()).toBe("2026-03-03T00:00:00.000Z");
+    expect(result).toBe(`${new Date("2026-03-03T00:00:00.000Z").getTime()}-0`);
   });
 
   it("returns null for an unparseable cursor instead of throwing", () => {

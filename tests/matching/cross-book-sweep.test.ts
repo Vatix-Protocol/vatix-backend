@@ -67,16 +67,47 @@ describe("cross-book sweep fill scenarios (snapshots)", () => {
 
   it("sweeps the YES book across price levels while the NO book stays untouched", () => {
     yesBook.addOrder(
-      createBookOrder("yes-maker-1", "ask", 0.4, 30, FIXED_NOW - 3000, "GMAKERY001", 0)
+      createBookOrder(
+        "yes-maker-1",
+        "ask",
+        0.4,
+        30,
+        FIXED_NOW - 3000,
+        "GMAKERY001",
+        0
+      )
     );
     yesBook.addOrder(
-      createBookOrder("yes-maker-2", "ask", 0.45, 50, FIXED_NOW - 2000, "GMAKERY002", 0)
+      createBookOrder(
+        "yes-maker-2",
+        "ask",
+        0.45,
+        50,
+        FIXED_NOW - 2000,
+        "GMAKERY002",
+        0
+      )
     );
     noBook.addOrder(
-      createBookOrder("no-maker-1", "ask", 0.55, 100, FIXED_NOW - 1000, "GMAKERN001", 1)
+      createBookOrder(
+        "no-maker-1",
+        "ask",
+        0.55,
+        100,
+        FIXED_NOW - 1000,
+        "GMAKERN001",
+        1
+      )
     );
 
-    const taker = createMatchingOrder("taker-yes-1", "BUY", 0.45, 70, "GTAKERY001", "YES");
+    const taker = createMatchingOrder(
+      "taker-yes-1",
+      "BUY",
+      0.45,
+      70,
+      "GTAKERY001",
+      "YES"
+    );
     const result = matchOrder(taker, yesBook);
 
     expect(result).toMatchSnapshot();
@@ -86,16 +117,47 @@ describe("cross-book sweep fill scenarios (snapshots)", () => {
 
   it("sweeps the NO book across price levels while the YES book stays untouched", () => {
     noBook.addOrder(
-      createBookOrder("no-maker-1", "ask", 0.3, 20, FIXED_NOW - 3000, "GMAKERN010", 1)
+      createBookOrder(
+        "no-maker-1",
+        "ask",
+        0.3,
+        20,
+        FIXED_NOW - 3000,
+        "GMAKERN010",
+        1
+      )
     );
     noBook.addOrder(
-      createBookOrder("no-maker-2", "ask", 0.35, 60, FIXED_NOW - 2000, "GMAKERN011", 1)
+      createBookOrder(
+        "no-maker-2",
+        "ask",
+        0.35,
+        60,
+        FIXED_NOW - 2000,
+        "GMAKERN011",
+        1
+      )
     );
     yesBook.addOrder(
-      createBookOrder("yes-maker-1", "ask", 0.6, 100, FIXED_NOW - 1000, "GMAKERY010", 0)
+      createBookOrder(
+        "yes-maker-1",
+        "ask",
+        0.6,
+        100,
+        FIXED_NOW - 1000,
+        "GMAKERY010",
+        0
+      )
     );
 
-    const taker = createMatchingOrder("taker-no-1", "BUY", 0.35, 65, "GTAKERN010", "NO");
+    const taker = createMatchingOrder(
+      "taker-no-1",
+      "BUY",
+      0.35,
+      65,
+      "GTAKERN010",
+      "NO"
+    );
     const result = matchOrder(taker, noBook);
 
     expect(result).toMatchSnapshot();
@@ -105,20 +167,66 @@ describe("cross-book sweep fill scenarios (snapshots)", () => {
 
   it("independently sweeps both YES and NO books for the same market in one run", () => {
     yesBook.addOrder(
-      createBookOrder("yes-maker-1", "ask", 0.5, 40, FIXED_NOW - 2000, "GMAKERY020", 0)
+      createBookOrder(
+        "yes-maker-1",
+        "ask",
+        0.5,
+        40,
+        FIXED_NOW - 2000,
+        "GMAKERY020",
+        0
+      )
     );
     yesBook.addOrder(
-      createBookOrder("yes-maker-2", "ask", 0.55, 40, FIXED_NOW - 1000, "GMAKERY021", 0)
+      createBookOrder(
+        "yes-maker-2",
+        "ask",
+        0.55,
+        40,
+        FIXED_NOW - 1000,
+        "GMAKERY021",
+        0
+      )
     );
     noBook.addOrder(
-      createBookOrder("no-maker-1", "ask", 0.42, 40, FIXED_NOW - 2000, "GMAKERN020", 1)
+      createBookOrder(
+        "no-maker-1",
+        "ask",
+        0.42,
+        40,
+        FIXED_NOW - 2000,
+        "GMAKERN020",
+        1
+      )
     );
     noBook.addOrder(
-      createBookOrder("no-maker-2", "ask", 0.48, 40, FIXED_NOW - 1000, "GMAKERN021", 1)
+      createBookOrder(
+        "no-maker-2",
+        "ask",
+        0.48,
+        40,
+        FIXED_NOW - 1000,
+        "GMAKERN021",
+        1
+      )
     );
 
-    const yesTaker = createMatchingOrder("taker-yes-2", "BUY", 0.55, 60, "GTAKERY020", "YES");
-    const noTaker = createMatchingOrder("taker-no-2", "BUY", 0.48, 60, "GTAKERN020", "NO");
+    const yesTaker = createMatchingOrder(
+      "taker-yes-2",
+      "BUY",
+      0.55,
+      60,
+      "GTAKERY020",
+      "YES"
+    );
+    const noTaker = createMatchingOrder(
+      "taker-no-2",
+      "BUY",
+      0.48,
+      60,
+      "GTAKERN020",
+      "NO"
+    );
 
     const yesResult = matchOrder(yesTaker, yesBook);
     const noResult = matchOrder(noTaker, noBook);

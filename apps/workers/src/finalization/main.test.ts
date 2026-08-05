@@ -95,7 +95,10 @@ describe("Finalization worker graceful shutdown (#777)", () => {
       },
       async () => {
         if (activePollPromise) {
-          logger.info("Waiting for active finalization poll to complete before shutdown", {});
+          logger.info(
+            "Waiting for active finalization poll to complete before shutdown",
+            {}
+          );
           await activePollPromise.catch((err: unknown) => {
             logger.warn(
               "In-flight finalization poll failed during graceful shutdown",
@@ -176,7 +179,9 @@ describe("Finalization worker graceful shutdown (#777)", () => {
     await teardownPromise;
 
     expect(disconnectCalled).toContain("disconnectPrisma");
-    expect(logWarns.some((m) => m.includes("In-flight finalization poll failed"))).toBe(true);
+    expect(
+      logWarns.some((m) => m.includes("In-flight finalization poll failed"))
+    ).toBe(true);
   });
 
   it("shutdown path is defined: teardown includes timer stop, drain, and DB disconnect steps", () => {
@@ -185,14 +190,22 @@ describe("Finalization worker graceful shutdown (#777)", () => {
     const steps: string[] = [];
 
     const teardown = [
-      async () => { steps.push("clear-timer"); },
-      async () => { steps.push("drain-poll"); },
-      async () => { steps.push("disconnect-db"); },
+      async () => {
+        steps.push("clear-timer");
+      },
+      async () => {
+        steps.push("drain-poll");
+      },
+      async () => {
+        steps.push("disconnect-db");
+      },
     ];
 
     expect(teardown).toHaveLength(3);
     // Execution order is sequential (critical: drain before disconnect)
-    const runAll = async () => { for (const fn of teardown) await fn(); };
+    const runAll = async () => {
+      for (const fn of teardown) await fn();
+    };
     return runAll().then(() => {
       expect(steps).toEqual(["clear-timer", "drain-poll", "disconnect-db"]);
     });
@@ -202,21 +215,29 @@ describe("Finalization worker graceful shutdown (#777)", () => {
     const order: string[] = [];
 
     let pollResolve: () => void = () => {};
-    const inFlightPoll = new Promise<void>((resolve) => { pollResolve = resolve; });
+    const inFlightPoll = new Promise<void>((resolve) => {
+      pollResolve = resolve;
+    });
     let activePollPromise: Promise<void> | null = inFlightPoll;
 
     const teardown = [
-      async () => { order.push("timer-cleared"); },
+      async () => {
+        order.push("timer-cleared");
+      },
       async () => {
         if (activePollPromise) {
           await activePollPromise.catch(() => {});
         }
         order.push("poll-drained");
       },
-      async () => { order.push("db-disconnected"); },
+      async () => {
+        order.push("db-disconnected");
+      },
     ];
 
-    const runTeardown = async () => { for (const fn of teardown) await fn(); };
+    const runTeardown = async () => {
+      for (const fn of teardown) await fn();
+    };
     const p = runTeardown();
 
     // Ensure "db-disconnected" has NOT been called while poll is pending
@@ -226,6 +247,8 @@ describe("Finalization worker graceful shutdown (#777)", () => {
     pollResolve();
     await p;
 
-    expect(order.indexOf("poll-drained")).toBeLessThan(order.indexOf("db-disconnected"));
+    expect(order.indexOf("poll-drained")).toBeLessThan(
+      order.indexOf("db-disconnected")
+    );
   });
 });

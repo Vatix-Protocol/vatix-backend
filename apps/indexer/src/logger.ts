@@ -8,7 +8,7 @@ export interface Logger {
   child(childPrefix: string): Logger;
 }
 
-type LogLevel = "debug" | "info" | "warn" | "error";
+export type LogLevel = "debug" | "info" | "warn" | "error";
 
 function stringifyLogPayload(payload: Record<string, unknown>): string {
   return JSON.stringify(payload, (_key, value) =>

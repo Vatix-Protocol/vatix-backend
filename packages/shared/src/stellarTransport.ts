@@ -160,7 +160,9 @@ export class StellarTransport {
 
         return result;
       } catch (error) {
-        const latency = Date.now() - metrics.lastAttemptAt!.getTime();
+        const latency = metrics.lastAttemptAt
+          ? Date.now() - metrics.lastAttemptAt.getTime()
+          : 0;
         metrics.failureCount++;
         metrics.lastError = error as Error;
         metrics.lastAttemptAt = new Date();
@@ -250,7 +252,10 @@ export class StellarTransport {
   private createTimeout(): Promise<never> {
     return new Promise((_, reject) => {
       setTimeout(
-        () => reject(new Error(`Operation timeout after ${this.config.timeoutMs}ms`)),
+        () =>
+          reject(
+            new Error(`Operation timeout after ${this.config.timeoutMs}ms`)
+          ),
         this.config.timeoutMs
       );
     });
@@ -287,13 +292,21 @@ export function loadStellarEndpoints(
   env: NodeJS.ProcessEnv,
   defaultPassphrase?: string
 ): EndpointConfig {
+  const horizonFromList = parseEndpointUrls(env.STELLAR_HORIZON_URLS);
   const horizonUrls =
-    parseEndpointUrls(env.STELLAR_HORIZON_URLS) ||
-    (env.STELLAR_HORIZON_URL ? [env.STELLAR_HORIZON_URL] : []);
+    horizonFromList.length > 0
+      ? horizonFromList
+      : env.STELLAR_HORIZON_URL
+        ? [env.STELLAR_HORIZON_URL]
+        : [];
 
+  const rpcFromList = parseEndpointUrls(env.STELLAR_RPC_URLS);
   const rpcUrls =
-    parseEndpointUrls(env.STELLAR_RPC_URLS) ||
-    (env.STELLAR_RPC_URL ? [env.STELLAR_RPC_URL] : []);
+    rpcFromList.length > 0
+      ? rpcFromList
+      : env.STELLAR_RPC_URL
+        ? [env.STELLAR_RPC_URL]
+        : [];
 
   // Apply defaults if neither env var is set
   const passphrase = env.SOROBAN_NETWORK_PASSPHRASE || defaultPassphrase;

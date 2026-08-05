@@ -311,7 +311,9 @@ describe("GapDetector.runBackfill", () => {
         ],
         latestLedger: 1000,
       }),
-      getLatestLedgerInfo: vi.fn().mockResolvedValue({ sequence: 1000, hash: "x" }),
+      getLatestLedgerInfo: vi
+        .fn()
+        .mockResolvedValue({ sequence: 1000, hash: "x" }),
     } as unknown as EventFetcher;
 
     const writer = makeBatchWriter({ written: 0, skipped: 0, errors: [] });

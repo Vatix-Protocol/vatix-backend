@@ -677,6 +677,35 @@ end
   }
 
   /**
+   * Get stream length (XLEN)
+   */
+  async xlen(key: string): Promise<number> {
+    try {
+      const client = await this.ensureConnected();
+      return await client.xlen(key);
+    } catch (error) {
+      console.error({ service: "redis", key, err: error }, "Redis XLEN failed");
+      throw error;
+    }
+  }
+
+  /**
+   * Get sorted-set cardinality (ZCARD)
+   */
+  async zcard(key: string): Promise<number> {
+    try {
+      const client = await this.ensureConnected();
+      return await client.zcard(key);
+    } catch (error) {
+      console.error(
+        { service: "redis", key, err: error },
+        "Redis ZCARD failed"
+      );
+      throw error;
+    }
+  }
+
+  /**
    * Get stream info
    */
   async xinfo(subcommand: "STREAM", key: string): Promise<any> {

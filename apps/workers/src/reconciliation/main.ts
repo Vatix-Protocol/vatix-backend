@@ -1,8 +1,8 @@
-import { createLogger } from "../../../packages/shared/src/logger.js";
+import { Logger } from "../../../../packages/shared/src/logger.js";
 import { loadReconciliationConfig } from "./config.js";
 import { ReconciliationJob } from "./job.js";
 
-const logger = createLogger("reconciliation-worker");
+const logger = new Logger("reconciliation-worker");
 
 async function main() {
   try {
@@ -32,7 +32,7 @@ async function main() {
       inFlight = job
         .run()
         .then((result) => {
-          logger.info("Reconciliation cycle completed", result);
+          logger.info("Reconciliation cycle completed", { ...result });
         })
         .catch((error) => {
           logger.error("Reconciliation cycle failed", { error });

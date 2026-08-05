@@ -168,7 +168,11 @@ export async function fillsRoutes(fastify: FastifyInstance) {
       if (rawCursor && rawCursor !== currentCursor) {
         try {
           const { trades: replayed } =
-            await fillsResumeService.getTradesAfterCursor(wallet, rawCursor, 100);
+            await fillsResumeService.getTradesAfterCursor(
+              wallet,
+              rawCursor,
+              100
+            );
 
           if (replayed.length > 0) {
             sendEvent("replay_start", { count: replayed.length });
@@ -206,7 +210,11 @@ export async function fillsRoutes(fastify: FastifyInstance) {
       const poll = async () => {
         try {
           const { trades: fills } =
-            await fillsResumeService.getTradesAfterCursor(wallet, currentCursor, 100);
+            await fillsResumeService.getTradesAfterCursor(
+              wallet,
+              currentCursor,
+              100
+            );
 
           for (const fill of fills) {
             const event: OrderFillEvent = {

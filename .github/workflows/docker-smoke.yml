@@ -1,0 +1,52 @@
+name: Docker image non-root smoke test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  docker-image-smoke:
+    name: Docker image non-root smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build --target api -t vatix-backend-api:ci .
+
+      - name: Build indexer image
+        run: docker build --target indexer -t vatix-backend-indexer:ci .
+
+      - name: Verify API image runs as non-root
+        run: |
+          uid=$(docker run --rm vatix-backend-api:ci id -u)
+          echo "api container uid: $uid"
+          test "$uid" -ne 0
+
+      - name: Verify indexer image runs as non-root
+        run: |
+          uid=$(docker run --rm vatix-backend-indexer:ci id -u)
+          echo "indexer container uid: $uid"
+          test "$uid" -ne 0
+
+      - name: Start postgres/redis via compose
+        run: docker compose up -d postgres redis
+
+      - name: Wait for postgres/redis healthchecks
+        run: |
+          for i in $(seq 1 30); do
+            pg_status=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q postgres))
+            redis_status=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q redis))
+            echo "postgres=$pg_status redis=$redis_status"
+            if [ "$pg_status" = "healthy" ] && [ "$redis_status" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Timed out waiting for healthchecks"
+          exit 1
+
+      - name: Tear down compose stack
+        if: always()
+        run: docker compose down -v

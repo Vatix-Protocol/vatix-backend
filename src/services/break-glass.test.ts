@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { createHash } from "crypto";
 import { BreakGlassService } from "./break-glass.js";
 import type { ILogger } from "../../packages/shared/src/logger.js";
 
@@ -7,7 +8,14 @@ const mockLogger: ILogger = {
   warn: vi.fn(),
   error: vi.fn(),
   debug: vi.fn(),
+  child: vi.fn(function (this: ILogger) {
+    return this;
+  }),
 };
+
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
 
 describe("BreakGlassService", () => {
   let service: BreakGlassService;
@@ -64,9 +72,7 @@ describe("BreakGlassService", () => {
         adminApprovalToken: {
           findUnique: vi.fn().mockResolvedValue({
             id: "token-1",
-            tokenHash: vi
-              .fn()
-              .mockReturnValue("token-hash"), // Will be mocked
+            tokenHash: hashToken("token-123"),
             action: "halt",
             expiresAt: new Date(Date.now() + 1000),
             approvedBy: null,
@@ -171,7 +177,7 @@ describe("BreakGlassService", () => {
         adminApprovalToken: {
           findUnique: vi.fn().mockResolvedValue({
             id: "token-1",
-            tokenHash: "hash",
+            tokenHash: hashToken("token"),
             action: "halt",
             expiresAt: new Date(Date.now() - 1000), // Already expired
             approvedBy: null,

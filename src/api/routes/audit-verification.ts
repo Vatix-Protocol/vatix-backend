@@ -116,7 +116,10 @@ export async function auditVerificationRoutes(fastify: FastifyInstance) {
         },
       },
     },
-    async (request: FastifyRequest<{ Params: { marketId: string } }>, reply) => {
+    async (
+      request: FastifyRequest<{ Params: { marketId: string } }>,
+      reply
+    ) => {
       const { marketId } = request.params;
 
       const watermark = await prisma.tradeStreamWatermark.findUnique({

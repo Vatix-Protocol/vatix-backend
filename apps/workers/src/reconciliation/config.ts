@@ -14,7 +14,7 @@ export function loadReconciliationConfig(): ReconciliationConfig {
     10
   );
   const autoRecoveryEnabled =
-    process.env.AUTO_RECOVERY_ENABLED?.toLowerCase() === "true" ?? false;
+    process.env.AUTO_RECOVERY_ENABLED?.toLowerCase() === "true";
 
   if (isNaN(intervalMs) || intervalMs < 1000) {
     throw new Error(

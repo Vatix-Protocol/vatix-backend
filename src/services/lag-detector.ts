@@ -100,10 +100,13 @@ export class LagDetector {
     } else if (this.shedState && totalLag <= this.config.lowWaterMark) {
       // Transition from shedding
       this.shedState = false;
-      console.info("Lag recovered below low water mark, exiting shedding state", {
-        lag: totalLag,
-        lowWater: this.config.lowWaterMark,
-      });
+      console.info(
+        "Lag recovered below low water mark, exiting shedding state",
+        {
+          lag: totalLag,
+          lowWater: this.config.lowWaterMark,
+        }
+      );
     }
 
     return this.shedState;

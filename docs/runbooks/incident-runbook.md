@@ -722,10 +722,10 @@ For consumer/retry/dead-letter mechanics see
 
 Default queue names (BullMQ prefixes every key with `bull:`):
 
-| Queue                | Name (env override)                                        | Example Redis key prefix           |
-| --------------------- | ----------------------------------------------------------- | ----------------------------------- |
-| Settlement            | `${REDIS_KEY_PREFIX}${SETTLEMENT_QUEUE_NAME}` (`vatix:settlement-trades`) | `bull:vatix:settlement-trades:*`   |
-| Oracle submission     | `${SUBMISSION_QUEUE_NAME}` (`oracle-submissions`)            | `bull:oracle-submissions:*`        |
+| Queue             | Name (env override)                                                       | Example Redis key prefix         |
+| ----------------- | ------------------------------------------------------------------------- | -------------------------------- |
+| Settlement        | `${REDIS_KEY_PREFIX}${SETTLEMENT_QUEUE_NAME}` (`vatix:settlement-trades`) | `bull:vatix:settlement-trades:*` |
+| Oracle submission | `${SUBMISSION_QUEUE_NAME}` (`oracle-submissions`)                         | `bull:oracle-submissions:*`      |
 
 ### Symptoms
 
@@ -848,10 +848,10 @@ Counts should trend back to baseline (near zero `wait`, no growth in
 Use the [Severity Decision Matrix](#severity-decision-matrix) alongside
 these queue-specific triggers:
 
-| Condition                                                     | Severity |
-| --------------------------------------------------------------- | -------- |
-| Settlement `wait` backlog > 5 min of throughput, still growing  | SEV-2    |
-| Oracle submission backlog delaying an active challenge window   | SEV-1    |
+| Condition                                                             | Severity |
+| --------------------------------------------------------------------- | -------- |
+| Settlement `wait` backlog > 5 min of throughput, still growing        | SEV-2    |
+| Oracle submission backlog delaying an active challenge window         | SEV-1    |
 | `failed` count growing but `wait`/`active` stable (isolated bad jobs) | SEV-3    |
 
 Follow the standard [Escalation Procedures](#escalation-procedures) for the

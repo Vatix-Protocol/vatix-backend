@@ -19,7 +19,9 @@ export const consoleTelemetry: Telemetry = {
       end(endTags) {
         const durationMs = performance.now() - startedAt;
         const tags = { ...startTags, ...endTags };
-        const tagStr = Object.keys(tags).length ? ` ${JSON.stringify(tags)}` : "";
+        const tagStr = Object.keys(tags).length
+          ? ` ${JSON.stringify(tags)}`
+          : "";
         console.log(
           `[telemetry] span ${name} duration_ms=${durationMs.toFixed(2)}${tagStr}`
         );

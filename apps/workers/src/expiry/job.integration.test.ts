@@ -28,7 +28,8 @@ describe("ExpiryJob Integration Tests", () => {
         question: "Should expire?",
         endTime: pastEndTime,
         resolutionTime: null,
-        oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
         status: "ACTIVE",
       },
     });
@@ -38,7 +39,8 @@ describe("ExpiryJob Integration Tests", () => {
         question: "Should not expire?",
         endTime: futureEndTime,
         resolutionTime: null,
-        oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
         status: "ACTIVE",
       },
     });
@@ -120,7 +122,8 @@ describe("ExpiryJob Integration Tests", () => {
         question: "Multi-order expiry?",
         endTime: pastEndTime,
         resolutionTime: null,
-        oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
         status: "ACTIVE",
       },
     });
@@ -170,7 +173,9 @@ describe("ExpiryJob Integration Tests", () => {
 
     const result = await job.run();
 
-    const marketResult = result.candidates.find((c) => c.marketId === market.id);
+    const marketResult = result.candidates.find(
+      (c) => c.marketId === market.id
+    );
     expect(marketResult?.ordersCount).toBe(4);
     expect(marketResult?.status).toBe("expired");
 
@@ -193,7 +198,8 @@ describe("ExpiryJob Integration Tests", () => {
         question: "Idempotent expiry?",
         endTime: pastEndTime,
         resolutionTime: null,
-        oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
         status: "ACTIVE",
       },
     });

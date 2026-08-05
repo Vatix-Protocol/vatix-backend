@@ -1,4 +1,4 @@
-import { Decimal } from "@prisma/client/runtime/library.js";
+import { Decimal } from "@prisma/client/runtime/client.js";
 
 /**
  * On-chain collateral amounts are i128 integers with 7 implicit decimal places.

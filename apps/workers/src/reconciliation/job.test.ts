@@ -45,9 +45,7 @@ describe("ReconciliationJob", () => {
       { id: "market2" },
     ]);
 
-    vi.mocked(
-      positionReconciliationService.reconcileMarket
-    ).mockResolvedValue({
+    vi.mocked(positionReconciliationService.reconcileMarket).mockResolvedValue({
       marketId: "market1",
       totalWallets: 5,
       driftCount: 1,
@@ -71,21 +69,21 @@ describe("ReconciliationJob", () => {
     ]);
 
     let callCount = 0;
-    vi.mocked(
-      positionReconciliationService.reconcileMarket
-    ).mockImplementation(async () => {
-      callCount++;
-      // Simulate long-running reconciliation
-      await new Promise((r) => setTimeout(r, 100));
-      return {
-        marketId: `market${callCount}`,
-        totalWallets: 5,
-        driftCount: 0,
-        recoveredCount: 0,
-        failedCount: 0,
-        duration: 100,
-      };
-    });
+    vi.mocked(positionReconciliationService.reconcileMarket).mockImplementation(
+      async () => {
+        callCount++;
+        // Simulate long-running reconciliation
+        await new Promise((r) => setTimeout(r, 100));
+        return {
+          marketId: `market${callCount}`,
+          totalWallets: 5,
+          driftCount: 0,
+          recoveredCount: 0,
+          failedCount: 0,
+          duration: 100,
+        };
+      }
+    );
 
     const job = new ReconciliationJob(mockLogger, 150, false);
     const result = await job.run();

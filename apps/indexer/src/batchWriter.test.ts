@@ -143,7 +143,10 @@ describe("PrismaBatchWriter", () => {
 
     const writer = new PrismaBatchWriter();
     await writer.write([
-      { kind: "resolution", data: withIdempotencyKey(resolutionWithConfidence) },
+      {
+        kind: "resolution",
+        data: withIdempotencyKey(resolutionWithConfidence),
+      },
     ]);
 
     expect(tx.resolutionCandidate.create).toHaveBeenCalledWith(

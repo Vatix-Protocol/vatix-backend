@@ -117,7 +117,9 @@ describe("apps/oracle/main poll()", () => {
 
     expect(mockQueue.initialize).toHaveBeenCalledTimes(1);
     expect(mockPrisma.market.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { status: "ACTIVE" } })
+      expect.objectContaining({
+        where: { status: { in: ["ACTIVE"] } },
+      })
     );
     expect(mockOracleService.resolve).toHaveBeenCalledWith({
       marketId: "market-1",

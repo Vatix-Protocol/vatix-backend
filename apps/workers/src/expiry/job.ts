@@ -1,9 +1,6 @@
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
-import type {
-  ExpiryJobResult,
-  ExpiryCandidateResult,
-} from "./types.js";
+import type { ExpiryJobResult, ExpiryCandidateResult } from "./types.js";
 
 export interface ExpiryJobConfig {
   maxRunMs?: number;
@@ -84,7 +81,10 @@ export class ExpiryJob {
     const results: ExpiryCandidateResult[] = [];
 
     for (const market of candidates) {
-      if (this.maxRunMs > 0 && Date.now() - startedAt.getTime() >= this.maxRunMs) {
+      if (
+        this.maxRunMs > 0 &&
+        Date.now() - startedAt.getTime() >= this.maxRunMs
+      ) {
         this.logger.warn("Expiry job exceeded maxRunMs, stopping early", {
           maxRunMs: this.maxRunMs,
           processedSoFar: results.length,
@@ -183,9 +183,7 @@ export class ExpiryJob {
       for (const order of openOrders) {
         const remainingQty = order.quantity - order.filledQuantity;
         const collateralPerUnit =
-          order.side === "BUY"
-            ? Number(order.price)
-            : 1 - Number(order.price);
+          order.side === "BUY" ? Number(order.price) : 1 - Number(order.price);
         const collateralToRelease =
           Math.round(collateralPerUnit * remainingQty * 1e8) / 1e8;
 

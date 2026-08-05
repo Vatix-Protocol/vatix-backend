@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { StellarTransport, parseEndpointUrls, loadStellarEndpoints } from "./stellarTransport.js";
+import {
+  StellarTransport,
+  parseEndpointUrls,
+  loadStellarEndpoints,
+} from "./stellarTransport.js";
 
 const mockLogger = {
   info: vi.fn(),

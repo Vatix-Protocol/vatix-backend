@@ -92,7 +92,9 @@ describe("safeStringify", () => {
   });
 
   it("serializes bigint as string", () => {
-    expect(safeStringify({ n: 9007199254740993n })).toBe('{"n":"9007199254740993"}');
+    expect(safeStringify({ n: 9007199254740993n })).toBe(
+      '{"n":"9007199254740993"}'
+    );
   });
 
   it("serializes an Error as an object with name/message", () => {

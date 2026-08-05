@@ -48,8 +48,10 @@ describe("docker-compose.yml", () => {
 
   it("gates application services behind profiles, leaving postgres/redis on by default", () => {
     const content = readFileSync(COMPOSE_PATH, "utf8");
-    expect(content).toMatch(/profiles:\s*\[\s*"app",\s*"api"\s*\]/);
-    expect(content).toMatch(/profiles:\s*\[\s*"app",\s*"indexer"\s*\]/);
+    expect(content).toMatch(/profiles:\s*\[\s*"app",\s*"full",\s*"api"\s*\]/);
+    expect(content).toMatch(
+      /profiles:\s*\[\s*"app",\s*"full",\s*"indexer"\s*\]/
+    );
 
     const postgresBlock = content.slice(
       content.indexOf("\n  postgres:"),

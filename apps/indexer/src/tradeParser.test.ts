@@ -166,9 +166,9 @@ describe("parseTradeEvent — malformed payloads", () => {
   });
 
   it("throws TradeParseError when topicsXdr contains only whitespace", () => {
-    expect(() =>
-      parseTradeEvent(makeEvent({ topicsXdr: ["   "] }))
-    ).toThrow(TradeParseError);
+    expect(() => parseTradeEvent(makeEvent({ topicsXdr: ["   "] }))).toThrow(
+      TradeParseError
+    );
   });
 
   it("throws TradeParseError when topicsXdr has wrong discriminator symbol", () => {
@@ -204,7 +204,6 @@ describe("parseTradeEvent — malformed payloads", () => {
     expect(errors.map((e) => e.eventId)).toEqual(["evt-bad-1", "evt-bad-2"]);
   });
 });
-
 
 describe("parseTradeEvents", () => {
   it("parses multiple valid events", () => {

@@ -70,6 +70,7 @@ export class EventFetcher {
         telemetry.record("indexer.transport.error", 1, ctx || {}),
       debug: (msg: string, ctx?: any) =>
         telemetry.record("indexer.transport.debug", 1, ctx || {}),
+      child: (_childPrefix: string) => logger,
     };
 
     this.transport = new StellarTransport(horizonUrls, logger, {
@@ -93,7 +94,8 @@ export class EventFetcher {
    */
   async getLatestLedgerInfo(): Promise<{ sequence: number; hash: string }> {
     const info = await this.server.getLatestLedger();
-    return { sequence: info.sequence, hash: info.hash.id };
+    // Soroban RPC getLatestLedger returns the ledger hash as `id`.
+    return { sequence: info.sequence, hash: info.id };
   }
 
   /**

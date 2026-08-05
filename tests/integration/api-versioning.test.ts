@@ -193,9 +193,7 @@ describe("Integration Tests: API versioning", () => {
     for (const request of unsupportedRequests) {
       const response = await app.inject(request);
 
-      expect(response.statusCode, `${request.method} ${request.url}`).toBe(
-        404
-      );
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(404);
       const body = JSON.parse(response.body);
       expect(body).toEqual({
         error: `Route ${request.method} ${request.url} not found`,

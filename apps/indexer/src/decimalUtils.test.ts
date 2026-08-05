@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Decimal } from "@prisma/client/runtime/library.js";
+import { Decimal } from "@prisma/client/runtime/client.js";
 import { amountRawToDecimal, COLLATERAL_SCALE } from "./decimalUtils.js";
 
 describe("amountRawToDecimal", () => {
@@ -14,11 +14,15 @@ describe("amountRawToDecimal", () => {
   });
 
   it("converts 10_000_000n to Decimal('1.0000000')", () => {
-    expect(amountRawToDecimal(10_000_000n).equals(new Decimal("1.0000000"))).toBe(true);
+    expect(
+      amountRawToDecimal(10_000_000n).equals(new Decimal("1.0000000"))
+    ).toBe(true);
   });
 
   it("converts 5_000_000n to Decimal('0.5000000')", () => {
-    expect(amountRawToDecimal(5_000_000n).equals(new Decimal("0.5000000"))).toBe(true);
+    expect(
+      amountRawToDecimal(5_000_000n).equals(new Decimal("0.5000000"))
+    ).toBe(true);
   });
 
   it("converts 1n to Decimal('0.0000001') — smallest unit", () => {
@@ -26,7 +30,9 @@ describe("amountRawToDecimal", () => {
   });
 
   it("converts 500_000_000n to Decimal('50.0000000')", () => {
-    expect(amountRawToDecimal(500_000_000n).equals(new Decimal("50.0000000"))).toBe(true);
+    expect(
+      amountRawToDecimal(500_000_000n).equals(new Decimal("50.0000000"))
+    ).toBe(true);
   });
 
   it("accepts string representation and produces same result as bigint", () => {
@@ -92,6 +98,8 @@ describe("amountRawToDecimal", () => {
   });
 
   it("accepts string with leading/trailing whitespace if otherwise valid integer", () => {
-    expect(amountRawToDecimal(" 10000000 ").equals(new Decimal("1.0000000"))).toBe(true);
+    expect(
+      amountRawToDecimal(" 10000000 ").equals(new Decimal("1.0000000"))
+    ).toBe(true);
   });
 });

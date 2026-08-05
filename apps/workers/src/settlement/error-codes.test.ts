@@ -52,9 +52,7 @@ describe("classifySettlementError", () => {
   });
 
   it("classifies not-confirmed as STELLAR_TX_NOT_CONFIRMED (transient)", () => {
-    const err = new Error(
-      "settle_trade not confirmed after 30s: hash=abc123"
-    );
+    const err = new Error("settle_trade not confirmed after 30s: hash=abc123");
     const info = classifySettlementError(err);
     expect(info.code).toBe("STELLAR_TX_NOT_CONFIRMED");
     expect(info.status).toBe("transient");
@@ -161,21 +159,63 @@ describe("classifySettlementError", () => {
 
 describe("isRetryable", () => {
   it("returns true for transient status", () => {
-    expect(isRetryable({ code: "STELLAR_RPC_UNAVAILABLE", status: "transient", message: "" })).toBe(true);
-    expect(isRetryable({ code: "STELLAR_TX_NOT_CONFIRMED", status: "transient", message: "" })).toBe(true);
-    expect(isRetryable({ code: "UNKNOWN", status: "transient", message: "" })).toBe(true);
+    expect(
+      isRetryable({
+        code: "STELLAR_RPC_UNAVAILABLE",
+        status: "transient",
+        message: "",
+      })
+    ).toBe(true);
+    expect(
+      isRetryable({
+        code: "STELLAR_TX_NOT_CONFIRMED",
+        status: "transient",
+        message: "",
+      })
+    ).toBe(true);
+    expect(
+      isRetryable({ code: "UNKNOWN", status: "transient", message: "" })
+    ).toBe(true);
   });
 
   it("returns false for fatal status", () => {
-    expect(isRetryable({ code: "STELLAR_TX_FAILED", status: "fatal", message: "" })).toBe(false);
-    expect(isRetryable({ code: "STELLAR_TX_BAD_AUTH", status: "fatal", message: "" })).toBe(false);
-    expect(isRetryable({ code: "SOROBAN_CONTRACT_ERROR", status: "fatal", message: "" })).toBe(false);
-    expect(isRetryable({ code: "STELLAR_TX_INSUFFICIENT_FUNDS", status: "fatal", message: "" })).toBe(false);
-    expect(isRetryable({ code: "MISSING_STELLAR_CONFIG", status: "fatal", message: "" })).toBe(false);
+    expect(
+      isRetryable({ code: "STELLAR_TX_FAILED", status: "fatal", message: "" })
+    ).toBe(false);
+    expect(
+      isRetryable({ code: "STELLAR_TX_BAD_AUTH", status: "fatal", message: "" })
+    ).toBe(false);
+    expect(
+      isRetryable({
+        code: "SOROBAN_CONTRACT_ERROR",
+        status: "fatal",
+        message: "",
+      })
+    ).toBe(false);
+    expect(
+      isRetryable({
+        code: "STELLAR_TX_INSUFFICIENT_FUNDS",
+        status: "fatal",
+        message: "",
+      })
+    ).toBe(false);
+    expect(
+      isRetryable({
+        code: "MISSING_STELLAR_CONFIG",
+        status: "fatal",
+        message: "",
+      })
+    ).toBe(false);
   });
 
   it("returns false for invalid_input status", () => {
-    expect(isRetryable({ code: "INVALID_PAYLOAD", status: "invalid_input", message: "" })).toBe(false);
+    expect(
+      isRetryable({
+        code: "INVALID_PAYLOAD",
+        status: "invalid_input",
+        message: "",
+      })
+    ).toBe(false);
   });
 });
 

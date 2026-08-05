@@ -25,13 +25,10 @@ async function bootstrap(): Promise<void> {
 
   const poll = async (): Promise<void> => {
     if (activePollPromise) {
-      logger.warn(
-        "Skipping expiry poll because a previous poll is active",
-        {
-          intervalMs: config.intervalMs,
-          component: "expiry-worker",
-        }
-      );
+      logger.warn("Skipping expiry poll because a previous poll is active", {
+        intervalMs: config.intervalMs,
+        component: "expiry-worker",
+      });
       return;
     }
 

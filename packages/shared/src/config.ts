@@ -399,9 +399,13 @@ export function loadIndexerConfig(env: Env = processEnv): IndexerConfig {
       env,
       1000
     ),
-    backfillMaxLedgers: requirePositiveInt("INDEXER_BACKFILL_MAX_LEDGERS", env, {
-      fallback: 500,
-    }),
+    backfillMaxLedgers: requirePositiveInt(
+      "INDEXER_BACKFILL_MAX_LEDGERS",
+      env,
+      {
+        fallback: 500,
+      }
+    ),
   };
 }
 

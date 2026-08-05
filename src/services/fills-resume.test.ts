@@ -69,9 +69,7 @@ describe("FillsResumeService", () => {
       ]); // Get latest
       vi.mocked(redis.xrange)
         .mockResolvedValueOnce([]) // First xrange (check cursor)
-        .mockResolvedValueOnce([
-          ["1234567900-0", ["data"]],
-        ]); // Second xrange (get oldest)
+        .mockResolvedValueOnce([["1234567900-0", ["data"]]]); // Second xrange (get oldest)
 
       // Override mock for sequence: check cursor, get oldest
       let callCount = 0;

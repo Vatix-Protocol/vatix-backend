@@ -197,7 +197,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
           requestId: approval.requestId,
           token: approval.token,
           expiresAt: approval.expiresAt.toISOString(),
-          message: "Second admin approval required. Use token in X-Approval-Token header.",
+          message:
+            "Second admin approval required. Use token in X-Approval-Token header.",
         });
       }
     }
@@ -263,7 +264,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
           requestId: approval.requestId,
           token: approval.token,
           expiresAt: approval.expiresAt.toISOString(),
-          message: "Second admin approval required. Use token in X-Approval-Token header.",
+          message:
+            "Second admin approval required. Use token in X-Approval-Token header.",
         });
       }
     }
@@ -329,7 +331,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
           requestId: approval.requestId,
           token: approval.token,
           expiresAt: approval.expiresAt.toISOString(),
-          message: "Second admin approval required. Use token in X-Approval-Token header.",
+          message:
+            "Second admin approval required. Use token in X-Approval-Token header.",
         });
       }
     }

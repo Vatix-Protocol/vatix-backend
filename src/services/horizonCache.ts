@@ -39,7 +39,11 @@ export class HorizonCacheService {
 
   async set(accountId: string, data: HorizonAccountData): Promise<void> {
     if (!isValidAccountId(accountId)) return;
-    await redis.set(cacheKey(accountId), JSON.stringify(data), HORIZON_ACCOUNT_TTL);
+    await redis.set(
+      cacheKey(accountId),
+      JSON.stringify(data),
+      HORIZON_ACCOUNT_TTL
+    );
   }
 
   async invalidate(accountId: string): Promise<void> {

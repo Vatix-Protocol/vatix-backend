@@ -57,9 +57,11 @@ describe("AuditArchiverJob", () => {
   it("should respect maxRunMs timeout", async () => {
     const mockPrisma = {
       market: {
-        findMany: vi.fn().mockResolvedValue(
-          Array.from({ length: 100 }, (_, i) => ({ id: `market-${i}` }))
-        ),
+        findMany: vi
+          .fn()
+          .mockResolvedValue(
+            Array.from({ length: 100 }, (_, i) => ({ id: `market-${i}` }))
+          ),
       },
     };
 

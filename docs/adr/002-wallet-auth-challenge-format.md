@@ -21,16 +21,16 @@ so the design intent is documented alongside the code.
 The signed payload is a JSON object with alphabetically sorted keys
 (`buildSignableMessage` in `stellarAuth.ts`):
 
-| Field        | Source               | Notes                              |
-| ------------ | -------------------- | ----------------------------------- |
-| `marketId`   | request body         | target market                       |
-| `nonce`      | `x-nonce` header      | single-use, issued by the challenge |
-| `outcome`    | request body         | `YES` / `NO`                        |
-| `price`      | request body         |                                      |
-| `quantity`   | request body         |                                      |
-| `side`       | request body         | `buy` / `sell`                      |
-| `timestamp`  | `x-timestamp` header  | ms since epoch                      |
-| `userAddress`| request body         | Stellar public key                  |
+| Field         | Source               | Notes                               |
+| ------------- | -------------------- | ----------------------------------- |
+| `marketId`    | request body         | target market                       |
+| `nonce`       | `x-nonce` header     | single-use, issued by the challenge |
+| `outcome`     | request body         | `YES` / `NO`                        |
+| `price`       | request body         |                                     |
+| `quantity`    | request body         |                                     |
+| `side`        | request body         | `buy` / `sell`                      |
+| `timestamp`   | `x-timestamp` header | ms since epoch                      |
+| `userAddress` | request body         | Stellar public key                  |
 
 Required headers on the authenticated request: `x-signature` (base64 Ed25519
 signature of the message), `x-timestamp`, `x-nonce`.
@@ -54,7 +54,7 @@ signature of the message), `x-timestamp`, `x-nonce`.
 
 1. The signature must verify against the exact message (including nonce and
    timestamp) before the nonce is touched.
-2. The nonce is consumed only *after* signature verification succeeds, via an
+2. The nonce is consumed only _after_ signature verification succeeds, via an
    atomic Redis `DEL`-if-exists (`consumeNonce`). The delete reply count
    guarantees exactly one winner if two requests race on the same nonce.
 3. Unknown, expired, or already-consumed nonces fail closed (401), as does a

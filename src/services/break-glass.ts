@@ -56,7 +56,8 @@ export class BreakGlassService {
    */
   async initiateApproval(request: ApprovalRequest): Promise<ApprovalResponse> {
     const expiresAt = new Date(
-      Date.now() + (request.expirationMinutes ?? this.tokenExpireMinutes) * 60000
+      Date.now() +
+        (request.expirationMinutes ?? this.tokenExpireMinutes) * 60000
     );
     const token = randomBytes(32).toString("hex");
     const tokenHash = this.hashToken(token);
@@ -372,9 +373,7 @@ export class BreakGlassService {
     }
 
     if (approval.action !== action) {
-      throw new Error(
-        `Token is for action ${approval.action}, not ${action}`
-      );
+      throw new Error(`Token is for action ${approval.action}, not ${action}`);
     }
 
     if (approval.expiresAt < new Date()) {

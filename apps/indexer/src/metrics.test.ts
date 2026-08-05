@@ -72,6 +72,7 @@ describe("InternalIndexerMetricsService", () => {
       lag: 50,
       gapDetectedTotal: 0,
       backfillLedgersTotal: 0,
+      parseErrorTotal: 0,
     });
   });
 
@@ -88,6 +89,7 @@ describe("InternalIndexerMetricsService", () => {
       lag: 1235,
       gapDetectedTotal: 0,
       backfillLedgersTotal: 0,
+      parseErrorTotal: 0,
     });
   });
 

@@ -72,7 +72,11 @@ export function resolveOracleStellarConfig(
   const networkPassphrase = env.SOROBAN_NETWORK_PASSPHRASE;
   const signerSecret = env.ORACLE_SECRET_KEY;
 
-  const { rpcUrls } = loadStellarEndpoints(env, networkPassphrase);
+  // Require an explicit RPC endpoint. loadStellarEndpoints applies public
+  // defaults, but the oracle worker must not silently submit against those.
+  const hasExplicitRpc =
+    Boolean(env.STELLAR_RPC_URL?.trim()) ||
+    Boolean(env.STELLAR_RPC_URLS?.trim());
 
   let contractId: string | undefined;
   try {
@@ -81,14 +85,22 @@ export function resolveOracleStellarConfig(
     contractId = undefined;
   }
 
-  if (!(rpcUrl && contractId && networkPassphrase && signerSecret)) {
+  if (!(hasExplicitRpc && contractId && networkPassphrase && signerSecret)) {
     return undefined;
   }
+
+  const { rpcUrls } = loadStellarEndpoints(env, networkPassphrase);
 
   assertPassphraseMatchesDeployment(
     networkPassphrase,
     env.STELLAR_NETWORK ?? "testnet"
   );
 
-  return { rpcUrl, contractId, networkPassphrase, signerSecret };
+  return {
+    rpcUrl: rpcUrls[0],
+    rpcUrls,
+    contractId,
+    networkPassphrase,
+    signerSecret,
+  };
 }

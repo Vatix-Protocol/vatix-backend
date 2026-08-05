@@ -88,14 +88,16 @@ export class AuditService {
         );
 
         // Trigger async archive (non-blocking)
-        this.archiveAuditEventAsync(
-          trade.id,
-          trade.marketId,
-          logData,
-          marketEntryId
-        ).catch((err) => {
-          console.error("Failed to archive audit event:", err);
-        });
+        if (marketEntryId) {
+          this.archiveAuditEventAsync(
+            trade.id,
+            trade.marketId,
+            logData,
+            marketEntryId
+          ).catch((err) => {
+            console.error("Failed to archive audit event:", err);
+          });
+        }
 
         const duration = performance.now() - startTime;
 
@@ -133,14 +135,16 @@ export class AuditService {
             ...this.flattenObject(logData)
           );
 
-          this.archiveAuditEventAsync(
-            trade.id,
-            trade.marketId,
-            logData,
-            marketEntryId
-          ).catch((err) => {
-            console.error("Failed to archive audit event:", err);
-          });
+          if (marketEntryId) {
+            this.archiveAuditEventAsync(
+              trade.id,
+              trade.marketId,
+              logData,
+              marketEntryId
+            ).catch((err) => {
+              console.error("Failed to archive audit event:", err);
+            });
+          }
 
           return marketEntryId;
         }

@@ -912,10 +912,11 @@ describe("FinalizationJob", () => {
         } as unknown as PrismaClient;
 
         const logger = makeLogger();
-        // Allow only 300 ms → first candidate (200 ms) fits, second is blocked
+        // Allow only 150 ms → first candidate (200 ms) completes, then the
+        // pre-iteration guard blocks the remaining candidates.
         const job = new FinalizationJob(prisma, logger, {
           challengeWindowSeconds: 3600,
-          maxRunMs: 300,
+          maxRunMs: 150,
         });
 
         const result = await job.run();
@@ -925,7 +926,7 @@ describe("FinalizationJob", () => {
         expect(result.totalCandidates).toBe(3);
         expect(logger.warn).toHaveBeenCalledWith(
           "Finalization job exceeded maxRunMs, stopping early",
-          expect.objectContaining({ maxRunMs: 300 })
+          expect.objectContaining({ maxRunMs: 150 })
         );
       } finally {
         vi.useRealTimers();

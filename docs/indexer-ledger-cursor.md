@@ -232,12 +232,12 @@ rows — the `skipped` counter increments and `written` stays at 0.
 
 ### Alert thresholds
 
-| Signal                    | Recommended condition                | Action                                                          |
-| ------------------------- | ------------------------------------ | --------------------------------------------------------------- |
-| `lag`                     | `lag > 500` for > 5 min              | Check RPC connectivity; review ingestion logs.                  |
-| `gapDetectedTotal`        | Any increment                        | Review `indexer.gap.*` events; verify backfill completed.       |
-| `indexer.gap.pause`       | Any occurrence                       | Immediate page; manual investigation required before restart.   |
-| `indexer.gap.clamped`     | Any occurrence                       | Increase `INDEXER_BACKFILL_MAX_LEDGERS` or investigate root cause. |
+| Signal                | Recommended condition   | Action                                                             |
+| --------------------- | ----------------------- | ------------------------------------------------------------------ |
+| `lag`                 | `lag > 500` for > 5 min | Check RPC connectivity; review ingestion logs.                     |
+| `gapDetectedTotal`    | Any increment           | Review `indexer.gap.*` events; verify backfill completed.          |
+| `indexer.gap.pause`   | Any occurrence          | Immediate page; manual investigation required before restart.      |
+| `indexer.gap.clamped` | Any occurrence          | Increase `INDEXER_BACKFILL_MAX_LEDGERS` or investigate root cause. |
 
 See [Metrics Log](metrics-log.md) for full log event reference.
 

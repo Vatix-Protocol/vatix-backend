@@ -1,6 +1,6 @@
 import { getPrismaClient } from "./prisma.js";
 import type { UserPosition, Prisma } from "../generated/prisma/client/index.js";
-import { Decimal } from "@prisma/client/runtime/library.js";
+import { Decimal } from "@prisma/client/runtime/client.js";
 import { amountRawToDecimal } from "../../apps/indexer/src/decimalUtils.js";
 
 export interface ComputedPosition {
@@ -77,7 +77,9 @@ export class PositionReconciliationService {
 
     // Apply deposit deltas
     for (const deposit of deposits) {
-      lockedCollateral = lockedCollateral.plus(amountRawToDecimal(deposit.amountRaw));
+      lockedCollateral = lockedCollateral.plus(
+        amountRawToDecimal(deposit.amountRaw)
+      );
     }
 
     // Apply trade deltas
@@ -117,9 +119,7 @@ export class PositionReconciliationService {
   ): { hasDrift: boolean; divergence: DriftRecord } {
     const yesSharesDiff = expected.yesShares - actual.yesShares;
     const noSharesDiff = expected.noShares - actual.noShares;
-    const lockedDiff = expected.lockedCollateral.minus(
-      actual.lockedCollateral
-    );
+    const lockedDiff = expected.lockedCollateral.minus(actual.lockedCollateral);
 
     const hasDrift =
       yesSharesDiff !== 0 || noSharesDiff !== 0 || !lockedDiff.isZero();
@@ -462,10 +462,7 @@ export class PositionReconciliationService {
           }
         } catch (error) {
           failed++;
-          console.error(
-            `Failed to reconcile deposit ${deposit.id}:`,
-            error
-          );
+          console.error(`Failed to reconcile deposit ${deposit.id}:`, error);
         }
       }
 
@@ -475,7 +472,10 @@ export class PositionReconciliationService {
         failed,
       };
     } catch (error) {
-      console.error(`Failed to reconcile deposits for market ${marketId}:`, error);
+      console.error(
+        `Failed to reconcile deposits for market ${marketId}:`,
+        error
+      );
       throw error;
     }
   }

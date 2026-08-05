@@ -268,6 +268,7 @@ export class PollingIngestionLoop implements IngestionLoop {
         : null;
 
     this.logger.info("Indexer heartbeat", {
+      ...this.metrics.toLogFields(),
       event: "indexer.heartbeat",
       cursor: this.cursor,
       latestIndexedLedgerSequence,
@@ -275,7 +276,6 @@ export class PollingIngestionLoop implements IngestionLoop {
       ledgerDelta,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
       isPaused: this.isPaused,
-      ...this.metrics.toLogFields(),
     });
 
     this.batchesSinceLastHeartbeat = 0;
@@ -292,7 +292,10 @@ export class PollingIngestionLoop implements IngestionLoop {
       const info = await this.deps.eventFetcher.getLatestLedgerInfo();
       return info.hash;
     } catch {
-      this.logger.warn("Failed to fetch latest ledger hash for reorg check", {});
+      this.logger.warn(
+        "Failed to fetch latest ledger hash for reorg check",
+        {}
+      );
       return null;
     }
   }
@@ -426,8 +429,7 @@ export class PollingIngestionLoop implements IngestionLoop {
     // than safeCurrentSequence because safeCurrentSequence == startLedger - 1
     // (always contiguous by construction), whereas the high-water mark
     // records the last *confirmed written* ledger across restarts.
-    const lastConfirmedIndexed =
-      this.metrics.getLatestIndexedLedgerSequence();
+    const lastConfirmedIndexed = this.metrics.getLatestIndexedLedgerSequence();
 
     if (
       lastConfirmedIndexed !== null &&
@@ -440,14 +442,17 @@ export class PollingIngestionLoop implements IngestionLoop {
         latestLedger
       );
       if (cursorGap.gapDetected) {
-        this.logger.warn("Cursor-level ledger gap detected — starting backfill", {
-          event: "indexer.gap.cursor_gap",
-          lastIndexedLedger: lastConfirmedIndexed,
-          batchStartLedger: startLedger,
-          gapStartLedger: cursorGap.gapStartLedger,
-          gapEndLedger: cursorGap.gapEndLedger,
-          gapSize: cursorGap.gapSize,
-        });
+        this.logger.warn(
+          "Cursor-level ledger gap detected — starting backfill",
+          {
+            event: "indexer.gap.cursor_gap",
+            lastIndexedLedger: lastConfirmedIndexed,
+            batchStartLedger: startLedger,
+            gapStartLedger: cursorGap.gapStartLedger,
+            gapEndLedger: cursorGap.gapEndLedger,
+            gapSize: cursorGap.gapSize,
+          }
+        );
 
         const backfillResult = await this.gapDetector.runBackfill(
           cursorGap.gapStartLedger!,

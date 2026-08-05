@@ -50,6 +50,7 @@ describe("resolveOracleStellarConfig", () => {
     });
     expect(config).toEqual({
       rpcUrl: BASE_ENV.STELLAR_RPC_URL,
+      rpcUrls: [BASE_ENV.STELLAR_RPC_URL],
       contractId: "CINDEXER",
       networkPassphrase: BASE_ENV.SOROBAN_NETWORK_PASSPHRASE,
       signerSecret: BASE_ENV.ORACLE_SECRET_KEY,

@@ -33,7 +33,9 @@ export async function walletRoutes(fastify: FastifyInstance) {
       const { accountId } = request.params;
 
       if (!STELLAR_ACCOUNT_RE.test(accountId)) {
-        throw new ValidationError("accountId must be a valid Stellar public key");
+        throw new ValidationError(
+          "accountId must be a valid Stellar public key"
+        );
       }
 
       const cached = await horizonCache.get(accountId);

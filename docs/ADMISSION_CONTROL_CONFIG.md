@@ -6,10 +6,10 @@ Admission control provides load shedding for the orders API based on downstream 
 
 ## Environment Variables
 
-| Variable | Default | Description | Impact |
-|----------|---------|-------------|--------|
-| `SETTLEMENT_LAG_SHED_THRESHOLD` | `1000` | High water mark: start shedding when lag ≥ this value | Production tuning |
-| `SETTLEMENT_LAG_RECOVERY_THRESHOLD` | `500` | Low water mark: stop shedding when lag ≤ this value | Hysteresis width |
+| Variable                            | Default | Description                                           | Impact            |
+| ----------------------------------- | ------- | ----------------------------------------------------- | ----------------- |
+| `SETTLEMENT_LAG_SHED_THRESHOLD`     | `1000`  | High water mark: start shedding when lag ≥ this value | Production tuning |
+| `SETTLEMENT_LAG_RECOVERY_THRESHOLD` | `500`   | Low water mark: stop shedding when lag ≤ this value   | Hysteresis width  |
 
 ## How Lag is Measured
 
@@ -20,11 +20,13 @@ total_lag = (settlement_queue_depth × 1.0) + (outbox_unpublished_count × 0.5)
 ```
 
 **Settlement Queue Depth**
+
 - Read from Redis stream (`XLEN`) or BullMQ queue (`ZCARD`)
 - Represents pending settlement jobs in `vatix:queue:settlement`
 - Weight: 1.0 (critical path)
 
 **Outbox Unpublished Count**
+
 - Counted from database table (`outbox_events` WHERE `published_at IS NULL`)
 - Represents uncommitted/undelivered state changes
 - Weight: 0.5 (secondary; may not exist initially)
@@ -87,6 +89,7 @@ Requests that **bypass** admission control:
 ### Default Configuration
 
 Assumes:
+
 - Settlement worker processes ~100 jobs/second
 - Reasonable SLA: queue drain in ~10 seconds at high threshold
 

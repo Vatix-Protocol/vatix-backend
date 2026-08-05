@@ -138,10 +138,12 @@ describe("Gap detection fixture — cursor jumped past unprocessed ledgers", () 
     eventFetcher = {
       fetchByLedgerWindow: vi
         .fn()
-        .mockImplementation(async ({ startLedger }: { startLedger: number }) => ({
-          events: [makeTradeEvent(`evt-${startLedger}`, startLedger)],
-          latestLedger: 300,
-        })),
+        .mockImplementation(
+          async ({ startLedger }: { startLedger: number }) => ({
+            events: [makeTradeEvent(`evt-${startLedger}`, startLedger)],
+            latestLedger: 300,
+          })
+        ),
       getLatestLedgerInfo: vi.fn().mockResolvedValue({
         sequence: 300,
         hash: "abc123",

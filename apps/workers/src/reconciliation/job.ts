@@ -1,9 +1,9 @@
-import type ILogger from "../../../../packages/shared/src/logger.js";
+import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import {
   positionReconciliationService,
   type BulkReconciliationResult,
-} from "../../../src/services/position-reconciliation.js";
-import { getPrismaClient } from "../../../src/services/prisma.js";
+} from "../../../../src/services/position-reconciliation.js";
+import { getPrismaClient } from "../../../../src/services/prisma.js";
 import type { ReconciliationJobResult } from "./types.js";
 
 export class ReconciliationJob {
@@ -11,11 +11,7 @@ export class ReconciliationJob {
   private readonly maxRunMs: number;
   private readonly autoRecoveryEnabled: boolean;
 
-  constructor(
-    logger: ILogger,
-    maxRunMs: number,
-    autoRecoveryEnabled: boolean
-  ) {
+  constructor(logger: ILogger, maxRunMs: number, autoRecoveryEnabled: boolean) {
     this.logger = logger;
     this.maxRunMs = maxRunMs;
     this.autoRecoveryEnabled = autoRecoveryEnabled;
@@ -85,10 +81,7 @@ export class ReconciliationJob {
       const totalDuration = performance.now() - startTime;
 
       const aggregateStats = {
-        reconciledCount: results.reduce(
-          (sum, r) => sum + r.totalWallets,
-          0
-        ),
+        reconciledCount: results.reduce((sum, r) => sum + r.totalWallets, 0),
         driftCount: results.reduce((sum, r) => sum + r.driftCount, 0),
         recoveredCount: results.reduce((sum, r) => sum + r.recoveredCount, 0),
       };

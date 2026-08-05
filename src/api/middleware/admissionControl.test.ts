@@ -3,16 +3,18 @@ import type { FastifyRequest, FastifyReply } from "fastify";
 import { admissionControl } from "./admissionControl.js";
 import { lagDetector } from "../../services/lag-detector.js";
 
-const mockRequest = (url: string, method: string = "POST"): FastifyRequest => ({
-  url,
-  method,
-} as FastifyRequest);
+const mockRequest = (url: string, method: string = "POST"): FastifyRequest =>
+  ({
+    url,
+    method,
+  }) as FastifyRequest;
 
-const mockReply = (): FastifyReply => ({
-  status: vi.fn().mockReturnThis(),
-  header: vi.fn().mockReturnThis(),
-  send: vi.fn().mockResolvedValue(undefined),
-} as any);
+const mockReply = (): FastifyReply =>
+  ({
+    status: vi.fn().mockReturnThis(),
+    header: vi.fn().mockReturnThis(),
+    send: vi.fn().mockResolvedValue(undefined),
+  }) as any;
 
 vi.mock("../../services/lag-detector.js", () => ({
   lagDetector: {

@@ -35,7 +35,8 @@ export class FillsResumeService {
     this.globalStream = `${this.keyPrefix}audit:trades:global`;
     // Max 10 minutes of replay buffer; beyond that, client must do REST poll
     this.maxReplayWindowMs =
-      parseInt(process.env.FILLS_MAX_REPLAY_WINDOW_MS ?? "600000", 10) || 600000;
+      parseInt(process.env.FILLS_MAX_REPLAY_WINDOW_MS ?? "600000", 10) ||
+      600000;
   }
 
   /**
@@ -202,13 +203,9 @@ export class FillsResumeService {
         marketId: trade.marketId,
         outcome: trade.outcome,
         side:
-          trade.buyerAddress === wallet
-            ? ("BUY" as const)
-            : ("SELL" as const),
+          trade.buyerAddress === wallet ? ("BUY" as const) : ("SELL" as const),
         orderId:
-          trade.buyerAddress === wallet
-            ? trade.buyOrderId
-            : trade.sellOrderId,
+          trade.buyerAddress === wallet ? trade.buyOrderId : trade.sellOrderId,
         counterpartyAddress:
           trade.buyerAddress === wallet
             ? trade.sellerAddress

@@ -2,10 +2,7 @@ import { createHash } from "crypto";
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import { redis } from "../../../../src/services/redis.js";
-import type {
-  AuditArchiverJobResult,
-  ArchivedEventResult,
-} from "./types.js";
+import type { AuditArchiverJobResult, ArchivedEventResult } from "./types.js";
 
 export interface AuditArchiverJobConfig {
   maxRunMs?: number;
@@ -48,11 +45,14 @@ export class AuditArchiverJob {
       const results: ArchivedEventResult[] = [];
 
       for (const market of markets) {
-        if (this.maxRunMs > 0 && Date.now() - startedAt.getTime() >= this.maxRunMs) {
+        if (
+          this.maxRunMs > 0 &&
+          Date.now() - startedAt.getTime() >= this.maxRunMs
+        ) {
           this.logger.warn("Audit archiver exceeded maxRunMs, stopping early", {
             maxRunMs: this.maxRunMs,
             processedSoFar: results.length,
-            remainingMarkets: markets.length - results.indexOf(market),
+            remainingMarkets: markets.length - markets.indexOf(market),
           });
           break;
         }
@@ -62,7 +62,9 @@ export class AuditArchiverJob {
       }
 
       const completedAt = new Date();
-      const archivedCount = results.filter((r) => r.status === "archived").length;
+      const archivedCount = results.filter(
+        (r) => r.status === "archived"
+      ).length;
       const erroredCount = results.filter((r) => r.status === "error").length;
       const skippedCount = results.filter((r) => r.status === "skipped").length;
 
@@ -122,7 +124,9 @@ export class AuditArchiverJob {
   /**
    * Archive all unarchived entries for a market.
    */
-  private async archiveMarket(marketId: string): Promise<ArchivedEventResult[]> {
+  private async archiveMarket(
+    marketId: string
+  ): Promise<ArchivedEventResult[]> {
     const streamKey = `${this.keyPrefix}audit:market:${marketId}`;
     const results: ArchivedEventResult[] = [];
 

@@ -79,7 +79,8 @@ const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
   STELLAR_TX_NOT_CONFIRMED: {
     code: "STELLAR_TX_NOT_CONFIRMED",
     status: "transient",
-    message: "settle_trade transaction was not confirmed within the polling window",
+    message:
+      "settle_trade transaction was not confirmed within the polling window",
   },
   /**
    * The submitted transaction's fee was below the network's base fee.
@@ -88,7 +89,8 @@ const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
   STELLAR_TX_INSUFFICIENT_FEE: {
     code: "STELLAR_TX_INSUFFICIENT_FEE",
     status: "transient",
-    message: "Transaction rejected: fee below network minimum (tx_insufficient_fee)",
+    message:
+      "Transaction rejected: fee below network minimum (tx_insufficient_fee)",
   },
   /**
    * The source account does not have enough XLM to cover the transaction fee
@@ -97,7 +99,8 @@ const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
   STELLAR_TX_INSUFFICIENT_FUNDS: {
     code: "STELLAR_TX_INSUFFICIENT_FUNDS",
     status: "fatal",
-    message: "Transaction rejected: source account has insufficient funds (op_underfunded / tx_insufficient_balance)",
+    message:
+      "Transaction rejected: source account has insufficient funds (op_underfunded / tx_insufficient_balance)",
   },
   /**
    * Account sequence number mismatch — likely a race between concurrent
@@ -106,7 +109,8 @@ const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
   STELLAR_TX_BAD_SEQUENCE: {
     code: "STELLAR_TX_BAD_SEQUENCE",
     status: "transient",
-    message: "Transaction rejected: account sequence number mismatch (tx_bad_seq)",
+    message:
+      "Transaction rejected: account sequence number mismatch (tx_bad_seq)",
   },
   /**
    * Signature validation failure. Fatal — signing key is wrong or revoked.
@@ -190,7 +194,10 @@ export function classifySettlementError(
     msg.includes("socket hang up") ||
     msg.includes("connection refused")
   ) {
-    return { ...ERROR_REGISTRY.STELLAR_RPC_UNAVAILABLE, message: error.message };
+    return {
+      ...ERROR_REGISTRY.STELLAR_RPC_UNAVAILABLE,
+      message: error.message,
+    };
   }
 
   // ── Timeouts ───────────────────────────────────────────────────────────────
@@ -210,7 +217,10 @@ export function classifySettlementError(
     msg.includes("fee is too low") ||
     msg.includes("fee too low")
   ) {
-    return { ...ERROR_REGISTRY.STELLAR_TX_INSUFFICIENT_FEE, message: error.message };
+    return {
+      ...ERROR_REGISTRY.STELLAR_TX_INSUFFICIENT_FEE,
+      message: error.message,
+    };
   }
 
   // ── Soroban/Horizon: insufficient funds ───────────────────────────────────
@@ -221,7 +231,10 @@ export function classifySettlementError(
     msg.includes("insufficient balance") ||
     msg.includes("underfunded")
   ) {
-    return { ...ERROR_REGISTRY.STELLAR_TX_INSUFFICIENT_FUNDS, message: error.message };
+    return {
+      ...ERROR_REGISTRY.STELLAR_TX_INSUFFICIENT_FUNDS,
+      message: error.message,
+    };
   }
 
   // ── Soroban/Horizon: sequence number mismatch ─────────────────────────────
@@ -231,7 +244,10 @@ export function classifySettlementError(
     msg.includes("sequence number") ||
     msg.includes("sequence mismatch")
   ) {
-    return { ...ERROR_REGISTRY.STELLAR_TX_BAD_SEQUENCE, message: error.message };
+    return {
+      ...ERROR_REGISTRY.STELLAR_TX_BAD_SEQUENCE,
+      message: error.message,
+    };
   }
 
   // ── Soroban/Horizon: auth / signature failure ─────────────────────────────
@@ -265,8 +281,14 @@ export function classifySettlementError(
   }
 
   // ── Not confirmed ──────────────────────────────────────────────────────────
-  if (msg.includes("not confirmed after") || msg.includes("settle_trade not confirmed")) {
-    return { ...ERROR_REGISTRY.STELLAR_TX_NOT_CONFIRMED, message: error.message };
+  if (
+    msg.includes("not confirmed after") ||
+    msg.includes("settle_trade not confirmed")
+  ) {
+    return {
+      ...ERROR_REGISTRY.STELLAR_TX_NOT_CONFIRMED,
+      message: error.message,
+    };
   }
 
   // ── Invalid payload ────────────────────────────────────────────────────────
@@ -298,7 +320,10 @@ export function classifySettlementError(
  * error code to their structured log fields without needing to import the
  * classifier.
  */
-export function annotateError(error: unknown, info: SettlementErrorInfo): Error {
+export function annotateError(
+  error: unknown,
+  info: SettlementErrorInfo
+): Error {
   const actual = error instanceof Error ? error : new Error(String(error));
   (actual as any).settlementErrorCode = info.code;
   (actual as any).settlementErrorStatus = info.status;

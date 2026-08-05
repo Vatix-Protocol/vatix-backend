@@ -32,10 +32,9 @@ GET /v1/wallets/:wallet/fills/stream
 const wallet = "GAWBT2Z5...";
 let lastReceivedId = localStorage.getItem("fillStreamId");
 
-const eventSource = new EventSource(
-  `/v1/wallets/${wallet}/fills/stream`,
-  { headers: { "Last-Event-ID": lastReceivedId } }
-);
+const eventSource = new EventSource(`/v1/wallets/${wallet}/fills/stream`, {
+  headers: { "Last-Event-ID": lastReceivedId },
+});
 
 eventSource.addEventListener("order_fill", (event) => {
   const fill = JSON.parse(event.data);
@@ -84,6 +83,7 @@ Emitted once on connection, contains stream metadata:
 ```
 
 **Fields**:
+
 - `cursor`: Starting point for new fills (from Last-Event-ID or now)
 - `minCursor`: Oldest available cursor (before this = trimmed, outside replay window)
 - `maxCursor`: Newest available cursor
@@ -112,6 +112,7 @@ Emitted for each trade matching this wallet:
 ```
 
 **Fields**:
+
 - `tradeId`: Unique trade ID (idempotency key for client deduplication)
 - `side`: BUY if wallet is buyer, SELL if wallet is seller
 - `orderId`: The wallet's order ID that matched
@@ -164,6 +165,7 @@ Emitted if replay fails:
 ```
 
 Recommendations:
+
 - Reconnect without Last-Event-ID to resume from now
 - Or use REST `/trades/user/:address` to catch up manually
 
@@ -319,10 +321,9 @@ const eventId = firstResponse.body.match(/id: (\d+-\d+)/)?.[1];
 await createTestTrade("trade2", wallet, counterparty, new Date());
 
 // 4. Reconnect with Last-Event-ID
-const secondResponse = await fetch(
-  `/v1/wallets/${wallet}/fills/stream`,
-  { headers: { "Last-Event-ID": eventId } }
-);
+const secondResponse = await fetch(`/v1/wallets/${wallet}/fills/stream`, {
+  headers: { "Last-Event-ID": eventId },
+});
 
 // 5. Assert replay of trade2
 assert(secondResponse.body.includes("replay_start"));

@@ -84,6 +84,7 @@ redis-cli
 ```
 
 **Common causes**:
+
 - Settlement worker crashed or slow
 - Stellar RPC is experiencing latency
 - Database is slow or locked
@@ -99,6 +100,7 @@ SELECT COUNT(*) FROM outbox_events WHERE published_at IS NULL;
 ```
 
 **Common causes**:
+
 - Outbox publishing worker is down
 - Downstream event consumer (webhook, CDC sink) is backed up
 - Network partition to subscriber systems

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { Decimal } from "@prisma/client/runtime/library.js";
+import { Decimal } from "@prisma/client/runtime/client.js";
 import { PositionReconciliationService } from "./position-reconciliation.js";
 import { getPrismaClient } from "./prisma.js";
 
@@ -44,7 +44,7 @@ describe("PositionReconciliationService", () => {
 
   describe("reconcile", () => {
     it("should detect no drift when position matches events", async () => {
-      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTironqoxla5DU";
+      const wallet = "GAWBT2Z5XMLMNRXA5TERUYRMKANZIA5CZSYPU3AVQLTIRONQOXLA5DU";
       const marketId = "market123";
 
       mockPrisma.userPosition.findUnique.mockResolvedValue({
@@ -68,7 +68,8 @@ describe("PositionReconciliationService", () => {
       mockPrisma.collateralDeposit.findMany.mockResolvedValue([
         {
           account: wallet,
-          amountRaw: "100",
+          // 100 * 10^7 collateral scale units
+          amountRaw: "1000000000",
         },
       ]);
 
@@ -179,7 +180,7 @@ describe("PositionReconciliationService", () => {
       mockPrisma.collateralDeposit.findMany.mockResolvedValue([
         {
           account: wallet,
-          amountRaw: "100",
+          amountRaw: "1000000000",
         },
       ]);
 
