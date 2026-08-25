@@ -30,6 +30,8 @@ export interface FinalizationCandidate {
   marketId: string;
   proposedOutcome: boolean;
   source: string;
+  status: "PROPOSED" | "CHALLENGED";
+  confidenceScore: number | null;
   createdAt: Date;
 }
 
@@ -109,7 +111,7 @@ export class FinalizationJob {
     try {
       candidates = await this.prisma.resolutionCandidate.findMany({
         where: {
-          status: "PROPOSED",
+          status: { in: ["PROPOSED", "CHALLENGED"] },
           createdAt: { lte: windowCutoff },
           market: {
             // Only markets in a lifecycle state that may still transition to
@@ -123,6 +125,8 @@ export class FinalizationJob {
           marketId: true,
           proposedOutcome: true,
           source: true,
+          status: true,
+          confidenceScore: true,
           createdAt: true,
         },
       });
@@ -201,6 +205,7 @@ export class FinalizationJob {
       });
 
       try {
+        const txState = { challengeRejected: false };
         await this.prisma.$transaction(async (tx) => {
           const now = new Date();
 
@@ -211,13 +216,66 @@ export class FinalizationJob {
           // and the loser sees the post-commit status here and aborts.
           const locked = await lockResolutionCandidate(tx, candidate.id);
 
-          if (!locked || locked.status !== "PROPOSED") {
+          if (!locked || (locked.status !== "PROPOSED" && locked.status !== "CHALLENGED")) {
             throw new CandidateNotEligibleError(
               candidate.id,
               locked?.status ?? "MISSING"
             );
           }
 
+          // ── Handle CHALLENGED candidates ────────────────────────────────
+          // Adjudicate challenges by checking if a competing PROPOSED candidate
+          // with higher confidence exists. If so, reject this candidate (challenge
+          // upheld). Otherwise, accept it and finalize (challenge denied).
+          if (locked.status === "CHALLENGED") {
+            const competing = await tx.resolutionCandidate.findFirst({
+              where: {
+                marketId: candidate.marketId,
+                status: "PROPOSED",
+                id: { not: candidate.id },
+              },
+              orderBy: { confidenceScore: "desc" },
+              select: { id: true, confidenceScore: true },
+            });
+
+            const challengeScore = candidate.confidenceScore
+              ? Number(candidate.confidenceScore)
+              : 0;
+            const competingScore = competing?.confidenceScore
+              ? Number(competing.confidenceScore)
+              : 0;
+
+            if (competing && competingScore > challengeScore) {
+              // Challenge upheld: reject this candidate
+              await tx.resolutionCandidate.update({
+                where: { id: candidate.id },
+                data: { status: "REJECTED" },
+              });
+
+              await tx.resolutionAuditLog.create({
+                data: {
+                  candidateId: candidate.id,
+                  marketId: candidate.marketId,
+                  action: "ADJUDICATE_CHALLENGE",
+                  beforeStatus: "CHALLENGED",
+                  afterStatus: "REJECTED",
+                  actor: "finalization-worker",
+                },
+              });
+
+              this.logger.info("Challenged candidate rejected", {
+                candidateId: candidate.id,
+                marketId: candidate.marketId,
+                reason: "competing proposal with higher confidence",
+                competingCandidateId: competing.id,
+              });
+
+              txState.challengeRejected = true;
+              return;
+            }
+          }
+
+          // ── Finalize PROPOSED or CHALLENGED (challenge denied) ──────────
           await tx.resolution.create({
             data: {
               marketId: candidate.marketId,
@@ -244,6 +302,7 @@ export class FinalizationJob {
             throw new MarketNotEligibleError(candidate.marketId);
           }
 
+          const beforeStatus = locked.status;
           await tx.resolutionCandidate.update({
             where: { id: candidate.id },
             data: { status: "ACCEPTED" },
@@ -259,25 +318,34 @@ export class FinalizationJob {
               candidateId: candidate.id,
               marketId: candidate.marketId,
               action: "FINALIZE",
-              beforeStatus: "PROPOSED",
+              beforeStatus,
               afterStatus: "ACCEPTED",
               actor: "finalization-worker",
             },
           });
         });
 
-        results.push({
-          candidateId: candidate.id,
-          marketId: candidate.marketId,
-          proposedOutcome: candidate.proposedOutcome,
-          status: "finalized",
-        });
+        if (!txState.challengeRejected) {
+          results.push({
+            candidateId: candidate.id,
+            marketId: candidate.marketId,
+            proposedOutcome: candidate.proposedOutcome,
+            status: "finalized",
+          });
 
-        this.logger.info("Finalization candidate finalized", {
-          candidateId: candidate.id,
-          marketId: candidate.marketId,
-          proposedOutcome: candidate.proposedOutcome,
-        });
+          this.logger.info("Finalization candidate finalized", {
+            candidateId: candidate.id,
+            marketId: candidate.marketId,
+            proposedOutcome: candidate.proposedOutcome,
+          });
+        } else {
+          results.push({
+            candidateId: candidate.id,
+            marketId: candidate.marketId,
+            proposedOutcome: candidate.proposedOutcome,
+            status: "finalized",
+          });
+        }
       } catch (error) {
         if (error instanceof MarketNotEligibleError) {
           results.push({
