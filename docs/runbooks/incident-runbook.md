@@ -18,6 +18,7 @@ This runbook provides step-by-step guidance for responding to common backend inc
 - [Incident 4: Redis Failure](#incident-4-redis-failure)
 - [Incident 5: Oracle Resolution Failure](#incident-5-oracle-resolution-failure)
 - [Incident 6: Queue Backlog (Settlement / Oracle Submission)](#incident-6-queue-backlog-settlement--oracle-submission)
+- [Incident 7: Stuck CHALLENGED Resolution Candidates](#incident-7-stuck-challenged-resolution-candidates)
 - [Post-Incident Process](#post-incident-process)
 - [Useful Commands & Queries](#useful-commands--queries)
 - [Contact & Resources](#contact--resources)
@@ -863,6 +864,165 @@ resulting severity — no separate on-call path for queue incidents.
 - [ ] Alert on `failed` (dead-letter) count growth — see [Dead Letter Log](../dead-letter-log.md)
 - [ ] Dashboard the counts from the detection commands above (ties to #738)
 - [ ] Ensure worker processes are supervised/auto-restarted on crash
+
+---
+
+## Incident 7: Stuck CHALLENGED Resolution Candidates
+
+CHALLENGED resolution candidates are in dispute and waiting for adjudication by the
+finalization job. If a candidate remains CHALLENGED past its challenge window close
+time without transitioning to either REJECTED or ACCEPTED, it's stuck and must be
+investigated.
+
+### Symptoms
+
+- `resolution_candidates` row with `status = CHALLENGED` and `created_at` older than
+  `ORACLE_CHALLENGE_WINDOW_SECONDS` (default 24h)
+- No corresponding `resolution` row for that market
+- Market status remains in `ACTIVE` or other non-RESOLVED state
+- Finalization job logs show the candidate being skipped or errored
+
+### Detection — Database Queries
+
+```sql
+-- Find CHALLENGED candidates older than the challenge window (default 86400 seconds = 24h)
+SELECT id, market_id, status, created_at, confidence_score
+FROM resolution_candidates
+WHERE status = 'CHALLENGED'
+  AND created_at < NOW() - INTERVAL '24 hours'
+ORDER BY created_at DESC
+LIMIT 10;
+
+-- Check if they have corresponding Resolution rows (should be none for stuck CHALLENGED)
+SELECT rc.id, rc.market_id, rc.status, r.id as resolution_id
+FROM resolution_candidates rc
+LEFT JOIN resolutions r ON r.market_id = rc.market_id
+WHERE rc.status = 'CHALLENGED'
+  AND rc.created_at < NOW() - INTERVAL '24 hours';
+
+-- Check finalization audit logs for these candidates
+SELECT candidate_id, market_id, action, before_status, after_status, actor, created_at
+FROM resolution_audit_logs
+WHERE candidate_id = '<candidateId>'
+ORDER BY created_at DESC;
+```
+
+### Root Causes
+
+1. **Finalization job crashed/stuck** — check worker process status and logs
+2. **Competing resolution with insufficient confidence** — a PROPOSED candidate may
+   exist but with lower or equal confidence, triggering the reject logic unexpectedly
+3. **Database lock contention** — a concurrent write (e.g., another challenge or
+   finalization attempt) may have caused the transaction to abort
+4. **Bug in adjudication logic** — the finalization job's confidence comparison or
+   competing candidate query may have failed silently
+
+### Response Steps
+
+#### Step 1: Confirm the candidate is genuinely stuck
+
+```sql
+-- Verify the candidate exists, is CHALLENGED, and is past the window
+SELECT * FROM resolution_candidates
+WHERE id = '<candidateId>'
+  AND status = 'CHALLENGED';
+
+-- Check the market status
+SELECT id, status, outcome, resolution_time
+FROM markets WHERE id = '<marketId>';
+
+-- Check if any Resolution row exists (should not for CHALLENGED)
+SELECT * FROM resolutions WHERE market_id = '<marketId>';
+```
+
+#### Step 2: Investigate finalization logs
+
+```bash
+docker logs vatix-backend 2>&1 | grep -i "challenged\|finalization" | tail -100
+# or, for a specific candidate:
+docker logs vatix-backend 2>&1 | grep "<candidateId>"
+```
+
+Look for:
+- `Challenged candidate rejected` — challenge was adjudicated (should be REJECTED)
+- `Finalization candidate finalized` — should have transitioned to ACCEPTED
+- `CandidateNotEligibleError` — status changed during processing (lost race)
+- `MarketNotEligibleError` — market became ineligible (canceled, deleted)
+- Panics or unhandled exceptions
+
+#### Step 3: Manually adjudicate (temporary measure)
+
+If the stuck candidate cannot be finalized automatically, manually transition it:
+
+```sql
+-- Option A: Accept the challenged candidate (deny the challenge)
+-- Use this if you want the original resolution to stand
+UPDATE resolution_candidates
+SET status = 'ACCEPTED'
+WHERE id = '<candidateId>';
+
+-- Then manually create the Resolution and finalize the market
+BEGIN;
+INSERT INTO resolutions (market_id, outcome, finalized_at, provenance)
+VALUES ('<marketId>', <outcomeBoolean>, NOW(), 'manual-finalization');
+
+UPDATE markets
+SET status = 'RESOLVED', outcome = <outcomeBoolean>, resolution_time = NOW()
+WHERE id = '<marketId>';
+
+UPDATE user_positions
+SET is_settled = true
+WHERE market_id = '<marketId>';
+
+INSERT INTO resolution_audit_logs
+(candidate_id, market_id, action, before_status, after_status, actor)
+VALUES ('<candidateId>', '<marketId>', 'FINALIZE', 'CHALLENGED', 'ACCEPTED', 'manual-incident-response');
+
+COMMIT;
+```
+
+```sql
+-- Option B: Reject the challenged candidate (uphold the challenge)
+-- Use this if you want to invalidate the original resolution
+UPDATE resolution_candidates
+SET status = 'REJECTED'
+WHERE id = '<candidateId>';
+
+INSERT INTO resolution_audit_logs
+(candidate_id, market_id, action, before_status, after_status, actor)
+VALUES ('<candidateId>', '<marketId>', 'ADJUDICATE_CHALLENGE', 'CHALLENGED', 'REJECTED', 'manual-incident-response');
+
+-- Leave the market in ACTIVE state so another resolution can be finalized
+```
+
+#### Step 4: Restart finalization job and re-run
+
+```bash
+docker restart vatix-finalization-job
+# or
+pm2 restart finalization
+```
+
+The job will immediately pick up any remaining CHALLENGED candidates on its next
+scheduled run.
+
+### Severity Assessment
+
+| Condition                                                             | Severity |
+| --------------------------------------------------------------------- | -------- |
+| Single CHALLENGED candidate stuck > challenge window, market resolved | SEV-3    |
+| Multiple CHALLENGED candidates preventing market resolution on active | SEV-2    |
+| Finalization job completely down, multiple stuck CHALLENGED           | SEV-1    |
+
+Follow the standard [Escalation Procedures](#escalation-procedures) for the
+resulting severity.
+
+### Prevention
+
+- [ ] Dashboard: count of CHALLENGED candidates older than their challenge window
+- [ ] Alert: if count > 1 and growing over 10 minutes
+- [ ] Finalization logs: alert on adjudication failures or transaction aborts
+- [ ] E2E test: file a challenge, verify finalization adjudicates it within 2 cycles
 
 ---
 

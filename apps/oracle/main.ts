@@ -22,12 +22,14 @@ import { OracleService } from "./oracle-service.js";
 import { PrimaryAdapter } from "./primary-adapter.js";
 import { FallbackAdapter } from "./fallback-adapter.js";
 import { signResolutionReport } from "./signature-helper.js";
-import { RedisSubmissionQueue } from "../workers/src/oracle/redis-submission-queue.js";
+import { BullMQSubmissionQueue } from "../workers/src/oracle/bullmq-submission-queue.js";
 import type { ResolutionRequest } from "./provider-adapter.js";
 import type {
   ShutdownHandler,
   ShutdownSignal,
 } from "../workers/src/finalization/types.js";
+
+let globalQueue: BullMQSubmissionQueue | null = null;
 
 export async function poll(): Promise<void> {
   const config = loadOracleConfig();
@@ -62,13 +64,10 @@ export async function poll(): Promise<void> {
     enableFallback: true,
   });
 
-  const queue = new RedisSubmissionQueue({
-    redisClient: redis,
-    visibilityTimeoutMs: 300_000,
-    logger,
-  });
-
-  await queue.initialize();
+  if (!globalQueue) {
+    globalQueue = new BullMQSubmissionQueue(logger);
+  }
+  const queue = globalQueue;
 
   // Only markets in a resolvable lifecycle state may be submitted for resolution.
   const markets = await prisma.market.findMany({
@@ -206,6 +205,9 @@ export async function bootstrap(): Promise<void> {
     clearInterval(timer);
 
     try {
+      if (globalQueue) {
+        await globalQueue.close();
+      }
       await disconnectPrisma();
       await redis.disconnect();
       logger.info("Oracle shutdown complete", { signal });

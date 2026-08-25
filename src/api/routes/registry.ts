@@ -74,6 +74,11 @@ export const CANONICAL_V1_ROUTES: CanonicalRoute[] = [
     notes: "Issues a single-use signing nonce for Stellar wallet auth",
   },
   {
+    method: "POST",
+    path: "/v1/resolutions/:id/challenge",
+    notes: "File a challenge/dispute against a proposed resolution (requires auth)",
+  },
+  {
     method: "GET",
     path: "/v1/openapi.json",
     notes: "OpenAPI specification",

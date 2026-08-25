@@ -1,6 +1,10 @@
-import { redis } from "./redis.js";
+import { Queue } from "bullmq";
 import type { Outcome } from "../types/index.js";
-import { settlementQueueName } from "../../apps/workers/src/shared/queue-config.js";
+import {
+  DEFAULT_JOB_OPTIONS,
+  redisConnectionFromEnv,
+  settlementQueueName,
+} from "../../apps/workers/src/shared/queue-config.js";
 
 export interface SettlementJob {
   tradeId: string;
@@ -16,37 +20,32 @@ export interface SettlementJob {
 }
 
 class SettlementQueueProducer {
-  private streamKey: string;
+  private queue: Queue<SettlementJob>;
 
   constructor() {
-    this.streamKey = settlementQueueName();
+    this.queue = new Queue<SettlementJob>(settlementQueueName(), {
+      connection: redisConnectionFromEnv(),
+      defaultJobOptions: DEFAULT_JOB_OPTIONS,
+    });
   }
 
   async enqueue(job: SettlementJob): Promise<void> {
-    const fields = [
-      "tradeId",
-      job.tradeId,
-      "marketId",
-      job.marketId,
-      "outcome",
-      job.outcome,
-      "buyOrderId",
-      job.buyOrderId,
-      "sellOrderId",
-      job.sellOrderId,
-      "buyerAddress",
-      job.buyerAddress,
-      "sellerAddress",
-      job.sellerAddress,
-      "price",
-      job.price.toString(),
-      "quantity",
-      job.quantity.toString(),
-      "timestamp",
-      job.timestamp.toString(),
-    ];
-
-    await redis.xadd(this.streamKey, "*", ...fields);
+    const correlationId = `settlement:${job.tradeId}:${Date.now()}`;
+    await this.queue.add(job.tradeId, job, {
+      ...DEFAULT_JOB_OPTIONS,
+      jobId: `settlement:${job.tradeId}`,
+    });
+    console.log(
+      JSON.stringify({
+        level: "info",
+        component: "settlement-queue",
+        action: "settlement_enqueued",
+        tradeId: job.tradeId,
+        marketId: job.marketId,
+        correlationId,
+        timestamp: new Date().toISOString(),
+      })
+    );
   }
 }
 
