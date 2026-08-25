@@ -2,7 +2,7 @@
 
 ## Overview
 
-The oracle submission pipeline provides a durable, Redis-backed system for resolving markets and submitting signed resolutions on-chain. It replaces the previous in-memory queue with a production-safe, at-least-once delivery system.
+The oracle submission pipeline provides a durable, BullMQ-backed system for resolving markets and submitting signed resolutions on-chain. It uses BullMQ for unified retry/backoff/DLQ management and at-least-once delivery semantics.
 
 ## Architecture
 
@@ -13,22 +13,23 @@ The oracle submission pipeline provides a durable, Redis-backed system for resol
    - Optional: enqueues successful resolutions for submission
    - Tracks metrics (success/failure counts, retry attempts)
 
-2. **RedisSubmissionQueue** (`apps/workers/src/oracle/redis-submission-queue.ts`)
-   - Redis streams consumer group implementation
-   - Handles enqueue with deduplication
-   - Supports dequeue with visibility timeout
-   - Provides acknowledge/nack semantics for at-least-once delivery
+2. **BullMQSubmissionQueue** (`apps/workers/src/oracle/bullmq-submission-queue.ts`)
+   - BullMQ Queue implementation for oracle submissions
+   - Handles enqueue with content-based deduplication (market ID + payload hash)
+   - Automatic retry with exponential backoff (3 attempts by default)
+   - Dead-letter queue (DLQ) for failed submissions
 
 3. **SubmissionWorker** (`apps/workers/src/oracle/submission-worker.ts`)
-   - Polls the Redis queue for pending submissions
+   - BullMQ Worker that processes pending submissions
    - Verifies signatures before submission
    - Submits signed resolutions on-chain (via Stellar SDK)
    - Updates OracleReport and ResolutionCandidate on success
-   - Implements retry logic with exponential backoff
-   - Dead-letters failed submissions after max retries
+   - Implements retry logic with exponential backoff via BullMQ
+   - Dead-letters failed submissions via DLQ
 
-4. **Oracle Worker Process** (`apps/workers/src/oracle/main.ts`)
-   - Entrypoint for the submission worker
+4. **Oracle Main** (`apps/oracle/main.ts`)
+   - Entrypoint for the oracle resolution polling
+   - Uses BullMQSubmissionQueue to enqueue submissions
    - Manages bootstrap, polling loop, and graceful shutdown
    - Handles SIGINT/SIGTERM signals
 
@@ -86,46 +87,46 @@ OracleService.resolve()
     ↓
 Provider returns ProviderResult
     ↓
-enqueueCallback() / SubmissionQueue.enqueue()
+BullMQSubmissionQueue.enqueue()
     ↓
-Compute payloadHash = SHA256(canonicalPayload)
+Compute jobId = marketId + payloadHash (first 16 chars)
     ↓
-Check dedup key: oracle:dedup:{marketId}:{payloadHash}
+Check if job already exists (by jobId)
     ↓
 If exists: skip (already processed)
 If not exists:
-  - Add to Redis stream: oracle:submissions
-  - Set dedup flag with 24h TTL
-  - Log enqueue event
+  - Add to BullMQ queue: oracle-submissions
+  - BullMQ applies DEFAULT_JOB_OPTIONS (3 attempts, exponential backoff)
+  - Log enqueue event with jobId and correlation ID
 ```
 
 ### Dequeue → Submit → Persist
 
 ```
-Worker polls: xreadgroup(oracle-submissions, oracle-worker)
+BullMQ Worker polls queue: oracle-submissions
     ↓
-Dequeue item from stream (visibility timeout: 5 min)
+Receive Job<SubmissionQueueItem>
     ↓
 Create SignedResolutionReport
     ↓
 Verify signature (defensive check)
     ↓
-submitOnChain() [placeholder for Stellar SDK]
+submitOnChain() [Stellar SDK]
     ↓
 Success:
   - Upsert OracleReport (status=SUBMITTED)
   - Upsert ResolutionCandidate (status=PROPOSED)
-  - xack() to remove from queue
-  - Log success
+  - BullMQ marks job as completed
+  - Log success with jobId
     ↓
 Failure (retryable):
-  - Increment attempts counter
-  - xclaim() to re-deliver message
+  - BullMQ automatically retries (up to 3 attempts)
+  - Exponential backoff: 1s, 2s, 4s
   - Log retry warning
     ↓
 Failure (max retries exceeded):
   - Mark OracleReport as FAILED
-  - xack() to remove from active queue
+  - Job moved to DLQ (failed set)
   - Log dead-letter event
 ```
 
@@ -302,16 +303,22 @@ Failed submissions that exceed `ORACLE_SUBMISSION_MAX_RETRIES` are:
 ### Key Metrics
 
 - **Queue Depth**: Number of pending submissions
-  - Query: `xinfo STREAM oracle:submissions`
+  - Source: BullMQ `queue.count()` or `queue.getWaitingCount()`
+  - Via BullMQ Board: `/admin/queues/oracle-submissions`
 
-- **Consumer Lag**: Age of oldest unprocessed message
-  - Query: `xinfo GROUPS oracle:submissions`
+- **Failed Jobs**: Number of submissions in DLQ
+  - Source: BullMQ `queue.getFailedCount()` or `queue.getFailed()`
+  - Indicates submissions that exceeded max retries
+
+- **Processing Rate**: Completed submissions per minute
+  - Source: Logs with `action: submission_processed`
+  - Indicator of worker health
 
 - **Submission Latency**: Time from enqueue to on-chain confirmation
-  - Source: OracleReport.created_at
+  - Source: OracleReport.created_at to OracleReport.confirmed_at
 
 - **Error Rate**: Failed submissions / total submissions
-  - Source: logs with level=error
+  - Source: Logs with level=error, action containing "failed"
 
 - **`vatix_oracle_submission_ambiguous_total`** (Counter, #996): Number of
   broadcast submissions that could not be definitively classified as
@@ -385,55 +392,76 @@ Example failure log:
 3. **Check queue depth**:
 
    ```bash
-   redis-cli -u $REDIS_URL XINFO STREAM oracle:submissions
-   # Look for: last-generated-id, length
+   redis-cli -u $REDIS_URL LLEN oracle-submissions
+   # Should show number of pending jobs
+   
+   # Or via redis-cli with BullMQ key pattern:
+   redis-cli KEYS "oracle-submissions:*" | wc -l
    ```
 
-4. **Check consumer group**:
+4. **Check worker status and failed jobs**:
 
    ```bash
-   redis-cli -u $REDIS_URL XINFO GROUPS oracle:submissions
-   # Look for: consumers, pending
+   # List failed jobs
+   redis-cli LRANGE oracle-submissions:failed 0 -1
+   
+   # Count completed jobs
+   redis-cli LLEN oracle-submissions:completed
    ```
 
 5. **Check logs**: `docker logs <oracle-worker-container>`
 
-### Stuck Submissions (Visibility Timeout)
+### Stuck Submissions (Failed Retries)
 
-If a message remains pending > 5 minutes:
+If a submission exceeds max retries (3):
 
-1. **Manual claim back to active consumer**:
+1. **View failed jobs** (in DLQ):
 
    ```bash
-   redis-cli -u $REDIS_URL XCLAIM oracle:submissions oracle-worker consumer-1 0 {message-id}
+   redis-cli LRANGE oracle-submissions:failed 0 9
+   # Shows the most recent 10 failed jobs
    ```
 
-2. **Or reset consumer group**:
+2. **Inspect a specific failed job**:
+
    ```bash
-   redis-cli -u $REDIS_URL XGROUP DESTROY oracle:submissions oracle-worker
-   # Then restart worker — it will recreate the group at "$" (latest)
+   # Get job details
+   redis-cli HGETALL "{jobId}"
+   # where jobId is from the failed list above
    ```
 
-### Database Out of Sync with Redis
-
-If OracleReport records exist without corresponding submissions:
-
-1. **Check dedup key**: `redis-cli KEYS "oracle:dedup:*"`
-   - If missing, enqueue is skipped due to dedup cache
-
-2. **Force reprocess**:
+3. **Retry a failed job** (manual recovery):
 
    ```bash
-   # Delete dedup key to allow re-enqueue
-   redis-cli DEL oracle:dedup:{marketId}:{payloadHash}
+   # Remove from failed list and re-add to queue
+   # (Requires BullMQ programmatic access or manual DB fix)
    ```
 
-3. **Manually enqueue**:
+### Database Out of Sync with BullMQ
+
+If OracleReport records exist but submissions aren't being processed:
+
+1. **Check if queue is empty but jobs are in DLQ**:
+
    ```bash
-   redis-cli -u $REDIS_URL XADD oracle:submissions "*" \
-     payload '{"id":"...","request":{...},"result":{...},...}' \
-     marketId "market-1" \
-     payloadHash "abc123..."
+   redis-cli LLEN oracle-submissions
+   # If 0, check:
+   redis-cli LLEN oracle-submissions:failed
+   # Count of failed jobs
+   ```
+
+2. **Force re-enqueue** (via application code or script):
+
+   ```bash
+   # Requires programmatic access to create a new SubmissionQueueItem
+   # and call BullMQSubmissionQueue.enqueue()
+   ```
+
+3. **Clear DLQ** (after investigation):
+
+   ```bash
+   redis-cli DEL oracle-submissions:failed
+   # WARNING: Irreversible — only after confirming with on-call lead
    ```
 
 ## Testing
