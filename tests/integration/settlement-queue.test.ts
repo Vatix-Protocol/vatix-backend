@@ -1,10 +1,10 @@
 /**
- * Integration test: settlement queue producer → Redis stream.
+ * Integration test: settlement queue producer → BullMQ.
  *
  * Verifies that placing a matched order writes a settlement job to the correct
- * Redis stream key with all required payload fields — without mocking enqueue.
- * This catches regressions where the stream key, field names, or payload shape
- * drift from what the downstream consumer expects.
+ * BullMQ queue with all required payload fields — without mocking enqueue.
+ * This catches regressions where the queue name, job data shape, or producer/consumer
+ * mismatch prevents settlements from being processed.
  */
 import {
   describe,
@@ -17,7 +17,7 @@ import {
 } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { Keypair } from "@stellar/stellar-sdk";
-import Redis from "ioredis";
+import { Queue } from "bullmq";
 import { ordersRoutes } from "../../src/api/routes/orders.js";
 import { buildSignableMessage } from "../../src/api/middleware/stellarAuth.js";
 import { issueChallenge } from "../../src/api/middleware/nonceStore.js";
@@ -28,10 +28,11 @@ import {
   releaseDatabaseLock,
 } from "../helpers/test-database.js";
 import { matchingService } from "../../src/matching/matching-service.js";
-
-const STREAM_KEY =
-  `${process.env.REDIS_KEY_PREFIX ?? "vatix:"}` +
-  `${process.env.SETTLEMENT_QUEUE_NAME ?? "settlement-trades"}`;
+import {
+  redisConnectionFromEnv,
+  settlementQueueName,
+} from "../../apps/workers/src/shared/queue-config.js";
+import type { SettlementJob } from "../../src/services/settlement-queue.js";
 
 const buyerKeypair = Keypair.random();
 const sellerKeypair = Keypair.random();
@@ -61,22 +62,22 @@ async function authHeaders(
   };
 }
 
-describe("Settlement queue: producer writes to Redis stream on trade match", () => {
+describe("Settlement queue: producer writes to BullMQ on trade match", () => {
   let app: FastifyInstance;
-  let redisClient: Redis;
+  let queue: Queue<SettlementJob>;
 
   beforeAll(async () => {
     await acquireDatabaseLock();
     app = await buildTestApp({ plugins: [ordersRoutes] });
 
-    redisClient = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
-      lazyConnect: false,
+    queue = new Queue<SettlementJob>(settlementQueueName(), {
+      connection: redisConnectionFromEnv(),
     });
   });
 
   afterAll(async () => {
     await app.close();
-    await redisClient.quit();
+    await queue.close();
     await releaseDatabaseLock();
   });
 
@@ -85,11 +86,11 @@ describe("Settlement queue: producer writes to Redis stream on trade match", () 
     (matchingService as any).books?.clear();
     (matchingService as any).locks?.clear();
     vi.restoreAllMocks();
-    // Trim stream so each test starts with a clean slate for this key.
-    await redisClient.xtrim(STREAM_KEY, "MAXLEN", 0);
+    // Drain queue so each test starts clean
+    await queue.drain();
   });
 
-  it("writes a settlement job to the stream when a trade is matched", async () => {
+  it("enqueues a settlement job to BullMQ when a trade is matched", async () => {
     const market = await testUtils.createTestMarket({ status: "ACTIVE" });
 
     // Seed a resting SELL order for the seller.
@@ -127,33 +128,29 @@ describe("Settlement queue: producer writes to Redis stream on trade match", () 
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.trades).toHaveLength(1);
+    const tradeId = body.trades[0].id;
 
-    // The enqueue is fire-and-forget; give the microtask queue a tick to flush.
-    await new Promise((resolve) => setImmediate(resolve));
+    // Give enqueue a moment to complete
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const entries = await redisClient.xrange(STREAM_KEY, "-", "+");
-    expect(entries.length).toBeGreaterThanOrEqual(1);
+    const job = await queue.getJob(`settlement:${tradeId}`);
+    expect(job).toBeDefined();
 
-    // Parse the most recent entry's fields into an object.
-    const [, fields] = entries[entries.length - 1];
-    const job: Record<string, string> = {};
-    for (let i = 0; i < fields.length; i += 2) {
-      job[fields[i]] = fields[i + 1];
-    }
-
-    expect(job.tradeId).toBeTruthy();
-    expect(job.marketId).toBe(market.id);
-    expect(job.outcome).toBe("YES");
-    expect(job.buyerAddress).toBe(buyerAddress);
-    expect(job.sellerAddress).toBe(sellerAddress);
-    expect(Number(job.price)).toBeCloseTo(0.5);
-    expect(Number(job.quantity)).toBe(10);
-    expect(job.buyOrderId).toBeTruthy();
-    expect(job.sellOrderId).toBeTruthy();
-    expect(Number(job.timestamp)).toBeGreaterThan(0);
+    const jobData = job?.data;
+    expect(jobData).toBeDefined();
+    expect(jobData?.tradeId).toBe(tradeId);
+    expect(jobData?.marketId).toBe(market.id);
+    expect(jobData?.outcome).toBe("YES");
+    expect(jobData?.buyerAddress).toBe(buyerAddress);
+    expect(jobData?.sellerAddress).toBe(sellerAddress);
+    expect(jobData?.price).toBeCloseTo(0.5);
+    expect(jobData?.quantity).toBe(10);
+    expect(jobData?.buyOrderId).toBeTruthy();
+    expect(jobData?.sellOrderId).toBeTruthy();
+    expect(jobData?.timestamp).toBeGreaterThan(0);
   });
 
-  it("does not write to the stream when no match occurs", async () => {
+  it("does not enqueue a job when no match occurs", async () => {
     const market = await testUtils.createTestMarket({ status: "ACTIVE" });
 
     const buyPayload = {
@@ -174,9 +171,9 @@ describe("Settlement queue: producer writes to Redis stream on trade match", () 
     expect(res.statusCode).toBe(201);
     expect(JSON.parse(res.body).trades).toHaveLength(0);
 
-    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const entries = await redisClient.xrange(STREAM_KEY, "-", "+");
-    expect(entries).toHaveLength(0);
+    const count = await queue.count();
+    expect(count).toBe(0);
   });
 });
