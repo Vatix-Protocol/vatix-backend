@@ -282,3 +282,137 @@ describe("POST /orders – Stellar wallet signature verification", () => {
     expect(response.statusCode).toBe(401);
   });
 });
+
+// Test helper for cancellation signatures
+import { buildCancellationMessage } from "./stellarAuth.js";
+
+function makeCancellationHeaders(
+  keypair: Keypair,
+  orderId: string,
+  userAddress: string,
+  ts = Date.now()
+): Record<string, string> {
+  const sig = keypair
+    .sign(
+      buildCancellationMessage({
+        orderId,
+        nonce: NONCE,
+        timestamp: ts,
+        userAddress,
+      })
+    )
+    .toString("base64");
+  return {
+    "x-signature": sig,
+    "x-timestamp": String(ts),
+    "x-nonce": NONCE,
+  };
+}
+
+describe("DELETE /orders/:id – Stellar wallet signature verification (cancellation)", () => {
+  let app: FastifyInstance;
+  const testKeypair = Keypair.random();
+  const userAddress = testKeypair.publicKey();
+
+  beforeEach(async () => {
+    clearRateLimitStores();
+    app = Fastify({ logger: false });
+    app.setErrorHandler(errorHandler);
+    await app.register(ordersRoutes);
+    vi.clearAllMocks();
+
+    (
+      mockMatchingService.cancelOrder as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      id: "order-123",
+      marketId: "market-1",
+      userAddress,
+      side: "BUY",
+      outcome: "YES",
+      price: "0.5",
+      quantity: 100,
+      filledQuantity: 0,
+      status: "CANCELLED",
+      createdAt: new Date(),
+    });
+  });
+
+  afterEach(async () => {
+    await app.close();
+    clearRateLimitStores();
+  });
+
+  it("should cancel order with valid cancellation signature", async () => {
+    const orderId = "order-123";
+    const ts = Date.now();
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/orders/${orderId}`,
+      headers: makeCancellationHeaders(testKeypair, orderId, userAddress, ts),
+      payload: { userAddress },
+    });
+
+    expect(response.statusCode).toBe(200);
+  });
+
+  it("should return 401 when cancellation signature is from different keypair", async () => {
+    const orderId = "order-123";
+    const otherKeypair = Keypair.random();
+    const ts = Date.now();
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/orders/${orderId}`,
+      headers: makeCancellationHeaders(
+        otherKeypair,
+        orderId,
+        otherKeypair.publicKey(),
+        ts
+      ),
+      payload: { userAddress: otherKeypair.publicKey() },
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("should return 401 when orderId in signature does not match URL", async () => {
+    const orderId = "order-123";
+    const wrongOrderId = "order-456";
+    const ts = Date.now();
+    const sig = testKeypair
+      .sign(
+        buildCancellationMessage({
+          orderId: wrongOrderId,
+          nonce: NONCE,
+          timestamp: ts,
+          userAddress,
+        })
+      )
+      .toString("base64");
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/orders/${orderId}`,
+      headers: {
+        "x-signature": sig,
+        "x-timestamp": String(ts),
+        "x-nonce": NONCE,
+      },
+      payload: { userAddress },
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("should return 401 when cancellation timestamp is expired", async () => {
+    const orderId = "order-123";
+    const oldTs = Date.now() - 6 * 60 * 1000;
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/orders/${orderId}`,
+      headers: makeCancellationHeaders(testKeypair, orderId, userAddress, oldTs),
+      payload: { userAddress },
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+});

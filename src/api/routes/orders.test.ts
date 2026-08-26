@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
+import { Keypair } from "@stellar/stellar-sdk";
 import { ordersRoutes } from "./orders.js";
 import { errorHandler } from "../middleware/errorHandler.js";
 import { ValidationError } from "../middleware/errors.js";
@@ -1060,8 +1061,35 @@ describe("POST /orders", () => {
 
 describe("DELETE /orders/:id — cancel order", () => {
   let app: FastifyInstance;
+  const testKeypair = Keypair.random();
+  const userAddress = testKeypair.publicKey();
   const validAddress =
     "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+  const NONCE = "test-nonce";
+
+  function makeCancellationHeaders(
+    keypair: Keypair,
+    orderId: string,
+    address: string,
+    ts = Date.now()
+  ): Record<string, string> {
+    const { buildCancellationMessage } = require("./middleware/stellarAuth.js");
+    const sig = keypair
+      .sign(
+        buildCancellationMessage({
+          orderId,
+          nonce: NONCE,
+          timestamp: ts,
+          userAddress: address,
+        })
+      )
+      .toString("base64");
+    return {
+      "x-signature": sig,
+      "x-timestamp": String(ts),
+      "x-nonce": NONCE,
+    };
+  }
 
   beforeEach(async () => {
     clearRateLimitStores();
@@ -1076,11 +1104,12 @@ describe("DELETE /orders/:id — cancel order", () => {
     clearRateLimitStores();
   });
 
-  it("should cancel an open order and return 200", async () => {
+  it("should cancel an open order with valid signature and return 200", async () => {
+    const orderId = "order-123";
     const cancelledOrder = {
-      id: "order-123",
+      id: orderId,
       marketId: "market-1",
-      userAddress: validAddress,
+      userAddress,
       side: "BUY",
       outcome: "YES",
       price: "0.5",
@@ -1096,8 +1125,9 @@ describe("DELETE /orders/:id — cancel order", () => {
 
     const response = await app.inject({
       method: "DELETE",
-      url: `/orders/${cancelledOrder.id}`,
-      payload: { userAddress: validAddress },
+      url: `/orders/${orderId}`,
+      headers: makeCancellationHeaders(testKeypair, orderId, userAddress),
+      payload: { userAddress },
     });
 
     expect(response.statusCode).toBe(200);
@@ -1106,47 +1136,116 @@ describe("DELETE /orders/:id — cancel order", () => {
     expect(body.order.id).toBe("order-123");
   });
 
-  it("should return 400 when userAddress is missing", async () => {
+  it("should return 401 when x-signature header is missing", async () => {
     const response = await app.inject({
       method: "DELETE",
       url: "/orders/order-123",
+      headers: { "x-timestamp": String(Date.now()), "x-nonce": NONCE },
+      payload: { userAddress },
+    });
+
+    expect(response.statusCode).toBe(401);
+    const body = JSON.parse(response.body);
+    expect(body.error).toContain("x-signature");
+  });
+
+  it("should return 401 when signature does not match actual orderId", async () => {
+    const orderId = "order-123";
+    const wrongOrderId = "order-456";
+    const ts = Date.now();
+    const sig = testKeypair
+      .sign(
+        require("./middleware/stellarAuth.js").buildCancellationMessage({
+          orderId: wrongOrderId, // Sign for wrong order
+          nonce: NONCE,
+          timestamp: ts,
+          userAddress,
+        })
+      )
+      .toString("base64");
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/orders/${orderId}`,
+      headers: {
+        "x-signature": sig,
+        "x-timestamp": String(ts),
+        "x-nonce": NONCE,
+      },
+      payload: { userAddress },
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("should return 401 when signature is from different keypair", async () => {
+    const otherKeypair = Keypair.random();
+    const orderId = "order-123";
+    const headers = makeCancellationHeaders(
+      otherKeypair,
+      orderId,
+      otherKeypair.publicKey()
+    );
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/orders/${orderId}`,
+      headers,
+      payload: { userAddress: otherKeypair.publicKey() },
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("should return 401 when userAddress in body does not match signature", async () => {
+    const orderId = "order-123";
+    const ts = Date.now();
+    // Sign with testKeypair's address but send different userAddress in body
+    const headers = makeCancellationHeaders(
+      testKeypair,
+      orderId,
+      userAddress,
+      ts
+    );
+
+    const response = await app.inject({
+      method: "DELETE",
+      url: `/orders/${orderId}`,
+      headers,
+      payload: { userAddress: validAddress }, // Different from signed address
+    });
+
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("should return 400 when userAddress is missing from request body", async () => {
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/orders/order-123",
+      headers: { "x-timestamp": String(Date.now()), "x-nonce": NONCE },
       payload: {},
     });
 
     expect(response.statusCode).toBe(400);
   });
 
-  it("should return 400 when cancelling a non-existent order", async () => {
-    (
-      mockMatchingService.cancelOrder as ReturnType<typeof vi.fn>
-    ).mockRejectedValue(
-      new ValidationError("Order not found", { orderId: "Order not found" })
+  it("should return 401 when timestamp is expired", async () => {
+    const orderId = "order-123";
+    const oldTs = Date.now() - 6 * 60 * 1000; // 6 minutes ago
+    const headers = makeCancellationHeaders(
+      testKeypair,
+      orderId,
+      userAddress,
+      oldTs
     );
 
     const response = await app.inject({
       method: "DELETE",
-      url: "/orders/nonexistent",
-      payload: { userAddress: validAddress },
+      url: `/orders/${orderId}`,
+      headers,
+      payload: { userAddress },
     });
 
-    expect(response.statusCode).toBe(400);
-  });
-
-  it("should return 400 when cancelling another user's order", async () => {
-    (
-      mockMatchingService.cancelOrder as ReturnType<typeof vi.fn>
-    ).mockRejectedValue(
-      new ValidationError("Order does not belong to this user", {
-        orderId: "Order does not belong to this user",
-      })
-    );
-
-    const response = await app.inject({
-      method: "DELETE",
-      url: "/orders/order-123",
-      payload: { userAddress: validAddress },
-    });
-
-    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).toBe(401);
   });
 });

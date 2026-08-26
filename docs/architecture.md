@@ -99,7 +99,7 @@ for the state diagram, transition matrix and per-path enforcement behaviour.
 - [x] **Queue technology**: Resolved — BullMQ selected. See [docs/adr/001-queue-technology.md](adr/001-queue-technology.md). Settlement and oracle submission queues migrated to BullMQ Workers with unified retry/backoff/DLQ config.
 - [ ] **Oracle multi-provider strategy**: `fallback-adapter.ts` exists but the failover policy (timeout, retry count) is not finalised.
 - [ ] **Monorepo build tooling**: Services currently share `tsconfig.json` at the root. Evaluate per-package tsconfigs as the repo grows.
-- [ ] **Authentication**: Admin routes use a static key guard (`adminGuard.ts`). A proper auth layer is needed before public launch.
+- [x] **Authentication**: Resolved — admin routes now use rotatable per-identity credentials (`AdminIdentity` model) instead of a static shared token. Each identity is independently revocable, rotatable, and auditable via `AdminIdentityAuditLog`. Break-glass operations remain an explicit, audited path via `AdminApprovalToken` dual-control. In production, the identity store must be configured and reachable; missing config fails fast. See `src/services/admin-identity.ts` and `src/api/middleware/adminGuard.ts`.
 - [x] **Workers deployment**: resolved — the root [`Dockerfile`](../Dockerfile) defines `finalization-worker` and `oracle-worker` build targets, and [`docker-compose.yml`](../docker-compose.yml) runs them under the `workers` profile. No standalone process manager is used; each container runs a single process and relies on Docker/Kubernetes restart policies. See [docs/docker-compose.md](docker-compose.md).
 
 ## Assumptions

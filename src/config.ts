@@ -15,10 +15,7 @@ function requireString(name: string): string {
   return raw.trim();
 }
 
-// Validate ADMIN_TOKEN at startup (except in test environment)
-if (process.env.NODE_ENV !== "test") {
-  requireString("ADMIN_TOKEN");
-}
+// Note: ADMIN_TOKEN is deprecated. Use AdminIdentity model for rotatable credentials.
 
 export const config = {
   /**
@@ -54,8 +51,8 @@ export const config = {
    */
   analyticsDatabaseUrl: env.ANALYTICS_DATABASE_URL,
   /**
-   * Admin bearer token for protected admin endpoints.
-   * Configured via ADMIN_TOKEN.
+   * @deprecated Use AdminIdentity model for rotatable credentials.
+   * Configured via ADMIN_TOKEN (legacy, no longer validated at startup).
    */
   get adminToken(): string {
     return process.env.ADMIN_TOKEN || "";
