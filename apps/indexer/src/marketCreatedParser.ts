@@ -2,6 +2,7 @@ import { xdr, scValToNative } from "@stellar/stellar-sdk";
 import type { RawChainEvent } from "./types.js";
 import { MarketCreatedParseError } from "./types.js";
 import type { NormalizedMarketCreated } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
 
 /**
  * Soroban's #[contractevent] macro derives the topic symbol by snake_casing
@@ -121,15 +122,27 @@ export function parseMarketCreatedChainEvent(
  * Parse a batch of raw events, skipping non-market-created events silently.
  * Errors are collected per-event so one bad payload never drops the batch.
  */
-export function parseMarketCreatedEvents(events: RawChainEvent[]): {
+export function parseMarketCreatedEvents(
+  events: RawChainEvent[],
+  options?: { telemetry?: Telemetry }
+): {
   markets: NormalizedMarketCreated[];
   errors: MarketCreatedParseError[];
 } {
   const markets: NormalizedMarketCreated[] = [];
   const errors: MarketCreatedParseError[] = [];
+  const telemetry = options?.telemetry;
 
   for (const event of events) {
-    if (!isMarketCreatedEvent(event.topicsXdr)) continue;
+    if (!isMarketCreatedEvent(event.topicsXdr)) {
+      telemetry?.record("indexer.parser.unknown_topics", 1, {
+        parser: "market_created",
+        eventId: event.id,
+        contractId: event.contractId,
+        ledger: String(event.ledger),
+      });
+      continue;
+    }
     try {
       markets.push(parseMarketCreatedChainEvent(event));
     } catch (err) {

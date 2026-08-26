@@ -6,6 +6,7 @@ import type {
   TradeOutcome,
 } from "./types.js";
 import { TradeParseError } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
 
 /**
  * Topic index 0 carries the event name symbol. Soroban's #[contractevent]
@@ -167,15 +168,27 @@ export function parseTradeEvent(event: RawChainEvent): NormalizedTrade {
  * Returns successfully parsed trades and collects errors separately
  * so one bad event never drops the whole batch.
  */
-export function parseTradeEvents(events: RawChainEvent[]): {
+export function parseTradeEvents(
+  events: RawChainEvent[],
+  options?: { telemetry?: Telemetry }
+): {
   trades: NormalizedTrade[];
   errors: TradeParseError[];
 } {
   const trades: NormalizedTrade[] = [];
   const errors: TradeParseError[] = [];
+  const telemetry = options?.telemetry;
 
   for (const event of events) {
-    if (!isTradeEvent(event.topicsXdr)) continue;
+    if (!isTradeEvent(event.topicsXdr)) {
+      telemetry?.record("indexer.parser.unknown_topics", 1, {
+        parser: "trade",
+        eventId: event.id,
+        contractId: event.contractId,
+        ledger: String(event.ledger),
+      });
+      continue;
+    }
     try {
       trades.push(parseTradeEvent(event));
     } catch (err) {

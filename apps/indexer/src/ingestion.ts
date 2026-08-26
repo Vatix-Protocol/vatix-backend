@@ -473,12 +473,20 @@ export class PollingIngestionLoop implements IngestionLoop {
     const parseSpan = this.telemetry.startSpan("indexer.ingestion.parse", {
       contractId: this.deps.contractId,
     });
-    const { trades, errors: tradeErrors } = parseTradeEvents(events);
-    const { resolutions, errors: resolutionErrors } =
-      parseResolutionEvents(events);
-    const { deposits, errors: depositErrors } =
-      parseCollateralDepositedEvents(events);
-    const { markets, errors: marketErrors } = parseMarketCreatedEvents(events);
+    const { trades, errors: tradeErrors } = parseTradeEvents(events, {
+      telemetry: this.telemetry,
+    });
+    const { resolutions, errors: resolutionErrors } = parseResolutionEvents(
+      events,
+      { telemetry: this.telemetry }
+    );
+    const { deposits, errors: depositErrors } = parseCollateralDepositedEvents(
+      events,
+      { telemetry: this.telemetry }
+    );
+    const { markets, errors: marketErrors } = parseMarketCreatedEvents(events, {
+      telemetry: this.telemetry,
+    });
     parseSpan.end({
       trades: String(trades.length),
       resolutions: String(resolutions.length),
