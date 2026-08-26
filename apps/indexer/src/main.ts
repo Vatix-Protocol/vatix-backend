@@ -40,6 +40,19 @@ async function bootstrap(): Promise<void> {
     pageLimit: config.batchSize,
   });
   const batchWriter = new PrismaBatchWriter(logger);
+
+  // Load optional gap paging config
+  const gapPagingWebhookUrl = process.env["INDEXER_GAP_PAGING_WEBHOOK_URL"];
+  const gapPagingConfig = gapPagingWebhookUrl
+    ? {
+        webhookUrl: gapPagingWebhookUrl,
+        persistenceCyclesBeforePage: parseInt(
+          process.env["INDEXER_GAP_PERSISTENCE_CYCLES"] ?? "3",
+          10
+        ),
+      }
+    : undefined;
+
   const ingestionLoop = new PollingIngestionLoop(
     logger,
     storage,
@@ -53,6 +66,8 @@ async function bootstrap(): Promise<void> {
       ledgerWindowSize: config.ledgerWindowSize,
       gapPauseThreshold: config.gapPauseThreshold,
       backfillMaxLedgers: config.backfillMaxLedgers,
+      gapPagingConfig,
+      nodeEnv: config.nodeEnv,
     }
   );
 
