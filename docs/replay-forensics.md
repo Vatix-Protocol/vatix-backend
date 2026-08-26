@@ -159,3 +159,50 @@ scenarios as the existing `#729` snapshot corpus
 diff, and that injected corruption (bad `filledQuantity`, a phantom/missing
 order, a stale Redis depth snapshot) is detected with clear order-id-level
 output.
+
+## Audit Trail Verification API
+
+In addition to replay-based forensics, the API provides audit trail verification endpoints under `/v1/admin/audit` for on-chain consensus verification:
+
+### POST /v1/admin/audit/verify-chain
+
+Verify hash chain integrity and detect tampering for a market's audit trail.
+
+**Authentication**: Requires admin API key and admin role.
+
+**Request**:
+```json
+{
+  "marketId": "market-123",
+  "startTime": "2026-07-29T00:00:00Z",
+  "endTime": "2026-07-29T23:59:59Z"
+}
+```
+
+**Response**:
+```json
+{
+  "marketId": "market-123",
+  "valid": true,
+  "totalEvents": 1250,
+  "mismatchCount": 0,
+  "errors": [],
+  "verifiedAt": "2026-07-29T12:00:00Z"
+}
+```
+
+### GET /v1/admin/audit/watermark/:marketId
+
+Get archival watermark for a market.
+
+**Authentication**: Requires admin API key and admin role.
+
+### GET /v1/admin/audit/events/:marketId
+
+Get archived audit events for a market with pagination.
+
+**Authentication**: Requires admin API key and admin role.
+
+**Query parameters**:
+- `limit`: Max events per page (default 100, max 1000)
+- `offset`: Skip N events (default 0)

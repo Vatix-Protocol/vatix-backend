@@ -35,6 +35,7 @@ import { redis } from "./services/redis.js";
 import { walletRoutes } from "./api/routes/wallet.js";
 import { resolutionsRoutes } from "./api/routes/resolutions.js";
 import { admissionControl } from "./api/middleware/admissionControl.js";
+import { auditAdminRoutes } from "./api/routes/audit-verification.js";
 
 // Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
 // Oversized requests are rejected with 413 Request Entity Too Large.
@@ -138,10 +139,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       await v1.register(positionsRouter);
       await v1.register(fillsRoutes);
       await v1.register(adminRoutes);
+      await v1.register(auditAdminRoutes);
       await v1.register(authRoutes);
       await v1.register(resolutionsRoutes);
       await v1.register(healthRoutes);
-      await v1.register(readyRoute(options.readyDeps ?? createReadyDeps()));
+      await v1.register(readyRoute(options.readyDeps ?? createDefaultReadyDeps()));
 
       v1.get("/openapi.json", async (_request, reply) => {
         const nodeEnv = process.env.NODE_ENV || "development";
