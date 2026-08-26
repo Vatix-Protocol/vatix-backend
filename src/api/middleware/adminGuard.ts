@@ -59,6 +59,7 @@ export async function requireAdmin(
       return;
     }
 
+    // validateCredential uses bcrypt.compare which performs timing-safe comparison
     const isValid = await identityService.validateCredential(
       identityName,
       credentialValue
