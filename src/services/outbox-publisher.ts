@@ -21,6 +21,8 @@ import {
   settlementOutboxLagSecondsGauge,
   settlementOutboxPublishFailuresTotal,
   settlementOutboxOrphanedTradesGauge,
+  settlementOutboxQuarantinedEntriesGauge,
+  settlementOutboxQuarantineTransitionsTotal,
 } from "./metrics.js";
 
 const DEFAULT_BATCH_SIZE = 50;
@@ -34,6 +36,14 @@ const DEFAULT_MAX_BACKOFF_MS = 60_000;
  */
 const ORPHAN_ATTEMPTS_THRESHOLD =
   Number(process.env.OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD) || 5;
+
+/**
+ * Attempts after which a permanently failing row is moved to QUARANTINED status.
+ * Must be >= ORPHAN_ATTEMPTS_THRESHOLD to ensure alerting is visible before quarantine.
+ * In production, this must be enforced (no silent fallback to indefinite retries).
+ */
+const QUARANTINE_ATTEMPTS_THRESHOLD =
+  Number(process.env.OUTBOX_QUARANTINE_ATTEMPTS_THRESHOLD) || 10;
 
 /** Minimal shape needed to publish + mark a single outbox row. */
 export interface OutboxRow {
@@ -92,7 +102,7 @@ export function buildSettlementPayload(trade: {
 export async function publishOutboxRow(
   prisma: PrismaClient,
   row: OutboxRow
-): Promise<"published" | "failed"> {
+): Promise<"published" | "failed" | "quarantined"> {
   const client = prisma as unknown as {
     outboxEvent: {
       updateMany: (args: unknown) => Promise<{ count: number }>;
@@ -111,6 +121,34 @@ export async function publishOutboxRow(
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     const nextAttempt = row.attempts + 1;
+
+    // Check if we've exceeded the quarantine threshold
+    if (nextAttempt >= QUARANTINE_ATTEMPTS_THRESHOLD) {
+      await client.outboxEvent.updateMany({
+        where: { tradeId: row.tradeId, status: { not: "PUBLISHED" } },
+        data: {
+          status: "QUARANTINED",
+          attempts: nextAttempt,
+          lastError: err.message.slice(0, 2000),
+          quarantinedAt: new Date(),
+        },
+      });
+
+      settlementOutboxPublishFailuresTotal.inc();
+      settlementOutboxQuarantineTransitionsTotal.inc();
+      console.error(
+        JSON.stringify({
+          level: "error",
+          component: "outbox-publisher",
+          action: "outbox_quarantined",
+          tradeId: row.tradeId,
+          attempts: nextAttempt,
+          message: err.message,
+        })
+      );
+
+      return "quarantined";
+    }
 
     await client.outboxEvent.updateMany({
       where: { tradeId: row.tradeId, status: { not: "PUBLISHED" } },
@@ -191,7 +229,7 @@ export async function drainOutboxOnce(
   return { published, failed };
 }
 
-/** Recomputes the outbox depth/lag/orphaned gauges from current DB state. */
+/** Recomputes the outbox depth/lag/orphaned/quarantined gauges from current DB state. */
 export async function refreshOutboxMetrics(
   prisma: PrismaClient
 ): Promise<void> {
@@ -202,7 +240,7 @@ export async function refreshOutboxMetrics(
     };
   };
 
-  const [depth, oldest, orphaned] = await Promise.all([
+  const [depth, oldest, orphaned, quarantined] = await Promise.all([
     client.outboxEvent.count({
       where: { status: { in: ["PENDING", "FAILED"] } },
     }),
@@ -217,6 +255,9 @@ export async function refreshOutboxMetrics(
         attempts: { gte: ORPHAN_ATTEMPTS_THRESHOLD },
       },
     }),
+    client.outboxEvent.count({
+      where: { status: "QUARANTINED" },
+    }),
   ]);
 
   settlementOutboxDepthGauge.set(depth);
@@ -224,6 +265,7 @@ export async function refreshOutboxMetrics(
     oldest ? (Date.now() - oldest.createdAt.getTime()) / 1000 : 0
   );
   settlementOutboxOrphanedTradesGauge.set(orphaned);
+  settlementOutboxQuarantinedEntriesGauge.set(quarantined);
 }
 
 export interface OutboxPublisherOptions {
