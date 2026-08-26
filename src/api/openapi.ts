@@ -811,6 +811,148 @@ export const openApiSpec = {
         },
       },
     },
+    "/v1/admin/audit/verify-chain": {
+      post: {
+        summary: "Verify audit trail hash chain",
+        description:
+          "Verify hash chain integrity and detect tampering for a market's " +
+          "audit trail. Requires API key and admin auth.",
+        tags: ["Admin", "Audit"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["marketId"],
+                properties: {
+                  marketId: { type: "string" },
+                  startTime: { type: "string", format: "date-time" },
+                  endTime: { type: "string", format: "date-time" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Chain verification result",
+          },
+          "400": {
+            description: "Invalid request parameters",
+          },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
+          },
+        },
+      },
+    },
+    "/v1/admin/audit/watermark/{marketId}": {
+      get: {
+        summary: "Get audit archival watermark",
+        description:
+          "Get archival watermark for a market's audit trail. " +
+          "Requires API key and admin auth.",
+        tags: ["Admin", "Audit"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
+        parameters: [
+          {
+            name: "marketId",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Archival watermark",
+          },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
+          },
+        },
+      },
+    },
+    "/v1/admin/audit/events/{marketId}": {
+      get: {
+        summary: "Get archived audit events",
+        description:
+          "Get archived audit events for a market with pagination. " +
+          "Requires API key and admin auth.",
+        tags: ["Admin", "Audit"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
+        parameters: [
+          {
+            name: "marketId",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          {
+            name: "limit",
+            in: "query",
+            description: "Max events per page (default 100, max 1000)",
+            schema: { type: "integer", minimum: 1, maximum: 1000, default: 100 },
+          },
+          {
+            name: "offset",
+            in: "query",
+            description: "Skip N events (default 0)",
+            schema: { type: "integer", minimum: 0, default: 0 },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Paginated audit events",
+          },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
+          },
+        },
+      },
+    },
+    "/v1/wallets/{wallet}/fills/stream": {
+      get: {
+        summary: "Order fill notifications stream",
+        description:
+          "Server-Sent Events stream of order fill notifications for a wallet. " +
+          "Only fills that occur after the client connects are pushed.",
+        tags: ["Fills"],
+        parameters: [
+          {
+            name: "wallet",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description: "Wallet address",
+          },
+          {
+            name: "after",
+            in: "query",
+            description:
+              "Resume cursor (stream ID or ISO timestamp); fallback for " +
+              "clients that cannot set Last-Event-ID header",
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            description:
+              "Event stream of fills (Server-Sent Events; text/event-stream)",
+          },
+        },
+      },
+    },
   },
   components: {
     securitySchemes: {
