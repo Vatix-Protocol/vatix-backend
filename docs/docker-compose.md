@@ -33,9 +33,10 @@ Every application process lives behind a profile so you opt in explicitly.
 All application images (`api`, `indexer`, `finalization-worker`,
 `oracle-worker`, `settlement-worker`) run as the non-root `vatix` user
 (uid/gid `1001`), set in the Dockerfile `runtime` stage. CI's
-`docker-image-smoke` job builds the `api` and `indexer` images and asserts
-`id -u` inside each container is non-zero, then confirms `postgres`/`redis`
-healthchecks still pass with the stack up.
+`docker-image-smoke` job builds all worker target images and asserts
+`id -u` inside each container is non-zero, ensuring non-root execution is
+consistent across all processes. The `api` target additionally confirms
+`postgres`/`redis` healthchecks pass with the stack up.
 
 ## Option A — Data layer only (host-run development)
 
