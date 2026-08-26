@@ -36,6 +36,10 @@ export interface OracleServiceConfig {
   enableFallback?: boolean;
   /** Default timeout for resolution requests */
   defaultTimeoutMs?: number;
+  /** Timeout for the primary provider, in milliseconds */
+  primaryTimeoutMs?: number;
+  /** Timeout for the fallback provider, in milliseconds */
+  fallbackTimeoutMs?: number;
   /** Retry configuration for provider calls */
   retryConfig?: Partial<RetryConfig>;
   /** Structured logger — defaults to a no-op logger if omitted */
@@ -71,18 +75,23 @@ export interface OracleMetrics {
  * Uses primary adapter by default, switches to fallback on primary failure.
  * Optionally enqueues successful resolutions for on-chain submission.
  *
- * ## Failover policy
+ * ## Failover policy (explicit timeouts, fail-closed)
  *
- * 1. The primary adapter is called first, with up to `retryConfig.maxRetries`
- *    retries using exponential back-off (see retry-utils.ts).
+ * 1. The primary adapter is called first with timeout `primaryTimeoutMs`
+ *    (defaults to 30 seconds). Retries are applied per `retryConfig.maxRetries`
+ *    with exponential back-off (see retry-utils.ts).
  * 2. If the primary fails with a **retryable** (transient) error after all
- *    retries, and `enableFallback` is true, the fallback adapter is tried once.
+ *    retries, and `enableFallback` is true, the fallback adapter is tried with
+ *    timeout `fallbackTimeoutMs` (defaults to 30 seconds).
  *    Retryable errors: network failures, 5xx responses, timeouts.
  *    Non-retryable errors (4xx client errors, invalid responses) skip
  *    the fallback and are re-thrown immediately.
- * 3. If the fallback adapter also fails, an error is thrown that aggregates
- *    both failure messages.
- * 4. Both adapters enqueue a successful resolution via `submissionQueue` or
+ * 3. If both primary and fallback fail or timeout, the oracle fails closed:
+ *    no resolution is returned or enqueued. An `oracleFailClosedTotal` metric
+ *    is incremented and an error is thrown.
+ * 4. Production mode enforces fail-closed behavior (no silent fallback to
+ *    stale or default values).
+ * 5. Successful resolutions are enqueued via `submissionQueue` or
  *    `enqueueCallback` when configured.
  */
 export class OracleService {
@@ -119,6 +128,8 @@ export class OracleService {
     this.config = {
       enableFallback: true,
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+      primaryTimeoutMs: DEFAULT_TIMEOUT_MS,
+      fallbackTimeoutMs: DEFAULT_TIMEOUT_MS,
       retryConfig: { maxRetries: 0 },
       ...config,
     };
@@ -141,8 +152,13 @@ export class OracleService {
         marketId: request.marketId,
       });
 
+      const primaryRequest = {
+        ...request,
+        timeoutMs: this.config.primaryTimeoutMs ?? this.config.defaultTimeoutMs,
+      };
+
       const result = await withRetry(
-        () => this.primaryAdapter.resolve(request),
+        () => this.primaryAdapter.resolve(primaryRequest),
         this.config.retryConfig,
         (error, attempt, delay) => {
           this.metrics.retryCount++;
@@ -206,7 +222,12 @@ export class OracleService {
     });
 
     try {
-      const result = await this.fallbackAdapter.resolve(request);
+      const fallbackRequest = {
+        ...request,
+        timeoutMs: this.config.fallbackTimeoutMs ?? this.config.defaultTimeoutMs,
+      };
+
+      const result = await this.fallbackAdapter.resolve(fallbackRequest);
       this.metrics.fallbackUsageCount++;
       this.logger.info("Fallback provider resolved market", {
         marketId: request.marketId,
