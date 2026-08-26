@@ -8,10 +8,10 @@
 
 ## Context
 
-Wallet-authenticated writes (e.g. `POST /v1/orders`) require the caller to prove
-ownership of a Stellar keypair by signing a challenge. This ADR records the
-message format, expiry, nonce storage, and replay-prevention rules implemented
-in `src/api/middleware/nonceStore.ts` and `src/api/middleware/stellarAuth.ts`,
+Wallet-authenticated writes (e.g. `POST /v1/orders` for placement and `DELETE /v1/orders/:id`
+for cancellation) require the caller to prove ownership of a Stellar keypair by signing a
+challenge. This ADR records the message formats, expiry, nonce storage, and replay-prevention
+rules implemented in `src/api/middleware/nonceStore.ts` and `src/api/middleware/stellarAuth.ts`,
 so the design intent is documented alongside the code.
 
 ## Decision
@@ -34,6 +34,20 @@ The signed payload is a JSON object with alphabetically sorted keys
 
 Required headers on the authenticated request: `x-signature` (base64 Ed25519
 signature of the message), `x-timestamp`, `x-nonce`.
+
+### Cancellation message fields
+
+For `DELETE /v1/orders/:id`, the signed payload is a JSON object with alphabetically sorted keys
+(`buildCancellationMessage` in `stellarAuth.ts`):
+
+| Field         | Source               | Notes                               |
+| ------------- | -------------------- | ----------------------------------- |
+| `nonce`       | `x-nonce` header     | single-use, issued by the challenge |
+| `orderId`     | request URL path     | the order being cancelled           |
+| `timestamp`   | `x-timestamp` header | ms since epoch                      |
+| `userAddress` | request body         | Stellar public key (must own order) |
+
+Same header and expiry rules as order placement apply.
 
 ### Expiry
 
