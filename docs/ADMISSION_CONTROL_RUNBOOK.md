@@ -74,22 +74,26 @@ annotations:
 
 #### High Settlement Queue Depth
 
-Check Redis stream depth:
+Check BullMQ queue depth across all states (wait, delayed, active):
 
 ```bash
 redis-cli
-> XLEN vatix:queue:settlement
-# or for BullMQ:
+# Check each queue state
+> LLEN vatix:queue:settlement:wait
+> ZCARD vatix:queue:settlement:delayed
 > ZCARD vatix:queue:settlement:active
 ```
+
+The admission control lag detector sums all three states to compute settlement queue depth. A high depth indicates jobs are backing up at any stage of processing.
 
 **Common causes**:
 
 - Settlement worker crashed or slow
 - Stellar RPC is experiencing latency
 - Database is slow or locked
+- Jobs are delayed (e.g., exponential backoff after retry)
 
-**Action**: Check settlement worker logs, Stellar network status, database queries.
+**Action**: Check settlement worker logs, Stellar network status, database queries. If jobs are stuck in `delayed`, check for repeated failures that are triggering retry backoff.
 
 #### High Outbox Depth
 
@@ -147,8 +151,10 @@ See those issues for additional Redis queue monitoring recipes.
 ### Test with Artificially High Lag
 
 ```bash
-# Simulate high settlement queue depth
-redis-cli XADD vatix:queue:settlement "*" test 1 # repeat 1000 times
+# Simulate high settlement queue depth by adding delayed jobs
+# This populates the BullMQ delayed queue
+redis-cli
+> ZADD vatix:queue:settlement:delayed 1693478400000 '{"test":"job"}' # repeat 1001+ times to exceed high water mark
 
 # Trigger admission control
 curl -X POST http://localhost:3000/v1/orders \
@@ -161,8 +167,9 @@ curl -X POST http://localhost:3000/v1/orders \
 ### Verify Recovery
 
 ```bash
-# Clear settlement queue
-redis-cli DEL vatix:queue:settlement
+# Clear settlement queue (all states)
+redis-cli
+> DEL vatix:queue:settlement:wait vatix:queue:settlement:delayed vatix:queue:settlement:active
 
 # Retry order submission
 curl -X POST http://localhost:3000/v1/orders \
@@ -187,12 +194,16 @@ Without this load shedding, a slow publisher would cause the outbox to grow unbo
 
 ### Shedding persists but queue is empty
 
-Check if metrics are stale:
+Check if metrics are stale by verifying all three BullMQ queue states:
 
 ```bash
 redis-cli
-> XLEN vatix:queue:settlement
-0  # Queue is empty
+> LLEN vatix:queue:settlement:wait
+0
+> ZCARD vatix:queue:settlement:delayed
+0
+> ZCARD vatix:queue:settlement:active
+0
 ```
 
 **Solution**: The shedding state is recomputed on every request. If metrics appear stale, restart the API pod.
