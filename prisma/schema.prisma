@@ -328,6 +328,7 @@ enum OutboxStatus {
   PENDING
   PUBLISHED
   FAILED
+  QUARANTINED
 }
 
 /// Transactional outbox for settlement jobs (durable dual-write fix).
@@ -351,11 +352,13 @@ model OutboxEvent {
   lastError     String?      @map("last_error")
   nextAttemptAt DateTime     @default(now()) @map("next_attempt_at")
   publishedAt   DateTime?    @map("published_at")
+  quarantinedAt DateTime?    @map("quarantined_at")
   createdAt     DateTime     @default(now()) @map("created_at")
   updatedAt     DateTime     @default(now()) @updatedAt @map("updated_at")
 
   @@index([status, nextAttemptAt])
   @@index([createdAt])
+  @@index([quarantinedAt])
   @@map("outbox_events")
 }
 

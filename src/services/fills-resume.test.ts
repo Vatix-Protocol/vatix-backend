@@ -120,6 +120,42 @@ describe("FillsResumeService", () => {
       expect(result.hasGap).toBe(true);
       expect(result.reason).toBe("cursor_unknown");
     });
+
+    it("should allow resume if cursor is trimmed from Redis but exists in Postgres (backfill case)", async () => {
+      const trimmedCursor = "1234567890000-0"; // Very old
+
+      // Redis doesn't have the cursor (trimmed)
+      vi.mocked(redis.xrange).mockResolvedValue([]);
+
+      // But Postgres has fills after that cursor
+      mockPrisma.trade.findFirst.mockResolvedValue({
+        tradedAt: new Date("2026-07-29T12:01:00Z"),
+      });
+
+      const result = await fillsResumeService.detectGap(trimmedCursor);
+
+      expect(result.hasGap).toBe(false);
+    });
+
+    it("should detect gap if cursor is trimmed from both Redis and Postgres", async () => {
+      const veryOldCursor = "1234567890000-0";
+
+      // Redis doesn't have the cursor
+      vi.mocked(redis.xrange).mockResolvedValue([]);
+
+      // Postgres doesn't have it either
+      mockPrisma.trade.findFirst.mockResolvedValue(null);
+
+      // But Redis has some data
+      vi.mocked(redis.xrevrange).mockResolvedValue([
+        ["1234567999000-0", ["data"]],
+      ]);
+
+      const result = await fillsResumeService.detectGap(veryOldCursor);
+
+      expect(result.hasGap).toBe(true);
+      expect(result.reason).toBe("cursor_trimmed");
+    });
   });
 
   describe("getTradesAfterCursor", () => {

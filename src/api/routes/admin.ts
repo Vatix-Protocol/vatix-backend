@@ -375,4 +375,181 @@ export async function adminRoutes(fastify: FastifyInstance) {
       });
     }
   );
+
+  // GET /admin/outbox/quarantined - list quarantined settlement outbox entries
+  fastify.get<{ Querystring: { limit?: string; offset?: string } }>(
+    "/admin/outbox/quarantined",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            limit: { type: "string" },
+            offset: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const limit = Math.min(
+        Number(request.query.limit) || 50,
+        500
+      );
+      const offset = Number(request.query.offset) || 0;
+
+      const client = prisma as unknown as {
+        outboxEvent: {
+          findMany: (args: unknown) => Promise<Array<any>>;
+          count: (args: unknown) => Promise<number>;
+        };
+      };
+
+      const [entries, total] = await Promise.all([
+        client.outboxEvent.findMany({
+          where: { status: "QUARANTINED" },
+          orderBy: { quarantinedAt: "desc" },
+          select: {
+            tradeId: true,
+            attempts: true,
+            lastError: true,
+            quarantinedAt: true,
+            createdAt: true,
+            payload: true,
+          },
+          skip: offset,
+          take: limit,
+        }),
+        client.outboxEvent.count({
+          where: { status: "QUARANTINED" },
+        }),
+      ]);
+
+      success(reply, {
+        entries: entries.map((e: any) => ({
+          tradeId: e.tradeId,
+          attempts: e.attempts,
+          lastError: e.lastError,
+          quarantinedAt: e.quarantinedAt?.toISOString(),
+          createdAt: e.createdAt.toISOString(),
+          payload: e.payload,
+        })),
+        total,
+        limit,
+        offset,
+      });
+    }
+  );
+
+  // POST /admin/outbox/quarantined/:tradeId/retry - retry a quarantined entry
+  fastify.post<{ Params: { tradeId: string } }>(
+    "/admin/outbox/quarantined/:tradeId/retry",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["tradeId"],
+          properties: { tradeId: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { tradeId } = request.params;
+
+      const client = prisma as unknown as {
+        outboxEvent: {
+          updateMany: (args: unknown) => Promise<{ count: number }>;
+          findFirst: (args: unknown) => Promise<any>;
+        };
+      };
+
+      const entry = await client.outboxEvent.findFirst({
+        where: { tradeId },
+      });
+
+      if (!entry) {
+        reply.status(404).send({ error: "Outbox entry not found", tradeId });
+        return;
+      }
+
+      if (entry.status !== "QUARANTINED") {
+        reply.status(400).send({
+          error: "Entry is not quarantined",
+          tradeId,
+          currentStatus: entry.status,
+        });
+        return;
+      }
+
+      await client.outboxEvent.updateMany({
+        where: { tradeId },
+        data: {
+          status: "FAILED",
+          attempts: 0,
+          nextAttemptAt: new Date(),
+          quarantinedAt: null,
+        },
+      });
+
+      success(reply, {
+        message: "Entry moved back to FAILED status for retry",
+        tradeId,
+      });
+    }
+  );
+
+  // POST /admin/outbox/quarantined/:tradeId/discard - discard a quarantined entry
+  fastify.post<{ Params: { tradeId: string } }>(
+    "/admin/outbox/quarantined/:tradeId/discard",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["tradeId"],
+          properties: { tradeId: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { tradeId } = request.params;
+
+      const client = prisma as unknown as {
+        outboxEvent: {
+          updateMany: (args: unknown) => Promise<{ count: number }>;
+          findFirst: (args: unknown) => Promise<any>;
+        };
+      };
+
+      const entry = await client.outboxEvent.findFirst({
+        where: { tradeId },
+      });
+
+      if (!entry) {
+        reply.status(404).send({ error: "Outbox entry not found", tradeId });
+        return;
+      }
+
+      if (entry.status !== "QUARANTINED") {
+        reply.status(400).send({
+          error: "Entry is not quarantined",
+          tradeId,
+          currentStatus: entry.status,
+        });
+        return;
+      }
+
+      await client.outboxEvent.updateMany({
+        where: { tradeId },
+        data: {
+          status: "PUBLISHED",
+          publishedAt: new Date(),
+          quarantinedAt: null,
+        },
+      });
+
+      success(reply, {
+        message: "Entry marked as PUBLISHED (discarded from settlement)",
+        tradeId,
+      });
+    }
+  );
 }
