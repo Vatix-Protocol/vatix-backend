@@ -19,7 +19,7 @@ import type { QueueJob } from "../consumers/queue-consumer.js";
 import {
   redisConnectionFromEnv,
   settlementQueueName,
-} from "../shared/queue-config.js";
+} from "../../../packages/shared/src/queue-config.js";
 
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 30_000;
