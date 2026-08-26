@@ -375,4 +375,72 @@ export async function adminRoutes(fastify: FastifyInstance) {
       });
     }
   );
+
+  // POST /admin/markets/:id/reconcile - Trigger on-demand position reconciliation
+  // Operators call this endpoint during incidents to repair position drift
+  // (e.g., after a settlement or deposits failure). Reconciliation runs with
+  // autoRecovery=true, so detected drift is immediately corrected.
+  fastify.post<{
+    Params: { id: string };
+  }>(
+    "/admin/markets/:id/reconcile",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+      const requestId = request.id;
+      const actor = (request as any).adminKey || "unknown";
+
+      const market = await prisma.market.findUnique({ where: { id: marketId } });
+      if (!market) {
+        throw new MarketNotFoundError(marketId);
+      }
+
+      request.log.info("Reconciliation triggered manually", {
+        marketId,
+        actor,
+        component: "admin-reconciliation",
+      });
+
+      try {
+        const result = await positionReconciliationService.reconcileMarket(
+          marketId,
+          true
+        );
+
+        request.log.info("Reconciliation completed", {
+          marketId,
+          actor,
+          totalWallets: result.totalWallets,
+          driftCount: result.driftCount,
+          recoveredCount: result.recoveredCount,
+          failedCount: result.failedCount,
+          durationMs: Math.round(result.duration),
+          component: "admin-reconciliation",
+        });
+
+        success(reply, {
+          marketId,
+          reconciliation: result,
+          triggeredBy: actor,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (error) {
+        request.log.error("Reconciliation failed", {
+          marketId,
+          actor,
+          error: error instanceof Error ? error.message : String(error),
+          component: "admin-reconciliation",
+        });
+        throw error;
+      }
+    }
+  );
 }
