@@ -419,6 +419,41 @@ model AdminAction {
   @@map("admin_actions")
 }
 
+/// Rotatable admin identities replacing the single shared ADMIN_TOKEN.
+/// Each identity is independently revocable, rotatable, and auditable.
+model AdminIdentity {
+  id           String   @id @default(uuid())
+  name         String   @unique @db.VarChar(256) // Human-readable identifier (e.g., "alice", "bob")
+  credentialHash String  @map("credential_hash") @db.VarChar(64) // Hashed credential (bcrypt/scrypt)
+  /// Metadata: { "purpose": "operations", "rotation_deadline": "2026-09-26T...", ...}
+  metadata     Json?    @default("{}")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  rotatedAt    DateTime? @map("rotated_at") // Track when last rotated
+  revokedAt    DateTime? @map("revoked_at") // Null when active; set when revoked
+  auditLog     AdminIdentityAuditLog[]
+
+  @@index([active])
+  @@index([revokedAt])
+  @@map("admin_identities")
+}
+
+/// Audit trail for admin identity operations (creation, rotation, revocation).
+model AdminIdentityAuditLog {
+  id         String   @id @default(uuid())
+  identityId String   @map("identity_id")
+  action     String   @db.VarChar(32) // "CREATE", "ROTATE", "REVOKE"
+  actor      String   @db.VarChar(256) // Who performed the action (system, admin name)
+  reason     String?  @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  identity   AdminIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+
+  @@index([identityId])
+  @@index([action])
+  @@map("admin_identity_audit_logs")
+}
+
 /// Dual-control approval tokens for break-glass operations.
 /// First admin initiates, second admin approves within time window.
 model AdminApprovalToken {
