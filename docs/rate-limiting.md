@@ -1,8 +1,15 @@
 # Rate Limiting
 
-All API endpoints are protected by an in-memory, per-IP sliding-window rate
-limiter. Limits are tiered by endpoint cost so that expensive routes receive
-tighter controls without penalising cheap ones.
+All API endpoints are protected by a **Redis-backed, distributed sliding-window rate
+limiter** shared across all API replicas. Limits are tiered by endpoint cost so that
+expensive routes receive tighter controls without penalising cheap ones.
+
+## Implementation
+
+- **Algorithm:** Sliding window using Redis sorted sets (ZSET)
+- **Scope:** Distributed across all API replica instances (not per-process)
+- **Failure mode:** Production fails closed (rejects excess traffic with 429) if Redis is unreachable; non-production falls back to in-memory
+- **IP detection:** Reads `X-Forwarded-For` header (when behind proxy) or `request.socket.remoteAddress`
 
 ## Tiers
 
@@ -96,10 +103,10 @@ present on the 429 response as well:
 
 ## Configuration
 
-All limits are configurable via environment variables (see `.env.example`).
-Changes take effect on the next server start. The in-memory store resets on
-restart; for distributed deployments consider replacing the store with a shared
-Redis backend.
+Rate limits are configurable via environment variables (see `.env.example`).
+Changes take effect on the next server start.
+
+### Rate limit configuration
 
 | Env var                      | Tier       | Default |
 | ---------------------------- | ---------- | ------- |
@@ -111,6 +118,31 @@ Redis backend.
 | `RATE_LIMIT_WRITE_WINDOW_MS` | Write      | `60000` |
 | `RATE_LIMIT_ADMIN_MAX`       | Admin      | `30`    |
 | `RATE_LIMIT_ADMIN_WINDOW_MS` | Admin      | `60000` |
+
+### Redis configuration
+
+Rate limiting uses Redis to share state across replicas. Configure Redis connection
+via standard environment variables (see `src/services/redis.ts`):
+
+| Env var                    | Purpose                                         | Default    |
+| -------------------------- | ----------------------------------------------- | ---------- |
+| `REDIS_URL`                | Redis connection string (required when running) | (none)     |
+| `REDIS_KEY_PREFIX`         | Prefix for all rate limit keys in Redis        | `vatix:`   |
+| `REDIS_CONNECT_TIMEOUT`    | Socket connect timeout in ms                    | `5000`     |
+| `REDIS_MAX_RETRIES`        | Max connection retry attempts before giving up  | `3`        |
+| `REDIS_RETRY_BASE_DELAY`   | Base delay for exponential backoff in ms        | `100`      |
+| `REDIS_RETRY_MAX_DELAY`    | Maximum delay between retries in ms             | `2000`     |
+
+### Production failure behavior
+
+In `NODE_ENV=production`:
+- If Redis is unreachable, rate limiter **fails closed**: rejects all excess traffic with HTTP 429
+- No silent fallback to in-memory or unlimited rates
+- Ensures consistent rate limiting across all replicas even under degraded conditions
+
+In non-production environments:
+- If Redis is unreachable, falls back to in-memory rate limiting per process
+- Allows local development and testing without Redis
 
 ## Integrator notes
 
