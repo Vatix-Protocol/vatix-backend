@@ -22,6 +22,26 @@ We use a validation layer that checks configurations immediately upon initializa
 > exits before it can bind a port. See [env-validation.md](./env-validation.md)
 > for the exact error message and full schema.
 
+## Production-Only Stellar Configuration (Fail-Fast)
+
+In **production** (`NODE_ENV=production`), the following Stellar RPC and smart contract environment variables are strictly **required**. If any are missing, the application exits non-zero at startup with a clear error message identifying exactly which variables are missing.
+
+- **`STELLAR_RPC_URL`** or **`STELLAR_RPC_URLS`** — At least one explicit Stellar RPC endpoint (required; public defaults are not trusted)
+- **`INDEXER_CONTRACT_ID`** or **`MARKET_CONTRACT_ID`** — Smart contract address for market data (required)
+- **`SOROBAN_NETWORK_PASSPHRASE`** — Must match the declared network (checked against `STELLAR_NETWORK`)
+
+### Oracle Worker (On-Chain Resolution)
+- **`ORACLE_SECRET_KEY`** — Stellar secret key for signing resolution submissions (strictly required in production)
+
+### Settlement Worker (On-Chain Settlement)
+- **`STELLAR_SECRET_KEY`** — Stellar secret key for signing settlement transactions (strictly required in production)
+
+### Development & Test Behavior
+In **development** and **test** environments, incomplete Stellar config is allowed (with a warning log), permitting offline/off-chain-only development. Production deployment must have all variables explicitly configured.
+
+### Why This Matters
+Silent off-chain fallback in production is a critical bug — operators cannot distinguish between "settlement actually succeeded on-chain" and "settlement ran off-chain and looks successful but is unfunded." Production must fail loud and early.
+
 ## Local Setup
 
 1. **Copy the Template:** Always ensure your local `.env` file matches the structure defined in `.env.example`.

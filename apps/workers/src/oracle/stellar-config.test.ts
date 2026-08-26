@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
   resolveOracleStellarConfig,
+  validateAndResolveStellarConfig,
   assertPassphraseMatchesDeployment,
   StellarNetworkMismatchError,
+  IncompleteProductionStellarConfigError,
 } from "./stellar-config.js";
 
 const BASE_ENV = {
@@ -135,5 +137,107 @@ describe("assertPassphraseMatchesDeployment", () => {
         "futurenet"
       )
     ).not.toThrow();
+  });
+});
+
+describe("validateAndResolveStellarConfig", () => {
+  it("returns undefined in development when config is incomplete", () => {
+    const config = validateAndResolveStellarConfig(
+      {
+        SOROBAN_NETWORK_PASSPHRASE: BASE_ENV.SOROBAN_NETWORK_PASSPHRASE,
+        ORACLE_SECRET_KEY: BASE_ENV.ORACLE_SECRET_KEY,
+      },
+      "development"
+    );
+    expect(config).toBeUndefined();
+  });
+
+  it("returns undefined in test when config is incomplete", () => {
+    const config = validateAndResolveStellarConfig(
+      {
+        SOROBAN_NETWORK_PASSPHRASE: BASE_ENV.SOROBAN_NETWORK_PASSPHRASE,
+        ORACLE_SECRET_KEY: BASE_ENV.ORACLE_SECRET_KEY,
+      },
+      "test"
+    );
+    expect(config).toBeUndefined();
+  });
+
+  it("throws in production when RPC URL is missing", () => {
+    expect(() =>
+      validateAndResolveStellarConfig(
+        {
+          SOROBAN_NETWORK_PASSPHRASE: BASE_ENV.SOROBAN_NETWORK_PASSPHRASE,
+          ORACLE_SECRET_KEY: BASE_ENV.ORACLE_SECRET_KEY,
+          INDEXER_CONTRACT_ID: "CINDEXER",
+        },
+        "production"
+      )
+    ).toThrow(IncompleteProductionStellarConfigError);
+  });
+
+  it("throws in production when contract ID is missing", () => {
+    expect(() =>
+      validateAndResolveStellarConfig(
+        {
+          ...BASE_ENV,
+        },
+        "production"
+      )
+    ).toThrow(IncompleteProductionStellarConfigError);
+  });
+
+  it("throws in production when network passphrase is missing", () => {
+    expect(() =>
+      validateAndResolveStellarConfig(
+        {
+          STELLAR_RPC_URL: BASE_ENV.STELLAR_RPC_URL,
+          ORACLE_SECRET_KEY: BASE_ENV.ORACLE_SECRET_KEY,
+          INDEXER_CONTRACT_ID: "CINDEXER",
+        },
+        "production"
+      )
+    ).toThrow(IncompleteProductionStellarConfigError);
+  });
+
+  it("throws in production when signer secret is missing", () => {
+    expect(() =>
+      validateAndResolveStellarConfig(
+        {
+          STELLAR_RPC_URL: BASE_ENV.STELLAR_RPC_URL,
+          SOROBAN_NETWORK_PASSPHRASE: BASE_ENV.SOROBAN_NETWORK_PASSPHRASE,
+          INDEXER_CONTRACT_ID: "CINDEXER",
+        },
+        "production"
+      )
+    ).toThrow(IncompleteProductionStellarConfigError);
+  });
+
+  it("returns resolved config in production when all required vars are present", () => {
+    const config = validateAndResolveStellarConfig(
+      {
+        ...BASE_ENV,
+        INDEXER_CONTRACT_ID: "CINDEXER",
+      },
+      "production"
+    );
+    expect(config).toEqual({
+      rpcUrl: BASE_ENV.STELLAR_RPC_URL,
+      rpcUrls: [BASE_ENV.STELLAR_RPC_URL],
+      contractId: "CINDEXER",
+      networkPassphrase: BASE_ENV.SOROBAN_NETWORK_PASSPHRASE,
+      signerSecret: BASE_ENV.ORACLE_SECRET_KEY,
+    });
+  });
+
+  it("throws in production with a clear error message listing missing vars", () => {
+    expect(() =>
+      validateAndResolveStellarConfig(
+        {
+          ORACLE_SECRET_KEY: BASE_ENV.ORACLE_SECRET_KEY,
+        },
+        "production"
+      )
+    ).toThrow(/Missing:.*STELLAR_RPC_URL.*contract ID.*SOROBAN_NETWORK_PASSPHRASE/);
   });
 });

@@ -65,6 +65,10 @@ export function assertPassphraseMatchesDeployment(
  * the passphrase known for STELLAR_NETWORK (default "testnet") — this is
  * what stops a misconfigured passphrase from silently submitting to the
  * wrong network. See assertPassphraseMatchesDeployment.
+ *
+ * Dev/test callers: this function returns undefined on incomplete config,
+ * allowing lenient startup for local development. Production callers should
+ * use validateAndResolveStellarConfig() instead.
  */
 export function resolveOracleStellarConfig(
   env: NodeJS.ProcessEnv
@@ -87,6 +91,86 @@ export function resolveOracleStellarConfig(
 
   if (!(hasExplicitRpc && contractId && networkPassphrase && signerSecret)) {
     return undefined;
+  }
+
+  const { rpcUrls } = loadStellarEndpoints(env, networkPassphrase);
+
+  assertPassphraseMatchesDeployment(
+    networkPassphrase,
+    env.STELLAR_NETWORK ?? "testnet"
+  );
+
+  return {
+    rpcUrl: rpcUrls[0],
+    rpcUrls,
+    contractId,
+    networkPassphrase,
+    signerSecret,
+  };
+}
+
+/** Thrown when production startup is attempted with incomplete Stellar config. */
+export class IncompleteProductionStellarConfigError extends Error {
+  constructor(missing: string[]) {
+    super(
+      `Production startup requires complete Stellar configuration. Missing: ${missing.join(", ")}. ` +
+        `Set STELLAR_RPC_URL (or STELLAR_RPC_URLS), contract ID (INDEXER_CONTRACT_ID or MARKET_CONTRACT_ID), ` +
+        `SOROBAN_NETWORK_PASSPHRASE, and ORACLE_SECRET_KEY (or STELLAR_SECRET_KEY for settlement) to proceed.`
+    );
+    this.name = "IncompleteProductionStellarConfigError";
+  }
+}
+
+/**
+ * Validates and resolves Stellar config, throwing in production when required
+ * environment variables are missing. In dev/test (NODE_ENV !== "production"),
+ * delegates to resolveOracleStellarConfig() for lenient behavior.
+ *
+ * @param env Process environment variables
+ * @param nodeEnv The NODE_ENV value (defaults to process.env.NODE_ENV)
+ * @returns Resolved Stellar config, or undefined in dev/test when incomplete
+ * @throws IncompleteProductionStellarConfigError if production + incomplete
+ */
+export function validateAndResolveStellarConfig(
+  env: NodeJS.ProcessEnv,
+  nodeEnv: string = process.env.NODE_ENV ?? "development"
+): ResolvedOracleStellarConfig | undefined {
+  // In dev/test, allow lenient resolution
+  if (nodeEnv !== "production") {
+    return resolveOracleStellarConfig(env);
+  }
+
+  // Production: fail fast if any required var is missing
+  const networkPassphrase = env.SOROBAN_NETWORK_PASSPHRASE;
+  const signerSecret = env.ORACLE_SECRET_KEY;
+
+  const hasExplicitRpc =
+    Boolean(env.STELLAR_RPC_URL?.trim()) ||
+    Boolean(env.STELLAR_RPC_URLS?.trim());
+
+  let contractId: string | undefined;
+  try {
+    contractId = loadIndexerContractId(env);
+  } catch {
+    contractId = undefined;
+  }
+
+  const missing: string[] = [];
+  if (!hasExplicitRpc) {
+    missing.push("STELLAR_RPC_URL or STELLAR_RPC_URLS");
+  }
+  if (!contractId) {
+    missing.push("INDEXER_CONTRACT_ID or MARKET_CONTRACT_ID");
+  }
+  if (!networkPassphrase) {
+    missing.push("SOROBAN_NETWORK_PASSPHRASE");
+  }
+  if (!signerSecret) {
+    missing.push("ORACLE_SECRET_KEY");
+  }
+
+  if (missing.length > 0) {
+    throw new IncompleteProductionStellarConfigError(missing);
   }
 
   const { rpcUrls } = loadStellarEndpoints(env, networkPassphrase);
