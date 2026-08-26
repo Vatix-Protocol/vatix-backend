@@ -2,6 +2,9 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import { auditService } from "../../services/audit.js";
 import { ValidationError } from "../middleware/errors.js";
+import { requireAdmin } from "../middleware/adminGuard.js";
+import { requireApiKey } from "../middleware/apiKeyAuth.js";
+import { adminLimiter } from "../middleware/rateLimiter.js";
 
 interface VerifyChainRequest {
   marketId: string;
@@ -21,16 +24,21 @@ interface ChainVerificationResponse {
 /**
  * Admin API for audit trail verification.
  * Verifies hash chain integrity and detects tampering.
+ * @param basePath Optional prefix for routes (default: "/audit")
  */
-export async function auditVerificationRoutes(fastify: FastifyInstance) {
+export async function auditVerificationRoutes(
+  fastify: FastifyInstance,
+  options?: { basePath?: string }
+) {
   const prisma = getPrismaClient();
+  const basePath = options?.basePath ?? "/audit";
 
   /**
    * POST /audit/verify-chain — Verify hash chain integrity for a market
    * Admin-only endpoint (authentication required in production)
    */
   fastify.post<{ Body: VerifyChainRequest }>(
-    "/audit/verify-chain",
+    `${basePath}/verify-chain`,
     {
       schema: {
         body: {
@@ -104,7 +112,7 @@ export async function auditVerificationRoutes(fastify: FastifyInstance) {
    * GET /audit/watermark/:marketId — Get archival watermark for a market
    */
   fastify.get<{ Params: { marketId: string } }>(
-    "/audit/watermark/:marketId",
+    `${basePath}/watermark/:marketId`,
     {
       schema: {
         params: {
@@ -153,7 +161,7 @@ export async function auditVerificationRoutes(fastify: FastifyInstance) {
     Params: { marketId: string };
     Querystring: { limit?: string; offset?: string };
   }>(
-    "/audit/events/:marketId",
+    `${basePath}/events/:marketId`,
     {
       schema: {
         params: {
@@ -210,4 +218,18 @@ export async function auditVerificationRoutes(fastify: FastifyInstance) {
       });
     }
   );
+}
+
+/**
+ * Admin API for audit trail verification with authentication guards.
+ * Mounts routes under /admin/audit (when registered within /v1 scope).
+ */
+export async function auditAdminRoutes(fastify: FastifyInstance) {
+  // All routes in this plugin require API key, admin role, and admin rate limit tier
+  fastify.addHook("onRequest", adminLimiter);
+  fastify.addHook("onRequest", requireApiKey);
+  fastify.addHook("onRequest", requireAdmin);
+
+  // Register audit routes under /admin/audit
+  await auditVerificationRoutes(fastify, { basePath: "/admin/audit" });
 }

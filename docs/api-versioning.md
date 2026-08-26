@@ -4,6 +4,23 @@
 
 Routes are prefixed with `/v1/` to allow non-breaking additions in future versions. All public routes are already mounted under `/v1/`; legacy unprefixed aliases are kept temporarily for backwards compatibility and return `Deprecation`/`Sunset` headers (see below).
 
+## Keeping Routes in Sync
+
+Three sources of truth must remain synchronized for every route change:
+
+1. **Live routes** — registered in `src/index.ts` and individual route files (e.g., `src/api/routes/admin.ts`)
+2. **Canonical registry** — `src/api/routes/registry.ts` (`CANONICAL_V1_ROUTES` constant)
+3. **OpenAPI spec** — `src/api/openapi.ts` (OpenAPI 3.0 document)
+
+When adding, modifying, or removing a route:
+
+- Add/update the route definition in its route file (e.g., `src/api/routes/orders.ts`)
+- Add/update the entry in `CANONICAL_V1_ROUTES` with method, path, and notes
+- Add/update the path in the OpenAPI `paths` object with schema and security requirements
+- The contract test in `tests/route-registry-sync.test.ts` verifies all three are in sync
+
+If these drift, the API surface becomes opaque to clients (missing OpenAPI docs) and operators (missing from the canonical registry), and changes can silently go undocumented.
+
 | Method | Canonical path                            | Legacy alias                | Notes                                                     |
 | ------ | ----------------------------------------- | --------------------------- | --------------------------------------------------------- |
 | GET    | `/v1/health`                              | `/health`                   | Liveness and health summary                               |
@@ -18,9 +35,15 @@ Routes are prefixed with `/v1/` to allow non-breaking additions in future versio
 | GET    | `/v1/trades/user/:address`                | `/trades/user/:address`     | Wallet trade history                                      |
 | GET    | `/v1/wallets/:wallet/positions`           | `/positions/user/:address`  | Canonical wallet positions path                           |
 | GET    | `/v1/wallets/:wallet/positions/:marketId` | none                        | Single-market position read                               |
+| GET    | `/v1/wallets/:wallet/fills/stream`        | none                        | Server-Sent Events stream of order fills                  |
 | GET    | `/v1/admin/markets`                       | `/admin/markets`            | Requires API key and admin auth                           |
 | PATCH  | `/v1/admin/markets/:id/status`            | `/admin/markets/:id/status` | Requires API key and admin auth                           |
+| GET    | `/v1/admin/analytics/summary`             | none                        | Requires API key and admin auth                           |
+| POST   | `/v1/admin/audit/verify-chain`            | none                        | Verify audit hash chain; requires API key and admin auth  |
+| GET    | `/v1/admin/audit/watermark/:marketId`     | none                        | Audit watermark; requires API key and admin auth          |
+| GET    | `/v1/admin/audit/events/:marketId`        | none                        | Audit events; requires API key and admin auth             |
 | POST   | `/v1/auth/challenge`                      | none                        | Issues a single-use signing nonce for Stellar wallet auth |
+| POST   | `/v1/resolutions/:id/challenge`           | none                        | Challenge a proposed resolution (requires auth)           |
 | GET    | `/v1/openapi.json`                        | none                        | OpenAPI specification                                     |
 
 Redis keys follow a namespaced pattern so a version bump can invalidate only affected entries without a full cache flush:

@@ -1,5 +1,11 @@
+import { Queue } from "bullmq";
 import { redis } from "./redis.js";
 import { getPrismaClient } from "./prisma.js";
+import {
+  redisConnectionFromEnv,
+  settlementQueueName,
+  DEFAULT_JOB_OPTIONS,
+} from "../../apps/workers/src/shared/queue-config.js";
 
 export interface LagMetrics {
   settlementQueueDepth: number;
@@ -18,36 +24,33 @@ export class LagDetector {
   private shedState: boolean = false;
   private readonly config: LagConfig;
   private lastMetrics: LagMetrics | null = null;
+  private settlementQueue: Queue;
 
   constructor(config: LagConfig) {
     this.config = config;
+    this.settlementQueue = new Queue(settlementQueueName(), {
+      connection: redisConnectionFromEnv(),
+      defaultJobOptions: DEFAULT_JOB_OPTIONS,
+    });
   }
 
   /**
-   * Read settlement queue depth from Redis stream or BullMQ
-   * Returns count of pending jobs in settlement queue
+   * Read settlement queue depth from BullMQ
+   * Returns sum of jobs in wait, delayed, and active states
    */
   async getSettlementQueueDepth(): Promise<number> {
     try {
-      const keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
-      const queueKey = `${keyPrefix}queue:settlement`;
+      const [waitCount, delayedCount, activeCount] = await Promise.all([
+        this.settlementQueue.getWaitingCount(),
+        this.settlementQueue.getDelayedCount(),
+        this.settlementQueue.getActiveCount(),
+      ]);
 
-      // Try BullMQ queue first (uses HLEN for job count)
-      try {
-        const depth = await redis.zcard(`${queueKey}:active`);
-        if (depth !== null) {
-          return Math.max(0, depth);
-        }
-      } catch (e) {
-        // Fall back to Redis stream XLEN
-      }
-
-      // Fall back to Redis stream length
-      const streamDepth = await redis.xlen(queueKey);
-      return Math.max(0, streamDepth);
+      const totalDepth = waitCount + delayedCount + activeCount;
+      return Math.max(0, totalDepth);
     } catch (error) {
       console.error("Failed to read settlement queue depth:", error);
-      return 0;
+      throw error;
     }
   }
 

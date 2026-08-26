@@ -58,6 +58,11 @@ export const CANONICAL_V1_ROUTES: CanonicalRoute[] = [
   },
   {
     method: "GET",
+    path: "/v1/wallets/:wallet/fills/stream",
+    notes: "Server-Sent Events stream of order fill notifications",
+  },
+  {
+    method: "GET",
     path: "/v1/admin/markets",
     legacyAlias: "/admin/markets",
     notes: "Requires API key and admin auth",
@@ -67,6 +72,26 @@ export const CANONICAL_V1_ROUTES: CanonicalRoute[] = [
     path: "/v1/admin/markets/:id/status",
     legacyAlias: "/admin/markets/:id/status",
     notes: "Requires API key and admin auth",
+  },
+  {
+    method: "GET",
+    path: "/v1/admin/analytics/summary",
+    notes: "Aggregate reporting stats; requires API key and admin auth",
+  },
+  {
+    method: "POST",
+    path: "/v1/admin/audit/verify-chain",
+    notes: "Verify audit trail hash chain integrity; requires API key and admin auth",
+  },
+  {
+    method: "GET",
+    path: "/v1/admin/audit/watermark/:marketId",
+    notes: "Get archival watermark for a market; requires API key and admin auth",
+  },
+  {
+    method: "GET",
+    path: "/v1/admin/audit/events/:marketId",
+    notes: "Get archived audit events for a market; requires API key and admin auth",
   },
   {
     method: "POST",

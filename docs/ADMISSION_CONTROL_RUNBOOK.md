@@ -57,6 +57,7 @@ annotations:
 - **Not shedding (lag < low water mark)**: Accept order, process normally
 - **Shedding (lag ≥ high water mark)**: Reject with 503, include `Retry-After: 30` header
 - **Transition during high lag**: Continue shedding until lag drops below low water mark (hysteresis)
+- **Probe error (in production)**: Fail closed — reject with 503 `lag_detector_probe_failed` to avoid silent degradation when health checks are unavailable
 
 ### Cancellations (DELETE /v1/orders/:id)
 
@@ -72,24 +73,44 @@ annotations:
 
 ### Detecting the Cause
 
+#### Probe Failure (lag_detector_probe_failed)
+
+If admission control is shedding with error `lag_detector_probe_failed`, the underlying lag detection is unhealthy.
+
+**Likely causes**:
+
+- Redis is unavailable or timing out
+- PostgreSQL (for outbox check) is unavailable or slow
+- Network partition to the database
+
+**Action**: Check Redis and PostgreSQL connectivity, logs for connection errors, and network status.
+
+**Behavior in production**: Admission control **always sheds traffic** when probes fail — this is intentional fail-closed behavior to prevent silent degradation. Never allow unknown-health-state traffic through.
+
+**Behavior in development/testing**: Non-production environments may allow requests through during probe failures with a warning log, for easier testing. This is safe only because production uses strict fail-closed behavior.
+
 #### High Settlement Queue Depth
 
-Check Redis stream depth:
+Check BullMQ queue depth across all states (wait, delayed, active):
 
 ```bash
 redis-cli
-> XLEN vatix:queue:settlement
-# or for BullMQ:
+# Check each queue state
+> LLEN vatix:queue:settlement:wait
+> ZCARD vatix:queue:settlement:delayed
 > ZCARD vatix:queue:settlement:active
 ```
+
+The admission control lag detector sums all three states to compute settlement queue depth. A high depth indicates jobs are backing up at any stage of processing.
 
 **Common causes**:
 
 - Settlement worker crashed or slow
 - Stellar RPC is experiencing latency
 - Database is slow or locked
+- Jobs are delayed (e.g., exponential backoff after retry)
 
-**Action**: Check settlement worker logs, Stellar network status, database queries.
+**Action**: Check settlement worker logs, Stellar network status, database queries. If jobs are stuck in `delayed`, check for repeated failures that are triggering retry backoff.
 
 #### High Outbox Depth
 
@@ -147,8 +168,10 @@ See those issues for additional Redis queue monitoring recipes.
 ### Test with Artificially High Lag
 
 ```bash
-# Simulate high settlement queue depth
-redis-cli XADD vatix:queue:settlement "*" test 1 # repeat 1000 times
+# Simulate high settlement queue depth by adding delayed jobs
+# This populates the BullMQ delayed queue
+redis-cli
+> ZADD vatix:queue:settlement:delayed 1693478400000 '{"test":"job"}' # repeat 1001+ times to exceed high water mark
 
 # Trigger admission control
 curl -X POST http://localhost:3000/v1/orders \
@@ -161,8 +184,9 @@ curl -X POST http://localhost:3000/v1/orders \
 ### Verify Recovery
 
 ```bash
-# Clear settlement queue
-redis-cli DEL vatix:queue:settlement
+# Clear settlement queue (all states)
+redis-cli
+> DEL vatix:queue:settlement:wait vatix:queue:settlement:delayed vatix:queue:settlement:active
 
 # Retry order submission
 curl -X POST http://localhost:3000/v1/orders \
@@ -187,12 +211,16 @@ Without this load shedding, a slow publisher would cause the outbox to grow unbo
 
 ### Shedding persists but queue is empty
 
-Check if metrics are stale:
+Check if metrics are stale by verifying all three BullMQ queue states:
 
 ```bash
 redis-cli
-> XLEN vatix:queue:settlement
-0  # Queue is empty
+> LLEN vatix:queue:settlement:wait
+0
+> ZCARD vatix:queue:settlement:delayed
+0
+> ZCARD vatix:queue:settlement:active
+0
 ```
 
 **Solution**: The shedding state is recomputed on every request. If metrics appear stale, restart the API pod.
