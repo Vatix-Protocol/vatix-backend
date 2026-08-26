@@ -57,6 +57,7 @@ annotations:
 - **Not shedding (lag < low water mark)**: Accept order, process normally
 - **Shedding (lag ≥ high water mark)**: Reject with 503, include `Retry-After: 30` header
 - **Transition during high lag**: Continue shedding until lag drops below low water mark (hysteresis)
+- **Probe error (in production)**: Fail closed — reject with 503 `lag_detector_probe_failed` to avoid silent degradation when health checks are unavailable
 
 ### Cancellations (DELETE /v1/orders/:id)
 
@@ -71,6 +72,22 @@ annotations:
 ## Incident Response
 
 ### Detecting the Cause
+
+#### Probe Failure (lag_detector_probe_failed)
+
+If admission control is shedding with error `lag_detector_probe_failed`, the underlying lag detection is unhealthy.
+
+**Likely causes**:
+
+- Redis is unavailable or timing out
+- PostgreSQL (for outbox check) is unavailable or slow
+- Network partition to the database
+
+**Action**: Check Redis and PostgreSQL connectivity, logs for connection errors, and network status.
+
+**Behavior in production**: Admission control **always sheds traffic** when probes fail — this is intentional fail-closed behavior to prevent silent degradation. Never allow unknown-health-state traffic through.
+
+**Behavior in development/testing**: Non-production environments may allow requests through during probe failures with a warning log, for easier testing. This is safe only because production uses strict fail-closed behavior.
 
 #### High Settlement Queue Depth
 
