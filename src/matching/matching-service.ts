@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import type { Outcome } from "../types/index.js";
 import type { OrderInput } from "./validation.js";
+import { computeEffectiveWorstPrice } from "./validation.js";
 import { OrderBook } from "./orderbook.js";
 import {
   matchOrder,
@@ -421,11 +422,30 @@ class MatchingService {
       const orderId = randomUUID();
       const timestamp = Date.now();
 
+      // Compute the effective worst-case execution price for this order.
+      // For a regular limit order this is just input.price.
+      // For a market order (price === 0) it is derived from limitPrice +
+      // maxSlippagePct so the engine never executes beyond the caller's
+      // stated tolerance.
+      const effectiveWorstPrice =
+        input.price === 0
+          ? computeEffectiveWorstPrice(
+              input.side,
+              input.limitPrice,
+              input.maxSlippagePct
+            )
+          : input.price;
+
       const takerOrder: MatchingOrder = {
         id: orderId,
         userAddress: input.userAddress,
         side: input.side,
-        price: input.price,
+        // Market orders pass effectiveWorstPrice as their matching price so
+        // canMatch() naturally stops at the caller's tolerance boundary.
+        // When no limit/slippage was specified effectiveWorstPrice is null
+        // and we fall back to the market-order extremes (1 for BUY, 0 for
+        // SELL) so the order walks the whole book — permitted only in dev.
+        price: effectiveWorstPrice ?? (input.side === "BUY" ? 0.9999 : 0.0001),
         quantity: input.quantity,
         marketId: input.marketId,
         outcome: input.outcome,
@@ -442,6 +462,36 @@ class MatchingService {
       let takerFilledQuantity =
         input.quantity - (matchResult.remainingOrder?.quantity ?? 0);
 
+      // Enforce partial-fill guard for market orders.
+      // When allowPartialFill is explicitly false, reject if the order
+      // was not fully executed within the price bounds.  The book is NOT
+      // mutated by matchOrder in a way that's visible until the DB
+      // transaction commits, so we can just throw here and the in-memory
+      // state is still consistent (matchOrder rolled back its own
+      // commands on the book, or the remaining order was never added).
+      const allowPartial = input.allowPartialFill !== false; // default true
+      if (!allowPartial && takerFilledQuantity < input.quantity) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            component: "matching-service",
+            action: "market_order_partial_fill_rejected",
+            marketId: input.marketId,
+            outcome: input.outcome,
+            side: input.side,
+            quantity: input.quantity,
+            filledQuantity: takerFilledQuantity,
+          })
+        );
+        // Roll back the in-memory book changes from the partial match
+        this.invalidateBook(input.marketId, input.outcome);
+        throw new ValidationError(
+          `Market order cannot be fully filled at the specified price limit ` +
+            `(filled ${takerFilledQuantity}/${input.quantity} units). ` +
+            `Set allowPartialFill=true or widen limitPrice/maxSlippagePct.`
+        );
+      }
+
       let takerStatus: "OPEN" | "PARTIALLY_FILLED" | "FILLED";
       if (takerFilledQuantity === 0) {
         takerStatus = "OPEN";
@@ -454,7 +504,9 @@ class MatchingService {
       let order: any;
       try {
         await prisma.$transaction(async (tx) => {
-          // Create taker order
+          // Create taker order — store the original input price (0 for market
+          // orders) not the effective matching price so the order record faithfully
+          // represents what the user submitted.
           order = await tx.order.create({
             data: {
               id: orderId,
