@@ -351,6 +351,10 @@ export class BreakGlassService {
 
   /**
    * Validate and consume an approval token.
+   *
+   * Dual-control requires that the approver is a **different** identity from
+   * the initiator. If both roles are the same actor, the second factor is
+   * theatre and provides no protection (issue #968).
    */
   private async validateAndConsumeToken(
     requestId: string,
@@ -382,6 +386,21 @@ export class BreakGlassService {
 
     if (approval.approvedBy) {
       throw new Error("Approval token has already been used");
+    }
+
+    // Dual-control enforcement: the approver must be a different admin identity
+    // from the initiator. Allowing the same actor to both initiate and approve
+    // defeats the purpose of requiring two independent actors (issue #968).
+    if (approval.initiator === approver) {
+      this.logger.warn("Break-glass dual-control violation: initiator attempted self-approval", {
+        requestId,
+        initiator: approval.initiator,
+        approver,
+        action,
+      });
+      throw new Error(
+        "Dual-control violation: the approver must be a different admin identity from the initiator"
+      );
     }
 
     // Mark as approved
