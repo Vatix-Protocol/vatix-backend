@@ -43,7 +43,7 @@ When a parser encounters an event with a topic symbol it does not recognize, it 
 | `buy_order_id`  | ScvSymbol | `string`    |                                    |
 | `sell_order_id` | ScvSymbol | `string`    |                                    |
 
-**DB write:** `IndexedTrade` row via `PrismaBatchWriter`. `priceRaw` and `quantityRaw` stored as `String` (bigint serialized) to avoid precision loss.
+**DB write:** `IndexedTrade` row via `PrismaBatchWriter`. `priceRaw` and `quantityRaw` stored as `String` (bigint serialized) to avoid precision loss. `PrismaBatchWriter` also reconciles the trade into both parties' `UserPosition.yesShares`/`noShares` (`Int` columns) — since `quantity` is already whole integer shares (no fixed-point scale, unlike `price`/collateral), this conversion is a validated bigint→Number bounds check rather than a division; see `sharesRawToInt` in [Decimal/share conversion utilities](#decimalshare-conversion-utilities) below.
 
 ---
 
@@ -142,3 +142,44 @@ key = SHA256(`${contractId}:${ledger}:${txIndex}:${eventIndex}`)
 ```
 
 `ledger`, `txIndex`, and `eventIndex` are parsed from the Stellar event id (`{ledger}-{txIndex}-{eventIndex}`, e.g. `0000000042-0000000001-0000000003`), the same id every event kind — including `market_created` — carries. `PrismaBatchWriter` uses this key as the unique constraint on `IndexerProcessedEvent`, so a duplicate or retried delivery of the same event (same ledger, tx, and event position) is skipped as a no-op instead of writing a second row — e.g. a second `Market` for a replayed `market_created` event. See `apps/indexer/src/idempotency.test.ts` and `apps/indexer/src/batchWriter.test.ts` for the duplicate-delivery test coverage.
+
+### Concurrent batch writers (#946)
+
+Horizon delivery is at-least-once, and more than one indexer process (or an
+overlapping retry of the same instance) can end up processing the same
+ledger range at the same time. When two writers race to insert the same
+idempotency key, Postgres's unique constraint lets exactly one `create()`
+win; the loser gets a `P2002` unique-violation, which aborts that writer's
+transaction. `PrismaBatchWriter` treats `P2002` as a retryable condition
+(same bounded backoff as connection/serialization errors — up to 3 retries):
+the retried transaction re-reads `IndexerProcessedEvent`, now sees the
+row the other writer committed, and correctly classifies it as a duplicate
+instead of writing a second row or crashing the batch. Every other record
+in that batch (genuinely new events sharing the transaction) is retried and
+committed normally. See the "concurrent batch writers" tests in
+`apps/indexer/src/batchWriter.test.ts`.
+
+## Decimal/share conversion utilities
+
+`apps/indexer/src/decimalUtils.ts` centralizes every raw-on-chain-integer ↔
+JS-value conversion instead of call sites hand-rolling scale math:
+
+| Function             | Direction                                        | Scale                                                                                              |
+| -------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
+| `amountRawToDecimal` | raw i128 (bigint/string) → `Decimal(20,8)`       | ÷ 10^7 (7 implicit decimals — collateral/price)                                                    |
+| `decimalToAmountRaw` | `Decimal(20,8)` → raw i128 (bigint)              | × 10^7, inverse of the above                                                                       |
+| `sharesRawToInt`     | raw i128 (bigint/string) → validated JS `number` | none — on-chain share quantities are already whole integers (see the `quantity` field table above) |
+
+All three throw `RangeError` on out-of-range/malformed input rather than
+silently truncating or losing precision (e.g. `sharesRawToInt` rejects a
+quantity past `Number.MAX_SAFE_INTEGER` instead of letting a bare
+`Number(bigint)` round it).
+
+**On contract test vectors (#948):** `vatix-contract/test-vectors/share-math.json`
+— the on-chain contract's own share-math fixtures — is not vendored into
+this repository, so these utilities cannot be checked against the
+contract's literal test vectors today. `decimalUtils.test.ts` instead fuzzes
+the documented invariants (round-trip losslessness, exact boundaries) with a
+seeded PRNG for reproducibility. If the contract fixtures become available,
+load `share-math.json` in that test file alongside — not instead of — the
+fuzz coverage.

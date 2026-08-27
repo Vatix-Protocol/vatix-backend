@@ -8,6 +8,12 @@ correct position after a restart instead of re-scanning from genesis.
 
 ## How it works
 
+0. Before touching the cursor at all, `main.ts` runs two startup gates (#947):
+   `checkStartupHealth` (pure config-shape validation — required env vars are present and
+   well-formed) and `checkLiveDependencies` (`apps/indexer/src/startupHealth.ts`), which
+   performs real I/O — a `SELECT 1` against Postgres and a Soroban RPC `getLatestLedger()` call
+   — to confirm the database and Horizon/RPC are actually reachable, not just configured. See
+   [Startup dependency check](#startup-dependency-check) below.
 1. On startup the indexer calls `PrismaCursorStorageClient.loadCursor()` to read the persisted
    sequence number from the `indexer_cursors` table in PostgreSQL.
 2. Each ingestion tick fetches a ledger window via `EventFetcher`, parses events, writes them
@@ -34,19 +40,38 @@ Replay safety is provided by `indexer_processed_events.idempotency_key` (SHA-256
 `{contractId}:{ledger}:{txIndex}:{eventIndex}`). Re-processing ledgers between checkpoints
 inserts no duplicate rows.
 
+## Startup dependency check
+
+`checkLiveDependencies` guards against the poller starting before its dependencies are actually
+ready — running against an unconfirmed DB or Horizon/RPC endpoint can poison the cursor (e.g. a
+half-broken RPC response gets treated as "no events this window" and the cursor advances past
+ledgers that were never really fetched).
+
+- **Production (`NODE_ENV=production`):** always runs. Each probe (`database`, `horizon`) gets
+  up to 5 retries (1s apart, configurable) to absorb ordinary startup jitter — e.g. Postgres or
+  the RPC endpoint still coming up during a coordinated deploy. If a probe still fails after
+  retries, `main.ts` throws and the process exits non-zero **before** the ingestion loop starts
+  or the cursor is loaded. No silent fallback.
+- **Development / test:** skipped by default so local runs and CI unit tests never require a
+  live DB/Horizon connection. Pass `force: true` to `checkLiveDependencies` to run it anyway
+  (e.g. a local smoke test against a real dev database).
+
+See `apps/indexer/src/startupHealth.ts` (`checkLiveDependencies`) and its tests in
+`apps/indexer/src/startupHealth.test.ts`.
+
 ## Configuration
 
-| Variable                                 | Required | Default     | Description                                                                                                 |
-| ---------------------------------------- | -------- | ----------- | ----------------------------------------------------------------------------------------------------------- |
-| `INDEXER_CURSOR_KEY`                     | Optional | `ingestion` | Key used to namespace the cursor row. Change only when running multiple consumers against the same network. |
-| `INDEXER_CONTRACT_ID`                    | Required | —           | Soroban contract ID to ingest (also accepts `MARKET_CONTRACT_ID`).                                          |
-| `INDEXER_LEDGER_WINDOW_SIZE`             | Optional | `100`       | Ledgers scanned per ingestion tick (1–1000).                                                                |
-| `INDEXER_BATCH_SIZE`                     | Optional | `100`       | Max events fetched per RPC page (1–500).                                                                    |
-| `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | Optional | `10`        | Successful batches between cursor checkpoints.                                                              |
-| `INDEXER_GAP_PAUSE_THRESHOLD`            | Optional | `1000`      | Gap size (in ledgers) that triggers fail-closed pause. Set to `0` to disable.                               |
-| `INDEXER_BACKFILL_MAX_LEDGERS`           | Optional | `500`       | Maximum ledgers re-fetched in a single backfill run. Larger gaps are clamped and warned.                    |
+| Variable                                 | Required | Default     | Description                                                                                                                                          |
+| ---------------------------------------- | -------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `INDEXER_CURSOR_KEY`                     | Optional | `ingestion` | Key used to namespace the cursor row. Change only when running multiple consumers against the same network.                                          |
+| `INDEXER_CONTRACT_ID`                    | Required | —           | Soroban contract ID to ingest (also accepts `MARKET_CONTRACT_ID`).                                                                                   |
+| `INDEXER_LEDGER_WINDOW_SIZE`             | Optional | `100`       | Ledgers scanned per ingestion tick (1–1000).                                                                                                         |
+| `INDEXER_BATCH_SIZE`                     | Optional | `100`       | Max events fetched per RPC page (1–500).                                                                                                             |
+| `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | Optional | `10`        | Successful batches between cursor checkpoints.                                                                                                       |
+| `INDEXER_GAP_PAUSE_THRESHOLD`            | Optional | `1000`      | Gap size (in ledgers) that triggers fail-closed pause. Set to `0` to disable.                                                                        |
+| `INDEXER_BACKFILL_MAX_LEDGERS`           | Optional | `500`       | Maximum ledgers re-fetched in a single backfill run. Larger gaps are clamped and warned.                                                             |
 | `INDEXER_GAP_PAGING_WEBHOOK_URL`         | Optional | —           | Webhook URL to call when a persistent gap is detected. Required in production. In `production` mode without this, the indexer fails fast at startup. |
-| `INDEXER_GAP_PERSISTENCE_CYCLES`         | Optional | `3`         | Number of consecutive detection cycles before paging operators (minimum: 1).                                 |
+| `INDEXER_GAP_PERSISTENCE_CYCLES`         | Optional | `3`         | Number of consecutive detection cycles before paging operators (minimum: 1).                                                                         |
 
 ## Checkpoint flushing
 
