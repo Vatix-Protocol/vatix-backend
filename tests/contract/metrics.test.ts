@@ -5,6 +5,7 @@
  * - is reachable and returns the Prometheus text exposition format
  * - includes default process/runtime metrics
  * - includes the orderbook hydrated-markets gauge (#746)
+ * - includes matching leader, oracle fail-closed, and outbox orphan gauges (#962)
  * - is never rate-limited, like the health/ready probes
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -44,6 +45,35 @@ describe("GET /metrics (#745)", () => {
   it("includes the orderbook hydrated-markets gauge (#746)", async () => {
     const res = await server.inject({ method: "GET", url: "/metrics" });
     expect(res.body).toContain("# TYPE vatix_orderbook_hydrated_markets gauge");
+  });
+
+  it("includes matching leader gauge (#962)", async () => {
+    const res = await server.inject({ method: "GET", url: "/metrics" });
+    expect(res.body).toContain("# TYPE vatix_matching_leader gauge");
+  });
+
+  it("includes oracle fail-closed counter (#962)", async () => {
+    const res = await server.inject({ method: "GET", url: "/metrics" });
+    expect(res.body).toContain("# TYPE vatix_oracle_fail_closed_total counter");
+  });
+
+  it("includes settlement outbox orphaned-trades gauge (#962)", async () => {
+    const res = await server.inject({ method: "GET", url: "/metrics" });
+    expect(res.body).toContain(
+      "# TYPE vatix_settlement_outbox_orphaned_trades gauge"
+    );
+  });
+
+  it("includes settlement outbox depth gauge (#962)", async () => {
+    const res = await server.inject({ method: "GET", url: "/metrics" });
+    expect(res.body).toContain("# TYPE vatix_settlement_outbox_depth gauge");
+  });
+
+  it("includes settlement outbox lag seconds gauge (#962)", async () => {
+    const res = await server.inject({ method: "GET", url: "/metrics" });
+    expect(res.body).toContain(
+      "# TYPE vatix_settlement_outbox_lag_seconds gauge"
+    );
   });
 
   it("is never rate-limited, unlike ordinary routes", async () => {
