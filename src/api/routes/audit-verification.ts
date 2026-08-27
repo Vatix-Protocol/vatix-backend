@@ -59,12 +59,12 @@ export async function auditVerificationRoutes(
         throw new ValidationError("marketId is required");
       }
 
-      // Verify market exists
+      // Verify market exists and is not soft-deleted
       const market = await prisma.market.findUnique({
         where: { id: marketId },
       });
 
-      if (!market) {
+      if (!market || market.deletedAt !== null) {
         throw new ValidationError("Market not found");
       }
 
