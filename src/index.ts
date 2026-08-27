@@ -69,6 +69,13 @@ function createDefaultReadyDeps(): Parameters<typeof readyRoute>[0] {
 }
 
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
+  // Trust proxy hops based on expected deployment topology.
+  // Standard deployment: client → load balancer → API
+  // trustProxy=1 trusts only the immediate upstream proxy (load balancer),
+  // rejecting spoofed X-Forwarded-For headers from untrusted sources.
+  const trustProxyHops =
+    Number(process.env.TRUST_PROXY_HOPS) || (process.env.NODE_ENV === "production" ? 1 : 0);
+
   const server: FastifyInstance = Fastify({
     logger: options.logger ?? true,
     // Name the auto-bound pino field "requestId" so every request.log.*
@@ -78,6 +85,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     // child logger, so the binding is correct from the very first log entry.
     genReqId: makeGenReqId(),
     bodyLimit,
+    // Configure proxy trust to prevent rate-limit bypass via spoofed X-Forwarded-For.
+    // In production, only trust the immediate upstream (load balancer).
+    // In dev/test, do not trust proxy headers (trust only direct socket IP).
+    trustProxy: trustProxyHops,
   });
 
   // Register error handler (must be before routes)

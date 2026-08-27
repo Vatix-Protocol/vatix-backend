@@ -23,7 +23,7 @@ import {
 import { redis } from "../../../../src/services/redis.js";
 import { loadOracleWorkerConfig } from "../../../../packages/shared/src/config.js";
 import {
-  resolveOracleStellarConfig,
+  validateAndResolveStellarConfig,
   type ResolvedOracleStellarConfig,
 } from "./stellar-config.js";
 import {
@@ -252,7 +252,10 @@ async function bootstrap(): Promise<void> {
   const logger = createLogger(config.logLevel);
   const prisma = getPrismaClient();
 
-  const stellarConfig = resolveOracleStellarConfig(process.env);
+  const stellarConfig = validateAndResolveStellarConfig(
+    process.env,
+    process.env.NODE_ENV ?? "development"
+  );
 
   if (!stellarConfig) {
     logger.warn(

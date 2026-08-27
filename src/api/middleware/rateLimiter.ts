@@ -64,11 +64,10 @@ export function sweepExpiredRateLimitEntries(): void {
 // ---------------------------------------------------------------------------
 
 function extractIp(request: FastifyRequest): string {
-  return (
-    (request.headers["x-forwarded-for"] as string)?.split(",")[0].trim() ||
-    request.socket.remoteAddress ||
-    "unknown"
-  );
+  // Fastify's request.ip respects the trustProxy configuration and will only
+  // extract IPs from X-Forwarded-For if the proxy hop count is trustworthy.
+  // For untrusted sources, it falls back to the direct socket address.
+  return request.ip || request.socket.remoteAddress || "unknown";
 }
 
 /**

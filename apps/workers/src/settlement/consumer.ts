@@ -34,6 +34,73 @@ import {
   stopOutboxPublisher,
 } from "../../../../src/services/outbox-publisher.js";
 
+/** Thrown when production startup is attempted with incomplete settlement Stellar config. */
+class IncompleteProductionSettlementConfigError extends Error {
+  constructor(missing: string[]) {
+    super(
+      `Production startup requires complete Stellar configuration for settlement. Missing: ${missing.join(", ")}. ` +
+        `Set STELLAR_RPC_URL (or STELLAR_RPC_URLS), SETTLEMENT_CONTRACT_ID, ` +
+        `SOROBAN_NETWORK_PASSPHRASE, and STELLAR_SECRET_KEY to proceed.`
+    );
+    this.name = "IncompleteProductionSettlementConfigError";
+  }
+}
+
+/**
+ * Validates settlement Stellar config in production, throwing when any required
+ * variables are missing. In dev/test, returns undefined for incomplete config
+ * (allowing lenient startup).
+ */
+function validateSettlementStellarConfig(
+  env: NodeJS.ProcessEnv,
+  nodeEnv: string = process.env.NODE_ENV ?? "development"
+): SettlementStellarConfig | undefined {
+  const contractId = env.SETTLEMENT_CONTRACT_ID;
+  const networkPassphrase = env.SOROBAN_NETWORK_PASSPHRASE;
+  const signerSecret = env.STELLAR_SECRET_KEY;
+
+  const hasExplicitRpc =
+    Boolean(env.STELLAR_RPC_URL?.trim()) ||
+    Boolean(env.STELLAR_RPC_URLS?.trim());
+
+  const { rpcUrls } = loadStellarEndpoints(env, networkPassphrase);
+  const rpcUrl = rpcUrls[0];
+
+  // In dev/test, allow incomplete config
+  if (nodeEnv !== "production") {
+    return rpcUrl && contractId && networkPassphrase && signerSecret
+      ? { rpcUrl, rpcUrls, contractId, networkPassphrase, signerSecret }
+      : undefined;
+  }
+
+  // Production: fail fast
+  const missing: string[] = [];
+  if (!hasExplicitRpc) {
+    missing.push("STELLAR_RPC_URL or STELLAR_RPC_URLS");
+  }
+  if (!contractId) {
+    missing.push("SETTLEMENT_CONTRACT_ID");
+  }
+  if (!networkPassphrase) {
+    missing.push("SOROBAN_NETWORK_PASSPHRASE");
+  }
+  if (!signerSecret) {
+    missing.push("STELLAR_SECRET_KEY");
+  }
+
+  if (missing.length > 0) {
+    throw new IncompleteProductionSettlementConfigError(missing);
+  }
+
+  return {
+    rpcUrl,
+    rpcUrls,
+    contractId,
+    networkPassphrase,
+    signerSecret,
+  };
+}
+
 const MAX_ATTEMPTS = 3;
 const PROCESSING_TIMEOUT_MS = 30_000;
 const IDEMPOTENCY_TTL_SECONDS = 86_400;
@@ -59,17 +126,10 @@ async function bootstrap(): Promise<void> {
   // outage between MatchingService's DB commit and its fast-path enqueue.
   startOutboxPublisher();
 
-  const contractId = process.env.SETTLEMENT_CONTRACT_ID;
-  const networkPassphrase = process.env.SOROBAN_NETWORK_PASSPHRASE;
-  const signerSecret = process.env.STELLAR_SECRET_KEY;
-
-  const { rpcUrls } = loadStellarEndpoints(process.env, networkPassphrase);
-  const rpcUrl = rpcUrls[0];
-
-  const stellar: SettlementStellarConfig | undefined =
-    rpcUrl && contractId && networkPassphrase && signerSecret
-      ? { rpcUrl, rpcUrls, contractId, networkPassphrase, signerSecret }
-      : undefined;
+  const stellar = validateSettlementStellarConfig(
+    process.env,
+    process.env.NODE_ENV ?? "development"
+  );
 
   if (!stellar) {
     logger.warn(

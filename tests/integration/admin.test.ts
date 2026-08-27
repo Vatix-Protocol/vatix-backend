@@ -374,3 +374,135 @@ describe("PATCH /v1/admin/markets/:id/status", () => {
     expect(res.statusCode).toBe(200);
   });
 });
+
+describe("Admin routes — position reconciliation", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    process.env.API_KEY = API_KEY;
+    process.env.ADMIN_TOKEN = ADMIN_TOKEN;
+    app = await buildTestApp({ plugins: [adminRoutes] });
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(() => {
+    resetRateLimits();
+  });
+
+  it("POST /admin/markets/:id/reconcile requires admin auth", async () => {
+    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/admin/markets/${market.id}/reconcile`,
+      headers: {
+        "x-api-key": "wrong-key",
+      },
+    });
+
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("POST /admin/markets/:id/reconcile returns 404 for unknown market", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/admin/markets/00000000-0000-0000-0000-000000000000/reconcile",
+      headers: {
+        "x-api-key": API_KEY,
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+      },
+    });
+
+    expect(res.statusCode).toBe(404);
+    const body = JSON.parse(res.body);
+    expect(body.code).toBe("market_not_found");
+  });
+
+  it("POST /admin/markets/:id/reconcile runs reconciliation and returns stats", async () => {
+    const prisma = getTestPrismaClient();
+    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+    const wallet = "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSWY7YQJGOUHKS2DTWRWOE";
+
+    // Create a position with no matching events (simulates drift)
+    await prisma.userPosition.create({
+      data: {
+        marketId: market.id,
+        userAddress: wallet,
+        yesShares: 100,
+        noShares: 0,
+        lockedCollateral: { set: "50" },
+      },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/admin/markets/${market.id}/reconcile`,
+      headers: {
+        "x-api-key": API_KEY,
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data).toHaveProperty("reconciliation");
+    expect(body.data.reconciliation).toHaveProperty("marketId", market.id);
+    expect(body.data.reconciliation).toHaveProperty("totalWallets");
+    expect(body.data.reconciliation).toHaveProperty("driftCount");
+    expect(body.data.reconciliation).toHaveProperty("recoveredCount");
+    expect(body.data).toHaveProperty("triggeredBy");
+    expect(body.data).toHaveProperty("timestamp");
+  });
+
+  it("POST /admin/markets/:id/reconcile detects and fixes drift", async () => {
+    const prisma = getTestPrismaClient();
+    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+    const wallet = "GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSWY7YQJGOUHKS2DTWRWOE";
+
+    // Simulate drift: position exists but no matching events
+    await prisma.userPosition.create({
+      data: {
+        marketId: market.id,
+        userAddress: wallet,
+        yesShares: 50,
+        noShares: 25,
+        lockedCollateral: { set: "100" },
+      },
+    });
+
+    // Before reconciliation, position is drifted
+    const beforeReconcile = await prisma.userPosition.findUnique({
+      where: {
+        marketId_userAddress: { marketId: market.id, userAddress: wallet },
+      },
+    });
+    expect(beforeReconcile?.yesShares).toBe(50);
+
+    // Reconcile (should auto-recover and zero out the position since no events exist)
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/admin/markets/${market.id}/reconcile`,
+      headers: {
+        "x-api-key": API_KEY,
+        authorization: `Bearer ${ADMIN_TOKEN}`,
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.reconciliation.driftCount).toBeGreaterThan(0);
+    expect(body.data.reconciliation.recoveredCount).toBeGreaterThan(0);
+
+    // After reconciliation, position should be updated (zero shares since no events)
+    const afterReconcile = await prisma.userPosition.findUnique({
+      where: {
+        marketId_userAddress: { marketId: market.id, userAddress: wallet },
+      },
+    });
+    expect(afterReconcile?.yesShares).toBe(0);
+    expect(afterReconcile?.noShares).toBe(0);
+  });
+});

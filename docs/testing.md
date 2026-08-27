@@ -389,6 +389,67 @@ node --inspect-brk node_modules/.bin/vitest
 DEBUG=* npm test -- specific-test.test.ts
 ```
 
+## Coverage Floors
+
+The project enforces minimum code coverage thresholds (configured in `vitest.config.ts`):
+
+- **Lines:** 80%
+- **Functions:** 80%
+- **Branches:** 80%
+- **Statements:** 80%
+
+### Checking Coverage Locally
+
+```bash
+# Generate coverage report
+pnpm test:coverage
+
+# Coverage reports available in ./coverage/
+# Open ./coverage/index.html in a browser for detailed report
+```
+
+### CI Coverage Floor
+
+The CI workflow runs `pnpm exec vitest run --coverage` and enforces the thresholds.
+If coverage drops below the floor, the CI job fails. To adjust the floor:
+
+1. Update `vitest.config.ts` thresholds in the `coverage.thresholds` section
+2. Ensure the change is intentional (increasing thresholds is preferred)
+3. Submit a PR explaining the rationale
+
+## Matching Lease Enforcement
+
+The matching engine uses a Redis-backed leader lease to enforce single-writer behavior: only one API process may match orders at a time. This prevents double-fills and book inconsistency under horizontal scaling.
+
+### Running Tests with Lease Enforcement
+
+By default, tests run with `MATCHING_LEASE_ENFORCED=false` (lease is bypassed), allowing all instances to match orders. To test with production-like behavior (lease actually enforced):
+
+```bash
+# Run integration tests with lease enforced
+MATCHING_LEASE_ENFORCED=true pnpm test:integration
+
+# Or run the matching-engine tests specifically
+pnpm test:matching
+```
+
+### CI Lease Enforcement Job
+
+The CI workflow runs two integration test passes:
+
+1. **Default (lease disabled):** `MATCHING_LEASE_ENFORCED=false` — tests the baseline API behavior
+2. **Lease enforced:** `MATCHING_LEASE_ENFORCED=true` — validates single-writer behavior (rejects concurrent matching from non-leaders with 503 MatchingUnavailable)
+
+The lease-enforced job catches regressions where matching logic inadvertently violates the single-writer invariant.
+
+### Configuring Lease Behavior
+
+Lease timing is configurable via environment variables:
+
+- `MATCHING_LEASE_TTL_MS` — Lease expiry in Redis (default: 15000 ms)
+- `MATCHING_LEASE_RENEW_INTERVAL_MS` — Heartbeat renewal interval (default: 5000 ms)
+- `MATCHING_LEASE_ENFORCED` — Enable/disable enforcement (default: `true` in production, `false` in tests)
+
 ## Best Practices Summary
 
 1. **Write tests first** (TDD when possible)
@@ -397,4 +458,6 @@ DEBUG=* npm test -- specific-test.test.ts
 4. **Use descriptive names** - Test should document behavior
 5. **Maintain test independence** - Tests shouldn't depend on each other
 6. **Review coverage reports** - Aim for meaningful coverage, not just metrics
+7. **Test with lease enforced** - Run `MATCHING_LEASE_ENFORCED=true` locally to catch single-writer violations
+8. **Monitor coverage trends** - Coverage floors prevent silent regressions in test quality
 7. **Update tests with code** - Keep tests in sync with implementation

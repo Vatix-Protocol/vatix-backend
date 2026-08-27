@@ -9,7 +9,9 @@ expensive routes receive tighter controls without penalising cheap ones.
 - **Algorithm:** Sliding window using Redis sorted sets (ZSET)
 - **Scope:** Distributed across all API replica instances (not per-process)
 - **Failure mode:** Production fails closed (rejects excess traffic with 429) if Redis is unreachable; non-production falls back to in-memory
-- **IP detection:** Reads `X-Forwarded-For` header (when behind proxy) or `request.socket.remoteAddress`
+- **IP detection:** Uses Fastify's `request.ip`, which respects the `trustProxy` configuration:
+  - **Production** (`NODE_ENV=production`): `trustProxy=1` — trusts only the immediate upstream proxy (e.g., load balancer); clients cannot bypass by spoofing `X-Forwarded-For`
+  - **Development** (`NODE_ENV!=production`): `trustProxy=0` — ignores proxy headers; keys rate limiting off direct socket address only
 
 ## Tiers
 
@@ -101,6 +103,33 @@ present on the 429 response as well:
 }
 ```
 
+## Proxy Trust Configuration (Security)
+
+The rate limiter prevents spoofing attacks via `X-Forwarded-For` headers by configuring Fastify's
+`trustProxy` setting based on the deployment topology:
+
+- **Production (`NODE_ENV=production`):** `trustProxy=1` — only the immediate upstream proxy
+  is trusted (typically a load balancer or reverse proxy). Any `X-Forwarded-For` header from
+  untrusted sources is ignored; rate limiting keys off the direct socket address instead.
+  This prevents attackers from bypassing rate limits by injecting fake IPs into the header.
+
+- **Development/Test:** `trustProxy=0` — no proxy headers are trusted. Rate limiting always
+  keys off the direct socket address (`request.socket.remoteAddress`), allowing local
+  development without a reverse proxy.
+
+### Configuring proxy hop count
+
+Override the default `trustProxy` value (1 for production, 0 for dev) via the `TRUST_PROXY_HOPS`
+environment variable. Set this if your deployment topology differs from the default
+(e.g., multiple nested proxies):
+
+```bash
+TRUST_PROXY_HOPS=2  # Trust up to 2 proxy hops (client → proxy1 → proxy2 → API)
+```
+
+See [Fastify trustProxy documentation](https://fastify.io/docs/latest/#trustproxy) for
+details on hop counting and configuration strategies.
+
 ## Configuration
 
 Rate limits are configurable via environment variables (see `.env.example`).
@@ -150,10 +179,16 @@ In non-production environments:
   before a 429 occurs. Back off proactively when it approaches zero.
 - When you do receive a 429, respect the `Retry-After` header (or equivalently
   wait until the `RateLimit-Reset` Unix timestamp) before retrying.
-- The `X-Forwarded-For` header is used for IP detection when the server sits
-  behind a proxy. Ensure your proxy sets this header correctly.
+- If you are behind a reverse proxy or load balancer, ensure your proxy sets
+  the `X-Forwarded-For` header correctly with your real client IP. The server
+  will trust this header only if the request comes through the configured trusted
+  proxy hops. Requests from untrusted sources bypassing the proxy will be rate-limited
+  using their direct socket address.
 - Heavy and write limits are intentionally lower than the global limit. If your
   integration requires higher throughput on these routes, contact the platform
   team to discuss dedicated rate-limit tiers.
 - Admin limits are enforced before the API-key and admin-role checks, so
   unauthenticated probes against admin routes still consume the admin quota.
+- **Important:** Do not attempt to spoof your client IP via the `X-Forwarded-For`
+  header — the server's `trustProxy` setting will reject untrusted IPs and
+  rate-limit you based on your actual source address instead.
