@@ -189,6 +189,8 @@ Must be a positive integer, optionally within a bounded range.
 | `RATE_LIMIT_HEAVY_WINDOW_MS`             | 1    | —       | `60000` |
 | `RATE_LIMIT_WRITE_MAX`                   | 1    | —       | `10`    |
 | `RATE_LIMIT_WRITE_WINDOW_MS`             | 1    | —       | `60000` |
+| `RATE_LIMIT_ADMIN_MAX`                   | 1    | —       | `30`    |
+| `RATE_LIMIT_ADMIN_WINDOW_MS`             | 1    | —       | `60000` |
 | `ORACLE_POLL_INTERVAL_MS`                | 5000 | 3600000 | `30000` |
 | `ORACLE_CHALLENGE_WINDOW_SECONDS`        | 1    | —       | `86400` |
 | `FINALIZATION_INTERVAL_MS`               | 1000 | —       | `60000` |

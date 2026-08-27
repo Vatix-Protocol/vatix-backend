@@ -10,7 +10,6 @@ import positionsRouter from "./api/routes/positions.js";
 import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
 import { signingService } from "./services/signing.js";
 import "dotenv/config";
-import { getPrismaClient } from "./services/prisma.js";
 import { marketsRoutes } from "./api/routes/markets.js";
 import { ordersRoutes } from "./api/routes/orders.js";
 import { fillsRoutes } from "./api/routes/fills.js";
@@ -31,7 +30,6 @@ import {
 import { config } from "./config.js";
 import { parseApiEnv } from "./env.js";
 import { corsPlugin } from "./api/middleware/cors.js";
-import { redis } from "./services/redis.js";
 import { walletRoutes } from "./api/routes/wallet.js";
 import { resolutionsRoutes } from "./api/routes/resolutions.js";
 import { admissionControl } from "./api/middleware/admissionControl.js";
@@ -45,27 +43,6 @@ export interface BuildServerOptions {
   logger?: FastifyServerOptions["logger"];
   readyDeps?: Parameters<typeof readyRoute>[0];
   registerTestRoutes?: boolean;
-}
-
-function createDefaultReadyDeps(): Parameters<typeof readyRoute>[0] {
-  return {
-    checkDatabase: async () => {
-      const prisma = getPrismaClient();
-      await prisma.$queryRaw`SELECT 1`;
-    },
-    checkRedis: async () => {
-      const ok = await redis.healthCheck();
-      if (!ok) throw new Error("Redis PING did not return PONG");
-    },
-    getLastIndexedAt: async () => {
-      const prisma = getPrismaClient();
-      const cursor = await prisma.indexerCursor.findFirst({
-        orderBy: { updatedAt: "desc" },
-        select: { updatedAt: true },
-      });
-      return cursor ? cursor.updatedAt.getTime() : null;
-    },
-  };
 }
 
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
@@ -154,7 +131,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       await v1.register(authRoutes);
       await v1.register(resolutionsRoutes);
       await v1.register(healthRoutes);
-      await v1.register(readyRoute(options.readyDeps ?? createDefaultReadyDeps()));
+      await v1.register(readyRoute(options.readyDeps ?? createReadyDeps()));
 
       v1.get("/openapi.json", async (_request, reply) => {
         const nodeEnv = process.env.NODE_ENV || "development";
