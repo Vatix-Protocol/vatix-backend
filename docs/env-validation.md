@@ -191,6 +191,8 @@ Must be a positive integer, optionally within a bounded range.
 | `RATE_LIMIT_WRITE_WINDOW_MS`             | 1    | —       | `60000` |
 | `ORACLE_POLL_INTERVAL_MS`                | 5000 | 3600000 | `30000` |
 | `ORACLE_CHALLENGE_WINDOW_SECONDS`        | 1    | —       | `86400` |
+| `ORACLE_PRIMARY_TIMEOUT_MS`              | 1    | —       | `30000` |
+| `ORACLE_FALLBACK_TIMEOUT_MS`             | 1    | —       | `30000` |
 | `FINALIZATION_INTERVAL_MS`               | 1000 | —       | `60000` |
 | `FINALIZATION_CHALLENGE_WINDOW_SECONDS`  | 0    | —       | `3600`  |
 | `INDEXER_INGESTION_INTERVAL_MS`          | 100  | —       | `5000`  |
