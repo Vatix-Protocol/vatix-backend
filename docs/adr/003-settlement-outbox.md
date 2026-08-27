@@ -44,6 +44,7 @@ enum OutboxStatus {
   PENDING
   PUBLISHED
   FAILED
+  QUARANTINED
 }
 
 model OutboxEvent {
@@ -55,6 +56,7 @@ model OutboxEvent {
   lastError     String?      @map("last_error")
   nextAttemptAt DateTime     @default(now()) @map("next_attempt_at")
   publishedAt   DateTime?    @map("published_at")
+  quarantinedAt DateTime?    @map("quarantined_at")
   createdAt     DateTime     @default(now()) @map("created_at")
   updatedAt     DateTime     @updatedAt @map("updated_at")
 
@@ -82,29 +84,36 @@ instead of always reading 0.
   idempotency-checks on `tradeId` before applying a position, so a duplicate enqueue never
   double-applies a settlement.
 
-### Backoff and orphan detection
+### Backoff, orphan detection, and quarantine
 
 `publishOutboxRow` uses capped exponential backoff (`1s * 2^attempts`, capped at 60s) on
-failure, tracked via `nextAttemptAt`. Rows are never abandoned — the drain loop keeps retrying
-indefinitely. Rows that have failed at least `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times (default 5) are surfaced via the `vatix_settlement_outbox_orphaned_trades` gauge for alerting; this is a
-visibility signal, not an automatic quarantine — see Operator Recovery below.
+failure, tracked via `nextAttemptAt`.
+
+**Orphan detection.** Rows that have failed at least `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times (default 5) are surfaced via the `vatix_settlement_outbox_orphaned_trades` gauge for alerting.
+
+**Quarantine.** Rows that exceed `OUTBOX_QUARANTINE_ATTEMPTS_THRESHOLD` (default 10, configurable via env) are automatically moved to `QUARANTINED` status and stop retrying. A quarantined entry will never be retried by the drain loop; only explicit operator action (via the API or manual SQL) can move it back to `FAILED` for retry or mark it `PUBLISHED` to discard it. The `vatix_settlement_outbox_quarantine_transitions_total` counter tracks quarantine transitions, and `vatix_settlement_outbox_quarantined_entries` gauge tracks current quarantined count.
+
+In production (`NODE_ENV=production`), quarantine is mandatory — a permanently-failing entry will not retry indefinitely.
 
 ## Metrics
 
 All registered on the shared Prometheus registry (`src/services/metrics.ts`), scraped via
 `GET /metrics`:
 
-| Metric                                           | Type    | Meaning                                                          |
-| ------------------------------------------------ | ------- | ---------------------------------------------------------------- |
-| `vatix_settlement_outbox_depth`                  | Gauge   | Rows currently `PENDING` or `FAILED` (not yet published)         |
-| `vatix_settlement_outbox_lag_seconds`            | Gauge   | Age of the oldest unpublished row                                |
-| `vatix_settlement_outbox_publish_failures_total` | Counter | Total failed publish attempts                                    |
-| `vatix_settlement_outbox_orphaned_trades`        | Gauge   | Rows that have failed ≥ `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times |
+| Metric                                            | Type    | Meaning                                                          |
+| ------------------------------------------------- | ------- | ---------------------------------------------------------------- |
+| `vatix_settlement_outbox_depth`                   | Gauge   | Rows currently `PENDING` or `FAILED` (not yet published)         |
+| `vatix_settlement_outbox_lag_seconds`             | Gauge   | Age of the oldest unpublished row                                |
+| `vatix_settlement_outbox_publish_failures_total`  | Counter | Total failed publish attempts                                    |
+| `vatix_settlement_outbox_orphaned_trades`         | Gauge   | Rows that have failed ≥ `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times |
+| `vatix_settlement_outbox_quarantined_entries`     | Gauge   | Rows currently in `QUARANTINED` status                           |
+| `vatix_settlement_outbox_quarantine_transitions_total` | Counter | Total rows moved to `QUARANTINED` status                    |
 
 Suggested alert: page when `vatix_settlement_outbox_lag_seconds` exceeds a few minutes, or when
 `vatix_settlement_outbox_orphaned_trades` is nonzero for an extended period — either indicates
 the recovery loop is running but the settlement queue (or the worker process itself) is
-unhealthy, not just a transient blip.
+unhealthy, not just a transient blip. Also page when `vatix_settlement_outbox_quarantined_entries`
+is nonzero, as this indicates operator action is required.
 
 ## Operator Recovery
 
@@ -137,8 +146,52 @@ outage, without waiting out the backoff window):
 UPDATE outbox_events SET next_attempt_at = now() WHERE status IN ('PENDING', 'FAILED');
 ```
 
-Rows never need to be manually deleted or reset to `PENDING` — the drain loop treats `FAILED`
-and `PENDING` identically as "still needs to be published."
+### Managing quarantined entries
+
+Entries that exceed `OUTBOX_QUARANTINE_ATTEMPTS_THRESHOLD` (default 10) are moved to `QUARANTINED`
+status and stop retrying. No automatic recovery is possible — only explicit operator action can
+move a quarantined entry back to `FAILED` for retry or mark it `PUBLISHED` to discard it.
+
+**Via admin API:**
+
+```bash
+# List quarantined entries
+curl -H "X-API-Key: <admin-key>" \
+  "https://api.vatix/v1/admin/outbox/quarantined?limit=50&offset=0"
+
+# Retry a quarantined entry (moves to FAILED, next drain will attempt)
+curl -X POST \
+  -H "X-API-Key: <admin-key>" \
+  "https://api.vatix/v1/admin/outbox/quarantined/{tradeId}/retry"
+
+# Discard a quarantined entry (marks PUBLISHED, no settlement happens)
+curl -X POST \
+  -H "X-API-Key: <admin-key>" \
+  "https://api.vatix/v1/admin/outbox/quarantined/{tradeId}/discard"
+```
+
+**Via SQL (if API is unavailable):**
+
+```sql
+-- View quarantined entries
+SELECT trade_id, attempts, last_error, quarantined_at, payload
+FROM outbox_events
+WHERE status = 'QUARANTINED'
+ORDER BY quarantined_at DESC;
+
+-- Retry a quarantined entry
+UPDATE outbox_events
+SET status = 'FAILED', attempts = 0, next_attempt_at = now(), quarantined_at = NULL
+WHERE trade_id = '<tradeId>';
+
+-- Discard a quarantined entry
+UPDATE outbox_events
+SET status = 'PUBLISHED', published_at = now(), quarantined_at = NULL
+WHERE trade_id = '<tradeId>';
+```
+
+Rows never need to be manually deleted — mark them `PUBLISHED` (discarded) instead so the
+audit trail remains intact.
 
 ## Consequences
 

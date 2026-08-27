@@ -187,6 +187,80 @@ describe("OracleService", () => {
     });
   });
 
+  describe("failover timeout policy", () => {
+    it("should pass primary timeout to primary adapter", async () => {
+      const primaryAdapter = createMockAdapter("primary", false);
+      const spy = vi.spyOn(primaryAdapter, "resolve");
+
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        enableFallback: true,
+        primaryTimeoutMs: 25000,
+      });
+
+      await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(spy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          timeoutMs: 25000,
+        })
+      );
+    });
+
+    it("should pass fallback timeout to fallback adapter on failover", async () => {
+      const failingPrimary = createMockAdapter("primary", true);
+      const fallbackAdapter = createMockAdapter("fallback", false);
+      const spy = vi.spyOn(fallbackAdapter, "resolve");
+
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter,
+        enableFallback: true,
+        primaryTimeoutMs: 5000,
+        fallbackTimeoutMs: 25000,
+      });
+
+      await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(spy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          timeoutMs: 25000,
+        })
+      );
+    });
+
+    it("should increment fail-closed metric when both adapters fail", async () => {
+      const failingPrimary = createMockAdapter("primary", true);
+      const failingFallback = createMockAdapter("fallback", true);
+
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter: failingFallback,
+        enableFallback: true,
+      });
+
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow();
+
+      const metrics = service.getMetrics();
+      expect(metrics.totalOutageCount).toBe(1);
+    });
+  });
+
   describe("health check", () => {
     it("should return true when primary is healthy", async () => {
       const healthy = await oracleService.healthCheck();
