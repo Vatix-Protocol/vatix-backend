@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import {
   parseCollateralDepositedEvent,
@@ -6,6 +6,7 @@ import {
 } from "./collateralDepositedParser.js";
 import { CollateralDepositedParseError } from "./types.js";
 import type { RawChainEvent } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
 
 // ─── Topic XDR fixtures ───────────────────────────────────────────────────────
 // Symbol "collateral_deposited" encoded as ScvSymbol base64
@@ -171,5 +172,34 @@ describe("parseCollateralDepositedEvents", () => {
     const { deposits, errors } = parseCollateralDepositedEvents([]);
     expect(deposits).toHaveLength(0);
     expect(errors).toHaveLength(0);
+  });
+
+  it("emits unknown_topic metric when encountering an unknown topic", () => {
+    const telemetry: Telemetry = {
+      record: vi.fn(),
+      startSpan: vi.fn(() => ({ end: vi.fn() })),
+    };
+    const events = [
+      makeEvent({
+        id: "0000000103-0000000001-0000000000",
+        topicsXdr: ["AAAADwAAABN1bmtub3duX2V2ZW50X3RvcGljIQ=="], // unknown topic
+      }),
+      makeEvent({ id: "0000000104-0000000001-0000000000" }),
+    ];
+    const { deposits, errors } = parseCollateralDepositedEvents(events, {
+      telemetry,
+    });
+    expect(deposits).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+    expect(telemetry.record).toHaveBeenCalledWith(
+      "indexer.parser.unknown_topics",
+      1,
+      expect.objectContaining({
+        parser: "collateral_deposited",
+        eventId: "0000000103-0000000001-0000000000",
+        contractId: "CDEPOSIT",
+        ledger: "100",
+      })
+    );
   });
 });

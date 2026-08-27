@@ -376,71 +376,180 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // POST /admin/markets/:id/reconcile - Trigger on-demand position reconciliation
-  // Operators call this endpoint during incidents to repair position drift
-  // (e.g., after a settlement or deposits failure). Reconciliation runs with
-  // autoRecovery=true, so detected drift is immediately corrected.
-  fastify.post<{
-    Params: { id: string };
-  }>(
-    "/admin/markets/:id/reconcile",
+  // GET /admin/outbox/quarantined - list quarantined settlement outbox entries
+  fastify.get<{ Querystring: { limit?: string; offset?: string } }>(
+    "/admin/outbox/quarantined",
     {
       schema: {
-        params: {
+        querystring: {
           type: "object",
-          required: ["id"],
-          properties: { id: { type: "string" } },
+          properties: {
+            limit: { type: "string" },
+            offset: { type: "string" },
+          },
         },
       },
     },
     async (request, reply) => {
-      const { id: marketId } = request.params;
-      const requestId = request.id;
-      const actor = (request as any).adminKey || "unknown";
+      const limit = Math.min(
+        Number(request.query.limit) || 50,
+        500
+      );
+      const offset = Number(request.query.offset) || 0;
 
-      const market = await prisma.market.findUnique({ where: { id: marketId } });
-      if (!market) {
-        throw new MarketNotFoundError(marketId);
-      }
+      const client = prisma as unknown as {
+        outboxEvent: {
+          findMany: (args: unknown) => Promise<Array<any>>;
+          count: (args: unknown) => Promise<number>;
+        };
+      };
 
-      request.log.info("Reconciliation triggered manually", {
-        marketId,
-        actor,
-        component: "admin-reconciliation",
+      const [entries, total] = await Promise.all([
+        client.outboxEvent.findMany({
+          where: { status: "QUARANTINED" },
+          orderBy: { quarantinedAt: "desc" },
+          select: {
+            tradeId: true,
+            attempts: true,
+            lastError: true,
+            quarantinedAt: true,
+            createdAt: true,
+            payload: true,
+          },
+          skip: offset,
+          take: limit,
+        }),
+        client.outboxEvent.count({
+          where: { status: "QUARANTINED" },
+        }),
+      ]);
+
+      success(reply, {
+        entries: entries.map((e: any) => ({
+          tradeId: e.tradeId,
+          attempts: e.attempts,
+          lastError: e.lastError,
+          quarantinedAt: e.quarantinedAt?.toISOString(),
+          createdAt: e.createdAt.toISOString(),
+          payload: e.payload,
+        })),
+        total,
+        limit,
+        offset,
+      });
+    }
+  );
+
+  // POST /admin/outbox/quarantined/:tradeId/retry - retry a quarantined entry
+  fastify.post<{ Params: { tradeId: string } }>(
+    "/admin/outbox/quarantined/:tradeId/retry",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["tradeId"],
+          properties: { tradeId: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { tradeId } = request.params;
+
+      const client = prisma as unknown as {
+        outboxEvent: {
+          updateMany: (args: unknown) => Promise<{ count: number }>;
+          findFirst: (args: unknown) => Promise<any>;
+        };
+      };
+
+      const entry = await client.outboxEvent.findFirst({
+        where: { tradeId },
       });
 
-      try {
-        const result = await positionReconciliationService.reconcileMarket(
-          marketId,
-          true
-        );
-
-        request.log.info("Reconciliation completed", {
-          marketId,
-          actor,
-          totalWallets: result.totalWallets,
-          driftCount: result.driftCount,
-          recoveredCount: result.recoveredCount,
-          failedCount: result.failedCount,
-          durationMs: Math.round(result.duration),
-          component: "admin-reconciliation",
-        });
-
-        success(reply, {
-          marketId,
-          reconciliation: result,
-          triggeredBy: actor,
-          timestamp: new Date().toISOString(),
-        });
-      } catch (error) {
-        request.log.error("Reconciliation failed", {
-          marketId,
-          actor,
-          error: error instanceof Error ? error.message : String(error),
-          component: "admin-reconciliation",
-        });
-        throw error;
+      if (!entry) {
+        reply.status(404).send({ error: "Outbox entry not found", tradeId });
+        return;
       }
+
+      if (entry.status !== "QUARANTINED") {
+        reply.status(400).send({
+          error: "Entry is not quarantined",
+          tradeId,
+          currentStatus: entry.status,
+        });
+        return;
+      }
+
+      await client.outboxEvent.updateMany({
+        where: { tradeId },
+        data: {
+          status: "FAILED",
+          attempts: 0,
+          nextAttemptAt: new Date(),
+          quarantinedAt: null,
+        },
+      });
+
+      success(reply, {
+        message: "Entry moved back to FAILED status for retry",
+        tradeId,
+      });
+    }
+  );
+
+  // POST /admin/outbox/quarantined/:tradeId/discard - discard a quarantined entry
+  fastify.post<{ Params: { tradeId: string } }>(
+    "/admin/outbox/quarantined/:tradeId/discard",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["tradeId"],
+          properties: { tradeId: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { tradeId } = request.params;
+
+      const client = prisma as unknown as {
+        outboxEvent: {
+          updateMany: (args: unknown) => Promise<{ count: number }>;
+          findFirst: (args: unknown) => Promise<any>;
+        };
+      };
+
+      const entry = await client.outboxEvent.findFirst({
+        where: { tradeId },
+      });
+
+      if (!entry) {
+        reply.status(404).send({ error: "Outbox entry not found", tradeId });
+        return;
+      }
+
+      if (entry.status !== "QUARANTINED") {
+        reply.status(400).send({
+          error: "Entry is not quarantined",
+          tradeId,
+          currentStatus: entry.status,
+        });
+        return;
+      }
+
+      await client.outboxEvent.updateMany({
+        where: { tradeId },
+        data: {
+          status: "PUBLISHED",
+          publishedAt: new Date(),
+          quarantinedAt: null,
+        },
+      });
+
+      success(reply, {
+        message: "Entry marked as PUBLISHED (discarded from settlement)",
+        tradeId,
+      });
     }
   );
 }

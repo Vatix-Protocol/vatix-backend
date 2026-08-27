@@ -248,22 +248,32 @@ FILLS_MAX_REPLAY_WINDOW_MS=600000
 HEARTBEAT_INTERVAL_MS=15000
 ```
 
-### Replay Window Calculation
+### Replay Window & Backfill Strategy
 
-Total replay window is bounded by:
+Replay window is backed by both Redis and Postgres for resilience:
 
-1. **Time-based**: `FILLS_MAX_REPLAY_WINDOW_MS` (default 10 min)
-2. **Stream-based**: Fills in database before audit stream MAXLEN trim
+1. **Live data (Redis stream)**: Recent fills (within Redis MAXLEN retention, typically minutes)
+   - Fast, in-memory replay for recently disconnected clients
+   
+2. **Historical backfill (Postgres)**: All fills in Postgres (retention policy-dependent)
+   - When a cursor is older than Redis retention, fills are backfilled from Postgres
+   - Seamless splicing: Postgres history → Redis live data with no gaps
 
-Whichever is smaller. This ensures:
+**Guarantees**:
+- Clients reconnecting within 10 minutes (`FILLS_MAX_REPLAY_WINDOW_MS`) replay from Redis
+- Clients reconnecting after Redis trim are backfilled from Postgres if data exists there
+- Gap detection returns 410 *only* if Postgres also lacks the requested cursor
+- No duplicate fills at the Redis/Postgres seam (sorted by `tradedAt`)
 
-- Clients have at least 10 minutes to reconnect without missing fills
-- No unbounded database growth from keeping fills indefinitely
-- With durable audit trail (#878), replay can move to Postgres for longer windows
+### Behavior Examples
 
-### Future Enhancement
-
-When transactional outbox (#864) is deployed, replay window can extend to Postgres historical fills, decoupling from in-memory stream retention.
+| Scenario | Cursor Age | Redis | Postgres | Result |
+|----------|------------|-------|----------|--------|
+| Fresh client | N/A | - | - | Connect, stream from now |
+| Recent disconnect | < 10min | ✓ | ✓ | Replay from Redis |
+| Stale cursor | > 10min, in DB | ✗ | ✓ | Backfill from Postgres + resume |
+| Very old cursor | Way old | ✗ | ✗ | 410 Gone (suggest oldest) |
+| Corrupted cursor | Invalid | ✗ | ✗ | 410 Gone (cursor_unknown) |
 
 ## Idempotency & Deduplication
 

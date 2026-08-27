@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { parseTradeEvent, parseTradeEvents } from "./tradeParser.js";
 import { TradeParseError } from "./types.js";
 import type { RawChainEvent } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
 
 // ─── Real XDR fixtures generated from @stellar/stellar-sdk ──────────────────
 
@@ -243,5 +244,34 @@ describe("parseTradeEvents", () => {
     const { trades, errors } = parseTradeEvents([]);
     expect(trades).toHaveLength(0);
     expect(errors).toHaveLength(0);
+  });
+
+  it("emits unknown_topic metric when encountering an unknown topic", () => {
+    const telemetry: Telemetry = {
+      record: vi.fn(),
+      startSpan: vi.fn(() => ({ end: vi.fn() })),
+    };
+    const events = [
+      makeEvent({
+        id: "e1",
+        topicsXdr: ["AAAADwAAABN1bmtub3duX2V2ZW50X3RvcGljIQ=="], // unknown topic
+      }),
+      makeEvent({ id: "e2", valueXdr: XDR.value.validBuy }),
+    ];
+    const { trades, errors } = parseTradeEvents(events, {
+      telemetry,
+    });
+    expect(trades).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+    expect(telemetry.record).toHaveBeenCalledWith(
+      "indexer.parser.unknown_topics",
+      1,
+      expect.objectContaining({
+        parser: "trade",
+        eventId: "e1",
+        contractId: "CTEST",
+        ledger: "42",
+      })
+    );
   });
 });

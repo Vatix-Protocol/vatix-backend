@@ -26,6 +26,8 @@ vi.mock("./metrics.js", () => ({
   settlementOutboxLagSecondsGauge: { set: vi.fn() },
   settlementOutboxPublishFailuresTotal: { inc: vi.fn() },
   settlementOutboxOrphanedTradesGauge: { set: vi.fn() },
+  settlementOutboxQuarantinedEntriesGauge: { set: vi.fn() },
+  settlementOutboxQuarantineTransitionsTotal: { inc: vi.fn() },
 }));
 
 import { settlementQueue } from "./settlement-queue.js";
@@ -33,6 +35,8 @@ import {
   settlementOutboxDepthGauge,
   settlementOutboxLagSecondsGauge,
   settlementOutboxOrphanedTradesGauge,
+  settlementOutboxQuarantinedEntriesGauge,
+  settlementOutboxQuarantineTransitionsTotal,
 } from "./metrics.js";
 import {
   buildSettlementPayload,
@@ -170,6 +174,26 @@ describe("publishOutboxRow", () => {
     );
     expect(publishedOutcome).toBe("published");
   });
+
+  it("quarantines a row that exceeds QUARANTINE_ATTEMPTS_THRESHOLD (default 10)", async () => {
+    vi.mocked(settlementQueue.enqueue).mockRejectedValue(
+      new Error("permanently broken")
+    );
+
+    const failedRow: OutboxRow = { ...row, attempts: 9 };
+    const outcome = await publishOutboxRow(mockPrisma as any, failedRow);
+
+    expect(outcome).toBe("quarantined");
+    expect(mockPrisma.outboxEvent.updateMany).toHaveBeenCalledWith({
+      where: { tradeId: "trade-1", status: { not: "PUBLISHED" } },
+      data: {
+        status: "QUARANTINED",
+        attempts: 10,
+        lastError: expect.stringContaining("permanently broken"),
+        quarantinedAt: expect.any(Date),
+      },
+    });
+  });
 });
 
 describe("drainOutboxOnce", () => {
@@ -270,11 +294,12 @@ describe("refreshOutboxMetrics", () => {
     vi.clearAllMocks();
   });
 
-  it("sets depth, lag, and orphaned gauges from current DB state", async () => {
+  it("sets depth, lag, orphaned, and quarantined gauges from current DB state", async () => {
     const mockPrisma = makeMockPrisma();
     mockPrisma.outboxEvent.count
       .mockResolvedValueOnce(7) // depth
-      .mockResolvedValueOnce(2); // orphaned
+      .mockResolvedValueOnce(2) // orphaned
+      .mockResolvedValueOnce(1); // quarantined
     const oldest = new Date(Date.now() - 5_000);
     mockPrisma.outboxEvent.findFirst.mockResolvedValue({ createdAt: oldest });
 
@@ -282,6 +307,9 @@ describe("refreshOutboxMetrics", () => {
 
     expect(settlementOutboxDepthGauge.set).toHaveBeenCalledWith(7);
     expect(settlementOutboxOrphanedTradesGauge.set).toHaveBeenCalledWith(2);
+    expect(
+      vi.mocked(settlementOutboxQuarantinedEntriesGauge.set)
+    ).toHaveBeenCalledWith(1);
     const [lagValue] = vi.mocked(settlementOutboxLagSecondsGauge.set).mock
       .calls[0];
     expect(lagValue).toBeGreaterThanOrEqual(4);

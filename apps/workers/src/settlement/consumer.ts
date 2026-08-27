@@ -26,7 +26,7 @@ import type { QueueJob } from "../consumers/queue-consumer.js";
 import {
   redisConnectionFromEnv,
   settlementQueueName,
-} from "../shared/queue-config.js";
+} from "../../../packages/shared/src/queue-config.js";
 import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
 import { loadStellarEndpoints } from "../../../../packages/shared/src/stellarTransport.js";
 import {

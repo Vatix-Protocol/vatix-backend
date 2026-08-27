@@ -45,6 +45,8 @@ inserts no duplicate rows.
 | `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | Optional | `10`        | Successful batches between cursor checkpoints.                                                              |
 | `INDEXER_GAP_PAUSE_THRESHOLD`            | Optional | `1000`      | Gap size (in ledgers) that triggers fail-closed pause. Set to `0` to disable.                               |
 | `INDEXER_BACKFILL_MAX_LEDGERS`           | Optional | `500`       | Maximum ledgers re-fetched in a single backfill run. Larger gaps are clamped and warned.                    |
+| `INDEXER_GAP_PAGING_WEBHOOK_URL`         | Optional | —           | Webhook URL to call when a persistent gap is detected. Required in production. In `production` mode without this, the indexer fails fast at startup. |
+| `INDEXER_GAP_PERSISTENCE_CYCLES`         | Optional | `3`         | Number of consecutive detection cycles before paging operators (minimum: 1).                                 |
 
 ## Checkpoint flushing
 

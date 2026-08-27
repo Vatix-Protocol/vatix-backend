@@ -5,6 +5,7 @@ import type {
   ResolutionOutcome,
 } from "./types.js";
 import { ResolutionParseError } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
 
 /**
  * Soroban's #[contractevent] macro derives the topic symbol by snake_casing
@@ -192,15 +193,27 @@ export function parseResolutionEvent(
  * Parse a batch of raw events, skipping non-resolution events silently.
  * Errors are collected per-event so one bad payload never drops the batch.
  */
-export function parseResolutionEvents(events: RawChainEvent[]): {
+export function parseResolutionEvents(
+  events: RawChainEvent[],
+  options?: { telemetry?: Telemetry }
+): {
   resolutions: NormalizedResolution[];
   errors: ResolutionParseError[];
 } {
   const resolutions: NormalizedResolution[] = [];
   const errors: ResolutionParseError[] = [];
+  const telemetry = options?.telemetry;
 
   for (const event of events) {
-    if (!isResolutionEvent(event.topicsXdr)) continue;
+    if (!isResolutionEvent(event.topicsXdr)) {
+      telemetry?.record("indexer.parser.unknown_topics", 1, {
+        parser: "resolution",
+        eventId: event.id,
+        contractId: event.contractId,
+        ledger: String(event.ledger),
+      });
+      continue;
+    }
     try {
       resolutions.push(parseResolutionEvent(event));
     } catch (err) {

@@ -85,6 +85,9 @@ function makeGapDetector(
 // detectGap — within-window gap detection
 // ---------------------------------------------------------------------------
 
+// Mock fetch for paging tests
+global.fetch = vi.fn();
+
 describe("GapDetector.detectGap", () => {
   it("returns no gap when all ledgers in the window have events", () => {
     const { detector } = makeGapDetector();
@@ -325,5 +328,119 @@ describe("GapDetector.runBackfill", () => {
     // records will be empty → write not called due to length === 0 guard
     // This confirms the path through the parsers is exercised without error
     expect(fetcher.fetchByLedgerWindow).toHaveBeenCalled();
+  });
+
+  it("pages operators when a gap persists beyond persistence threshold", async () => {
+    const fetcher = makeEventFetcher([]);
+    const logger = makeLogger();
+    const { detector } = makeGapDetector({
+      fetcher,
+      logger,
+      gapPauseThreshold: 0, // disable fail-closed to allow backfill
+    });
+
+    // Add paging config after creation via a new detector instance
+    const detectorWithPaging = new GapDetector(
+      {
+        gapPauseThreshold: 0,
+        backfillMaxLedgers: 500,
+        contractId: "CTEST",
+        pagingConfig: {
+          webhookUrl: "https://example.com/page",
+          persistenceCyclesBeforePage: 2,
+        },
+      },
+      fetcher,
+      makeBatchWriter(),
+      makeMetrics(),
+      logger
+    );
+
+    // First gap detection
+    await detectorWithPaging.runBackfill(100, 110);
+
+    // Second gap at same ledger (persistent) — should page
+    (global.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+    });
+
+    await detectorWithPaging.runBackfill(100, 110);
+
+    // Verify webhook was called
+    expect(global.fetch).toHaveBeenCalledWith(
+      "https://example.com/page",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    // Verify the paging was logged
+    expect(logger.info).toHaveBeenCalledWith(
+      "Paging operators for persistent gap",
+      expect.objectContaining({
+        event: "indexer.gap.paging.triggered",
+      })
+    );
+  });
+
+  it("does not page multiple times for the same gap", async () => {
+    const fetcher = makeEventFetcher([]);
+    const logger = makeLogger();
+
+    const detectorWithPaging = new GapDetector(
+      {
+        gapPauseThreshold: 0,
+        backfillMaxLedgers: 500,
+        contractId: "CTEST",
+        pagingConfig: {
+          webhookUrl: "https://example.com/page",
+          persistenceCyclesBeforePage: 1,
+        },
+      },
+      fetcher,
+      makeBatchWriter(),
+      makeMetrics(),
+      logger
+    );
+
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      status: 200,
+    });
+
+    // First gap — triggers page
+    await detectorWithPaging.runBackfill(100, 110);
+
+    // Reset fetch mock to verify it's not called again
+    (global.fetch as any).mockClear();
+
+    // Second gap at same ledger — should NOT page again
+    await detectorWithPaging.runBackfill(100, 110);
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("fails fast in production without paging webhook configured", () => {
+    const logger = makeLogger();
+
+    expect(() => {
+      new GapDetector(
+        {
+          gapPauseThreshold: 1000,
+          backfillMaxLedgers: 500,
+          contractId: "CTEST",
+          nodeEnv: "production",
+          // no pagingConfig
+        },
+        makeEventFetcher(),
+        makeBatchWriter(),
+        makeMetrics(),
+        logger
+      );
+    }).toThrow(
+      "Production indexer requires INDEXER_GAP_PAGING_WEBHOOK_URL to be configured"
+    );
   });
 });

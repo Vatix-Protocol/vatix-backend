@@ -621,26 +621,43 @@ docker logs vatix-backend 2>&1 | grep -i redis
 ### Detection
 
 ```sql
--- Check markets in challenged state
+-- Check resolution candidates in CHALLENGED status
 SELECT
-  market_id,
-  status,
-  resolved_at,
-  challenge_ends_at,
-  NOW() - challenge_ends_at as time_since_challenge_end
-FROM markets
-WHERE status IN ('challenged', 'resolving')
-ORDER BY challenge_ends_at ASC;
+  rc.id,
+  rc.market_id,
+  rc.status,
+  rc.proposed_outcome,
+  rc.confidence_score,
+  rc.created_at,
+  NOW() - rc.created_at as age_since_proposed
+FROM resolution_candidates rc
+WHERE rc.status = 'CHALLENGED'
+ORDER BY rc.created_at ASC;
 
--- Check resolution candidates
+-- Check all resolution candidates for a market
 SELECT
-  market_id,
-  source_type,
-  confidence_score,
-  created_at
-FROM resolution_candidates
-ORDER BY created_at DESC
-LIMIT 20;
+  rc.id,
+  rc.status,
+  rc.proposed_outcome,
+  rc.confidence_score,
+  rc.source,
+  rc.created_at
+FROM resolution_candidates rc
+WHERE rc.market_id = '[MARKET_ID]'
+ORDER BY rc.created_at DESC;
+
+-- Markets awaiting resolution (ACTIVE with existing resolution candidates)
+SELECT DISTINCT
+  m.id,
+  m.status,
+  m.end_time,
+  COUNT(rc.id) as candidate_count,
+  MAX(CASE WHEN rc.status = 'CHALLENGED' THEN 1 ELSE 0 END) as has_challenged
+FROM markets m
+LEFT JOIN resolution_candidates rc ON m.id = rc.market_id
+WHERE m.status = 'ACTIVE'
+GROUP BY m.id
+ORDER BY m.end_time ASC;
 ```
 
 ### Response Steps
@@ -664,14 +681,22 @@ curl http://localhost:3000/v1/oracle/health
 -- WARNING: Only use manual resolution as last resort
 -- Requires admin access and proper authorization
 
--- Update market status
+-- Update market status to RESOLVED with outcome (outcome: true=YES, false=NO)
 UPDATE markets
-SET status = 'resolved',
-    resolved_at = NOW(),
-    outcome = '[YES/NO]'
-WHERE market_id = '[MARKET_ID]';
+SET status = 'RESOLVED',
+    outcome = true,  -- or false for NO
+    resolution_time = NOW(),
+    updated_at = NOW()
+WHERE id = '[MARKET_ID]';
 
--- Log the manual intervention
+-- If a resolution candidate should be accepted, update its status
+UPDATE resolution_candidates
+SET status = 'ACCEPTED',
+    updated_at = NOW()
+WHERE market_id = '[MARKET_ID]'
+  AND status = 'CHALLENGED';
+
+-- Log the manual intervention (if audit_log table exists)
 INSERT INTO audit_log (
   action,
   entity_type,
@@ -691,15 +716,20 @@ INSERT INTO audit_log (
 
 ```sql
 -- Confirm market status
-SELECT market_id, status, resolved_at, outcome
+SELECT id, status, outcome, resolution_time
 FROM markets
+WHERE id = '[MARKET_ID]';
+
+-- Check resolution candidates
+SELECT id, status, proposed_outcome
+FROM resolution_candidates
 WHERE market_id = '[MARKET_ID]';
 
--- Check positions are settled
+-- Check user positions are settled
 SELECT COUNT(*) as unsettled_positions
-FROM positions
+FROM user_positions
 WHERE market_id = '[MARKET_ID]'
-  AND status != 'settled';
+  AND is_settled = false;
 ```
 
 #### Step 4: Prevention

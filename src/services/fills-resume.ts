@@ -79,11 +79,14 @@ export class FillsResumeService {
 
   /**
    * Detect if a cursor is stale, trimmed, or out of bounds
-   * Returns gap info and suggested recovery cursor
+   * Returns gap info and suggested recovery cursor.
+   * A gap is only declared if the cursor cannot be backfilled from Postgres.
    */
   async detectGap(cursor: FillsResumeCursor): Promise<GapDetectionResult> {
     try {
-      // Check if cursor exists in stream
+      const prisma = getPrismaClient();
+
+      // Check if cursor exists in Redis stream
       const entries = await redis.xrange(
         this.globalStream,
         cursor,
@@ -93,56 +96,67 @@ export class FillsResumeService {
       );
 
       if (entries.length === 0) {
-        // Cursor trimmed or never existed
-        const oldest = await this.getOldestAvailableCursor();
-        const latest = await this.getLatestAvailableCursor();
+        // Cursor not in Redis: check if it can be backfilled from Postgres
+        const cursorMs = this.extractTimestampMs(cursor);
+        const cursorDate = new Date(cursorMs);
 
-        if (!oldest) {
-          // Empty audit stream: nothing has been trimmed, so a resume cursor
-          // is not a gap — allow the client to continue from the requested point.
+        // Query Postgres to see if we have any trades at or after this cursor
+        const oldestPostgresEntry = await prisma.trade.findFirst({
+          where: {
+            tradedAt: { gte: cursorDate },
+          },
+          select: { tradedAt: true },
+          orderBy: { tradedAt: "asc" },
+        });
+
+        if (oldestPostgresEntry) {
+          // Postgres has data we can backfill — no gap
           return { hasGap: false };
         }
 
-        // Check if cursor is before oldest (trimmed due to MAXLEN)
-        const cursorMs = this.extractTimestampMs(cursor);
-        const oldestMs = this.extractTimestampMs(oldest);
+        // Neither Redis nor Postgres has data for this cursor
+        const oldest = await this.getOldestAvailableCursor();
+        const latestPostgres = await prisma.trade.findFirst({
+          select: { tradedAt: true },
+          orderBy: { tradedAt: "desc" },
+        });
 
-        if (cursorMs < oldestMs) {
-          // Cursor was trimmed — gap detected
-          return {
-            hasGap: true,
-            reason: "cursor_trimmed",
-            suggestedCursor: oldest,
-          };
+        const latestCursor = latestPostgres
+          ? `${latestPostgres.tradedAt.getTime()}-0`
+          : oldest;
+
+        if (!oldest && !latestPostgres) {
+          // Empty everywhere: allow client to continue from cursor
+          return { hasGap: false };
         }
 
-        // Cursor is unknown (never existed)
+        // Check if cursor is before oldest Redis entry
+        if (oldest) {
+          const oldestMs = this.extractTimestampMs(oldest);
+          if (cursorMs < oldestMs) {
+            // Cursor was trimmed from Redis but check if Postgres has it
+            // (already checked above, Postgres doesn't have it either)
+            return {
+              hasGap: true,
+              reason: "cursor_trimmed",
+              suggestedCursor: oldest,
+            };
+          }
+        }
+
+        // Cursor is unknown (never existed anywhere)
         return {
           hasGap: true,
           reason: "cursor_unknown",
-          suggestedCursor: oldest,
+          suggestedCursor: oldest || latestCursor,
         };
       }
 
-      // Cursor exists; check if it's too old (beyond max replay window)
-      const cursorMs = this.extractTimestampMs(cursor);
-      const now = Date.now();
-
-      if (now - cursorMs > this.maxReplayWindowMs) {
-        // Beyond replay window
-        const oldest = await this.getOldestAvailableCursor();
-        return {
-          hasGap: true,
-          reason: "beyond_max_window",
-          suggestedCursor: oldest ?? cursor,
-        };
-      }
-
-      // Cursor is valid
+      // Cursor exists in Redis; no gap
       return { hasGap: false };
     } catch (error) {
       console.error("Failed to detect gap:", error);
-      // Fail open on Redis errors: prefer reconnecting over 410 storms.
+      // Fail open on errors: prefer reconnecting over 410 storms
       return { hasGap: false };
     }
   }

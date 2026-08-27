@@ -68,6 +68,18 @@ export const settlementOutboxOrphanedTradesGauge = new client.Gauge({
   registers: [metricsRegistry],
 });
 
+export const settlementOutboxQuarantinedEntriesGauge = new client.Gauge({
+  name: "vatix_settlement_outbox_quarantined_entries",
+  help: "Number of outbox entries currently in QUARANTINED status",
+  registers: [metricsRegistry],
+});
+
+export const settlementOutboxQuarantineTransitionsTotal = new client.Counter({
+  name: "vatix_settlement_outbox_quarantine_transitions_total",
+  help: "Total number of outbox entries moved to QUARANTINED status due to exceeding retry budget",
+  registers: [metricsRegistry],
+});
+
 /**
  * 1 when this process currently holds the matching leader lease, else 0.
  * Updated by src/matching/leader-lease.ts.
