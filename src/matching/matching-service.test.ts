@@ -380,6 +380,59 @@ describe("MatchingService", () => {
     });
   });
 
+  describe("placeOrder leader re-check inside the mutex (#956)", () => {
+    const orderInput = {
+      marketId: "market-1",
+      userAddress: "GUSER1234567890123456789012345678901234567890123456",
+      side: "BUY" as const,
+      outcome: "YES" as const,
+      price: 0.5,
+      quantity: 10,
+    };
+
+    afterEach(() => {
+      process.env.MATCHING_LEASE_ENFORCED = "false";
+    });
+
+    it("rejects with MatchingUnavailableError if leadership is lost between the entry gate and the mutex turn", async () => {
+      process.env.MATCHING_LEASE_ENFORCED = "true";
+      // True at the entry gate (this instance was leader when the request
+      // was enqueued), false on every check thereafter — simulating the
+      // lease flipping to a new, higher-token holder while this call sat
+      // queued behind other in-flight work on the same book's mutex.
+      leaderLeaseMock.isLeader.mockReturnValueOnce(true).mockReturnValue(false);
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MatchingUnavailableError
+      );
+      expect(leaderLeaseMock.isLeader).toHaveBeenCalledTimes(2);
+      // Must never have reached the DB with a match minted under a stale lease.
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("proceeds normally when this instance remains the leader for the whole call", async () => {
+      process.env.MATCHING_LEASE_ENFORCED = "true";
+      leaderLeaseMock.isLeader.mockReturnValue(true);
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: null,
+      });
+      mockPrismaClient.order.findMany.mockResolvedValue([]);
+      mockTx.order.create.mockResolvedValue({
+        id: "order-3",
+        ...orderInput,
+        status: "FILLED",
+        filledQuantity: orderInput.quantity,
+      });
+
+      await expect(
+        matchingService.placeOrder(orderInput)
+      ).resolves.toBeDefined();
+      expect(leaderLeaseMock.isLeader).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe("placeOrder market status check (#792)", () => {
     const orderInput = {
       marketId: "market-1",
