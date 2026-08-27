@@ -4,7 +4,7 @@ import {
   DEFAULT_JOB_OPTIONS,
   redisConnectionFromEnv,
   settlementQueueName,
-} from "../../apps/workers/src/shared/queue-config.js";
+} from "../../packages/shared/src/queue-config.js";
 
 export interface SettlementJob {
   tradeId: string;

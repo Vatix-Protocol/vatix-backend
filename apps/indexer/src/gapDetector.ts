@@ -12,6 +12,19 @@ import { withIdempotencyKey } from "./idempotency.js";
 // Public types
 // ---------------------------------------------------------------------------
 
+export interface GapPagingConfig {
+  /**
+   * Webhook URL to call when a persistent gap is detected.
+   * Required in production to page operators.
+   */
+  webhookUrl: string;
+  /**
+   * Number of consecutive detection cycles where a gap persists
+   * before triggering a page (minimum: 1).
+   */
+  persistenceCyclesBeforePage: number;
+}
+
 export interface GapDetectorConfig {
   /**
    * Ledger gap size at which the ingestion loop is fail-closed (paused).
@@ -27,6 +40,13 @@ export interface GapDetectorConfig {
   backfillMaxLedgers: number;
   /** Soroban contract ID — forwarded to the event fetcher. */
   contractId: string;
+  /**
+   * Optional paging configuration for persistent gaps.
+   * In production, this should be configured to alert operators.
+   */
+  pagingConfig?: GapPagingConfig;
+  /** Current environment (dev, test, production). */
+  nodeEnv?: string;
 }
 
 export interface GapDetectionResult {
@@ -96,15 +116,32 @@ export interface BackfillResult {
  * When the gap size meets or exceeds `gapPauseThreshold` (and the threshold is
  * > 0), `runBackfill` returns `{ paused: true }`. The ingestion loop is
  * expected to stop scheduling new ticks and alert operators.
+ *
+ * ## Persistent gap paging
+ *
+ * When a gap is detected in consecutive cycles (exceeding the persistence
+ * threshold), an operator alert is triggered via a configurable webhook.
+ * In production, this webhook must be configured to fail-fast.
  */
 export class GapDetector {
+  private lastGapStartLedger: number | null = null;
+  private persistentGapCycles = 0;
+  private hasPagedForCurrentGap = false;
+
   constructor(
     private readonly config: GapDetectorConfig,
     private readonly eventFetcher: EventFetcher,
     private readonly batchWriter: BatchWriter,
     private readonly metrics: InternalIndexerMetricsService,
     private readonly logger: ILogger
-  ) {}
+  ) {
+    const isProd = config.nodeEnv === "production";
+    if (isProd && !config.pagingConfig?.webhookUrl) {
+      throw new Error(
+        "Production indexer requires INDEXER_GAP_PAGING_WEBHOOK_URL to be configured"
+      );
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Gap detection
@@ -211,6 +248,54 @@ export class GapDetector {
   }
 
   // -------------------------------------------------------------------------
+  // Private paging helper
+  // -------------------------------------------------------------------------
+
+  /**
+   * Sends a page to operators when a persistent gap is detected.
+   * Non-blocking: errors are logged but do not throw.
+   */
+  private async pageOperatorsForPersistentGap(
+    gapStartLedger: number,
+    gapEndLedger: number,
+    gapSize: number
+  ): Promise<void> {
+    const webhookUrl = this.config.pagingConfig?.webhookUrl;
+    if (!webhookUrl) {
+      return;
+    }
+
+    try {
+      const response = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          alert: "persistent_ledger_gap",
+          contractId: this.config.contractId,
+          gapStartLedger,
+          gapEndLedger,
+          gapSize,
+          persistentCycles: this.persistentGapCycles,
+          timestamp: new Date().toISOString(),
+        }),
+      });
+
+      if (!response.ok) {
+        this.logger.warn("Gap paging webhook returned non-2xx status", {
+          event: "indexer.gap.paging.webhook_error",
+          status: response.status,
+          webhookUrl,
+        });
+      }
+    } catch (error) {
+      this.logger.warn("Failed to send gap paging alert", {
+        event: "indexer.gap.paging.error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Bounded back-fill
   // -------------------------------------------------------------------------
 
@@ -224,6 +309,8 @@ export class GapDetector {
    * - Emits `gap_detected_total` and `backfill_ledgers_total` metrics.
    * - Returns `{ paused: true }` when the unclamped gap size meets or exceeds
    *   `gapPauseThreshold` (fail-closed).
+   * - Tracks persistent gaps and pages operators when a gap recurs
+   *   across multiple consecutive cycles.
    *
    * @param gapStartLedger - First missing ledger (inclusive).
    * @param gapEndLedger   - Last missing ledger (inclusive).
@@ -235,6 +322,42 @@ export class GapDetector {
     const rawGapSize = gapEndLedger - gapStartLedger + 1;
 
     this.metrics.incrementGapDetected();
+
+    // Track persistent gaps: if the gap we're seeing is the same ledger range
+    // as before (or overlapping), increment the cycle counter; otherwise reset.
+    const isSameGap =
+      this.lastGapStartLedger !== null &&
+      this.lastGapStartLedger === gapStartLedger;
+
+    if (isSameGap) {
+      this.persistentGapCycles += 1;
+    } else {
+      this.persistentGapCycles = 1;
+      this.hasPagedForCurrentGap = false;
+    }
+    this.lastGapStartLedger = gapStartLedger;
+
+    // Page operators if gap persists beyond threshold (only once per gap)
+    const { pagingConfig } = this.config;
+    if (
+      pagingConfig &&
+      this.persistentGapCycles >= pagingConfig.persistenceCyclesBeforePage &&
+      !this.hasPagedForCurrentGap
+    ) {
+      this.hasPagedForCurrentGap = true;
+      this.logger.info("Paging operators for persistent gap", {
+        event: "indexer.gap.paging.triggered",
+        gapStartLedger,
+        gapEndLedger,
+        gapSize: rawGapSize,
+        persistentCycles: this.persistentGapCycles,
+      });
+      await this.pageOperatorsForPersistentGap(
+        gapStartLedger,
+        gapEndLedger,
+        rawGapSize
+      );
+    }
 
     // Fail-closed check — must happen before clamping so the operator sees
     // the true gap size in the log even when pausing.
@@ -288,7 +411,7 @@ export class GapDetector {
       endLedger: clampedEnd,
     });
 
-    // Parse all event types
+    // Parse all event types (backfill doesn't have telemetry, so no metrics for unknown topics)
     const { trades } = parseTradeEvents(events);
     const { resolutions } = parseResolutionEvents(events);
     const { deposits } = parseCollateralDepositedEvents(events);

@@ -2,6 +2,7 @@ import { xdr, scValToNative } from "@stellar/stellar-sdk";
 import type { RawChainEvent } from "./types.js";
 import { CollateralDepositedParseError } from "./types.js";
 import { safeStringify } from "./safeJson.js";
+import type { Telemetry } from "./telemetry.js";
 
 const COLLATERAL_DEPOSITED_TOPIC = "collateral_deposited";
 
@@ -122,15 +123,27 @@ export function parseCollateralDepositedEvent(
 /**
  * Parse a batch, skipping non-collateral-deposited events silently.
  */
-export function parseCollateralDepositedEvents(events: RawChainEvent[]): {
+export function parseCollateralDepositedEvents(
+  events: RawChainEvent[],
+  options?: { telemetry?: Telemetry }
+): {
   deposits: NormalizedCollateralDeposit[];
   errors: CollateralDepositedParseError[];
 } {
   const deposits: NormalizedCollateralDeposit[] = [];
   const errors: CollateralDepositedParseError[] = [];
+  const telemetry = options?.telemetry;
 
   for (const event of events) {
-    if (!isCollateralDepositedEvent(event.topicsXdr)) continue;
+    if (!isCollateralDepositedEvent(event.topicsXdr)) {
+      telemetry?.record("indexer.parser.unknown_topics", 1, {
+        parser: "collateral_deposited",
+        eventId: event.id,
+        contractId: event.contractId,
+        ledger: String(event.ledger),
+      });
+      continue;
+    }
     try {
       deposits.push(parseCollateralDepositedEvent(event));
     } catch (err) {

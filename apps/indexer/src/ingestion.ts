@@ -16,7 +16,7 @@ import {
   CollateralDepositedParseError,
   MarketCreatedParseError,
 } from "./types.js";
-import { GapDetector } from "./gapDetector.js";
+import { GapDetector, type GapPagingConfig } from "./gapDetector.js";
 
 /**
  * Number of ledgers to rewind when a chain reorganisation is detected.
@@ -39,6 +39,10 @@ export interface IngestionDependencies {
   gapPauseThreshold?: number;
   /** @see GapDetectorConfig.backfillMaxLedgers */
   backfillMaxLedgers?: number;
+  /** @see GapDetectorConfig.pagingConfig */
+  gapPagingConfig?: GapPagingConfig;
+  /** @see GapDetectorConfig.nodeEnv */
+  nodeEnv?: string;
   telemetry?: Telemetry;
 }
 
@@ -92,6 +96,8 @@ export class PollingIngestionLoop implements IngestionLoop {
         gapPauseThreshold: deps.gapPauseThreshold ?? 1000,
         backfillMaxLedgers: deps.backfillMaxLedgers ?? 500,
         contractId: deps.contractId,
+        pagingConfig: deps.gapPagingConfig,
+        nodeEnv: deps.nodeEnv,
       },
       deps.eventFetcher,
       deps.batchWriter,
@@ -473,12 +479,20 @@ export class PollingIngestionLoop implements IngestionLoop {
     const parseSpan = this.telemetry.startSpan("indexer.ingestion.parse", {
       contractId: this.deps.contractId,
     });
-    const { trades, errors: tradeErrors } = parseTradeEvents(events);
-    const { resolutions, errors: resolutionErrors } =
-      parseResolutionEvents(events);
-    const { deposits, errors: depositErrors } =
-      parseCollateralDepositedEvents(events);
-    const { markets, errors: marketErrors } = parseMarketCreatedEvents(events);
+    const { trades, errors: tradeErrors } = parseTradeEvents(events, {
+      telemetry: this.telemetry,
+    });
+    const { resolutions, errors: resolutionErrors } = parseResolutionEvents(
+      events,
+      { telemetry: this.telemetry }
+    );
+    const { deposits, errors: depositErrors } = parseCollateralDepositedEvents(
+      events,
+      { telemetry: this.telemetry }
+    );
+    const { markets, errors: marketErrors } = parseMarketCreatedEvents(events, {
+      telemetry: this.telemetry,
+    });
     parseSpan.end({
       trades: String(trades.length),
       resolutions: String(resolutions.length),

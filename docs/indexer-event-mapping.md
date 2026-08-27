@@ -17,6 +17,10 @@ Test vectors: [`apps/indexer/fixtures/contract-event-vectors.json`](../apps/inde
 
 All events share the same topic encoding: **topic[0] = ScvSymbol** carrying the event name. Soroban's `#[contractevent]` macro derives that symbol from the event struct name including its literal `Event` suffix (e.g. `MarketCreatedEvent` → `market_created_event`) — see `contracts/market/src/events.rs`.
 
+## Unknown/unrecognized topics
+
+When a parser encounters an event with a topic symbol it does not recognize, it increments the metric `indexer.parser.unknown_topics` with tags including `parser` (parser name), `eventId` (the event ID), `contractId` (contract address), and `ledger` (ledger sequence). This metric signals that a new on-chain event type needs a parser, and allows operators to diagnose missing coverage without reading raw ledger data.
+
 ---
 
 ## 1. `trade_executed`
