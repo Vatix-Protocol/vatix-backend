@@ -100,6 +100,16 @@ order books and accepts `POST /v1/orders`. See
 [Architecture — Order placement](architecture.md#order-placement) for how
 this fits into the request path.
 
+- **Fencing under contention** (#956): leadership is checked twice per
+  `placeOrder` call — once at entry, and again immediately after the
+  per-book mutex is acquired. The mutex wait for a busy book is unbounded,
+  so a request can be enqueued while this instance is still the leader and
+  only reach its turn after losing the lease to a new (higher-token) holder;
+  the second check rejects that request with `503 matching_unavailable`
+  instead of letting a fenced instance commit a match. Both checks are a
+  local field read (`leaderLease.isLeader()`), not a Redis round-trip, so
+  this adds no latency to the hot path.
+
 - **Non-leader behavior**: instances that do not hold the lease still serve
   everything else normally (health/ready probes, market/position/fill reads,
   order cancellation) — only order _placement_ is gated. A non-leader
@@ -113,6 +123,16 @@ this fits into the request path.
   cluster-wide for up to `MATCHING_LEASE_TTL_MS` while the lease expires and
   a standby acquires it. A graceful shutdown (`SIGTERM`) releases the lease
   immediately so a standby can take over without waiting out the TTL.
+- **Rehydration safety on handover** (#955): losing the lease drops every
+  in-memory book (`invalidateAllBooks()`); acquiring it re-hydrates every
+  active market's books from PostgreSQL OPEN/PARTIALLY_FILLED orders
+  (`hydrateAllActiveMarkets()`). Each book's rehydration is queued behind
+  that same book's per-order mutex — the one `POST /v1/orders` and
+  `DELETE /v1/orders/:id` hold for the duration of a match/cancel — so a
+  rehydration triggered while this instance still has in-flight matches for
+  a book can never read a DB snapshot from _before_ those commits and clobber
+  the in-memory book with stale (already-filled) resting orders. No operator
+  action needed; this is transparent to clients.
 - **Monitoring**: scrape `vatix_matching_leader` (gauge, 1 on the current
   holder / 0 everywhere else) and `vatix_matching_lease_renew_failures_total`
   (counter) from `GET /metrics` on every replica. Alert if:

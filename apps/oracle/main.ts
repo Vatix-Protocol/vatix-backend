@@ -61,7 +61,9 @@ export async function poll(): Promise<void> {
       })),
     }),
     logger,
-    enableFallback: true,
+    enableFallback: process.env.NODE_ENV !== "production",
+    primaryTimeoutMs: config.primaryTimeoutMs,
+    fallbackTimeoutMs: config.fallbackTimeoutMs,
   });
 
   if (!globalQueue) {
@@ -76,6 +78,9 @@ export async function poll(): Promise<void> {
       status: { in: [...RESOLVABLE_MARKET_STATUSES] },
       deletedAt: null,
     },
+  // Only markets in a resolvable lifecycle state and not soft-deleted may be submitted for resolution.
+  const markets = await prisma.market.findMany({
+    where: { status: { in: [...RESOLVABLE_MARKET_STATUSES] }, deletedAt: null },
     select: { id: true, oracleAddress: true },
   });
 

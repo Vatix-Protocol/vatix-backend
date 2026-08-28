@@ -32,9 +32,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
   fastify.addHook("onRequest", requireApiKey);
   fastify.addHook("onRequest", requireAdmin);
 
-  // GET /admin/markets - list all markets including cancelled
+  // GET /admin/markets - list all non-deleted markets (excluding soft-deleted)
   fastify.get("/admin/markets", async (_request, reply) => {
     const markets = await prisma.market.findMany({
+      where: { deletedAt: null },
       orderBy: { createdAt: "desc" },
     });
     success(reply, { markets, count: markets.length });
@@ -101,7 +102,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       const ifMatch = request.headers["if-match"];
 
       const existing = await prisma.market.findUnique({ where: { id } });
-      if (!existing) {
+      if (!existing || existing.deletedAt !== null) {
         throw new MarketNotFoundError(id);
       }
 

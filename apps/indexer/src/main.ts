@@ -6,8 +6,11 @@ import { InternalIndexerMetricsService } from "./metrics.js";
 import { PrismaCursorStorageClient } from "./storage.js";
 import { EventFetcher } from "./eventFetcher.js";
 import { PrismaBatchWriter } from "./batchWriter.js";
-import { checkStartupHealth } from "./startupHealth.js";
-import { disconnectPrisma } from "../../../src/services/prisma.js";
+import { checkStartupHealth, checkLiveDependencies } from "./startupHealth.js";
+import {
+  disconnectPrisma,
+  getPrismaClient,
+} from "../../../src/services/prisma.js";
 
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
@@ -40,6 +43,45 @@ async function bootstrap(): Promise<void> {
     pageLimit: config.batchSize,
   });
   const batchWriter = new PrismaBatchWriter(logger);
+
+  // Confirm DB and Horizon/Soroban RPC are actually reachable before the
+  // poller starts (#947) — checkStartupHealth above only validates config
+  // shape, it never touches the network. Running the poller against an
+  // unconfirmed dependency can poison the cursor (e.g. commit progress past
+  // ledgers a half-broken RPC never really returned).
+  const liveHealth = await checkLiveDependencies(
+    [
+      {
+        name: "database",
+        check: async () => {
+          await getPrismaClient().$queryRaw`SELECT 1`;
+        },
+      },
+      {
+        name: "horizon",
+        check: async () => {
+          await eventFetcher.getLatestLedgerInfo();
+        },
+      },
+    ],
+    { nodeEnv: config.nodeEnv }
+  );
+
+  if (!liveHealth.ready) {
+    logger.error("Indexer dependency health check failed", {
+      errors: liveHealth.errors,
+      nodeEnv: config.nodeEnv,
+    });
+    throw new Error(
+      `Dependency health check failed: ${liveHealth.errors.join("; ")}`
+    );
+  }
+  logger.info(
+    liveHealth.skipped
+      ? "Skipped live DB/Horizon health check (non-production)"
+      : "Indexer dependencies confirmed ready",
+    { nodeEnv: config.nodeEnv }
+  );
 
   // Load optional gap paging config
   const gapPagingWebhookUrl = process.env["INDEXER_GAP_PAGING_WEBHOOK_URL"];

@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import type { Outcome } from "../types/index.js";
 import type { OrderInput } from "./validation.js";
+import { computeEffectiveWorstPrice } from "./validation.js";
 import { OrderBook } from "./orderbook.js";
 import {
   matchOrder,
@@ -317,10 +318,22 @@ class MatchingService {
     const outcomes: Outcome[] = ["YES", "NO"];
     let count = 0;
 
+    // Route each book's (re)hydration through its per-book mutex — the same
+    // one placeOrder/cancelOrder hold for the duration of a match. Without
+    // this, a hydrateBook() triggered here (e.g. on regaining the matching
+    // leader lease, #955) can read a DB snapshot taken *before* a concurrent
+    // placeOrder's commit, then overwrite (clobber) the book that placeOrder
+    // already mutated — reviving an already-filled resting order in memory
+    // and letting the next incoming taker match it a second time. Acquiring
+    // the mutex here forces the hydration to either happen-before or
+    // happen-after any in-flight match for that book, never mid-flight.
     await Promise.all(
       markets.flatMap((m) =>
         outcomes.map(async (outcome) => {
-          await this.hydrateBook(m.id, outcome);
+          const bookKey = this.getBookKey(m.id, outcome);
+          await this.getOrCreateMutex(bookKey).run(() =>
+            this.hydrateBook(m.id, outcome)
+          );
           count++;
         })
       )
@@ -389,6 +402,20 @@ class MatchingService {
     const bookKey = this.getBookKey(input.marketId, input.outcome);
 
     return this.getOrCreateMutex(bookKey).run(async () => {
+      // Re-check leadership now that we hold the mutex (#956). The gate
+      // above only proves we were the leader at *enqueue* time — the mutex
+      // wait for a busy book is unbounded, so the lease can be lost (or
+      // fenced by a new higher-token holder) while this call was queued.
+      // isLeader() is a local, synchronous check (no Redis round-trip), so
+      // this costs nothing and closes the same TOCTOU window the market
+      // status re-check below (#792) closes for market state.
+      if (
+        !leaderLease.isLeader() &&
+        process.env.MATCHING_LEASE_ENFORCED !== "false"
+      ) {
+        throw new MatchingUnavailableError();
+      }
+
       const prisma = getPrismaClient();
 
       const market = await prisma.market.findUnique({
@@ -421,11 +448,30 @@ class MatchingService {
       const orderId = randomUUID();
       const timestamp = Date.now();
 
+      // Compute the effective worst-case execution price for this order.
+      // For a regular limit order this is just input.price.
+      // For a market order (price === 0) it is derived from limitPrice +
+      // maxSlippagePct so the engine never executes beyond the caller's
+      // stated tolerance.
+      const effectiveWorstPrice =
+        input.price === 0
+          ? computeEffectiveWorstPrice(
+              input.side,
+              input.limitPrice,
+              input.maxSlippagePct
+            )
+          : input.price;
+
       const takerOrder: MatchingOrder = {
         id: orderId,
         userAddress: input.userAddress,
         side: input.side,
-        price: input.price,
+        // Market orders pass effectiveWorstPrice as their matching price so
+        // canMatch() naturally stops at the caller's tolerance boundary.
+        // When no limit/slippage was specified effectiveWorstPrice is null
+        // and we fall back to the market-order extremes (1 for BUY, 0 for
+        // SELL) so the order walks the whole book — permitted only in dev.
+        price: effectiveWorstPrice ?? (input.side === "BUY" ? 0.9999 : 0.0001),
         quantity: input.quantity,
         marketId: input.marketId,
         outcome: input.outcome,
@@ -442,6 +488,36 @@ class MatchingService {
       let takerFilledQuantity =
         input.quantity - (matchResult.remainingOrder?.quantity ?? 0);
 
+      // Enforce partial-fill guard for market orders.
+      // When allowPartialFill is explicitly false, reject if the order
+      // was not fully executed within the price bounds.  The book is NOT
+      // mutated by matchOrder in a way that's visible until the DB
+      // transaction commits, so we can just throw here and the in-memory
+      // state is still consistent (matchOrder rolled back its own
+      // commands on the book, or the remaining order was never added).
+      const allowPartial = input.allowPartialFill !== false; // default true
+      if (!allowPartial && takerFilledQuantity < input.quantity) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            component: "matching-service",
+            action: "market_order_partial_fill_rejected",
+            marketId: input.marketId,
+            outcome: input.outcome,
+            side: input.side,
+            quantity: input.quantity,
+            filledQuantity: takerFilledQuantity,
+          })
+        );
+        // Roll back the in-memory book changes from the partial match
+        this.invalidateBook(input.marketId, input.outcome);
+        throw new ValidationError(
+          `Market order cannot be fully filled at the specified price limit ` +
+            `(filled ${takerFilledQuantity}/${input.quantity} units). ` +
+            `Set allowPartialFill=true or widen limitPrice/maxSlippagePct.`
+        );
+      }
+
       let takerStatus: "OPEN" | "PARTIALLY_FILLED" | "FILLED";
       if (takerFilledQuantity === 0) {
         takerStatus = "OPEN";
@@ -454,7 +530,9 @@ class MatchingService {
       let order: any;
       try {
         await prisma.$transaction(async (tx) => {
-          // Create taker order
+          // Create taker order — store the original input price (0 for market
+          // orders) not the effective matching price so the order record faithfully
+          // represents what the user submitted.
           order = await tx.order.create({
             data: {
               id: orderId,

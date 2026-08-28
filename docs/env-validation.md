@@ -28,9 +28,9 @@ Two utilities work together for other services:
 
 The HTTP API uses Zod to validate `NODE_ENV`, `PORT`, `DATABASE_URL`,
 `ORACLE_CHALLENGE_WINDOW_SECONDS`, `ORACLE_POLL_INTERVAL_MS`,
-`MATCHING_ENGINE_ENABLED`, and `ANALYTICS_DATABASE_URL` before
-`buildServer()` runs. Invalid values throw with the same descriptive messages
-as the legacy manual validators.
+`MATCHING_ENGINE_ENABLED`, `ANALYTICS_DATABASE_URL`, and `BODY_LIMIT_BYTES`
+before `buildServer()` runs. Invalid values throw with the same descriptive
+messages as the legacy manual validators.
 
 ```ts
 import { parseApiEnv } from "./env.js";
@@ -193,6 +193,8 @@ Must be a positive integer, optionally within a bounded range.
 | `RATE_LIMIT_ADMIN_WINDOW_MS`             | 1    | —       | `60000` |
 | `ORACLE_POLL_INTERVAL_MS`                | 5000 | 3600000 | `30000` |
 | `ORACLE_CHALLENGE_WINDOW_SECONDS`        | 1    | —       | `86400` |
+| `ORACLE_PRIMARY_TIMEOUT_MS`              | 1    | —       | `30000` |
+| `ORACLE_FALLBACK_TIMEOUT_MS`             | 1    | —       | `30000` |
 | `FINALIZATION_INTERVAL_MS`               | 1000 | —       | `60000` |
 | `FINALIZATION_CHALLENGE_WINDOW_SECONDS`  | 0    | —       | `3600`  |
 | `INDEXER_INGESTION_INTERVAL_MS`          | 100  | —       | `5000`  |

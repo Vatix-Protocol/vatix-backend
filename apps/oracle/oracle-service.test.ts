@@ -4,7 +4,7 @@
  * Covers primary resolution, fallback switching, metrics, and error handling.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { OracleService } from "./oracle-service.js";
 import { PrimaryAdapter } from "./primary-adapter.js";
 import { FallbackAdapter } from "./fallback-adapter.js";
@@ -54,6 +54,10 @@ describe("OracleService", () => {
     });
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe("primary resolution", () => {
     it("should resolve using primary adapter when it succeeds", async () => {
       const result = await oracleService.resolve({
@@ -81,6 +85,26 @@ describe("OracleService", () => {
   });
 
   describe("fallback switching", () => {
+    it("fails closed in production without invoking an off-chain fallback", async () => {
+      vi.stubEnv("NODE_ENV", "production");
+      const failingPrimary = createMockAdapter("primary", true);
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter,
+        enableFallback: true,
+      });
+
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow("primary provider failed");
+
+      expect(fallbackAdapter.resolve).not.toHaveBeenCalled();
+    });
+
     it("should switch to fallback when primary fails", async () => {
       const failingPrimary = createMockAdapter("primary", true);
       const service = new OracleService({

@@ -443,4 +443,163 @@ describe("PrismaBatchWriter", () => {
       );
     });
   });
+
+  describe("trade quantity -> UserPosition share reconciliation (#948)", () => {
+    it("credits/debits whole-share deltas for both sides of the trade", async () => {
+      const tx = createMockTx();
+      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
+      mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
+
+      const writer = new PrismaBatchWriter();
+      const result = await writer.write([
+        { kind: "trade", data: withIdempotencyKey(TRADE) },
+      ]);
+
+      expect(result.written).toBe(1);
+      // TRADE: outcome YES, direction buy, quantityRaw 100n — trader gains
+      // 100 whole YES shares, counterparty loses 100.
+      expect(tx.userPosition.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            marketId_userAddress: {
+              marketId: TRADE.marketId,
+              userAddress: TRADE.traderAddress,
+            },
+          },
+          create: expect.objectContaining({ yesShares: 100, noShares: 0 }),
+          update: expect.objectContaining({
+            yesShares: { increment: 100 },
+          }),
+        })
+      );
+      expect(tx.userPosition.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            marketId_userAddress: {
+              marketId: TRADE.marketId,
+              userAddress: TRADE.counterpartyAddress,
+            },
+          },
+          update: expect.objectContaining({
+            yesShares: { increment: -100 },
+          }),
+        })
+      );
+    });
+
+    it("skips position reconciliation (without failing the batch) when quantityRaw exceeds safe-integer range", async () => {
+      const tx = createMockTx();
+      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
+      mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
+      const warnSpy = vi.fn();
+
+      const corrupted = {
+        ...TRADE,
+        quantityRaw: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
+      };
+
+      const writer = new PrismaBatchWriter({
+        warn: warnSpy,
+        info: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      } as any);
+
+      const result = await writer.write([
+        { kind: "trade", data: withIdempotencyKey(corrupted) },
+      ]);
+
+      // The trade itself is still the source of truth and gets written —
+      // only the best-effort position projection is skipped.
+      expect(result.written).toBe(1);
+      expect(tx.userPosition.upsert).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        "Skipping position reconciliation: invalid trade quantity",
+        expect.objectContaining({
+          error: expect.stringContaining("exceeds Number.MAX_SAFE_INTEGER"),
+        })
+      );
+    });
+  });
+
+  describe("concurrent batch writers (#946)", () => {
+    it("treats a concurrent unique-constraint conflict as a duplicate after retrying", async () => {
+      // First attempt: another writer's transaction committed the same
+      // idempotency-keyed row a moment earlier — our INSERT collides.
+      const conflictErr = Object.assign(
+        new Error(
+          "Unique constraint failed on the fields: (`idempotency_key`)"
+        ),
+        { code: "P2002" }
+      );
+
+      // Second attempt: a fresh transaction now sees the row the other
+      // writer committed, so the dedup check correctly classifies it as
+      // a duplicate instead of racing the INSERT again.
+      const retryTx = createMockTx();
+      retryTx.indexerProcessedEvent.findUnique.mockResolvedValue({
+        idempotencyKey: withIdempotencyKey(TRADE).idempotencyKey,
+      });
+
+      mockPrisma.$transaction
+        .mockRejectedValueOnce(conflictErr)
+        .mockImplementation(async (fn) => fn(retryTx));
+
+      const writer = new PrismaBatchWriter();
+      const result = await writer.write([
+        { kind: "trade", data: withIdempotencyKey(TRADE) },
+      ]);
+
+      expect(result.written).toBe(0);
+      expect(result.skipped).toBe(1);
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(2);
+      // The record must never be re-inserted once recognised as a duplicate.
+      expect(retryTx.indexedTrade.create).not.toHaveBeenCalled();
+    });
+
+    it("still writes the other genuinely-new records in the batch after a concurrent conflict", async () => {
+      const conflictErr = Object.assign(new Error("Unique constraint failed"), {
+        code: "P2002",
+      });
+
+      const tradeKey = withIdempotencyKey(TRADE).idempotencyKey;
+      const retryTx = createMockTx();
+      retryTx.indexerProcessedEvent.findUnique.mockImplementation(
+        async ({ where }: { where: { idempotencyKey: string } }) =>
+          where.idempotencyKey === tradeKey
+            ? { idempotencyKey: tradeKey }
+            : null
+      );
+
+      mockPrisma.$transaction
+        .mockRejectedValueOnce(conflictErr)
+        .mockImplementation(async (fn) => fn(retryTx));
+
+      const writer = new PrismaBatchWriter();
+      const result = await writer.write([
+        { kind: "trade", data: withIdempotencyKey(TRADE) },
+        { kind: "market_created", data: withIdempotencyKey(MARKET_CREATED) },
+      ]);
+
+      expect(result.written).toBe(1);
+      expect(result.skipped).toBe(1);
+      expect(retryTx.market.upsert).toHaveBeenCalled();
+      expect(retryTx.indexedTrade.create).not.toHaveBeenCalled();
+    });
+
+    it("throws after exhausting retries when conflicts persist across every attempt", async () => {
+      const conflictErr = Object.assign(new Error("Unique constraint failed"), {
+        code: "P2002",
+      });
+      mockPrisma.$transaction.mockRejectedValue(conflictErr);
+
+      const writer = new PrismaBatchWriter();
+      await expect(
+        writer.write([{ kind: "trade", data: withIdempotencyKey(TRADE) }])
+      ).rejects.toThrow("Unique constraint failed");
+
+      // 1 initial + 3 retries = 4 total — never retries forever.
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(4);
+    });
+  });
 });

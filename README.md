@@ -11,6 +11,7 @@ Backend services for the Vatix prediction market protocol on Stellar.
 - [Indexer Metrics Log](docs/metrics-log.md)
 - [Prometheus Metrics](docs/metrics.md)
 - [Queue Consumer](docs/queue-consumer.md)
+- [Soft-Deleted Markets](docs/SOFT_DELETED_MARKETS.md) - Filtering deleted markets across all components
 
 > See [docs/schema.md](docs/schema.md) for the full Prisma schema reference (models, enums, indexes).
 

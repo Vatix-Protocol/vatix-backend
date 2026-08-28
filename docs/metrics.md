@@ -26,12 +26,21 @@ GET /metrics
 
 ## Metrics
 
-| Metric                                      | Type    | Description                                                                                       |
-| ------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `vatix_process_*`, `vatix_nodejs_*`         | various | Default Node.js process/runtime metrics from `prom-client`.                                       |
-| `vatix_orderbook_hydrated_markets`          | gauge   | Number of `(market, outcome)` order books currently held in memory by the matching engine (#746). |
-| `vatix_matching_leader`                     | gauge   | Whether this process currently holds the matching leader lease: `1` while held, `0` otherwise.    |
-| `vatix_matching_lease_renew_failures_total` | counter | Total failed matching leader lease acquire/renew attempts on this process.                        |
+| Metric                                                        | Type      | Description                                                                                                       |
+| ------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------- |
+| `vatix_process_*`, `vatix_nodejs_*`                           | various   | Default Node.js process/runtime metrics from `prom-client`.                                                       |
+| `vatix_orderbook_hydrated_markets`                            | gauge     | Number of `(market, outcome)` order books currently held in memory by the matching engine (#746).                 |
+| `vatix_matching_leader`                                       | gauge     | Whether this process currently holds the matching leader lease: `1` while held, `0` otherwise.                    |
+| `vatix_matching_lease_renew_failures_total`                   | counter   | Total failed matching leader lease acquire/renew attempts on this process.                                        |
+| `vatix_oracle_fail_closed_total`                              | counter   | Total times the oracle failed closed after all providers were unreachable (no report submitted on-chain).         |
+| `vatix_oracle_submission_ambiguous_total`                     | counter   | Total oracle on-chain submissions left in an ambiguous confirmation state (e.g. NOT_FOUND that may still confirm).|
+| `vatix_oracle_submission_confirmation_latency_ms`             | histogram | Milliseconds from oracle submission broadcast to on-chain confirmation.                                           |
+| `vatix_settlement_outbox_depth`                               | gauge     | Number of settlement outbox rows not yet PUBLISHED (PENDING + FAILED).                                            |
+| `vatix_settlement_outbox_lag_seconds`                         | gauge     | Age in seconds of the oldest unpublished settlement outbox row.                                                   |
+| `vatix_settlement_outbox_publish_failures_total`              | counter   | Total failed attempts to publish an outbox row to the settlement queue.                                           |
+| `vatix_settlement_outbox_orphaned_trades`                     | gauge     | Outbox rows that have failed to publish at least `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times (stalled settlement).   |
+| `vatix_settlement_outbox_quarantined_entries`                 | gauge     | Number of outbox entries currently in QUARANTINED status.                                                         |
+| `vatix_settlement_outbox_quarantine_transitions_total`        | counter   | Total outbox entries moved to QUARANTINED status due to exceeding retry budget.                                    |
 
 ### `vatix_orderbook_hydrated_markets`
 
@@ -52,6 +61,31 @@ should report `vatix_matching_leader == 1` at a time (see
 [Scaling the API / Matching Leader Lease](deployment-runbook.md#scaling-the-api--matching-leader-lease)
 for alerting guidance and failover timing). Updated by
 `src/matching/leader-lease.ts` on every acquire, renew, and loss.
+
+### `vatix_oracle_fail_closed_total`
+
+Incremented by `OracleService` whenever every provider (primary + fallback) fails
+for a resolution request and the oracle fails closed — i.e. no `OracleReport` is
+written and nothing is submitted on-chain. Alert when this counter rises to avoid
+silent resolution gaps.
+
+### `vatix_settlement_outbox_*`
+
+The settlement outbox metrics track the transactional outbox pattern used by
+`MatchingService.placeOrder` → settlement queue delivery
+(see `src/services/outbox-publisher.ts`):
+
+- **`vatix_settlement_outbox_depth`** — total undelivered rows (PENDING + FAILED).
+  Should stay near zero under normal operation.
+- **`vatix_settlement_outbox_lag_seconds`** — staleness of the oldest undelivered
+  row. Alert when this exceeds the acceptable settlement SLA.
+- **`vatix_settlement_outbox_orphaned_trades`** — rows stuck past the retry
+  threshold (`OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD`). Non-zero means stalled
+  settlement that requires operator attention.
+- **`vatix_settlement_outbox_quarantined_entries`** — rows moved to QUARANTINED
+  after exhausting the retry budget.
+- **`vatix_settlement_outbox_quarantine_transitions_total`** — cumulative count
+  of entries that entered QUARANTINED status.
 
 ## Adding a new metric
 
