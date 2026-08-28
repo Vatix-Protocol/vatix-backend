@@ -7,6 +7,9 @@ import {
   NotFoundError,
   UnauthorizedError,
   ForbiddenError,
+  ContractError,
+  MatchingUnavailableError,
+  ServiceUnavailableError,
 } from "./errors.js";
 import type { ErrorResponse } from "../../types/errors.js";
 import { createErrorEnvelope } from "../../../packages/shared/src/errors.js";
@@ -17,6 +20,9 @@ function resolveCode(error: Error, statusCode: number): string {
   if (error instanceof NotFoundError) return "NOT_FOUND";
   if (error instanceof UnauthorizedError) return "UNAUTHORIZED";
   if (error instanceof ForbiddenError) return "FORBIDDEN";
+  if (error instanceof MatchingUnavailableError) return "MATCHING_UNAVAILABLE";
+  if (error instanceof ServiceUnavailableError) return "SERVICE_UNAVAILABLE";
+  if (error instanceof ContractError || error.name === "ContractError") return "CONTRACT_ERROR";
   if (error instanceof AppError) return error.code;
   if (statusCode >= 500) return "INTERNAL_ERROR";
   return "BAD_REQUEST";
@@ -33,6 +39,8 @@ export function errorHandler(
   let statusCode = 500;
   if ("statusCode" in error && typeof error.statusCode === "number") {
     statusCode = error.statusCode;
+  } else if (error instanceof ContractError || error.name === "ContractError") {
+    statusCode = 400;
   }
 
   // Determine if it's a client error (4xx) or server error (5xx)
