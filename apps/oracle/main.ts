@@ -71,9 +71,9 @@ export async function poll(): Promise<void> {
   }
   const queue = globalQueue;
 
-  // Only markets in a resolvable lifecycle state may be submitted for resolution.
+  // Only markets in a resolvable lifecycle state and not soft-deleted may be submitted for resolution.
   const markets = await prisma.market.findMany({
-    where: { status: { in: [...RESOLVABLE_MARKET_STATUSES] } },
+    where: { status: { in: [...RESOLVABLE_MARKET_STATUSES] }, deletedAt: null },
     select: { id: true, oracleAddress: true },
   });
 

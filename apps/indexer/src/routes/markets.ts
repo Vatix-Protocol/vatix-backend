@@ -38,9 +38,10 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       reply
     ) => {
       const { status, limit = 50 } = request.query;
-      const where: Prisma.MarketWhereInput = status
-        ? { status: status as MarketStatus }
-        : {};
+      const where: Prisma.MarketWhereInput = {
+        deletedAt: null,
+        ...(status && { status: status as MarketStatus }),
+      };
 
       const markets = await prisma.market.findMany({
         where,
@@ -72,7 +73,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
       const { id } = request.params;
 
       const market = await prisma.market.findUnique({ where: { id } });
-      if (!market) {
+      if (!market || market.deletedAt !== null) {
         return reply.status(404).send({ error: "Market not found" });
       }
 

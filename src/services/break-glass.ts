@@ -93,12 +93,12 @@ export class BreakGlassService {
     action: BreakGlassAction,
     approver: string
   ): Promise<BreakGlassResult> {
-    // Validate market exists
+    // Validate market exists and is not soft-deleted
     const market = await this.prisma.market.findUnique({
       where: { id: action.marketId },
     });
 
-    if (!market) {
+    if (!market || market.deletedAt !== null) {
       throw new Error(`Market ${action.marketId} not found`);
     }
 
