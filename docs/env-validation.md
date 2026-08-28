@@ -28,9 +28,9 @@ Two utilities work together for other services:
 
 The HTTP API uses Zod to validate `NODE_ENV`, `PORT`, `DATABASE_URL`,
 `ORACLE_CHALLENGE_WINDOW_SECONDS`, `ORACLE_POLL_INTERVAL_MS`,
-`MATCHING_ENGINE_ENABLED`, and `ANALYTICS_DATABASE_URL` before
-`buildServer()` runs. Invalid values throw with the same descriptive messages
-as the legacy manual validators.
+`MATCHING_ENGINE_ENABLED`, `ANALYTICS_DATABASE_URL`, and `BODY_LIMIT_BYTES`
+before `buildServer()` runs. Invalid values throw with the same descriptive
+messages as the legacy manual validators.
 
 ```ts
 import { parseApiEnv } from "./env.js";

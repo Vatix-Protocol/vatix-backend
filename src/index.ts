@@ -37,9 +37,13 @@ import { resolutionsRoutes } from "./api/routes/resolutions.js";
 import { admissionControl } from "./api/middleware/admissionControl.js";
 import { auditAdminRoutes } from "./api/routes/audit-verification.js";
 
-// Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
+// Default: 64 KB. Override via BODY_LIMIT_BYTES env var (validated by parseApiEnv).
 // Oversized requests are rejected with 413 Request Entity Too Large.
-const bodyLimit = Number(process.env.BODY_LIMIT_BYTES) || 65_536;
+// The value is parsed here so buildServer() can be called in tests before
+// parseApiEnv() runs — invalid values fall back to the safe default.
+const rawBodyLimit = Number(process.env.BODY_LIMIT_BYTES);
+const bodyLimit =
+  Number.isInteger(rawBodyLimit) && rawBodyLimit > 0 ? rawBodyLimit : 65_536;
 
 export interface BuildServerOptions {
   logger?: FastifyServerOptions["logger"];

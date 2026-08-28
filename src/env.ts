@@ -128,6 +128,22 @@ export const apiEnvSchema = z.object({
       .transform((value) => value === "true")
   ),
   ANALYTICS_DATABASE_URL: optionalPostgresUrlSchema("ANALYTICS_DATABASE_URL"),
+  /**
+   * Maximum request body size in bytes. Requests exceeding this are rejected
+   * with 413 before any route handler runs. Defaults to 64 KB (65536 bytes).
+   * See docs/body-limit.md.
+   */
+  BODY_LIMIT_BYTES: z.preprocess(
+    emptyToUndefined,
+    z.coerce
+      .number({
+        invalid_type_error:
+          "Environment variable BODY_LIMIT_BYTES must be a positive integer",
+      })
+      .int("Environment variable BODY_LIMIT_BYTES must be a positive integer")
+      .min(1, "Environment variable BODY_LIMIT_BYTES must be a positive integer")
+      .default(65_536)
+  ),
 });
 
 export type ParsedApiEnv = z.infer<typeof apiEnvSchema>;
