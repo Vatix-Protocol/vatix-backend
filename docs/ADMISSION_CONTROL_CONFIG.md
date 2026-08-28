@@ -10,6 +10,8 @@ Admission control provides load shedding for the orders API based on downstream 
 | ----------------------------------- | ------- | ----------------------------------------------------- | ----------------- |
 | `SETTLEMENT_LAG_SHED_THRESHOLD`     | `1000`  | High water mark: start shedding when lag ≥ this value | Production tuning |
 | `SETTLEMENT_LAG_RECOVERY_THRESHOLD` | `500`   | Low water mark: stop shedding when lag ≤ this value   | Hysteresis width  |
+| `PER_MARKET_SHED_THRESHOLD`         | `500`   | Per-market lag score at which that market is shed     | Per-market tuning |
+| `PER_MARKET_RECOVERY_THRESHOLD`     | `250`   | Per-market lag score at which shedding is lifted      | Per-market tuning |
 
 ## How Lag is Measured
 
@@ -83,6 +85,55 @@ Requests that **bypass** admission control:
    - Reason: Incident response takes priority
 3. **Health Checks**: `/v1/health`, `/v1/ready`, `/metrics`
    - Reason: K8s liveness/readiness probes must not be gated
+
+## Per-Market Shedding
+
+One toxic market with a deep settlement backlog must not stall order placement
+for all other markets (issue #967). Per-market shedding solves this by
+maintaining a set of "shed markets" that is checked before the global lag probe.
+
+### How It Works
+
+1. The settlement worker (or any service-level probe) calls
+   `updateMarketShedState(marketId, lagScore)` when it detects per-market lag.
+2. When `lagScore >= PER_MARKET_SHED_THRESHOLD`, the market is added to the
+   shed set.
+3. When `lagScore <= PER_MARKET_RECOVERY_THRESHOLD`, the market is removed.
+4. On each incoming order request, `admissionControl` checks the shed set
+   **before** querying the global lag probe (no I/O, fast path).
+
+### Per-Market Response Format
+
+```json
+{
+  "error": "market_backpressured",
+  "message": "This market is experiencing high settlement lag. Please retry after a short delay.",
+  "details": { "marketId": "<uuid>" },
+  "retryAfterSeconds": 30
+}
+```
+
+HTTP Status: `503 Service Unavailable`  
+Header: `Retry-After: 30`
+
+### Operator Controls
+
+```ts
+import {
+  updateMarketShedState,
+  getShedMarkets,
+  clearShedMarkets,
+} from "src/api/middleware/admissionControl.js";
+
+// Manually activate shedding for a market (e.g. from a runbook script)
+updateMarketShedState("market-uuid", 99999);
+
+// Inspect current shed set
+console.log([...getShedMarkets()]);
+
+// Clear all per-market shedding (manual recovery)
+clearShedMarkets();
+```
 
 ## Tuning
 
@@ -161,6 +212,5 @@ User within rate limit but lag high → 503 Service Unavailable
 
 ## Future Enhancements
 
-- **Per-Market Shedding**: Shed only for markets with high lag
 - **Adaptive Thresholds**: Auto-tune based on settlement latency SLO
 - **Gradual Backoff**: Return 503 to X% of requests instead of all-or-nothing
