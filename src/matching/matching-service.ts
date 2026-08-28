@@ -317,10 +317,22 @@ class MatchingService {
     const outcomes: Outcome[] = ["YES", "NO"];
     let count = 0;
 
+    // Route each book's (re)hydration through its per-book mutex — the same
+    // one placeOrder/cancelOrder hold for the duration of a match. Without
+    // this, a hydrateBook() triggered here (e.g. on regaining the matching
+    // leader lease, #955) can read a DB snapshot taken *before* a concurrent
+    // placeOrder's commit, then overwrite (clobber) the book that placeOrder
+    // already mutated — reviving an already-filled resting order in memory
+    // and letting the next incoming taker match it a second time. Acquiring
+    // the mutex here forces the hydration to either happen-before or
+    // happen-after any in-flight match for that book, never mid-flight.
     await Promise.all(
       markets.flatMap((m) =>
         outcomes.map(async (outcome) => {
-          await this.hydrateBook(m.id, outcome);
+          const bookKey = this.getBookKey(m.id, outcome);
+          await this.getOrCreateMutex(bookKey).run(() =>
+            this.hydrateBook(m.id, outcome)
+          );
           count++;
         })
       )
@@ -389,6 +401,20 @@ class MatchingService {
     const bookKey = this.getBookKey(input.marketId, input.outcome);
 
     return this.getOrCreateMutex(bookKey).run(async () => {
+      // Re-check leadership now that we hold the mutex (#956). The gate
+      // above only proves we were the leader at *enqueue* time — the mutex
+      // wait for a busy book is unbounded, so the lease can be lost (or
+      // fenced by a new higher-token holder) while this call was queued.
+      // isLeader() is a local, synchronous check (no Redis round-trip), so
+      // this costs nothing and closes the same TOCTOU window the market
+      // status re-check below (#792) closes for market state.
+      if (
+        !leaderLease.isLeader() &&
+        process.env.MATCHING_LEASE_ENFORCED !== "false"
+      ) {
+        throw new MatchingUnavailableError();
+      }
+
       const prisma = getPrismaClient();
 
       const market = await prisma.market.findUnique({

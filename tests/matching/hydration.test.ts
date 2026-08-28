@@ -133,6 +133,48 @@ describe("#449 — hydrateAllActiveMarkets (restart simulation)", () => {
     expect(books.size).toBe(0);
   });
 
+  it("does not clobber a book while a concurrent operation holds its mutex (#955)", async () => {
+    // Regression test: hydrateBook() used to write `this.books.set(...)`
+    // without ever acquiring the per-book mutex that placeOrder/cancelOrder
+    // hold for the duration of a match. That let a re-hydration (e.g.
+    // triggered by regaining the matching leader lease) read a DB snapshot
+    // taken *before* a concurrent match's commit, then overwrite the book
+    // the match had already mutated — reviving an already-filled order in
+    // memory so the next taker could match (and fill) it a second time.
+    process.env.WARM_MARKETS_ON_STARTUP = "true";
+    const svc = matchingService as any;
+    const bookKey = "market-1:YES";
+
+    // Stand-in for a book a concurrent placeOrder has already mutated.
+    const sentinelBook = {
+      __sentinel: true,
+      getDepth: () => ({ bids: [], asks: [] }),
+    };
+    svc.books.set(bookKey, sentinelBook);
+
+    // Simulate placeOrder currently holding market-1:YES's mutex.
+    let releaseHold: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      releaseHold = resolve;
+    });
+    const mutex = svc.getOrCreateMutex(bookKey);
+    const holdPromise = mutex.run(() => held);
+
+    const hydrationPromise = matchingService.hydrateAllActiveMarkets();
+
+    // While the mutex is held, hydration must be queued, not applied.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(svc.books.get(bookKey)).toBe(sentinelBook);
+
+    // Release the simulated in-flight operation.
+    releaseHold();
+    await holdPromise;
+    await hydrationPromise;
+
+    // Hydration proceeded only once the lock was free, and replaced the book.
+    expect(svc.books.get(bookKey)).not.toBe(sentinelBook);
+  });
+
   it("creates empty books for outcomes with no resting orders", async () => {
     process.env.WARM_MARKETS_ON_STARTUP = "true";
     await matchingService.hydrateAllActiveMarkets();

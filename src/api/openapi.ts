@@ -388,6 +388,44 @@ export const openApiSpec = {
               },
             },
           },
+          "409": {
+            description:
+              "A maker order this request would have matched against was concurrently filled or cancelled (optimistic-concurrency conflict on Order.version). Safe and expected to retry: re-submit the same order — it will match against current book state.",
+            content: {
+              "application/json": {
+                examples: {
+                  makerConflict: {
+                    summary: "Maker order concurrently modified",
+                    value: {
+                      code: "order_conflict",
+                      message:
+                        "Maker order ord_01j9z3k4p2q8r5t6u7v8w9x0y2 was concurrently modified; please retry",
+                      statusCode: 409,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "503": {
+            description:
+              "Matching engine disabled, or this API replica does not currently hold the matching leader lease (matching_unavailable — see docs/deployment-runbook.md#scaling-the-api--matching-leader-lease). Safe to retry against any replica.",
+            content: {
+              "application/json": {
+                examples: {
+                  notLeader: {
+                    summary: "Not the current matching leader",
+                    value: {
+                      code: "matching_unavailable",
+                      message:
+                        "This instance does not currently hold the matching leader lease",
+                      statusCode: 503,
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -473,10 +511,30 @@ export const openApiSpec = {
             description: "Order cancelled successfully",
           },
           "400": {
-            description: "Invalid order ID or order already filled/cancelled",
+            description:
+              "Invalid order ID, order does not belong to the caller, or order was already filled/cancelled at the time it was read",
           },
           "404": {
             description: "Order not found",
+          },
+          "409": {
+            description:
+              "Optimistic-concurrency conflict (order_conflict): the order was filled or cancelled by a concurrent request between this call's read and its version-conditioned UPDATE (Order.version). Distinct from 400 — the order was still cancellable when this request started but lost the race. Safe and expected to retry: re-fetch the order's current status; if it is now FILLED/CANCELLED, no further action is needed.",
+            content: {
+              "application/json": {
+                examples: {
+                  raceLost: {
+                    summary: "Order filled or cancelled concurrently",
+                    value: {
+                      code: "order_conflict",
+                      message:
+                        "Order was concurrently filled or cancelled; please retry",
+                      statusCode: 409,
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -899,7 +957,12 @@ export const openApiSpec = {
             name: "limit",
             in: "query",
             description: "Max events per page (default 100, max 1000)",
-            schema: { type: "integer", minimum: 1, maximum: 1000, default: 100 },
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 1000,
+              default: 100,
+            },
           },
           {
             name: "offset",
