@@ -238,6 +238,8 @@ describe("validateAndResolveStellarConfig", () => {
         },
         "production"
       )
-    ).toThrow(/Missing:.*STELLAR_RPC_URL.*contract ID.*SOROBAN_NETWORK_PASSPHRASE/);
+    ).toThrow(
+      /Missing:.*STELLAR_RPC_URL.*contract ID.*SOROBAN_NETWORK_PASSPHRASE/
+    );
   });
 });

@@ -144,3 +144,86 @@ describe("parseApiEnv — ANALYTICS_DATABASE_URL (#743)", () => {
     ).toThrow("ANALYTICS_DATABASE_URL is not a valid URL");
   });
 });
+
+describe("parseApiEnv — DATABASE_STATEMENT_TIMEOUT_MS (#983)", () => {
+  it("defaults to 5000 when omitted", () => {
+    const env = parseApiEnv(VALID_ENV);
+    expect(env.DATABASE_STATEMENT_TIMEOUT_MS).toBe(5_000);
+  });
+
+  it("is 5000 when set to an empty string", () => {
+    const env = parseApiEnv({
+      ...VALID_ENV,
+      DATABASE_STATEMENT_TIMEOUT_MS: "",
+    });
+    expect(env.DATABASE_STATEMENT_TIMEOUT_MS).toBe(5_000);
+  });
+
+  it("parses a configured timeout", () => {
+    const env = parseApiEnv({
+      ...VALID_ENV,
+      DATABASE_STATEMENT_TIMEOUT_MS: "1500",
+    });
+    expect(env.DATABASE_STATEMENT_TIMEOUT_MS).toBe(1_500);
+  });
+
+  it("throws on a non-integer value", () => {
+    expect(() =>
+      parseApiEnv({ ...VALID_ENV, DATABASE_STATEMENT_TIMEOUT_MS: "abc" })
+    ).toThrow("DATABASE_STATEMENT_TIMEOUT_MS");
+  });
+
+  it("throws on a non-positive value", () => {
+    expect(() =>
+      parseApiEnv({ ...VALID_ENV, DATABASE_STATEMENT_TIMEOUT_MS: "0" })
+    ).toThrow("DATABASE_STATEMENT_TIMEOUT_MS");
+  });
+});
+
+describe("parseApiEnv — ADMIN_TOKEN single source of truth (#984)", () => {
+  it("is undefined when omitted", () => {
+    const env = parseApiEnv(VALID_ENV);
+    expect(env.ADMIN_TOKEN).toBeUndefined();
+  });
+
+  it("is undefined when set to an empty string", () => {
+    const env = parseApiEnv({ ...VALID_ENV, ADMIN_TOKEN: "" });
+    expect(env.ADMIN_TOKEN).toBeUndefined();
+  });
+
+  it("passes a non-empty value through in development", () => {
+    const env = parseApiEnv({ ...VALID_ENV, ADMIN_TOKEN: "local-stub-token" });
+    expect(env.ADMIN_TOKEN).toBe("local-stub-token");
+  });
+
+  it("tolerates a non-empty value in test", () => {
+    const env = parseApiEnv({
+      ...VALID_ENV,
+      NODE_ENV: "test",
+      ADMIN_TOKEN: "local-stub-token",
+    });
+    expect(env.ADMIN_TOKEN).toBe("local-stub-token");
+  });
+
+  it("is a hard startup failure when non-empty and NODE_ENV=production", () => {
+    expect(() =>
+      parseApiEnv({
+        ...VALID_ENV,
+        NODE_ENV: "production",
+        ADMIN_TOKEN: "should-not-ship",
+      })
+    ).toThrow("ADMIN_TOKEN must not be set when NODE_ENV=production");
+  });
+
+  it("allows production boot when ADMIN_TOKEN is unset", () => {
+    const env = parseApiEnv({ ...VALID_ENV, NODE_ENV: "production" });
+    expect(env.ADMIN_TOKEN).toBeUndefined();
+    expect(env.NODE_ENV).toBe("production");
+  });
+
+  it("allows production boot when ADMIN_TOKEN is an empty string", () => {
+    expect(() =>
+      parseApiEnv({ ...VALID_ENV, NODE_ENV: "production", ADMIN_TOKEN: "" })
+    ).not.toThrow();
+  });
+});

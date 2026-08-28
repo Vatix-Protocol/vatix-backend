@@ -52,9 +52,32 @@ export interface OutboxRow {
   attempts: number;
 }
 
-function backoffMs(attempts: number): number {
-  const delay = DEFAULT_BASE_BACKOFF_MS * 2 ** attempts;
-  return Math.min(delay, DEFAULT_MAX_BACKOFF_MS);
+/**
+ * Capped exponential backoff with **equal jitter** (#982).
+ *
+ * Without jitter, every publisher that failed during the same Redis blip
+ * retries on an identical schedule and stampedes Redis the moment it recovers
+ * — a thundering herd that can knock it straight back over, silently stalling
+ * trade/resolution/admin settlement. Equal jitter keeps half the delay
+ * deterministic (so backoff still grows monotonically in expectation) and
+ * randomises the other half, spreading a fleet's retries across the
+ * `[capped/2, capped]` window instead of a single instant.
+ *
+ * @param attempts - retry count so far (0-based)
+ * @param rng - injectable `[0, 1)` source; defaults to `Math.random`. Tests
+ *   pass a deterministic stub.
+ * @returns delay in whole milliseconds, never exceeding DEFAULT_MAX_BACKOFF_MS
+ */
+export function backoffMs(
+  attempts: number,
+  rng: () => number = Math.random
+): number {
+  const capped = Math.min(
+    DEFAULT_BASE_BACKOFF_MS * 2 ** attempts,
+    DEFAULT_MAX_BACKOFF_MS
+  );
+  const half = capped / 2;
+  return Math.round(half + rng() * half);
 }
 
 /**

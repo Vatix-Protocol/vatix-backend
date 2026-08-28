@@ -95,6 +95,9 @@
       "prettier --write",
       "tsc-files --noEmit"
     ],
+    "{apps,packages}/**/*.ts": [
+      "tsc-files -p apps/tsconfig.json --noEmit"
+    ],
     "*.{js,json,md,yml,yaml}": [
       "prettier --write"
     ],

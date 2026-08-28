@@ -1,5 +1,10 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
-import { db, DatabaseService, DatabaseMetrics } from "./database";
+import {
+  db,
+  DatabaseService,
+  DatabaseMetrics,
+  StatementTimeoutError,
+} from "./database";
 import { disconnectPrisma, getPrismaClient } from "./prisma";
 
 describe("DatabaseService", () => {
@@ -198,6 +203,122 @@ describe("DatabaseService", () => {
         totalConnections: 0,
         idleConnections: 0,
         waitingRequests: 0,
+      });
+    });
+  });
+
+  describe("withStatementTimeout (#983)", () => {
+    function mockPrismaWithTx() {
+      const executeRawUnsafe = vi.fn().mockResolvedValue(0);
+      const tx = { $executeRawUnsafe: executeRawUnsafe };
+      const $transaction = vi.fn(
+        async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx)
+      );
+      return { executeRawUnsafe, tx, mockPrisma: { $transaction } };
+    }
+
+    async function withMockedPrisma<T>(
+      mockPrisma: unknown,
+      run: (service: DatabaseService) => Promise<T>
+    ): Promise<T> {
+      const prismaModule = await import("./prisma");
+      vi.spyOn(prismaModule, "getPrismaClient").mockReturnValue(
+        mockPrisma as unknown as ReturnType<typeof prismaModule.getPrismaClient>
+      );
+      return run(new DatabaseService());
+    }
+
+    it("rejects a non-positive timeout without opening a transaction", async () => {
+      const { mockPrisma } = mockPrismaWithTx();
+      await withMockedPrisma(mockPrisma, async (service) => {
+        await expect(
+          service.withStatementTimeout(async () => "unused", 0)
+        ).rejects.toThrow(TypeError);
+        expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+      });
+    });
+
+    it("rejects a non-finite timeout", async () => {
+      const { mockPrisma } = mockPrismaWithTx();
+      await withMockedPrisma(mockPrisma, async (service) => {
+        await expect(
+          service.withStatementTimeout(async () => "unused", Number.NaN)
+        ).rejects.toThrow(TypeError);
+      });
+    });
+
+    it("sets a per-transaction statement_timeout and returns the operation result", async () => {
+      const { executeRawUnsafe, tx, mockPrisma } = mockPrismaWithTx();
+      const result = await withMockedPrisma(mockPrisma, (service) =>
+        service.withStatementTimeout(async (client) => {
+          expect(client).toBe(tx);
+          return ["market-a", "market-b"];
+        }, 1234)
+      );
+
+      expect(result).toEqual(["market-a", "market-b"]);
+      expect(executeRawUnsafe).toHaveBeenCalledWith(
+        "SET LOCAL statement_timeout = 1234"
+      );
+    });
+
+    it("floors a fractional timeout before interpolating it into SQL", async () => {
+      const { executeRawUnsafe, mockPrisma } = mockPrismaWithTx();
+      await withMockedPrisma(mockPrisma, (service) =>
+        service.withStatementTimeout(async () => null, 999.9)
+      );
+      expect(executeRawUnsafe).toHaveBeenCalledWith(
+        "SET LOCAL statement_timeout = 999"
+      );
+    });
+
+    it("translates a Postgres 57014 cancellation into StatementTimeoutError", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const { tx, mockPrisma } = mockPrismaWithTx();
+      const pgError = Object.assign(
+        new Error("canceling statement due to statement timeout"),
+        {
+          code: "57014",
+        }
+      );
+      tx.$executeRawUnsafe.mockResolvedValue(0);
+
+      await withMockedPrisma(mockPrisma, async (service) => {
+        const promise = service.withStatementTimeout(async () => {
+          throw pgError;
+        }, 250);
+        await expect(promise).rejects.toBeInstanceOf(StatementTimeoutError);
+        await expect(promise).rejects.toMatchObject({ timeoutMs: 250 });
+      });
+    });
+
+    it("detects a 57014 code nested under error.cause", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const { mockPrisma } = mockPrismaWithTx();
+      const wrapped = Object.assign(new Error("raw query failed"), {
+        cause: Object.assign(new Error("timeout"), { code: "57014" }),
+      });
+
+      await withMockedPrisma(mockPrisma, async (service) => {
+        await expect(
+          service.withStatementTimeout(async () => {
+            throw wrapped;
+          }, 100)
+        ).rejects.toBeInstanceOf(StatementTimeoutError);
+      });
+    });
+
+    it("passes non-timeout errors through unchanged", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      const { mockPrisma } = mockPrismaWithTx();
+      const other = new Error("unique constraint violation");
+
+      await withMockedPrisma(mockPrisma, async (service) => {
+        await expect(
+          service.withStatementTimeout(async () => {
+            throw other;
+          }, 100)
+        ).rejects.toBe(other);
       });
     });
   });

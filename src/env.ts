@@ -129,6 +129,44 @@ export const apiEnvSchema = z.object({
   ),
   ANALYTICS_DATABASE_URL: optionalPostgresUrlSchema("ANALYTICS_DATABASE_URL"),
   /**
+   * Per-transaction Postgres `statement_timeout` (ms) applied to unbounded
+   * read paths such as `GET /v1/markets` via
+   * `DatabaseService.withStatementTimeout` (#983). Bounds a pathological or
+   * unindexed query so it aborts instead of pinning a pool connection — and
+   * stalling the event loop behind it — indefinitely.
+   * Configured via DATABASE_STATEMENT_TIMEOUT_MS (default: 5000). An empty
+   * value is treated as unset and falls back to the default.
+   */
+  DATABASE_STATEMENT_TIMEOUT_MS: z.preprocess(
+    emptyToUndefined,
+    z.coerce
+      .number({
+        invalid_type_error:
+          "Environment variable DATABASE_STATEMENT_TIMEOUT_MS must be a positive integer",
+      })
+      .int(
+        "Environment variable DATABASE_STATEMENT_TIMEOUT_MS must be a positive integer"
+      )
+      .min(
+        1,
+        "Environment variable DATABASE_STATEMENT_TIMEOUT_MS must be a positive integer"
+      )
+      .default(5_000)
+  ),
+  /**
+   * @deprecated Static admin bearer token, superseded by the rotatable
+   * AdminIdentity model. Declared here so the value flows through this single
+   * Zod schema instead of being read ad-hoc from `process.env` in
+   * `src/config.ts` (#984 — one parser, no undeclared env).
+   *
+   * Production/dev split: in `NODE_ENV=production` a non-empty `ADMIN_TOKEN`
+   * is a hard startup failure (it is a fail-open auth path and must not
+   * ship); in development/test it is tolerated as a local stub. The
+   * production check lives in `parseApiEnv` so `apiEnvSchema` stays a plain
+   * object (its `.shape` is consumed by tooling and tests).
+   */
+  ADMIN_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  /**
    * Maximum request body size in bytes. Requests exceeding this are rejected
    * with 413 before any route handler runs. Defaults to 64 KB (65536 bytes).
    * See docs/body-limit.md.
@@ -141,7 +179,10 @@ export const apiEnvSchema = z.object({
           "Environment variable BODY_LIMIT_BYTES must be a positive integer",
       })
       .int("Environment variable BODY_LIMIT_BYTES must be a positive integer")
-      .min(1, "Environment variable BODY_LIMIT_BYTES must be a positive integer")
+      .min(
+        1,
+        "Environment variable BODY_LIMIT_BYTES must be a positive integer"
+      )
       .default(65_536)
   ),
 });
@@ -184,5 +225,19 @@ export function parseApiEnv(env: ApiEnvInput = process.env): ParsedApiEnv {
   if (!result.success) {
     throw new Error(formatZodError(result.error));
   }
-  return result.data;
+
+  const parsed = result.data;
+
+  // Production/dev split (#984): the deprecated static ADMIN_TOKEN is a
+  // fail-open auth path. Fail fast in production; allow it as a local stub
+  // in development/test.
+  if (parsed.NODE_ENV === "production" && parsed.ADMIN_TOKEN) {
+    throw new Error(
+      "ADMIN_TOKEN must not be set when NODE_ENV=production: it is a " +
+        "deprecated fail-open auth path. Use the AdminIdentity model for " +
+        "rotatable admin credentials."
+    );
+  }
+
+  return parsed;
 }

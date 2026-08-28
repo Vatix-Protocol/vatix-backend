@@ -3,14 +3,21 @@ set -e
 
 echo "🔍 Running pre-commit checks..."
 
-# Run lint-staged (TypeScript check + Prisma format)
+# Run lint-staged: Prettier + per-project tsc-files type-check + Prisma format.
+# Staged *.ts files under apps/ and packages/ are type-checked against
+# apps/tsconfig.json (baseUrl + curated includes), not just the src-oriented
+# root tsconfig — matching/auth type errors on those paths must not slip
+# through because the hook only knew about src/ (#985).
 ./node_modules/.bin/lint-staged
 
-# Lint apps and packages directories with prettier
-echo "🔍 Linting apps/ and packages/..."
+# Formatting regressions under apps/ and packages/ block the commit. This used
+# to be swallowed with `|| true`, so a malformed file could land silently (#985).
+echo "🔍 Checking apps/ and packages/ formatting..."
 if [ -d "apps" ] || [ -d "packages" ]; then
-  ./node_modules/.bin/prettier --check apps/ packages/ 2>/dev/null || \
-    (echo "⚠️  Some files in apps/ or packages/ need formatting. Run 'pnpm format' to fix." && false) || true
+  ./node_modules/.bin/prettier --check apps/ packages/ || {
+    echo "⚠️  Files in apps/ or packages/ need formatting. Run 'pnpm format' to fix."
+    exit 1
+  }
 fi
 
-echo "All checks passed!"
+echo "✅ All checks passed!"

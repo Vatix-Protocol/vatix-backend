@@ -7,15 +7,14 @@ const env = parseApiEnv();
 
 export type NodeEnv = typeof env.NODE_ENV;
 
-function requireString(name: string): string {
-  const raw = process.env[name];
-  if (!raw || raw.trim() === "") {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return raw.trim();
-}
+// Single source of truth (#984): every value below is read from the Zod-parsed
+// `env` object. This module must never touch `process.env` directly — that
+// would reintroduce a second, unvalidated parser. `src/config.test.ts` guards
+// this with a source scan.
 
-// Note: ADMIN_TOKEN is deprecated. Use AdminIdentity model for rotatable credentials.
+// Note: ADMIN_TOKEN is deprecated. Use AdminIdentity model for rotatable
+// credentials. It is declared in the schema (src/env.ts) and rejected outright
+// when NODE_ENV=production.
 
 export const config = {
   /**
@@ -52,11 +51,19 @@ export const config = {
   analyticsDatabaseUrl: env.ANALYTICS_DATABASE_URL,
   /**
    * @deprecated Use AdminIdentity model for rotatable credentials.
-   * Configured via ADMIN_TOKEN (legacy, no longer validated at startup).
+   * Read from the Zod-parsed `env` (#984) — never `process.env` — so the value
+   * passes through the single validated schema. Empty string when unset;
+   * `parseApiEnv` rejects a non-empty value outright when NODE_ENV=production.
    */
-  get adminToken(): string {
-    return process.env.ADMIN_TOKEN || "";
-  },
+  adminToken: env.ADMIN_TOKEN ?? "",
+  /**
+   * Per-transaction Postgres `statement_timeout` (ms) for unbounded read paths
+   * such as `GET /v1/markets`, applied via `DatabaseService.withStatementTimeout`
+   * (#983). A query that exceeds this is aborted by Postgres instead of pinning
+   * a pool connection indefinitely.
+   * Configured via DATABASE_STATEMENT_TIMEOUT_MS (default: 5000).
+   */
+  databaseStatementTimeoutMs: env.DATABASE_STATEMENT_TIMEOUT_MS,
   /**
    * Feature flag: whether the matching engine accepts and matches new orders (#744).
    * When false, startup order-book hydration is skipped and placeOrder()
