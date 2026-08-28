@@ -54,6 +54,42 @@ describe("signResolutionReport", () => {
   });
 });
 
+describe("domain separation (#978)", () => {
+  const TESTNET = "Test SDF Network ; September 2015";
+  const MAINNET = "Public Global Stellar Network ; September 2015";
+
+  it("a report signed for one network does not verify on another", () => {
+    const report = signResolutionReport(basePayload, SECRET, TESTNET);
+
+    expect(verifyResolutionReport(report, TESTNET)).toBe(true);
+    expect(verifyResolutionReport(report, MAINNET)).toBe(false);
+  });
+
+  it("changes the signature when the bound network changes", () => {
+    const onTestnet = signResolutionReport(basePayload, SECRET, TESTNET);
+    const onMainnet = signResolutionReport(basePayload, SECRET, MAINNET);
+
+    expect(onTestnet.signature).not.toBe(onMainnet.signature);
+  });
+
+  it("does not verify against the bare (pre-#978) message layout", () => {
+    const report = signResolutionReport(basePayload, SECRET, TESTNET);
+    const bare = JSON.stringify({
+      marketId: basePayload.marketId,
+      outcome: basePayload.outcome,
+      timestamp: basePayload.timestamp,
+    });
+    const keypair = Keypair.fromPublicKey(report.publicKey);
+
+    expect(
+      keypair.verify(
+        Buffer.from(bare, "utf8"),
+        Buffer.from(report.signature, "base64")
+      )
+    ).toBe(false);
+  });
+});
+
 describe("verifyResolutionReport", () => {
   it("returns true for a freshly signed report", () => {
     const report = signResolutionReport(basePayload, SECRET);

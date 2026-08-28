@@ -51,6 +51,13 @@ export const config = {
    */
   analyticsDatabaseUrl: env.ANALYTICS_DATABASE_URL,
   /**
+   * Max connections in the pg.Pool backing the read-only analytics Prisma
+   * client (#979). Independent of `databasePoolSize` so analytics load
+   * cannot starve the primary/matching pool.
+   * Configured via ANALYTICS_DATABASE_POOL_SIZE (default: 5).
+   */
+  analyticsDatabasePoolSize: env.ANALYTICS_DATABASE_POOL_SIZE,
+  /**
    * @deprecated Use AdminIdentity model for rotatable credentials.
    * Configured via ADMIN_TOKEN (legacy, no longer validated at startup).
    */

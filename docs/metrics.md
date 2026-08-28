@@ -26,21 +26,25 @@ GET /metrics
 
 ## Metrics
 
-| Metric                                                        | Type      | Description                                                                                                       |
-| ------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------- |
-| `vatix_process_*`, `vatix_nodejs_*`                           | various   | Default Node.js process/runtime metrics from `prom-client`.                                                       |
-| `vatix_orderbook_hydrated_markets`                            | gauge     | Number of `(market, outcome)` order books currently held in memory by the matching engine (#746).                 |
-| `vatix_matching_leader`                                       | gauge     | Whether this process currently holds the matching leader lease: `1` while held, `0` otherwise.                    |
-| `vatix_matching_lease_renew_failures_total`                   | counter   | Total failed matching leader lease acquire/renew attempts on this process.                                        |
-| `vatix_oracle_fail_closed_total`                              | counter   | Total times the oracle failed closed after all providers were unreachable (no report submitted on-chain).         |
-| `vatix_oracle_submission_ambiguous_total`                     | counter   | Total oracle on-chain submissions left in an ambiguous confirmation state (e.g. NOT_FOUND that may still confirm).|
-| `vatix_oracle_submission_confirmation_latency_ms`             | histogram | Milliseconds from oracle submission broadcast to on-chain confirmation.                                           |
-| `vatix_settlement_outbox_depth`                               | gauge     | Number of settlement outbox rows not yet PUBLISHED (PENDING + FAILED).                                            |
-| `vatix_settlement_outbox_lag_seconds`                         | gauge     | Age in seconds of the oldest unpublished settlement outbox row.                                                   |
-| `vatix_settlement_outbox_publish_failures_total`              | counter   | Total failed attempts to publish an outbox row to the settlement queue.                                           |
-| `vatix_settlement_outbox_orphaned_trades`                     | gauge     | Outbox rows that have failed to publish at least `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times (stalled settlement).   |
-| `vatix_settlement_outbox_quarantined_entries`                 | gauge     | Number of outbox entries currently in QUARANTINED status.                                                         |
-| `vatix_settlement_outbox_quarantine_transitions_total`        | counter   | Total outbox entries moved to QUARANTINED status due to exceeding retry budget.                                    |
+| Metric                                                 | Type      | Description                                                                                                                                                     |
+| ------------------------------------------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vatix_process_*`, `vatix_nodejs_*`                    | various   | Default Node.js process/runtime metrics from `prom-client`.                                                                                                     |
+| `vatix_orderbook_hydrated_markets`                     | gauge     | Number of `(market, outcome)` order books currently held in memory by the matching engine (#746).                                                               |
+| `vatix_matching_leader`                                | gauge     | Whether this process currently holds the matching leader lease: `1` while held, `0` otherwise.                                                                  |
+| `vatix_matching_lease_renew_failures_total`            | counter   | Total failed matching leader lease acquire/renew attempts on this process.                                                                                      |
+| `vatix_oracle_fail_closed_total`                       | counter   | Total times the oracle failed closed after all providers were unreachable (no report submitted on-chain).                                                       |
+| `vatix_oracle_submission_ambiguous_total`              | counter   | Total oracle on-chain submissions left in an ambiguous confirmation state (e.g. NOT_FOUND that may still confirm).                                              |
+| `vatix_oracle_submission_confirmation_latency_ms`      | histogram | Milliseconds from oracle submission broadcast to on-chain confirmation.                                                                                         |
+| `vatix_settlement_outbox_depth`                        | gauge     | Number of settlement outbox rows not yet PUBLISHED (PENDING + FAILED).                                                                                          |
+| `vatix_settlement_outbox_lag_seconds`                  | gauge     | Age in seconds of the oldest unpublished settlement outbox row.                                                                                                 |
+| `vatix_settlement_outbox_publish_failures_total`       | counter   | Total failed attempts to publish an outbox row to the settlement queue.                                                                                         |
+| `vatix_settlement_outbox_orphaned_trades`              | gauge     | Outbox rows that have failed to publish at least `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times (stalled settlement).                                                 |
+| `vatix_settlement_outbox_quarantined_entries`          | gauge     | Number of outbox entries currently in QUARANTINED status.                                                                                                       |
+| `vatix_settlement_outbox_quarantine_transitions_total` | counter   | Total outbox entries moved to QUARANTINED status due to exceeding retry budget.                                                                                 |
+| `vatix_settlement_lag`                                 | histogram | Distribution of settlement lag scores observed by admission control. Buckets: 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000. Use this for alerting (#981). |
+| `vatix_settlement_lag_current`                         | gauge     | Latest instantaneous settlement lag score. Dashboard signal only — alert on the `vatix_settlement_lag` histogram instead (#981).                                |
+| `vatix_orders_shed_total`                              | counter   | Total orders shed by admission control due to settlement lag.                                                                                                   |
+| `vatix_admission_shedding`                             | gauge     | `1` while admission control is shedding order traffic, `0` otherwise.                                                                                           |
 
 ### `vatix_orderbook_hydrated_markets`
 
@@ -86,6 +90,32 @@ The settlement outbox metrics track the transactional outbox pattern used by
   after exhausting the retry budget.
 - **`vatix_settlement_outbox_quarantine_transitions_total`** — cumulative count
   of entries that entered QUARANTINED status.
+
+### `vatix_settlement_lag` (histogram) vs `vatix_settlement_lag_current` (gauge) — #981
+
+Admission control (`src/api/middleware/admissionControl.ts`) samples a
+settlement lag score on each order request and feeds it to
+`src/services/lag-metrics.ts`. That score is published **twice, as two metric
+types**, because they answer different questions:
+
+- **`vatix_settlement_lag_current`** (gauge) is a single sampled point. It is
+  fine on a dashboard graph, but a Grafana alert rule on a raw gauge either
+  flaps on brief spikes or misses sustained elevation that happens to fall
+  between scrapes. Do not page on it.
+- **`vatix_settlement_lag`** (histogram) records the _distribution_ of scores
+  over time. Alert on a rolling quantile or average, which is stable under
+  scrape jitter:
+
+  ```promql
+  # p90 lag over the last 5 minutes exceeds the shed threshold
+  histogram_quantile(0.9, sum(rate(vatix_settlement_lag_bucket[5m])) by (le)) > 500
+
+  # moving-average lag over the last 5 minutes
+  rate(vatix_settlement_lag_sum[5m]) / rate(vatix_settlement_lag_count[5m])
+  ```
+
+Pairing rule of thumb: **gauge for "what is it right now" panels, histogram
+for "has it been bad for a while" alerts.**
 
 ## Adding a new metric
 
