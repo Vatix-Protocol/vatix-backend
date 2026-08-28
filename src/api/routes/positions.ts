@@ -434,9 +434,13 @@ export default async function positionsRouter(server: FastifyInstance) {
       }>,
       reply: FastifyReply
     ) => {
-      const { wallet, marketId } = request.params;
+      const { wallet: rawWallet, marketId } = request.params;
       const prisma = getPrismaClient();
 
+      // Sanitize before validation — strip whitespace, uppercase, remove
+      // control characters — exactly as the list route does so both routes
+      // enforce identical identity normalisation.
+      const wallet = sanitizeUserAddress(rawWallet) ?? "";
       const addressError = validateUserAddress(wallet);
       if (addressError) {
         throw new ValidationError(addressError);
