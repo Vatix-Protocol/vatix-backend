@@ -33,12 +33,12 @@ Vatix Backend is a monorepo of services that together power the Vatix prediction
 
 ## Service Boundaries
 
-| Module      | Directory       | Responsibility                                                                                                  |
-| ----------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| **API**     | `src/`          | HTTP server (Fastify). Handles order placement, market queries, position reads. Owns the CLOB matching engine.  |
-| **Indexer** | `apps/indexer/` | Polls Stellar network for on-chain events, parses them, and writes canonical records to PostgreSQL.             |
-| **Oracle**  | `apps/oracle/`  | Fetches external price/resolution data, signs reports, and submits them on-chain via the Stellar SDK.           |
-| **Workers** | `apps/workers/` | Queue consumers and scheduled jobs (e.g. settlement, expiry sweeps). Decoupled from the HTTP request lifecycle. |
+| Module      | Directory          | Responsibility                                                                                                                                               |
+| ----------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **API**     | `src/`             | HTTP server (Fastify). Handles order placement, market queries, position reads. Owns the CLOB matching engine.                                               |
+| **Indexer** | `apps/indexer/`    | Polls Stellar network for on-chain events, parses them, and writes canonical records to PostgreSQL.                                                          |
+| **Oracle**  | `apps/oracle/`     | Fetches external price/resolution data, signs reports, and submits them on-chain via the Stellar SDK.                                                        |
+| **Workers** | `apps/workers/`    | Queue consumers and scheduled jobs (e.g. settlement, expiry sweeps). Decoupled from the HTTP request lifecycle.                                              |
 | **Shared**  | `packages/shared/` | Cross-package types and utilities (logging, queue config, market lifecycle). TypeScript project references prevent direct imports across service boundaries. |
 
 ## Major Data Flows
@@ -84,9 +84,12 @@ Workers consume queue entries and perform background tasks such as trade settlem
 4. Workers pick up the candidate, apply the challenge window, and settle positions
 
 **Oracle failover policy (fail-closed).** The oracle service is configured with explicit timeouts and a failover strategy:
+
 - Primary provider timeout: `ORACLE_PRIMARY_TIMEOUT_MS` (default 30 seconds)
 - Fallback provider timeout: `ORACLE_FALLBACK_TIMEOUT_MS` (default 30 seconds)
-- If the primary provider times out or fails with a transient error (network failure, 5xx), the fallback provider is tried.
+- Provider retries use one shared budget: `maxRetries` means retries after the initial call (default `0`); each retry uses bounded exponential backoff and jitter.
+- In development and test, if the primary provider times out or fails with a transient error (network failure, 5xx), the fallback provider is tried.
+- In production (`NODE_ENV=production`), fallback is disabled and any primary failure fails closed immediately. No secondary off-chain result, stale value, or default value is accepted.
 - If the fallback also fails or times out, the oracle fails closed: no resolution is generated, and `vatix_oracle_fail_closed_total` is incremented. No trades are settled and no on-chain submission occurs until a provider becomes available again.
 - Non-transient errors (4xx, malformed responses) from the primary provider skip fallback and fail fast.
 - See `apps/oracle/oracle-service.ts` for implementation details and `apps/oracle/oracle-config.ts` for configuration.

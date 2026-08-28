@@ -61,7 +61,9 @@ export async function poll(): Promise<void> {
       })),
     }),
     logger,
-    enableFallback: true,
+    enableFallback: process.env.NODE_ENV !== "production",
+    primaryTimeoutMs: config.primaryTimeoutMs,
+    fallbackTimeoutMs: config.fallbackTimeoutMs,
   });
 
   if (!globalQueue) {

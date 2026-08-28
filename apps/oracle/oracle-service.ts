@@ -115,6 +115,7 @@ export class OracleService {
   constructor(config: OracleServiceConfig) {
     this.primaryAdapter = config.primaryAdapter;
     this.fallbackAdapter = config.fallbackAdapter;
+    const isProduction = process.env.NODE_ENV === "production";
     const noOpLogger: ILogger = {
       debug: () => {},
       info: () => {},
@@ -126,13 +127,16 @@ export class OracleService {
     this.submissionQueue = config.submissionQueue;
     this.enqueueCallback = config.enqueueCallback;
     this.config = {
-      enableFallback: true,
+      enableFallback: !isProduction,
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
       primaryTimeoutMs: DEFAULT_TIMEOUT_MS,
       fallbackTimeoutMs: DEFAULT_TIMEOUT_MS,
       retryConfig: { maxRetries: 0 },
       ...config,
     };
+    if (isProduction) {
+      this.config.enableFallback = false;
+    }
   }
 
   /**
@@ -145,11 +149,13 @@ export class OracleService {
    */
   async resolve(request: ResolutionRequest): Promise<ProviderResult> {
     this.metrics.totalAttempts++;
+    const requestId = request.marketId;
 
     try {
       // Attempt primary provider
       this.logger.info("Resolving market via primary provider", {
         marketId: request.marketId,
+        requestId,
       });
 
       const primaryRequest = {
@@ -164,6 +170,7 @@ export class OracleService {
           this.metrics.retryCount++;
           this.logger.warn("Primary provider retry", {
             marketId: request.marketId,
+            requestId,
             attempt,
             delayMs: Math.round(delay),
             error: error.message,
@@ -174,6 +181,7 @@ export class OracleService {
       this.metrics.primarySuccessCount++;
       this.logger.info("Primary provider resolved market", {
         marketId: request.marketId,
+        requestId,
         source: result.source,
       });
 
@@ -185,6 +193,7 @@ export class OracleService {
       this.metrics.primaryFailureCount++;
       this.logger.error("Primary provider failed", {
         marketId: request.marketId,
+        requestId,
         error:
           primaryError instanceof Error
             ? primaryError.message
@@ -219,18 +228,21 @@ export class OracleService {
   ): Promise<ProviderResult> {
     this.logger.warn("Falling back to secondary provider", {
       marketId: request.marketId,
+      requestId: request.marketId,
     });
 
     try {
       const fallbackRequest = {
         ...request,
-        timeoutMs: this.config.fallbackTimeoutMs ?? this.config.defaultTimeoutMs,
+        timeoutMs:
+          this.config.fallbackTimeoutMs ?? this.config.defaultTimeoutMs,
       };
 
       const result = await this.fallbackAdapter.resolve(fallbackRequest);
       this.metrics.fallbackUsageCount++;
       this.logger.info("Fallback provider resolved market", {
         marketId: request.marketId,
+        requestId: request.marketId,
         source: result.source,
       });
 
@@ -245,6 +257,7 @@ export class OracleService {
       this.logger.error("All providers unreachable — total provider outage", {
         event: "oracle.total_outage",
         marketId: request.marketId,
+        requestId: request.marketId,
         primaryFailureCount: this.metrics.primaryFailureCount,
         fallbackFailureCount: this.metrics.fallbackFailureCount,
         error:
@@ -344,6 +357,7 @@ export class OracleService {
     } catch (error) {
       this.logger.error("Failed to enqueue resolution for submission", {
         marketId: request.marketId,
+        requestId: request.marketId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
