@@ -1,6 +1,38 @@
 import { describe, it, expect } from "vitest";
 import { Decimal } from "@prisma/client/runtime/client.js";
-import { amountRawToDecimal, COLLATERAL_SCALE } from "./decimalUtils.js";
+import {
+  amountRawToDecimal,
+  decimalToAmountRaw,
+  sharesRawToInt,
+  COLLATERAL_SCALE,
+} from "./decimalUtils.js";
+
+/**
+ * Deterministic PRNG (mulberry32) so the fuzz runs below explore a wide,
+ * reproducible input space instead of relying on Math.random (flaky CI
+ * reruns would explore different values than a local failure).
+ */
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function randomBigintUpTo(rand: () => number, maxExclusive: bigint): bigint {
+  // Build a random bigint by sampling digit-by-digit magnitude, biased
+  // toward exploring the full range including near-boundary values.
+  const bits = maxExclusive.toString(2).length;
+  let value = 0n;
+  for (let i = 0; i < bits; i++) {
+    value = (value << 1n) | (rand() < 0.5 ? 0n : 1n);
+  }
+  return value % (maxExclusive + 1n);
+}
 
 describe("amountRawToDecimal", () => {
   it("COLLATERAL_SCALE is 7", () => {
@@ -101,5 +133,99 @@ describe("amountRawToDecimal", () => {
     expect(
       amountRawToDecimal(" 10000000 ").equals(new Decimal("1.0000000"))
     ).toBe(true);
+  });
+});
+
+// ─── #948: fuzz coverage ──────────────────────────────────────────────────────
+//
+// `vatix-contract/test-vectors/share-math.json` — the on-chain contract's
+// own share-math fixtures — is not vendored into this repository (verified:
+// no `vatix-contract` directory exists in this tree), so these utilities
+// cannot be asserted against the contract's literal test vectors today.
+// Instead we fuzz the documented invariants (round-trip losslessness, exact
+// boundary behavior) across a wide, reproducible input space. If the
+// contract fixtures become available, load `share-math.json` here directly
+// alongside (not instead of) this fuzz coverage.
+
+describe("decimalToAmountRaw (#948)", () => {
+  it("is the exact inverse of amountRawToDecimal for a fixed seeded fuzz run", () => {
+    const rand = mulberry32(0xc0ffee);
+    const MAX_RAW = 9_999_999_999_990_000_000n;
+
+    for (let i = 0; i < 500; i++) {
+      const raw = randomBigintUpTo(rand, MAX_RAW);
+      const decimal = amountRawToDecimal(raw);
+      expect(decimalToAmountRaw(decimal)).toBe(raw);
+    }
+  });
+
+  it("round-trips every explicit boundary value", () => {
+    const boundaries = [
+      0n,
+      1n,
+      9_999_999n,
+      10_000_000n,
+      9_999_999_999_990_000_000n, // MAX_RAW
+    ];
+    for (const raw of boundaries) {
+      expect(decimalToAmountRaw(amountRawToDecimal(raw))).toBe(raw);
+    }
+  });
+
+  it("throws RangeError when the decimal carries more than 7 fractional digits", () => {
+    expect(() => decimalToAmountRaw("1.00000001")).toThrow(RangeError);
+  });
+
+  it("throws RangeError when the decimal exceeds the Decimal(20,8) range", () => {
+    expect(() => decimalToAmountRaw("1000000000000")).toThrow(RangeError);
+  });
+
+  it("accepts plain numbers and Decimal instances, not just strings", () => {
+    expect(decimalToAmountRaw(1)).toBe(10_000_000n);
+    expect(decimalToAmountRaw(new Decimal("0.5"))).toBe(5_000_000n);
+  });
+});
+
+describe("sharesRawToInt (#948)", () => {
+  it("passes through whole share counts unscaled (shares are not fixed-point on-chain)", () => {
+    expect(sharesRawToInt(100n)).toBe(100);
+    expect(sharesRawToInt("100")).toBe(100);
+    expect(sharesRawToInt(0n)).toBe(0);
+  });
+
+  it("round-trips a fixed seeded fuzz run across the safe-integer range", () => {
+    const rand = mulberry32(0x5eed);
+    const MAX = BigInt(Number.MAX_SAFE_INTEGER);
+
+    for (let i = 0; i < 500; i++) {
+      const raw = randomBigintUpTo(rand, MAX);
+      expect(sharesRawToInt(raw)).toBe(Number(raw));
+      expect(Number.isInteger(sharesRawToInt(raw))).toBe(true);
+    }
+  });
+
+  it("accepts exactly Number.MAX_SAFE_INTEGER", () => {
+    expect(sharesRawToInt(BigInt(Number.MAX_SAFE_INTEGER))).toBe(
+      Number.MAX_SAFE_INTEGER
+    );
+  });
+
+  it("throws RangeError one past Number.MAX_SAFE_INTEGER instead of silently losing precision", () => {
+    const tooBig = BigInt(Number.MAX_SAFE_INTEGER) + 1n;
+    expect(() => sharesRawToInt(tooBig)).toThrow(RangeError);
+    expect(() => sharesRawToInt(tooBig)).toThrow(
+      "exceeds Number.MAX_SAFE_INTEGER"
+    );
+  });
+
+  it("throws RangeError for negative quantities", () => {
+    expect(() => sharesRawToInt(-1n)).toThrow(RangeError);
+    expect(() => sharesRawToInt("-5")).toThrow(RangeError);
+  });
+
+  it("throws RangeError for non-integer strings", () => {
+    expect(() => sharesRawToInt("1.5")).toThrow(RangeError);
+    expect(() => sharesRawToInt("abc")).toThrow(RangeError);
+    expect(() => sharesRawToInt("")).toThrow(RangeError);
   });
 });

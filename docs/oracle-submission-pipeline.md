@@ -221,7 +221,10 @@ submission converges on one row instead of inserting a new one per retry:
   worker calls `reconcileInFlightSubmissions()`, which re-checks every
   `SUBMITTED` row against the chain and resolves it to `CONFIRMED` or clears
   it for retry. This is what recovers a submission left ambiguous by a
-  crash in the previous process.
+  crash in the previous process. One row failing its chain check (e.g. a
+  transient RPC error) is logged and counted as ambiguous but never aborts
+  the pass — every other in-flight row is still reconciled (#949; see
+  `apps/workers/src/oracle/submission-reconciliation.test.ts`).
 - **Idempotent short-circuit.** If a redelivered submission's row is already
   `CONFIRMED`, the worker acknowledges the queue message without touching
   the chain at all.
@@ -394,7 +397,7 @@ Example failure log:
    ```bash
    redis-cli -u $REDIS_URL LLEN oracle-submissions
    # Should show number of pending jobs
-   
+
    # Or via redis-cli with BullMQ key pattern:
    redis-cli KEYS "oracle-submissions:*" | wc -l
    ```
@@ -404,7 +407,7 @@ Example failure log:
    ```bash
    # List failed jobs
    redis-cli LRANGE oracle-submissions:failed 0 -1
-   
+
    # Count completed jobs
    redis-cli LLEN oracle-submissions:completed
    ```
