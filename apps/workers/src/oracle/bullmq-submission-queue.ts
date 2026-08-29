@@ -15,7 +15,7 @@ import {
   DEFAULT_JOB_OPTIONS,
   redisConnectionFromEnv,
   submissionQueueName,
-} from "../../../packages/shared/src/queue-config.js";
+} from "../../../../packages/shared/src/queue-config.js";
 
 function payloadHash(item: SubmissionQueueItem): string {
   return createHash("sha256")
