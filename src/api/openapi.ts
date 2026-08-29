@@ -892,8 +892,13 @@ export const openApiSpec = {
       post: {
         summary: "Verify audit trail hash chain",
         description:
-          "Verify hash chain integrity and detect tampering for a market's " +
-          "audit trail. Requires API key and admin auth.",
+          "Verify hash chain integrity for a market's audit trail. Requires " +
+          "API key and admin auth. Detects payload tampering (`mismatchCount`) " +
+          "and — issue #952 — broken chain links from deleted or expired " +
+          "archived rows (`gapCount`). Each error carries `kind`: " +
+          "`hash_mismatch`, `chain_gap`, or `genesis`. A non-zero `gapCount` " +
+          "increments `vatix_audit_chain_gap_total` and, in production, logs " +
+          "at error level.",
         tags: ["Admin", "Audit"],
         security: [{ ApiKeyAuth: [], BearerAuth: [] }],
         requestBody: {

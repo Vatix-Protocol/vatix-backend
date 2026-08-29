@@ -17,7 +17,13 @@ interface ChainVerificationResponse {
   valid: boolean;
   totalEvents: number;
   mismatchCount: number;
-  errors: Array<{ streamId: string; reason: string }>;
+  /**
+   * Broken chain links — a prevHash that does not match the preceding
+   * entryHash, i.e. an archived row that was deleted or expired (issue #952).
+   * A non-zero value means the chain can no longer prove completeness.
+   */
+  gapCount: number;
+  errors: Array<{ streamId: string; reason: string; kind: string }>;
   verifiedAt: string;
 }
 
@@ -100,6 +106,7 @@ export async function auditVerificationRoutes(
         valid: result.valid,
         totalEvents: result.totalEvents,
         mismatchCount: result.mismatchCount,
+        gapCount: result.gapCount,
         errors: result.errors,
         verifiedAt: new Date().toISOString(),
       };
