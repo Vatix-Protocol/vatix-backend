@@ -841,21 +841,32 @@ pm2 restart settlement-worker
 
 **B. Re-run failed jobs once the root cause is fixed**
 
-BullMQ jobs must be retried through the API (not by editing Redis keys
-directly) so retry counters and locks stay consistent:
+Use the DLQ CLI (issue #953) — it retries jobs through BullMQ so retry
+counters and locks stay consistent, and never needs raw `redis-cli`.
+`--queue` takes the alias `settlement` or `oracle`.
 
 ```bash
-node -e '
-const { Queue } = require("bullmq");
-const q = new Queue("vatix:settlement-trades", { connection: { url: process.env.REDIS_URL } });
-(async () => {
-  const failed = await q.getFailed(0, 50);
-  for (const job of failed) await job.retry();
-  console.log(`retried ${failed.length} jobs`);
-  await q.close();
-})();
-'
+# See what is dead-lettered
+pnpm dlq stats --queue settlement
+pnpm dlq list  --queue settlement --limit 50
+
+# Preview, then retry the whole failed set (production needs --yes)
+pnpm dlq retry-all --queue settlement --limit 50 --dry-run
+pnpm dlq retry-all --queue settlement --limit 50 --yes
+
+# One job at a time
+pnpm dlq retry   --queue oracle --job <jobId>
+pnpm dlq discard --queue oracle --job <jobId> --yes   # permanent — only for confirmed poison
 ```
+
+`retry-all` reports per-job failures without aborting the batch and exits
+non-zero if any job could not be retried. For a non-retryable poison job,
+`discard` after you have captured its payload from `pnpm dlq list`.
+
+> The older `pnpm replay:dlq` script drains a _different_ store — the raw
+> `vatix:dead-letter:*` Redis streams written for messages rejected as
+> non-retryable before they ever entered BullMQ. It does not touch the
+> BullMQ `failed` set.
 
 **C. Escalate to manual settlement (last resort)**
 
