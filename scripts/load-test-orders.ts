@@ -35,19 +35,32 @@
 
 import { Keypair } from "@stellar/stellar-sdk";
 import { buildSignableMessage } from "../src/api/middleware/stellarAuth.js";
+import {
+  TICK_SIZE,
+  assertLocalTarget,
+  evaluateSlo,
+  log,
+  roundToTick,
+  summarize,
+  type LoadTestSummary,
+  type OrderRequestResult,
+} from "./load-test-orders.lib.js";
+
+export {
+  assertLocalTarget,
+  evaluateSlo,
+  percentile,
+  roundToTick,
+  summarize,
+  type LoadTestSummary,
+  type OrderRequestResult,
+  type SloResult,
+  type SloThresholds,
+} from "./load-test-orders.lib.js";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-
-const TICK_SIZE = 0.01;
-const LOCAL_HOSTNAMES = new Set([
-  "localhost",
-  "127.0.0.1",
-  "0.0.0.0",
-  "::1",
-  "api", // docker-compose service name, reachable from other compose services
-]);
 
 interface CliOptions {
   baseUrl: string;
@@ -56,6 +69,26 @@ interface CliOptions {
   marketId?: string;
   traderCount: number;
   allowRemote: boolean;
+  /**
+   * SLO gate: max acceptable p95 latency (ms). When set, the run exits
+   * non-zero if the observed p95 exceeds it. Used by the CI nightly job.
+   */
+  maxP95Ms?: number;
+  /**
+   * SLO gate: min acceptable fraction of 201-Created responses (0..1),
+   * counting only requests that were not rate-limited (429).
+   */
+  minSuccessRate?: number;
+}
+
+function numericEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    throw new Error(`${name} must be a number, got "${raw}"`);
+  }
+  return value;
 }
 
 function parseArgs(): CliOptions {
@@ -66,6 +99,8 @@ function parseArgs(): CliOptions {
     durationSeconds: 30,
     traderCount: 20,
     allowRemote: false,
+    maxP95Ms: numericEnv("LOAD_TEST_MAX_P95_MS"),
+    minSuccessRate: numericEnv("LOAD_TEST_MIN_SUCCESS_RATE"),
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -87,6 +122,12 @@ function parseArgs(): CliOptions {
         break;
       case "--allow-remote":
         options.allowRemote = true;
+        break;
+      case "--max-p95-ms":
+        options.maxP95Ms = Number(args[++i]);
+        break;
+      case "--min-success-rate":
+        options.minSuccessRate = Number(args[++i]);
         break;
       case "-h":
       case "--help":
@@ -114,6 +155,20 @@ function parseArgs(): CliOptions {
       "--traders must be at least 2 (need both sides of a trade)"
     );
   }
+  if (
+    options.maxP95Ms !== undefined &&
+    (!Number.isFinite(options.maxP95Ms) || options.maxP95Ms <= 0)
+  ) {
+    throw new Error("--max-p95-ms must be a positive number");
+  }
+  if (
+    options.minSuccessRate !== undefined &&
+    (!Number.isFinite(options.minSuccessRate) ||
+      options.minSuccessRate < 0 ||
+      options.minSuccessRate > 1)
+  ) {
+    throw new Error("--min-success-rate must be between 0 and 1");
+  }
 
   return options;
 }
@@ -129,41 +184,13 @@ Options:
   --market-id <id>      Market to trade against (default: auto-discover an ACTIVE market)
   --traders <number>    Size of the synthetic trader pool (default: 20)
   --allow-remote        Bypass the localhost-only safety guard (do NOT use against prod/staging)
+  --max-p95-ms <n>      SLO gate: exit non-zero if observed p95 latency exceeds n ms
+  --min-success-rate <r> SLO gate: exit non-zero if the 201 rate (excluding 429s) is below r (0..1)
   -h, --help            Show this help
+
+Env: LOAD_TEST_BASE_URL, LOAD_TEST_MAX_P95_MS, LOAD_TEST_MIN_SUCCESS_RATE
+     (CI nightly job sets the two SLO gates so a capacity regression fails the build).
 `);
-}
-
-function log(
-  level: string,
-  message: string,
-  meta?: Record<string, unknown>
-): void {
-  console.log(
-    JSON.stringify({
-      ts: new Date().toISOString(),
-      level,
-      component: "load-test-orders",
-      message,
-      ...meta,
-    })
-  );
-}
-
-function assertLocalTarget(baseUrl: string, allowRemote: boolean): void {
-  const hostname = new URL(baseUrl).hostname;
-  if (LOCAL_HOSTNAMES.has(hostname)) return;
-
-  if (!allowRemote) {
-    throw new Error(
-      `Refusing to load-test non-local host "${hostname}". This script is ` +
-        `for local development only. If you really mean it, pass --allow-remote ` +
-        `— but never do this against a shared staging or production environment.`
-    );
-  }
-
-  log("warn", "⚠️  --allow-remote set: load-testing a non-local host", {
-    hostname,
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -180,10 +207,6 @@ function createTraders(count: number): Trader[] {
     const keypair = Keypair.random();
     return { publicKey: keypair.publicKey(), keypair };
   });
-}
-
-function roundToTick(price: number): number {
-  return Math.round(price / TICK_SIZE) * TICK_SIZE;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,12 +255,6 @@ async function waitForApi(baseUrl: string, timeoutMs = 30_000): Promise<void> {
 // ---------------------------------------------------------------------------
 // Order placement
 // ---------------------------------------------------------------------------
-
-interface OrderRequestResult {
-  status: number;
-  latencyMs: number;
-  error?: string;
-}
 
 async function placeOrder(
   baseUrl: string,
@@ -354,50 +371,25 @@ async function runLoadTest(
 // Reporting
 // ---------------------------------------------------------------------------
 
-function percentile(sortedLatencies: number[], p: number): number {
-  if (sortedLatencies.length === 0) return 0;
-  const index = Math.min(
-    sortedLatencies.length - 1,
-    Math.ceil((p / 100) * sortedLatencies.length) - 1
-  );
-  return sortedLatencies[Math.max(0, index)];
-}
+function report(
+  results: OrderRequestResult[],
+  options: CliOptions
+): LoadTestSummary {
+  const summary = summarize(results, options.durationSeconds);
 
-function report(results: OrderRequestResult[], options: CliOptions): void {
-  const byStatus = new Map<number, number>();
-  for (const r of results) {
-    byStatus.set(r.status, (byStatus.get(r.status) ?? 0) + 1);
-  }
+  log("info", "Load test complete", { ...summary });
 
-  const latencies = results
-    .filter((r) => r.status !== 0)
-    .map((r) => r.latencyMs)
-    .sort((a, b) => a - b);
-
-  const succeeded = byStatus.get(201) ?? 0;
-  const rateLimited = byStatus.get(429) ?? 0;
-  const achievedRps = results.length / options.durationSeconds;
-
-  log("info", "Load test complete", {
-    sent: results.length,
-    achievedRps: Number(achievedRps.toFixed(1)),
-    statusCounts: Object.fromEntries(byStatus),
-    succeeded,
-    rateLimited,
-    latencyMsP50: Number(percentile(latencies, 50).toFixed(1)),
-    latencyMsP95: Number(percentile(latencies, 95).toFixed(1)),
-    latencyMsP99: Number(percentile(latencies, 99).toFixed(1)),
-  });
-
-  if (rateLimited > 0) {
+  if (summary.rateLimited > 0) {
     log(
       "warn",
       "Requests were rate-limited (429). If you want to sustain the target " +
         "rps against the write endpoint, raise RATE_LIMIT_WRITE_MAX / " +
         "RATE_LIMIT_WRITE_WINDOW_MS on the target API for this local run only.",
-      { rateLimited }
+      { rateLimited: summary.rateLimited }
     );
   }
+
+  return summary;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,12 +413,37 @@ async function main(): Promise<void> {
   const traders = createTraders(options.traderCount);
 
   const results = await runLoadTest(options, marketId, traders);
-  report(results, options);
-}
+  const summary = report(results, options);
 
-void main().catch((error) => {
-  log("error", "Load test failed", {
-    error: error instanceof Error ? error.message : String(error),
+  const slo = evaluateSlo(summary, {
+    maxP95Ms: options.maxP95Ms,
+    minSuccessRate: options.minSuccessRate,
+  });
+
+  if (!slo.evaluated) return;
+
+  if (slo.passed) {
+    log("info", "SLO gates passed", {
+      capacityRps: summary.capacityRps,
+      latencyMsP95: summary.latencyMsP95,
+      successRate: summary.successRate,
+    });
+    return;
+  }
+
+  log("error", "SLO gates failed — load/capacity regression", {
+    violations: slo.violations,
+    capacityRps: summary.capacityRps,
   });
   process.exit(1);
-});
+}
+
+const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+if (isMainModule) {
+  void main().catch((error) => {
+    log("error", "Load test failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
+  });
+}

@@ -43,6 +43,7 @@
     "test:matching": "vitest run src/matching",
     "matching:test": "vitest run src/matching",
     "prepare": "husky install",
+    "engines:check": "tsx scripts/check-engines.ts",
     "generate:keypair": "tsx scripts/generate-keypair.ts",
     "load-test:orders": "tsx scripts/load-test-orders.ts",
     "replay:market": "tsx scripts/replay-market.ts",
@@ -51,7 +52,7 @@
   },
   "engines": {
     "node": ">=22.0.0",
-    "pnpm": ">=8.0.0",
+    "pnpm": ">=10.0.0",
     "npm": "please-use-pnpm",
     "yarn": "please-use-pnpm"
   },

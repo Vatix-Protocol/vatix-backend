@@ -190,6 +190,28 @@ RATE_LIMIT_WRITE_MAX=2000 RATE_LIMIT_WRITE_WINDOW_MS=1000 pnpm dev
 See the header comment in `scripts/load-test-orders.ts` for the full option
 list (`--url`, `--market-id`, `--traders`, etc.) and prerequisites.
 
+### SLO gates & the CI nightly job
+
+The run reports a **capacity number** — `capacityRps`, the sustained rate of
+accepted (`201`) orders — for tuning the admission-control watermarks
+(`SETTLEMENT_LAG_SHED_THRESHOLD` et al., see
+[ADMISSION_CONTROL_CONFIG.md](ADMISSION_CONTROL_CONFIG.md)), plus
+`successRate` (201s excluding 429s) and p50/p95/p99 latency.
+
+Two optional SLO gates make a regression fail loudly instead of silently:
+
+| Flag / env                                              | Effect                                               |
+| ------------------------------------------------------- | ---------------------------------------------------- |
+| `--max-p95-ms <n>` / `LOAD_TEST_MAX_P95_MS`             | Exit non-zero if observed p95 latency exceeds `n`ms  |
+| `--min-success-rate <r>` / `LOAD_TEST_MIN_SUCCESS_RATE` | Exit non-zero if the 201 rate drops below `r` (0..1) |
+
+With neither set (a local ad-hoc run) the gates are a no-op and the script
+always exits `0`. `.github/workflows/nightly-load-test.yml` runs this nightly
+(cron `0 3 * * *`) and on `workflow_dispatch`: it boots Postgres + Redis,
+seeds an ACTIVE market, starts the API, and runs
+`pnpm load-test:orders` with both gates set (defaults: p95 ≤ 1500ms,
+success rate ≥ 0.95). It never runs on pull requests.
+
 ## Graceful shutdown
 
 Every process registers `SIGINT`/`SIGTERM` handlers (see

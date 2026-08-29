@@ -36,17 +36,41 @@ interface Args {
   outcome?: Outcome;
   asOf: Date;
   sample?: number;
+  help?: boolean;
 }
 
-function parseArgs(): Args {
-  const args = process.argv.slice(2);
+export const HELP = `
+Deterministic order/trade replay & forensics CLI — reconstructs a book's fills.
+
+Usage:
+  pnpm replay:market -- --market <id> --outcome <YES|NO> [--as-of <iso-date>]
+  pnpm replay:market -- --sample <N>
+
+Options:
+  --market <id>       Market to replay
+  --outcome <YES|NO>  Which side of the market to replay
+  --as-of <iso-date>  Replay only orders/trades at or before this instant
+                      (default: now) — use the incident time for postmortems
+  --sample <N>        Instead of one market, replay N recent markets (both
+                      outcomes) and exit non-zero if any diverges
+  -h, --help          Show this help
+
+Requires DATABASE_URL (and REDIS_URL for the depth cross-check). Read-only:
+issues only Prisma reads and Redis GETs. Exit code 0 = replay matches ledger
+truth exactly, 1 = divergence or error. See docs/replay-forensics.md.
+`;
+
+export function parseArgs(argv: string[] = process.argv.slice(2)): Args {
+  const args = argv;
   let marketId: string | undefined;
   let outcome: Outcome | undefined;
   let asOf = new Date();
   let sample: number | undefined;
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--market" && args[i + 1]) {
+    if (args[i] === "-h" || args[i] === "--help") {
+      return { asOf, help: true };
+    } else if (args[i] === "--market" && args[i + 1]) {
       marketId = args[++i];
     } else if (args[i] === "--outcome" && args[i + 1]) {
       const value = args[++i].toUpperCase();
@@ -70,7 +94,7 @@ function parseArgs(): Args {
 
   if (sample === undefined && (!marketId || !outcome)) {
     throw new Error(
-      "Usage: replay-market.ts --market <id> --outcome <YES|NO> [--as-of <iso-date>]  OR  --sample <N>"
+      "Usage: pnpm replay:market -- --market <id> --outcome <YES|NO> [--as-of <iso-date>]  OR  --sample <N>  (see --help)"
     );
   }
 
@@ -269,6 +293,12 @@ async function replayMarketOutcome(
 
 async function main(): Promise<void> {
   const args = parseArgs();
+
+  if (args.help) {
+    console.log(HELP);
+    process.exit(0);
+  }
+
   const prisma = getPrismaClient();
   let exitCode = 0;
 
@@ -329,7 +359,10 @@ async function main(): Promise<void> {
   process.exit(exitCode);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+if (isMainModule) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

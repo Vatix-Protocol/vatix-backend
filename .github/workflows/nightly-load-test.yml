@@ -1,0 +1,126 @@
+name: Nightly Load Test (POST /v1/orders)
+
+# Issue #987: give admission-control watermark tuning a real capacity number,
+# and fail if throughput/latency regress. Runs nightly (and on demand); never
+# on PRs, so it can't gate day-to-day merges.
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      rps:
+        description: "Target requests per second"
+        required: false
+        default: "100"
+      duration:
+        description: "Sustained load duration (seconds)"
+        required: false
+        default: "30"
+      max_p95_ms:
+        description: "Fail if observed p95 latency exceeds this (ms)"
+        required: false
+        default: "1500"
+      min_success_rate:
+        description: "Fail if the 201 rate (excluding 429s) drops below this (0..1)"
+        required: false
+        default: "0.95"
+
+concurrency:
+  group: nightly-load-test
+  cancel-in-progress: true
+
+jobs:
+  load-test:
+    name: Load test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vatix
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+      REDIS_URL: redis://localhost:6379
+      NODE_ENV: development
+      ADMIN_TOKEN: nightly-load-test-token
+      MATCHING_LEASE_ENFORCED: "false"
+      # Single-IP load tests trip the write limiter almost immediately; raise it
+      # for this throwaway instance only (see scripts/load-test-orders.ts).
+      RATE_LIMIT_WRITE_MAX: "100000"
+      RATE_LIMIT_WRITE_WINDOW_MS: "1000"
+      LOAD_TEST_BASE_URL: http://localhost:3000
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Enforce engine parity (Node/pnpm)
+        run: pnpm engines:check
+
+      - name: Generate Prisma Client
+        run: pnpm prisma:generate
+
+      - name: Run migrations
+        run: pnpm prisma:deploy
+
+      - name: Seed an ACTIVE market
+        run: pnpm prisma:seed
+
+      - name: Start API
+        run: |
+          pnpm start > api.log 2>&1 &
+          echo "API_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Run load test with SLO gates
+        run: |
+          pnpm load-test:orders -- \
+            --rps "${{ github.event.inputs.rps || '100' }}" \
+            --duration "${{ github.event.inputs.duration || '30' }}" \
+            --max-p95-ms "${{ github.event.inputs.max_p95_ms || '1500' }}" \
+            --min-success-rate "${{ github.event.inputs.min_success_rate || '0.95' }}"
+
+      - name: Stop API
+        if: always()
+        run: kill "$API_PID" 2>/dev/null || true
+
+      - name: Upload API log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-log
+          path: api.log
+          if-no-files-found: ignore

@@ -31,18 +31,59 @@ engine would do" and "what actually got recorded" surfaces immediately.
 ## Usage
 
 ```bash
+# Show all flags
+pnpm replay:market -- --help
+
 # Single market + outcome, as of now
-npx tsx scripts/replay-market.ts --market <marketId> --outcome YES
+pnpm replay:market -- --market <marketId> --outcome YES
+# (equivalently: npx tsx scripts/replay-market.ts --market <marketId> --outcome YES)
 
 # As of a specific point in time (useful for incident postmortems)
-npx tsx scripts/replay-market.ts --market <marketId> --outcome NO --as-of 2026-07-29T00:00:00Z
+pnpm replay:market -- --market <marketId> --outcome NO --as-of 2026-07-29T00:00:00Z
 
 # Sample N markets (both outcomes) — for staging cron/continuous checks
-npx tsx scripts/replay-market.ts --sample 20
+pnpm replay:market -- --sample 20
 ```
+
+| Flag                  | Purpose                                                                |
+| --------------------- | ---------------------------------------------------------------------- |
+| `--market <id>`       | Market to replay                                                       |
+| `--outcome <YES\|NO>` | Which side of the market to replay                                     |
+| `--as-of <iso-date>`  | Replay only orders/trades at or before this instant (default: now)     |
+| `--sample <N>`        | Replay N recent markets (both outcomes); non-zero exit if any diverges |
+| `-h`, `--help`        | Print usage                                                            |
+
+Required env: `DATABASE_URL` (and `REDIS_URL` for the depth cross-check).
 
 Exit code is `0` when replay matches ledger truth (and the Redis snapshot, if
 present) exactly, `1` on any divergence or error.
+
+## Reconstructing a book's fills (incident recipe)
+
+When ops needs an order-id-level account of what a book actually did — e.g. a
+trader disputes a fill, or a matching incident is suspected:
+
+1. **Fix the window.** Note the incident start/end and the affected
+   `marketId`(s). Use the incident start as `--as-of` to replay the book as it
+   was at that moment.
+2. **Run the replay** for each affected `(marketId, outcome)` from an
+   environment that can reach the production DB read replica (the script only
+   issues reads, so it is safe against production):
+
+   ```bash
+   DATABASE_URL=... REDIS_URL=... \
+     pnpm replay:market -- --market <marketId> --outcome YES --as-of <incidentStart>
+   ```
+
+3. **Read the JSON report** it prints on stdout (schema below). Exit `0` means
+   the recorded fills are exactly what the engine would produce — the book
+   reconstructs cleanly. Exit `1` means divergence; every field is keyed by
+   order id.
+4. **Triage divergence** with the field guide under "Interpreting a divergence
+   report", checking `cancelAmbiguities` first (see "Known limitation: cancel
+   timing").
+5. **Attach the report** to the incident ticket / postmortem as the
+   authoritative fill reconstruction.
 
 The script is **read-only**: it only issues Prisma `findMany` reads and a
 Redis `GET` for the cached depth snapshot. It never writes to the database or
@@ -171,6 +212,7 @@ Verify hash chain integrity and detect tampering for a market's audit trail.
 **Authentication**: Requires admin API key and admin role.
 
 **Request**:
+
 ```json
 {
   "marketId": "market-123",
@@ -180,6 +222,7 @@ Verify hash chain integrity and detect tampering for a market's audit trail.
 ```
 
 **Response**:
+
 ```json
 {
   "marketId": "market-123",
@@ -204,5 +247,6 @@ Get archived audit events for a market with pagination.
 **Authentication**: Requires admin API key and admin role.
 
 **Query parameters**:
+
 - `limit`: Max events per page (default 100, max 1000)
 - `offset`: Skip N events (default 0)
