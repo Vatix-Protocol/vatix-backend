@@ -97,6 +97,16 @@ export class MarketNotActiveError extends AppError {
   }
 }
 
+export class MarketExpiredError extends AppError {
+  constructor(marketId: string, endTime: Date) {
+    super(
+      `Market ${marketId} ended at ${endTime.toISOString()}; new orders and matches are rejected`,
+      409,
+      "market_expired"
+    );
+  }
+}
+
 export class ContractError extends AppError {
   constructor(
     message = "Contract execution failed",
@@ -106,4 +116,3 @@ export class ContractError extends AppError {
     super(message, statusCode, code);
   }
 }
-

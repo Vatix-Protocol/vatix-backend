@@ -390,7 +390,7 @@ export const openApiSpec = {
           },
           "409": {
             description:
-              "A maker order this request would have matched against was concurrently filled or cancelled (optimistic-concurrency conflict on Order.version). Safe and expected to retry: re-submit the same order — it will match against current book state.",
+              "The order could not be accepted against current market state. `order_conflict`: a maker order this request would have matched was concurrently filled or cancelled (optimistic-concurrency conflict on Order.version) — safe and expected to retry. `market_not_active`: the market is RESOLVED or CANCELLED — do not retry. `market_expired` (issue #951): the market's trading window (`endTime`) has closed even though its status is still ACTIVE because the expiry worker has not yet caught up — do not retry.",
             content: {
               "application/json": {
                 examples: {
@@ -400,6 +400,25 @@ export const openApiSpec = {
                       code: "order_conflict",
                       message:
                         "Maker order ord_01j9z3k4p2q8r5t6u7v8w9x0y2 was concurrently modified; please retry",
+                      statusCode: 409,
+                    },
+                  },
+                  marketNotActive: {
+                    summary: "Market is resolved or cancelled",
+                    value: {
+                      code: "market_not_active",
+                      message:
+                        "Market mkt_01j9z3k4p2q8r5t6u7v8w9x0y2 is cancelled, orders cannot be placed",
+                      statusCode: 409,
+                    },
+                  },
+                  marketExpired: {
+                    summary:
+                      "Market trading window has closed (expiry worker lagging)",
+                    value: {
+                      code: "market_expired",
+                      message:
+                        "Market mkt_01j9z3k4p2q8r5t6u7v8w9x0y2 ended at 2026-08-29T12:00:00.000Z; new orders and matches are rejected",
                       statusCode: 409,
                     },
                   },
