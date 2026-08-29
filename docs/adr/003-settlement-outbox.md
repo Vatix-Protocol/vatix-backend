@@ -87,7 +87,10 @@ instead of always reading 0.
 ### Backoff, orphan detection, and quarantine
 
 `publishOutboxRow` uses capped exponential backoff (`1s * 2^attempts`, capped at 60s) on
-failure, tracked via `nextAttemptAt`.
+failure, tracked via `nextAttemptAt`. The delay carries **equal jitter** (#982): half of
+the capped value is fixed and the other half is randomised, so a fleet of publishers that
+all failed during the same Redis blip retry spread across a `[capped/2, capped]` window
+instead of stampeding Redis in lockstep the instant it recovers.
 
 **Orphan detection.** Rows that have failed at least `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times (default 5) are surfaced via the `vatix_settlement_outbox_orphaned_trades` gauge for alerting.
 
@@ -100,14 +103,14 @@ In production (`NODE_ENV=production`), quarantine is mandatory — a permanently
 All registered on the shared Prometheus registry (`src/services/metrics.ts`), scraped via
 `GET /metrics`:
 
-| Metric                                            | Type    | Meaning                                                          |
-| ------------------------------------------------- | ------- | ---------------------------------------------------------------- |
-| `vatix_settlement_outbox_depth`                   | Gauge   | Rows currently `PENDING` or `FAILED` (not yet published)         |
-| `vatix_settlement_outbox_lag_seconds`             | Gauge   | Age of the oldest unpublished row                                |
-| `vatix_settlement_outbox_publish_failures_total`  | Counter | Total failed publish attempts                                    |
-| `vatix_settlement_outbox_orphaned_trades`         | Gauge   | Rows that have failed ≥ `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times |
-| `vatix_settlement_outbox_quarantined_entries`     | Gauge   | Rows currently in `QUARANTINED` status                           |
-| `vatix_settlement_outbox_quarantine_transitions_total` | Counter | Total rows moved to `QUARANTINED` status                    |
+| Metric                                                 | Type    | Meaning                                                          |
+| ------------------------------------------------------ | ------- | ---------------------------------------------------------------- |
+| `vatix_settlement_outbox_depth`                        | Gauge   | Rows currently `PENDING` or `FAILED` (not yet published)         |
+| `vatix_settlement_outbox_lag_seconds`                  | Gauge   | Age of the oldest unpublished row                                |
+| `vatix_settlement_outbox_publish_failures_total`       | Counter | Total failed publish attempts                                    |
+| `vatix_settlement_outbox_orphaned_trades`              | Gauge   | Rows that have failed ≥ `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times |
+| `vatix_settlement_outbox_quarantined_entries`          | Gauge   | Rows currently in `QUARANTINED` status                           |
+| `vatix_settlement_outbox_quarantine_transitions_total` | Counter | Total rows moved to `QUARANTINED` status                         |
 
 Suggested alert: page when `vatix_settlement_outbox_lag_seconds` exceeds a few minutes, or when
 `vatix_settlement_outbox_orphaned_trades` is nonzero for an extended period — either indicates

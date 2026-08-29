@@ -216,7 +216,10 @@ export class FinalizationJob {
           // and the loser sees the post-commit status here and aborts.
           const locked = await lockResolutionCandidate(tx, candidate.id);
 
-          if (!locked || (locked.status !== "PROPOSED" && locked.status !== "CHALLENGED")) {
+          if (
+            !locked ||
+            (locked.status !== "PROPOSED" && locked.status !== "CHALLENGED")
+          ) {
             throw new CandidateNotEligibleError(
               candidate.id,
               locked?.status ?? "MISSING"

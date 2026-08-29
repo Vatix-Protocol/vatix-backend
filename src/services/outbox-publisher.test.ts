@@ -43,6 +43,7 @@ import {
   publishOutboxRow,
   drainOutboxOnce,
   refreshOutboxMetrics,
+  backoffMs,
   type OutboxRow,
 } from "./outbox-publisher.js";
 
@@ -322,5 +323,53 @@ describe("refreshOutboxMetrics", () => {
     await refreshOutboxMetrics(mockPrisma as any);
 
     expect(settlementOutboxLagSecondsGauge.set).toHaveBeenCalledWith(0);
+  });
+});
+
+describe("backoffMs — capped exponential backoff with equal jitter (#982)", () => {
+  const BASE = 1_000;
+  const MAX = 60_000;
+  const capped = (attempts: number) => Math.min(BASE * 2 ** attempts, MAX);
+
+  it("returns the lower half of the window when the jitter source yields 0", () => {
+    expect(backoffMs(0, () => 0)).toBe(capped(0) / 2);
+    expect(backoffMs(3, () => 0)).toBe(capped(3) / 2);
+  });
+
+  it("returns the full capped delay when the jitter source yields ~1", () => {
+    expect(backoffMs(0, () => 1)).toBe(capped(0));
+    expect(backoffMs(4, () => 1)).toBe(capped(4));
+  });
+
+  it("splits the delay evenly for a mid-range jitter sample", () => {
+    // half deterministic + half * 0.5 => 75% of the capped delay
+    expect(backoffMs(3, () => 0.5)).toBe(capped(3) * 0.75);
+  });
+
+  it("never exceeds the maximum backoff, even for large attempt counts", () => {
+    for (const rng of [() => 0, () => 0.5, () => 0.999999]) {
+      expect(backoffMs(50, rng)).toBeLessThanOrEqual(MAX);
+      expect(backoffMs(50, rng)).toBeGreaterThanOrEqual(MAX / 2);
+    }
+  });
+
+  it("grows monotonically (in the zero-jitter floor) until the cap", () => {
+    let previous = 0;
+    for (let attempts = 0; attempts <= 8; attempts++) {
+      const delay = backoffMs(attempts, () => 0);
+      expect(delay).toBeGreaterThanOrEqual(previous);
+      previous = delay;
+    }
+  });
+
+  it("spreads real retries across the jitter window instead of a single instant", () => {
+    const attempts = 4;
+    const lo = capped(attempts) / 2;
+    const hi = capped(attempts);
+    const samples = Array.from({ length: 500 }, () => backoffMs(attempts));
+
+    expect(new Set(samples).size).toBeGreaterThan(50);
+    expect(Math.min(...samples)).toBeGreaterThanOrEqual(lo);
+    expect(Math.max(...samples)).toBeLessThanOrEqual(hi);
   });
 });
