@@ -76,6 +76,22 @@ describe("GET /metrics (#745)", () => {
     );
   });
 
+  it("exposes settlement lag as a histogram for alerting (#981)", async () => {
+    const res = await server.inject({ method: "GET", url: "/metrics" });
+    expect(res.body).toContain("# TYPE vatix_settlement_lag histogram");
+  });
+
+  it("exposes the instantaneous lag gauge alongside the histogram (#981)", async () => {
+    const res = await server.inject({ method: "GET", url: "/metrics" });
+    expect(res.body).toContain("# TYPE vatix_settlement_lag_current gauge");
+  });
+
+  it("exposes admission-control shed counter and shedding gauge (#981)", async () => {
+    const res = await server.inject({ method: "GET", url: "/metrics" });
+    expect(res.body).toContain("# TYPE vatix_orders_shed_total counter");
+    expect(res.body).toContain("# TYPE vatix_admission_shedding gauge");
+  });
+
   it("is never rate-limited, unlike ordinary routes", async () => {
     let lastStatus = 200;
     for (let i = 0; i < 150; i++) {

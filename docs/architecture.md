@@ -83,6 +83,14 @@ Workers consume queue entries and perform background tasks such as trade settlem
 3. Indexer detects the on-chain event and writes a `ResolutionCandidate` to PostgreSQL
 4. Workers pick up the candidate, apply the challenge window, and settle positions
 
+**Event delivery is at-least-once.** The indexer event path (`EventProcessor`)
+may hand the same on-chain event to its handler more than once — after a
+restart, an in-memory-window eviction, or a ledger replay/reorg. Handlers
+(e.g. the one writing `ResolutionCandidate` rows) MUST be idempotent, and
+production deployments MUST back the processor with a durable idempotency
+store (a DB `UNIQUE` constraint on the event ID). See
+[Event Processor](event-processor.md).
+
 **Oracle failover policy (fail-closed).** The oracle service is configured with explicit timeouts and a failover strategy:
 
 - Primary provider timeout: `ORACLE_PRIMARY_TIMEOUT_MS` (default 30 seconds)

@@ -30,3 +30,12 @@ export { resolveCorsAllowedOrigins } from "./cors.js";
 
 export type { ErrorEnvelope, CreateErrorEnvelopeInput } from "./errors.js";
 export { createErrorEnvelope } from "./errors.js";
+
+export type { SigningDomain } from "./signingDomain.js";
+export {
+  SIGNING_DOMAINS,
+  STUB_NETWORK_PASSPHRASE,
+  SigningDomainConfigError,
+  resolveSigningNetworkPassphrase,
+  buildDomainSeparatedMessage,
+} from "./signingDomain.js";

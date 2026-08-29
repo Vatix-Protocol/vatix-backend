@@ -12,7 +12,38 @@ The data payload that is signed for a resolution report includes:
 
 ## Canonicalisation
 
-Before signing, the payload is converted into a deterministic canonical string. Keys are sorted so the same data always serializes identically.
+Before signing, the payload is wrapped in a **domain- and network-separated
+envelope** (#978) and that envelope is serialised to a deterministic canonical
+string. Keys are listed explicitly so the same data always serialises
+identically.
+
+### Domain separation (#978)
+
+The signature is computed over a wrapper object, never the bare payload:
+
+```json
+{
+  "domain": "vatix.oracle-resolution.v1",
+  "network": "<Stellar network passphrase>",
+  "payload": { "marketId": "...", "outcome": true, "timestamp": "..." }
+}
+```
+
+- **`domain`** is the constant string `vatix.oracle-resolution.v1`. The
+  off-chain order-receipt signer (`src/services/signing.ts`) uses a different
+  tag (`vatix.order-receipt.v1`), so an order-receipt signature can never be
+  replayed as an oracle-resolution signature or vice versa.
+- **`network`** is the active Stellar network passphrase
+  (`SOROBAN_NETWORK_PASSPHRASE`). A testnet signature therefore does not
+  verify on mainnet. In `NODE_ENV=production` this variable is **required** —
+  `signResolutionReport` / `verifyResolutionReport` throw
+  `SigningDomainConfigError` rather than fall back to the local stub
+  passphrase (`Test SDF Network ; September 2015`), which is used only outside
+  production. Callers may pass an explicit passphrase as the third argument to
+  override resolution.
+
+Shared implementation: `packages/shared/src/signingDomain.ts`
+(`buildDomainSeparatedMessage`, `resolveSigningNetworkPassphrase`).
 
 ## Message Bytes for Signers
 
@@ -22,14 +53,15 @@ External signers and verifiers (anyone re-implementing `signResolutionReport`/`v
 
 ### Exact construction
 
-1. Build a plain object with exactly these three keys, in exactly this order: `marketId` (string), `outcome` (boolean), `timestamp` (string, ISO-8601). No other keys, and no reordering — `JSON.stringify` on a plain object preserves insertion order for string keys, and the order here happens to also be alphabetical (`marketId` < `outcome` < `timestamp`), which is what "keys are sorted" above refers to.
-2. Serialize with `JSON.stringify`, exactly as Node's implementation does it: no extra whitespace, booleans as bare `true`/`false`, strings double-quoted with standard JSON escaping.
-3. Encode the resulting string as UTF-8. These bytes are the message.
-4. Sign those bytes with the Stellar/Ed25519 keypair (`keypair.sign(message)`), base64-encode the 64-byte signature, and pair it with the signer's Stellar public key (`G...`).
+1. Build the inner payload object with exactly these three keys, in exactly this order: `marketId` (string), `outcome` (boolean), `timestamp` (string, ISO-8601).
+2. Wrap it in the envelope object with exactly these three keys, in this order: `domain` (the constant `"vatix.oracle-resolution.v1"`), `network` (the Stellar network passphrase string), `payload` (the object from step 1).
+3. Serialize the envelope with `JSON.stringify`, exactly as Node's implementation does it: no extra whitespace, booleans as bare `true`/`false`, strings double-quoted with standard JSON escaping.
+4. Encode the resulting string as UTF-8. These bytes are the message.
+5. Sign those bytes with the Stellar/Ed25519 keypair (`keypair.sign(message)`), base64-encode the 64-byte signature, and pair it with the signer's Stellar public key (`G...`).
 
 ### Worked example
 
-Payload:
+Inner payload:
 
 ```json
 {
@@ -39,24 +71,15 @@ Payload:
 }
 ```
 
-Canonical string (this exact string, no surrounding whitespace):
+Canonical string on Stellar **testnet** (this exact string, no surrounding whitespace):
 
 ```
-{"marketId":"market-abc123","outcome":true,"timestamp":"2026-06-29T00:00:00.000Z"}
+{"domain":"vatix.oracle-resolution.v1","network":"Test SDF Network ; September 2015","payload":{"marketId":"market-abc123","outcome":true,"timestamp":"2026-06-29T00:00:00.000Z"}}
 ```
 
-UTF-8 bytes (82 bytes total, hex):
+The same inner payload on **mainnet** (`"network":"Public Global Stellar Network ; September 2015"`) produces a different canonical string, and therefore a different, non-interchangeable signature.
 
-```
-7b22 6d61 726b 6574 4964 223a 226d 6172
-6b65 742d 6162 6331 3233 222c 226f 7574
-636f 6d65 223a 7472 7565 2c22 7469 6d65
-7374 616d 7022 3a22 3230 3236 2d30 362d
-3239 5430 303a 3030 3a30 302e 3030 305a
-227d
-```
-
-These are the bytes a third-party signer must produce and sign to be verifiable by `verifyResolutionReport`, and the bytes any external verifier must reconstruct from a market's `marketId`, `outcome`, and `timestamp` to check a signature independently of this codebase.
+These are the bytes a third-party signer must produce and sign to be verifiable by `verifyResolutionReport`, and the bytes any external verifier must reconstruct (including the correct `domain` tag and `network` passphrase) to check a signature independently of this codebase.
 
 ## Usage
 
