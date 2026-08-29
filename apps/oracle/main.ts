@@ -71,6 +71,13 @@ export async function poll(): Promise<void> {
   }
   const queue = globalQueue;
 
+  // Only markets in a resolvable lifecycle state may be submitted for resolution.
+  // Soft-deleted markets (deletedAt set) are excluded, matching the finalization worker.
+  const markets = await prisma.market.findMany({
+    where: {
+      status: { in: [...RESOLVABLE_MARKET_STATUSES] },
+      deletedAt: null,
+    },
   // Only markets in a resolvable lifecycle state and not soft-deleted may be submitted for resolution.
   const markets = await prisma.market.findMany({
     where: { status: { in: [...RESOLVABLE_MARKET_STATUSES] }, deletedAt: null },
@@ -97,6 +104,25 @@ export async function poll(): Promise<void> {
         throw new Error(
           `Resolved confidence ${result.confidence} is out of range [0, 1]`
         );
+      }
+
+      // A market may have been CANCELLED (admin cancel or expiry sweep) while
+      // the provider resolution was in flight. Re-check the lifecycle state
+      // immediately before persisting a report or enqueuing a submission so
+      // the scheduler never emits reports for dead markets.
+      const stillResolvable = await prisma.market.findMany({
+        where: {
+          id: market.id,
+          status: { in: [...RESOLVABLE_MARKET_STATUSES] },
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      if (stillResolvable.length === 0) {
+        logger.info("Market no longer resolvable, skipping", {
+          marketId: market.id,
+        });
+        continue;
       }
 
       const report = signResolutionReport(
