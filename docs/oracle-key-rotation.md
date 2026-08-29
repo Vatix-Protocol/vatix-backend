@@ -11,16 +11,39 @@ This guide explains how to rotate oracle signing keys without interrupting marke
 - Current oracle worker process stable and healthy
 - Monitoring/alerting systems operational
 
+## Generating a keypair safely
+
+Use `scripts/generate-keypair.ts` (alias `pnpm generate:keypair`) rather than an
+ad-hoc `console.log` of the secret seed. A Stellar secret seed is a bearer
+credential, and CI systems (GitHub Actions in particular) retain step logs, so
+the script **refuses to print the secret seed to stdout** when it detects a
+CI / non-interactive / `NODE_ENV=production` context.
+
+| Context                              | Behaviour                                                                                            |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| Interactive local shell (TTY, no CI) | Prints the secret seed and public key (with a warning)                                               |
+| CI / non-TTY / `NODE_ENV=production` | Exits non-zero unless `--out <path>` or `--public-only` is given                                     |
+| `--out <path>` (any context)         | Writes `ORACLE_SECRET_KEY=<seed>` to `<path>` with `0600` permissions; only the public key is echoed |
+| `--public-only` / `--json`           | Never emits the secret seed                                                                          |
+
+```bash
+# Local, interactive — prints the seed for you to copy into .env
+pnpm generate:keypair
+
+# Anywhere (CI, containers, servers) — seed goes to a protected file, not the log
+pnpm generate:keypair -- --out ./oracle.key.env      # chmod 0600, refuses to overwrite
+
+# Only need the address (e.g. to register the signer)
+pnpm generate:keypair -- --public-only
+```
+
 ## Step 1: Generate and Test New Key
 
 1. **Generate new keypair** (off-chain in secure environment):
 
 ```bash
-# Using Stellar SDK (TypeScript example)
-import { Keypair } from "@stellar/stellar-sdk";
-const newKeypair = Keypair.random();
-console.log("Public Key:", newKeypair.publicKey());
-console.log("Secret Key:", newKeypair.secret());  // Keep secure!
+pnpm generate:keypair -- --out ./oracle-next.key.env
+# oracle-next.key.env now contains ORACLE_SECRET_KEY=S... (mode 0600)
 ```
 
 2. **Test the new key** in a staging environment:

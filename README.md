@@ -23,8 +23,8 @@ Node.js • TypeScript • Fastify • PostgreSQL • Prisma • Redis • Stell
 
 ### Prerequisites
 
-- Node.js 22+
-- pnpm 8+
+- Node.js 22 (pinned in `.nvmrc` — run `nvm use`; enforced in CI, see [docs/engine-enforcement.md](docs/engine-enforcement.md))
+- pnpm 10+
 - Docker & Docker Compose
 
 ### Setup

@@ -974,6 +974,7 @@ docker logs vatix-backend 2>&1 | grep "<candidateId>"
 ```
 
 Look for:
+
 - `Challenged candidate rejected` — challenge was adjudicated (should be REJECTED)
 - `Finalization candidate finalized` — should have transitioned to ACCEPTED
 - `CandidateNotEligibleError` — status changed during processing (lost race)
@@ -1075,6 +1076,17 @@ resulting severity.
    - Save relevant logs
    - Export database state snapshots
    - Screenshot monitoring dashboards
+   - For any matching / trade / fill discrepancy, reconstruct the affected
+     book(s) with the replay-market forensics CLI and attach the report:
+
+     ```bash
+     DATABASE_URL=... REDIS_URL=... \
+       pnpm replay:market -- --market <marketId> --outcome YES --as-of <incidentStart>
+     ```
+
+     Exit `1` means the recorded fills diverge from what the matching engine
+     would produce. Full procedure and report interpretation:
+     [docs/replay-forensics.md](../replay-forensics.md#reconstructing-a-books-fills-incident-recipe).
 
 ### Post-Incident Review (Within 1 Week)
 
