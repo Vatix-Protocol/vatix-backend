@@ -37,6 +37,12 @@ import {
   IllegalChallengeTransitionError,
 } from "../../apps/workers/src/finalization/challenge.js";
 import type { ILogger } from "../../packages/shared/src/logger.js";
+import type { FastifyInstance } from "fastify";
+import { Keypair } from "@stellar/stellar-sdk";
+import { buildTestApp, resetRateLimits } from "./helpers/build-test-app.js";
+import { resolutionsRoutes } from "../../src/api/routes/resolutions.js";
+import { buildSignableMessage } from "../../src/api/middleware/stellarAuth.js";
+import { issueChallenge } from "../../src/api/middleware/nonceStore.js";
 
 function silentLogger(): ILogger {
   const noop = () => undefined;
@@ -268,5 +274,131 @@ describe("Finalization vs. challenge race (DB-level locking)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * HTTP-layer race (issue #992): the DB lock proven above serializes the two
+ * writers, but a route can still map the loser incorrectly and hand two
+ * clients a 2xx for the same candidate. These tests drive the real
+ * `POST /v1/resolutions/:id/challenge` route concurrently and assert exactly
+ * one request is accepted (201) while every other loses with 409 — never two
+ * acceptances, and never a Resolution row for a CHALLENGED candidate.
+ */
+describe("Finalization vs. challenge race (HTTP layer)", () => {
+  const prisma = getTestPrismaClient();
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    await acquireDatabaseLock();
+    app = await buildTestApp({ plugins: [resolutionsRoutes] });
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await releaseDatabaseLock();
+  });
+
+  beforeEach(() => {
+    resetRateLimits();
+    vi.useRealTimers();
+  });
+
+  /** Signs the canonical challenge message exactly as verifyStellarSignature rebuilds it. */
+  async function challengeRequest(candidateId: string) {
+    const keypair = Keypair.random();
+    const userAddress = keypair.publicKey();
+    const timestamp = Date.now();
+    const { nonce } = await issueChallenge(userAddress);
+    const signature = keypair
+      .sign(
+        buildSignableMessage({
+          marketId: "",
+          nonce,
+          outcome: "",
+          price: 0,
+          quantity: 0,
+          side: "",
+          timestamp,
+          userAddress,
+        })
+      )
+      .toString("base64");
+
+    return app.inject({
+      method: "POST",
+      url: `/v1/resolutions/${candidateId}/challenge`,
+      headers: {
+        "x-signature": signature,
+        "x-timestamp": String(timestamp),
+        "x-nonce": nonce,
+      },
+      payload: { userAddress },
+    });
+  }
+
+  async function createProposedCandidate() {
+    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+    const candidate = await prisma.resolutionCandidate.create({
+      data: {
+        marketId: market.id,
+        proposedOutcome: true,
+        source: "chainlink",
+        operatorAddress: testUtils.generateStellarAddress(),
+        status: "PROPOSED",
+        createdAt: new Date(),
+      },
+    });
+    return { market, candidate };
+  }
+
+  it("accepts exactly one of N concurrent challenge requests; the rest get 409", async () => {
+    for (let round = 0; round < 5; round++) {
+      const { market, candidate } = await createProposedCandidate();
+
+      const responses = await Promise.all(
+        Array.from({ length: 4 }, () => challengeRequest(candidate.id))
+      );
+      const codes = responses.map((r) => r.statusCode).sort();
+
+      expect(codes.filter((c) => c === 201)).toHaveLength(1);
+      expect(codes.filter((c) => c === 409)).toHaveLength(3);
+
+      const stored = await prisma.resolutionCandidate.findUniqueOrThrow({
+        where: { id: candidate.id },
+      });
+      expect(stored.status).toBe("CHALLENGED");
+
+      const audit = await prisma.resolutionAuditLog.findMany({
+        where: { candidateId: candidate.id },
+      });
+      expect(audit).toHaveLength(1);
+      expect(audit[0].action).toBe("CHALLENGE");
+
+      const resolutions = await prisma.resolution.findMany({
+        where: { marketId: market.id },
+      });
+      expect(resolutions).toHaveLength(0);
+    }
+  }, 30000);
+
+  it("a second challenge against an already-CHALLENGED candidate gets 409, never a second acceptance", async () => {
+    const { market, candidate } = await createProposedCandidate();
+
+    const first = await challengeRequest(candidate.id);
+    expect(first.statusCode).toBe(201);
+
+    const second = await challengeRequest(candidate.id);
+    expect(second.statusCode).toBe(409);
+
+    const audit = await prisma.resolutionAuditLog.findMany({
+      where: { candidateId: candidate.id },
+    });
+    expect(audit).toHaveLength(1);
+
+    const resolutions = await prisma.resolution.findMany({
+      where: { marketId: market.id },
+    });
+    expect(resolutions).toHaveLength(0);
   });
 });

@@ -450,6 +450,40 @@ Lease timing is configurable via environment variables:
 - `MATCHING_LEASE_RENEW_INTERVAL_MS` — Heartbeat renewal interval (default: 5000 ms)
 - `MATCHING_LEASE_ENFORCED` — Enable/disable enforcement (default: `true` in production, `false` in tests)
 
+### Exercising the Lease Path from an Integration Test
+
+`buildTestApp` (the integration route harness) bypasses the lease by default.
+Pass `enableLease: true` to run a route test through the real production
+single-writer gate:
+
+```ts
+const app = await buildTestApp({ plugins: [ordersRoutes], enableLease: true });
+// MATCHING_LEASE_ENFORCED is forced to "true" and the Redis-backed lease is
+// acquired before the app is ready; matchingService.placeOrder now runs the
+// same leaderLease.isLeader() check it runs in production.
+await app.close(); // releases the lease and restores the previous env value
+```
+
+Enablement is **fail-fast**: if the lease cannot be acquired (Redis
+unreachable, or another holder owns it) `buildTestApp` throws rather than
+silently returning a lease-disabled app.
+
+## Test Infrastructure & External Dependencies
+
+Each test only needs the backing services it actually exercises. In
+particular:
+
+- **Prisma seed / schema tests** (`prisma/seed.test.ts`,
+  `prisma/schema.test.ts`) and the seed script itself (`prisma/seed.ts`)
+  require **only Postgres** — never Redis. `prisma/seed-no-redis.test.ts`
+  is a regression guard that fails if a Redis import creeps into that path.
+  The seed script also refuses to run when `NODE_ENV=production`.
+- **Fills SSE resume after trim**
+  (`tests/integration/fills-stream-xtrim.test.ts`) covers the Redis `XTRIM`
+  case: when a client's resume cursor has been trimmed from the audit
+  stream, missed fills are backfilled from Postgres and the request only
+  returns `410 stream_gap` when Postgres also cannot serve the cursor.
+
 ## Best Practices Summary
 
 1. **Write tests first** (TDD when possible)
@@ -460,4 +494,4 @@ Lease timing is configurable via environment variables:
 6. **Review coverage reports** - Aim for meaningful coverage, not just metrics
 7. **Test with lease enforced** - Run `MATCHING_LEASE_ENFORCED=true` locally to catch single-writer violations
 8. **Monitor coverage trends** - Coverage floors prevent silent regressions in test quality
-7. **Update tests with code** - Keep tests in sync with implementation
+9. **Update tests with code** - Keep tests in sync with implementation
