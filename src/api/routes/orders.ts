@@ -10,6 +10,8 @@ import {
   validateUserAddress,
   sanitizeUserAddress,
   assertValidOrder,
+  validateTickSize,
+  TICK_SIZE,
   STELLAR_PUBLIC_KEY_REGEX,
   type OrderInput,
 } from "../../matching/validation.js";
@@ -36,7 +38,10 @@ const CreateOrderSchema = z.object({
   price: z
     .number()
     .gt(0, "price must be greater than 0")
-    .lt(1, "price must be less than 1"),
+    .lt(1, "price must be less than 1")
+    .refine((val) => validateTickSize(val) === null, {
+      message: `price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`,
+    }),
   quantity: z
     .number()
     .int("quantity must be an integer")

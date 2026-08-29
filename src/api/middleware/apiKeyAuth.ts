@@ -1,5 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { timingSafeEqual } from "crypto";
+import { createHash, timingSafeEqual } from "crypto";
 import { unauthorized } from "./responses.js";
 
 const API_KEY_HEADER = "x-api-key";
@@ -15,15 +15,12 @@ const API_KEY_HEADER = "x-api-key";
  * timing attacks.
  */
 function timingSafeCompare(a: string, b: string): boolean {
-  try {
-    return (
-      a.length === b.length &&
-      timingSafeEqual(Buffer.from(a), Buffer.from(b))
-    );
-  } catch {
-    // timingSafeEqual throws if lengths don't match; we handle it above, but catch as safety net
-    return false;
-  }
+  // Hash both inputs to fixed-length SHA-256 digests before the constant-time
+  // comparison. A raw length check would short-circuit timingSafeEqual for
+  // inputs of different lengths and leak key-length information via timing.
+  const digestA = createHash("sha256").update(a, "utf8").digest();
+  const digestB = createHash("sha256").update(b, "utf8").digest();
+  return timingSafeEqual(digestA, digestB);
 }
 
 export function requireApiKey(

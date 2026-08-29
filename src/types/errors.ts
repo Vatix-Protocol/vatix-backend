@@ -2,3 +2,5 @@
 // consumers keep importing from `../types/errors.js` unchanged.
 
 export type { ErrorEnvelope as ErrorResponse } from "../../packages/shared/src/errors.js";
+export { ContractError } from "../api/middleware/errors.js";
+

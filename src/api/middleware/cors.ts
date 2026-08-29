@@ -17,6 +17,7 @@ export interface CorsConfig {
   credentials: boolean;
   preflight: boolean;
   strictPreflight: boolean;
+  maxAge?: number;
 }
 
 function getAllowedOrigins(): string[] {
@@ -65,7 +66,11 @@ export const corsPlugin = fp(async (fastify: FastifyInstance) => {
     credentials: true,
     preflight: true,
     strictPreflight: false,
+    maxAge: process.env.CORS_MAX_AGE
+      ? parseInt(process.env.CORS_MAX_AGE, 10)
+      : 86400,
   };
 
   await fastify.register(cors, corsConfig);
 });
+

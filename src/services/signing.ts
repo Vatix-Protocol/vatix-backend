@@ -1,16 +1,29 @@
 import { Keypair } from "@stellar/stellar-sdk";
+import { randomUUID } from "node:crypto";
 import type {
   OrderData,
   SignedOrderReceipt,
   VerificationResult,
 } from "../types";
+import {
+  SIGNING_DOMAINS,
+  buildDomainSeparatedMessage,
+  resolveSigningNetworkPassphrase,
+} from "../../packages/shared/src/signingDomain.js";
 
 /**
  * Signing service for creating and verifying cryptographic order receipts.
  * Uses Ed25519 signatures for order verification in the off-chain matching system.
+ *
+ * Signed messages are domain- and network-separated (#978): every message
+ * embeds the `vatix.order-receipt.v1` domain tag and the active Stellar
+ * network passphrase, so an order-receipt signature cannot be replayed as
+ * an oracle-resolution signature and a testnet signature cannot be replayed
+ * on mainnet.
  */
 export class SigningService {
   private keypair: Keypair | null = null;
+  private networkPassphrase: string | null = null;
 
   /**
    * Initialize the signing keypair from environment variable
@@ -30,13 +43,32 @@ export class SigningService {
 
     try {
       this.keypair = Keypair.fromSecret(secretKey);
-      console.log("Signing keypair initialized successfully");
     } catch (error) {
       throw new Error(
         `Invalid ORACLE_SECRET_KEY format. Must be a valid Stellar secret key. ` +
           `Error: ${error instanceof Error ? error.message : "Unknown error"}`
       );
     }
+
+    // Resolve the network binding up front so misconfiguration fails at boot,
+    // not on the first signature. Throws in production when
+    // SOROBAN_NETWORK_PASSPHRASE is unset (no silent stub fallback).
+    this.networkPassphrase = resolveSigningNetworkPassphrase();
+
+    // Structured init log. The passphrase and public key are not secrets; the
+    // secret key is never logged.
+    console.log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: "info",
+        message: "Signing keypair initialized",
+        component: "signing-service",
+        correlationId: randomUUID(),
+        domain: SIGNING_DOMAINS.ORDER_RECEIPT,
+        networkPassphrase: this.networkPassphrase,
+        publicKey: this.keypair.publicKey(),
+      })
+    );
   }
 
   /**
@@ -71,7 +103,17 @@ export class SigningService {
       timestamp: order.timestamp,
     };
 
-    return JSON.stringify(sortedOrder);
+    // Domain- and network-separate the signed bytes (#978). Resolve lazily so
+    // verifyOrderReceipt() also works before initialize() has been called;
+    // still throws in production when the network passphrase is unset.
+    const networkPassphrase =
+      this.networkPassphrase ?? resolveSigningNetworkPassphrase();
+
+    return buildDomainSeparatedMessage(
+      SIGNING_DOMAINS.ORDER_RECEIPT,
+      networkPassphrase,
+      sortedOrder
+    );
   }
 
   /**
@@ -186,6 +228,7 @@ export class SigningService {
    */
   public reset(): void {
     this.keypair = null;
+    this.networkPassphrase = null;
   }
 }
 

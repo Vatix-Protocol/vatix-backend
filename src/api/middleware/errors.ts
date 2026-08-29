@@ -96,3 +96,14 @@ export class MarketNotActiveError extends AppError {
     );
   }
 }
+
+export class ContractError extends AppError {
+  constructor(
+    message = "Contract execution failed",
+    statusCode = 400,
+    code = "contract_error"
+  ) {
+    super(message, statusCode, code);
+  }
+}
+

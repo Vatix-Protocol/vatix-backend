@@ -97,6 +97,17 @@ export const apiEnvSchema = z.object({
    * Recommended defaults documented in .env.example — tune per environment.
    */
   DATABASE_POOL_SIZE: positiveInt("DATABASE_POOL_SIZE").default(10),
+  /**
+   * Max size of the pg.Pool used by the read-only analytics Prisma client
+   * (#979). Kept small and independent of DATABASE_POOL_SIZE so heavy
+   * analytics queries cannot exhaust connections the matching/OLTP path
+   * needs — this bound matters most when ANALYTICS_DATABASE_URL is unset and
+   * the analytics client shares the primary database (dev/test only;
+   * production requires a dedicated replica). Default: 5.
+   */
+  ANALYTICS_DATABASE_POOL_SIZE: positiveInt(
+    "ANALYTICS_DATABASE_POOL_SIZE"
+  ).default(5),
   ORACLE_CHALLENGE_WINDOW_SECONDS: positiveInt(
     "ORACLE_CHALLENGE_WINDOW_SECONDS"
   ).default(86400),
