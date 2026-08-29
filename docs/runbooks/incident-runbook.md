@@ -946,6 +946,15 @@ ORDER BY created_at DESC;
    finalization attempt) may have caused the transaction to abort
 4. **Bug in adjudication logic** — the finalization job's confidence comparison or
    competing candidate query may have failed silently
+5. **Challenge window drift (issue #950)** — the finalization worker enforces
+   `FINALIZATION_CHALLENGE_WINDOW_SECONDS`, which defaults to (and in production
+   **must** equal) `ORACLE_CHALLENGE_WINDOW_SECONDS` — the window the on-chain
+   resolution contract enforces. If the two disagree the worker finalizes too
+   early or too late relative to the chain. In `NODE_ENV=production` the worker
+   refuses to start on a mismatch; outside production it starts but logs
+   `Finalization challenge window overridden and drifts from the on-chain
+resolution contract window` at `warn`. Grep the worker's startup logs for
+   `onChainChallengeWindowSeconds` and confirm it matches the contract.
 
 ### Response Steps
 
