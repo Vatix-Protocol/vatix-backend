@@ -37,4 +37,33 @@ describe("oracle-config", () => {
   it("throws on invalid log level", () => {
     expect(() => loadOracleConfig({ ORACLE_LOG_LEVEL: "invalid" })).toThrow();
   });
+
+  describe("minConfidenceThreshold (#991)", () => {
+    it("defaults to 0.75 when unset", () => {
+      const config = loadOracleConfig({});
+      expect(config.minConfidenceThreshold).toBe(0.75);
+    });
+
+    it("reads a valid value from env", () => {
+      const config = loadOracleConfig({
+        ORACLE_MIN_CONFIDENCE_THRESHOLD: "0.9",
+      });
+      expect(config.minConfidenceThreshold).toBe(0.9);
+    });
+
+    it("throws when out of the [0,1] range", () => {
+      expect(() =>
+        loadOracleConfig({ ORACLE_MIN_CONFIDENCE_THRESHOLD: "1.5" })
+      ).toThrow();
+      expect(() =>
+        loadOracleConfig({ ORACLE_MIN_CONFIDENCE_THRESHOLD: "-0.1" })
+      ).toThrow();
+    });
+
+    it("throws on a non-numeric value", () => {
+      expect(() =>
+        loadOracleConfig({ ORACLE_MIN_CONFIDENCE_THRESHOLD: "not-a-number" })
+      ).toThrow();
+    });
+  });
 });

@@ -548,4 +548,85 @@ describe("OracleService", () => {
       // No error, enqueue was skipped gracefully
     });
   });
+
+  describe("confidence gate (#991)", () => {
+    function lowConfidenceAdapter(source: string): ProviderAdapter {
+      return {
+        getSource: () => source,
+        healthCheck: vi.fn().mockResolvedValue(true),
+        resolve: vi.fn().mockResolvedValue({
+          outcome: true,
+          confidence: 0.2,
+          source,
+          timestamp: new Date().toISOString(),
+        } as ProviderResult),
+      };
+    }
+
+    it("refuses to enqueue a low-confidence primary result", async () => {
+      const enqueueCallback = vi.fn().mockResolvedValue(undefined);
+      const service = new OracleService({
+        primaryAdapter: lowConfidenceAdapter("primary"),
+        fallbackAdapter,
+        enqueueCallback,
+        minConfidenceThreshold: 0.75,
+      });
+
+      await expect(
+        service.resolve({
+          marketId: "market-low-confidence",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow(/confidence/i);
+
+      expect(enqueueCallback).not.toHaveBeenCalled();
+    });
+
+    it("increments oracleFailClosedTotal when refusing a low-confidence result", async () => {
+      const before = (await oracleFailClosedTotal.get()).values.reduce(
+        (sum, v) => sum + v.value,
+        0
+      );
+
+      const service = new OracleService({
+        primaryAdapter: lowConfidenceAdapter("primary"),
+        fallbackAdapter,
+        minConfidenceThreshold: 0.75,
+      });
+
+      await expect(
+        service.resolve({
+          marketId: "market-low-confidence-2",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow();
+
+      const after = (await oracleFailClosedTotal.get()).values.reduce(
+        (sum, v) => sum + v.value,
+        0
+      );
+      expect(after).toBeGreaterThan(before);
+    });
+
+    it("enqueues when confidence meets the threshold", async () => {
+      const enqueueCallback = vi.fn().mockResolvedValue(undefined);
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        enqueueCallback,
+        minConfidenceThreshold: 0.5,
+      });
+
+      const result = await service.resolve({
+        marketId: "market-ok-confidence",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(result.confidence).toBeGreaterThanOrEqual(0.5);
+      expect(enqueueCallback).toHaveBeenCalled();
+    });
+  });
 });

@@ -213,6 +213,30 @@ PORT must be a positive integer, got: "abc"
 PORT must be <= 65535, got: "99999"
 ```
 
+### Unit-interval variables
+
+Must be a finite number between `0` and `1` (inclusive).
+
+| Variable                            | Min | Max | Default |
+| ------------------------------------ | --- | --- | ------- |
+| `ORACLE_MIN_CONFIDENCE_THRESHOLD`   | 0   | 1   | `0.75`  |
+
+`ORACLE_MIN_CONFIDENCE_THRESHOLD` gates whether a resolved market result is
+enqueued for on-chain submission (#991). A resolution — from either the
+primary or fallback provider — whose `confidence` score falls below this
+threshold is treated as a fail-closed condition: it is never enqueued, an
+`oracle.low_confidence_fail_closed` log event is emitted, and the
+`oracleFailClosedTotal` metric is incremented, mirroring the existing
+`ALL_PROVIDERS_FAILED` outage path. Operators must raise this value
+explicitly to accept weaker signals; the default (`0.75`) errs toward
+dropping ambiguous resolutions rather than submitting them on-chain.
+
+**Error example:**
+
+```
+ORACLE_MIN_CONFIDENCE_THRESHOLD must be a number between 0 and 1, got: "1.5"
+```
+
 ### Boolean variables
 
 Accepted values are the literal strings `true` or `false`; any other value

@@ -35,6 +35,14 @@ export interface OracleConfig {
   primaryTimeoutMs: number;
   /** Timeout for the fallback oracle provider, in milliseconds. */
   fallbackTimeoutMs: number;
+  /**
+   * Minimum acceptable confidence score (0-1, inclusive) for a resolution
+   * to be enqueued for on-chain submission. Results below this threshold
+   * are treated as a fail-closed condition: they are never enqueued, and
+   * in production they raise the same `oracleFailClosedTotal` metric used
+   * for total provider outages.
+   */
+  minConfidenceThreshold: number;
 }
 
 const VALID_LOG_LEVELS: ReadonlySet<string> = new Set([
@@ -46,6 +54,13 @@ const VALID_LOG_LEVELS: ReadonlySet<string> = new Set([
 
 const DEFAULT_CHALLENGE_WINDOW_SECONDS = 86_400;
 const DEFAULT_LOG_LEVEL: LogLevel = "info";
+/**
+ * Default minimum confidence threshold. Chosen to be strict enough that a
+ * partial-success, low-confidence resolution never reaches the submission
+ * queue silently — operators must explicitly lower this via
+ * `ORACLE_MIN_CONFIDENCE_THRESHOLD` if they want to accept weaker signals.
+ */
+const DEFAULT_MIN_CONFIDENCE_THRESHOLD = 0.75;
 
 type Env = Record<string, string | undefined>;
 
@@ -79,6 +94,12 @@ export function loadOracleConfig(env: Env = process.env): OracleConfig {
     DEFAULT_TIMEOUT_MS
   );
 
+  const minConfidenceThreshold = parseOptionalUnitInterval(
+    env["ORACLE_MIN_CONFIDENCE_THRESHOLD"],
+    "ORACLE_MIN_CONFIDENCE_THRESHOLD",
+    DEFAULT_MIN_CONFIDENCE_THRESHOLD
+  );
+
   return {
     pollIntervalMs,
     challengeWindowSeconds,
@@ -86,7 +107,31 @@ export function loadOracleConfig(env: Env = process.env): OracleConfig {
     secretKey: env["ORACLE_SECRET_KEY"] ?? undefined,
     primaryTimeoutMs,
     fallbackTimeoutMs,
+    minConfidenceThreshold,
   };
+}
+
+/**
+ * Parse an optional environment variable that must fall within [0, 1].
+ * Used for confidence-threshold style settings.
+ */
+function parseOptionalUnitInterval(
+  raw: string | undefined,
+  name: string,
+  defaultValue: number
+): number {
+  if (raw === undefined || raw === "") {
+    return defaultValue;
+  }
+
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(
+      `${name} must be a number between 0 and 1, got: ${JSON.stringify(raw)}`
+    );
+  }
+
+  return value;
 }
 
 function parseOptionalPositiveInt(
