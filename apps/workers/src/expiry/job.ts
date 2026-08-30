@@ -4,6 +4,16 @@ import type { ExpiryJobResult, ExpiryCandidateResult } from "./types.js";
 
 export interface ExpiryJobConfig {
   maxRunMs?: number;
+  /**
+   * Grace period (ms) subtracted from "now" before comparing against
+   * `market.endTime`. Guards against the host container clock running
+   * fast relative to the Stellar ledger's close time: if the host clock is
+   * ahead, `Date.now()` can cross a market's endTime before the ledger
+   * actually reaches it, causing the job to cancel orders and lock in
+   * expiry on a market that is not actually expired on-chain yet. A
+   * market is only treated as a candidate once `endTime <= now - tolerance`.
+   */
+  clockSkewToleranceMs?: number;
 }
 
 interface ExpireyMarket {
@@ -26,6 +36,7 @@ class MarketNotEligibleError extends Error {
 
 export class ExpiryJob {
   private readonly maxRunMs: number;
+  private readonly clockSkewToleranceMs: number;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -33,14 +44,20 @@ export class ExpiryJob {
     config: ExpiryJobConfig
   ) {
     this.maxRunMs = config.maxRunMs ?? 0;
+    this.clockSkewToleranceMs = config.clockSkewToleranceMs ?? 0;
   }
 
   async run(): Promise<ExpiryJobResult> {
     const startedAt = new Date();
     const now = new Date();
+    const runId = `expiry-${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`;
+    const expiryThreshold = new Date(now.getTime() - this.clockSkewToleranceMs);
 
     this.logger.info("Expiry job started", {
+      runId,
       now: now.toISOString(),
+      clockSkewToleranceMs: this.clockSkewToleranceMs,
+      expiryThreshold: expiryThreshold.toISOString(),
     });
 
     let candidates: ExpireyMarket[];
@@ -49,7 +66,7 @@ export class ExpiryJob {
       candidates = await this.prisma.market.findMany({
         where: {
           status: "ACTIVE",
-          endTime: { lte: now },
+          endTime: { lte: expiryThreshold },
           deletedAt: null,
         },
         select: {
@@ -130,6 +147,7 @@ export class ExpiryJob {
     const skippedCount = results.filter((r) => r.status === "skipped").length;
 
     this.logger.info("Expiry job completed", {
+      runId,
       totalCandidates: candidates.length,
       expiredCount,
       erroredCount,

@@ -14,11 +14,13 @@ async function bootstrap(): Promise<void> {
   const prisma = getPrismaClient();
   const job = new ExpiryJob(prisma, logger, {
     maxRunMs: config.maxRunMs,
+    clockSkewToleranceMs: config.clockSkewToleranceMs,
   });
 
   logger.info("Expiry worker started", {
     intervalMs: config.intervalMs,
     maxRunMs: config.maxRunMs,
+    clockSkewToleranceMs: config.clockSkewToleranceMs,
   });
 
   let activePollPromise: Promise<void> | null = null;

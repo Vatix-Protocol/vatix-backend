@@ -4,6 +4,7 @@ export interface ExpiryWorkerConfig {
   intervalMs: number;
   maxRunMs: number;
   logLevel: LogLevel;
+  clockSkewToleranceMs: number;
 }
 
 const VALID_LOG_LEVELS = new Set<LogLevel>(["debug", "info", "warn", "error"]);
@@ -29,6 +30,19 @@ export function loadExpiryConfig(): ExpiryWorkerConfig {
   );
   const logLevel = parseLogLevel(process.env.LOG_LEVEL);
 
+  // Production containers run on schedulers/nodes whose clocks are not
+  // guaranteed to be NTP-synced to the same tolerance as the Stellar
+  // ledger. Default to a 5s grace period in production so a fast host
+  // clock cannot silently expire markets ahead of the actual ledger close
+  // time; local/dev/test default to 0 for deterministic behavior.
+  const defaultClockSkewToleranceMs =
+    process.env.NODE_ENV === "production" ? 5000 : 0;
+  const clockSkewToleranceMs = parseInt(
+    process.env.EXPIRY_CLOCK_SKEW_TOLERANCE_MS ??
+      String(defaultClockSkewToleranceMs),
+    10
+  );
+
   if (!Number.isFinite(intervalMs) || intervalMs < 1000) {
     throw new Error(
       `EXPIRY_WORKER_INTERVAL_MS must be >= 1000, got: ${intervalMs}`
@@ -39,5 +53,11 @@ export function loadExpiryConfig(): ExpiryWorkerConfig {
     throw new Error(`EXPIRY_WORKER_MAX_RUN_MS must be >= 0, got: ${maxRunMs}`);
   }
 
-  return { intervalMs, maxRunMs, logLevel };
+  if (!Number.isFinite(clockSkewToleranceMs) || clockSkewToleranceMs < 0) {
+    throw new Error(
+      `EXPIRY_CLOCK_SKEW_TOLERANCE_MS must be >= 0, got: ${clockSkewToleranceMs}`
+    );
+  }
+
+  return { intervalMs, maxRunMs, logLevel, clockSkewToleranceMs };
 }
