@@ -117,4 +117,53 @@ describe("ReconciliationJob", () => {
     expect(result.failedMarkets).toBe(1);
     expect(result.completedMarkets).toBe(1);
   });
+
+  // Regression coverage: previously the only way to avoid mutating
+  // positions was AUTO_RECOVERY_ENABLED=false at the process level, which
+  // meant operators could not preview drift on a job configured with
+  // auto-recovery on without redeploying. dryRun must force
+  // autoRecoveryEnabled=false for a single run regardless of the
+  // constructor setting, and the result must say so.
+  it("forces autoRecoveryEnabled off and reports dryRun:true when run(true) is called, even if configured with autoRecoveryEnabled=true", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([{ id: "market1" }]);
+    vi.mocked(positionReconciliationService.reconcileMarket).mockResolvedValue({
+      marketId: "market1",
+      totalWallets: 5,
+      driftCount: 2,
+      recoveredCount: 0,
+      failedCount: 0,
+      duration: 100,
+    });
+
+    const job = new ReconciliationJob(mockLogger, 20000, true);
+    const result = await job.run(true);
+
+    expect(positionReconciliationService.reconcileMarket).toHaveBeenCalledWith(
+      "market1",
+      false
+    );
+    expect(result.dryRun).toBe(true);
+    expect(result.aggregateStats.driftCount).toBe(2);
+  });
+
+  it("reports dryRun:false and uses the configured autoRecoveryEnabled when run() is called without an argument", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([{ id: "market1" }]);
+    vi.mocked(positionReconciliationService.reconcileMarket).mockResolvedValue({
+      marketId: "market1",
+      totalWallets: 5,
+      driftCount: 0,
+      recoveredCount: 0,
+      failedCount: 0,
+      duration: 100,
+    });
+
+    const job = new ReconciliationJob(mockLogger, 20000, true);
+    const result = await job.run();
+
+    expect(positionReconciliationService.reconcileMarket).toHaveBeenCalledWith(
+      "market1",
+      true
+    );
+    expect(result.dryRun).toBe(false);
+  });
 });

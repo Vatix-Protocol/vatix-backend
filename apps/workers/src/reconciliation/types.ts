@@ -7,6 +7,7 @@ export interface ReconciliationResult {
 
 export interface ReconciliationJobResult {
   success: boolean;
+  dryRun: boolean;
   totalMarkets: number;
   completedMarkets: number;
   failedMarkets: number;
