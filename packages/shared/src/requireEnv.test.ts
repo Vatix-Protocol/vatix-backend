@@ -62,25 +62,25 @@ describe("requireEnv", () => {
     expect(parsed.level).toBe("error");
     expect(parsed.message).toBe("Missing required environment variables");
     expect(parsed.missing).toEqual(["ABSENT_ONE", "ABSENT_TWO"]);
+    expect(parsed.count).toBe(2);
   });
 
-  it("outputs singular message when only one key is missing", () => {
+  it("outputs structured log with count=1 when only one key is missing", () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(process, "exit").mockImplementation(() => {
       throw new Error("process.exit called");
     });
 
-    expect(() =>
-      requireEnv(["MISSING_KEY"], {})
-    ).toThrow();
+    expect(() => requireEnv(["MISSING_KEY"], {})).toThrow();
 
     const rawMessage: string = errorSpy.mock.calls[0][0];
     const parsed = JSON.parse(rawMessage);
 
     expect(parsed).toHaveProperty("ts");
     expect(parsed.level).toBe("error");
-    expect(parsed.message).toBe("Missing required environment variable");
+    expect(parsed.message).toBe("Missing required environment variables");
     expect(parsed.missing).toEqual(["MISSING_KEY"]);
+    expect(parsed.count).toBe(1);
   });
 
   it("treats an empty-string value as missing", () => {

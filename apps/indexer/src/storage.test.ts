@@ -1,93 +1,130 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { PrismaCursorStorageClient } from "./storage.js";
 
-const upsertMock = vi.fn();
-const findUniqueMock = vi.fn();
-const transactionMock = vi.fn(async (fn: (tx: any) => Promise<void>) => {
-  return fn({
-    indexerCursor: { upsert: upsertMock, findUnique: findUniqueMock },
-  });
-});
-
+// Mock the prisma singleton before importing storage
 vi.mock("../../../src/services/prisma.js", () => ({
-  getPrismaClient: () => ({
-    indexerCursor: { findUnique: findUniqueMock, upsert: upsertMock },
-    $transaction: transactionMock,
-  }),
+  getPrismaClient: vi.fn(),
 }));
 
-import {
-  PrismaCursorStorageClient,
-  CursorStorageConfigError,
-  CursorConflictError,
-} from "./storage.js";
+import { getPrismaClient } from "../../../src/services/prisma.js";
+
+function makeMockPrisma(
+  findResult: { cursorValue: string | null } | null = null
+) {
+  const upsert = vi.fn().mockResolvedValue({});
+  const findUnique = vi.fn().mockResolvedValue(findResult);
+  return { indexerCursor: { findUnique, upsert } };
+}
 
 describe("PrismaCursorStorageClient", () => {
+  const networkId = "testnet";
+  const cursorKey = "ingestion";
+
   beforeEach(() => {
-    upsertMock.mockReset();
-    findUniqueMock.mockReset();
-    transactionMock.mockClear();
+    vi.clearAllMocks();
   });
 
-  it("does not advance the cursor when the batch write throws (no holes)", async () => {
-    const client = new PrismaCursorStorageClient("stellar-mainnet", "matching");
-    const batchError = new Error("write failed");
-    const writeBatch = vi.fn().mockRejectedValue(batchError);
+  describe("loadCursor", () => {
+    it("returns cursorValue when row exists", async () => {
+      const mockPrisma = makeMockPrisma({ cursorValue: "42" });
+      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
 
-    await expect(
-      client.saveCursorWithBatch("cursor-2", writeBatch)
-    ).rejects.toThrow("write failed");
+      const client = new PrismaCursorStorageClient(networkId, cursorKey);
+      const result = await client.loadCursor();
 
-    expect(writeBatch).toHaveBeenCalledTimes(1);
-    // The cursor upsert must never run once the batch write has failed.
-    expect(upsertMock).not.toHaveBeenCalled();
-  });
-
-  it("persists the batch and cursor atomically on success", async () => {
-    const client = new PrismaCursorStorageClient("stellar-mainnet", "matching");
-    const order: string[] = [];
-    const writeBatch = vi.fn().mockImplementation(async () => {
-      order.push("batch");
-    });
-    upsertMock.mockImplementation(async () => {
-      order.push("cursor");
+      expect(result).toBe("42");
+      expect(mockPrisma.indexerCursor.findUnique).toHaveBeenCalledWith({
+        where: { networkId_cursorKey: { networkId, cursorKey } },
+        select: { cursorValue: true },
+      });
     });
 
-    await client.saveCursorWithBatch("cursor-3", writeBatch);
+    it("returns null when row is missing", async () => {
+      const mockPrisma = makeMockPrisma(null);
+      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
 
-    expect(order).toEqual(["batch", "cursor"]);
-    expect(transactionMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("raises CursorConflictError when another writer already advanced the cursor", async () => {
-    const client = new PrismaCursorStorageClient("stellar-mainnet", "matching");
-    findUniqueMock.mockResolvedValue({ cursor: "cursor-99" });
-    const writeBatch = vi.fn();
-
-    await expect(
-      client.saveCursorWithBatch("cursor-4", writeBatch, "cursor-3")
-    ).rejects.toThrow(CursorConflictError);
-
-    expect(writeBatch).not.toHaveBeenCalled();
-    expect(upsertMock).not.toHaveBeenCalled();
-  });
-
-  describe("production configuration guardrails", () => {
-    const originalEnv = process.env.NODE_ENV;
-
-    afterEach(() => {
-      process.env.NODE_ENV = originalEnv;
+      const client = new PrismaCursorStorageClient(networkId, cursorKey);
+      expect(await client.loadCursor()).toBeNull();
     });
 
-    it("fails fast in production with an empty cursorKey", () => {
-      process.env.NODE_ENV = "production";
-      expect(() => new PrismaCursorStorageClient("stellar-mainnet", "")).toThrow(
-        CursorStorageConfigError
+    it("returns null when cursorValue is null", async () => {
+      const mockPrisma = makeMockPrisma({ cursorValue: null });
+      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
+
+      const client = new PrismaCursorStorageClient(networkId, cursorKey);
+      expect(await client.loadCursor()).toBeNull();
+    });
+  });
+
+  describe("saveCursor", () => {
+    it("upserts cursorValue using composite key", async () => {
+      const mockPrisma = makeMockPrisma();
+      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
+
+      const client = new PrismaCursorStorageClient(networkId, cursorKey);
+      await client.saveCursor("99");
+
+      expect(mockPrisma.indexerCursor.upsert).toHaveBeenCalledWith({
+        where: { networkId_cursorKey: { networkId, cursorKey } },
+        create: { networkId, cursorKey, cursorValue: "99" },
+        update: { cursorValue: "99" },
+      });
+    });
+
+    it("emits structured log with event key", async () => {
+      const mockPrisma = makeMockPrisma();
+      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
+
+      const logger = {
+        info: vi.fn(),
+        debug: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+      };
+      const client = new PrismaCursorStorageClient(
+        networkId,
+        cursorKey,
+        logger as never
+      );
+      await client.saveCursor("55");
+
+      expect(logger.info).toHaveBeenCalledWith(
+        "Indexer cursor saved",
+        expect.objectContaining({
+          event: "indexer.cursor.saved",
+          cursorValue: "55",
+          networkId,
+          cursorKey,
+        })
       );
     });
 
-    it("allows an empty cursorKey outside production", () => {
-      process.env.NODE_ENV = "test";
-      expect(() => new PrismaCursorStorageClient("stellar-mainnet", "")).not.toThrow();
+    it("independent rows per cursorKey with same networkId", async () => {
+      const prismaA = makeMockPrisma({ cursorValue: "10" });
+      const prismaB = makeMockPrisma({ cursorValue: "20" });
+
+      vi.mocked(getPrismaClient)
+        .mockReturnValueOnce(prismaA as never)
+        .mockReturnValueOnce(prismaB as never);
+
+      const clientA = new PrismaCursorStorageClient(networkId, "keyA");
+      const clientB = new PrismaCursorStorageClient(networkId, "keyB");
+
+      const a = await clientA.loadCursor();
+      const b = await clientB.loadCursor();
+
+      expect(a).toBe("10");
+      expect(b).toBe("20");
+      expect(prismaA.indexerCursor.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { networkId_cursorKey: { networkId, cursorKey: "keyA" } },
+        })
+      );
+      expect(prismaB.indexerCursor.findUnique).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { networkId_cursorKey: { networkId, cursorKey: "keyB" } },
+        })
+      );
     });
   });
 });

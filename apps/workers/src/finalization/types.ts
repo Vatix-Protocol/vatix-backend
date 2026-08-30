@@ -8,10 +8,7 @@
  */
 
 /** Status of an individual finalization candidate after processing. */
-export type FinalizationCandidateStatus =
-  | "finalized"
-  | "skipped"
-  | "errored";
+export type FinalizationCandidateStatus = "finalized" | "skipped" | "errored";
 
 /** Result of processing a single finalization candidate. */
 export interface FinalizationCandidateResult {
@@ -46,6 +43,19 @@ export interface FinalizationJobResult {
   /** Duration of the job run in milliseconds. */
   durationMs: number;
 }
+
+/**
+ * Valid OS signals that trigger a graceful shutdown.
+ * Re-exported from the shared shutdown module for backward compatibility.
+ * @deprecated Import from "../../../../packages/shared/src/shutdown.js" instead.
+ */
+export type ShutdownSignal =
+  import("../../../../packages/shared/src/shutdown.js").ShutdownSignal;
+
+/** Async handler invoked when a shutdown signal is received.
+ * @deprecated Import from "packages/shared/src/shutdown.js" instead.
+ */
+export type ShutdownHandler = (signal: ShutdownSignal) => Promise<void>;
 
 /** Payload shape for a finalization job enqueued via Redis or similar. */
 export interface FinalizationJobPayload {

@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { loadBaseConfig, loadIndexerConfig } from "./config.js";
+import {
+  loadBaseConfig,
+  loadIndexerConfig,
+  loadOracleWorkerConfig,
+  loadFinalizationConfig,
+  ConfigValidationError,
+} from "./config.js";
 
 const BASE_ENV = {
   DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
@@ -57,13 +63,30 @@ describe("loadBaseConfig", () => {
 describe("loadIndexerConfig", () => {
   const INDEXER_ENV = {
     STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
+    INDEXER_CONTRACT_ID: "CABC123",
   };
 
   it("loads valid indexer config with defaults", () => {
     const config = loadIndexerConfig(INDEXER_ENV);
     expect(config.stellarRpcUrl).toBe(INDEXER_ENV.STELLAR_RPC_URL);
+    expect(config.contractId).toBe("CABC123");
+    expect(config.ledgerWindowSize).toBe(100);
     expect(config.networkId).toBe("mainnet");
     expect(config.cursorKey).toBe("ingestion");
+  });
+
+  it("accepts MARKET_CONTRACT_ID as alias", () => {
+    const config = loadIndexerConfig({
+      STELLAR_RPC_URL: INDEXER_ENV.STELLAR_RPC_URL,
+      MARKET_CONTRACT_ID: "CMARKET",
+    });
+    expect(config.contractId).toBe("CMARKET");
+  });
+
+  it("throws on missing contract id", () => {
+    expect(() =>
+      loadIndexerConfig({ STELLAR_RPC_URL: INDEXER_ENV.STELLAR_RPC_URL })
+    ).toThrow("INDEXER_CONTRACT_ID");
   });
 
   it("throws on missing STELLAR_RPC_URL", () => {
@@ -80,5 +103,86 @@ describe("loadIndexerConfig", () => {
     expect(() => loadIndexerConfig(env)).toThrow(
       "INDEXER_INGESTION_INTERVAL_MS"
     );
+  });
+});
+
+describe("loadOracleWorkerConfig", () => {
+  const ORACLE_WORKER_ENV = {
+    REDIS_URL: "redis://localhost:6379",
+    DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
+  };
+
+  it("loads valid oracle worker config with defaults", () => {
+    const config = loadOracleWorkerConfig(ORACLE_WORKER_ENV);
+    expect(config.redisUrl).toBe(ORACLE_WORKER_ENV.REDIS_URL);
+    expect(config.databaseUrl).toBe(ORACLE_WORKER_ENV.DATABASE_URL);
+    expect(config.submissionPollIntervalMs).toBe(5000);
+    expect(config.submissionMaxRetries).toBe(3);
+    expect(config.submissionVisibilityTimeoutMs).toBe(300000);
+    expect(config.logLevel).toBe("info");
+  });
+
+  it("throws on missing REDIS_URL", () => {
+    const env = { ...ORACLE_WORKER_ENV, REDIS_URL: undefined };
+    expect(() => loadOracleWorkerConfig(env)).toThrow("REDIS_URL");
+  });
+
+  it("throws on missing DATABASE_URL", () => {
+    const env = { ...ORACLE_WORKER_ENV, DATABASE_URL: undefined };
+    expect(() => loadOracleWorkerConfig(env)).toThrow("DATABASE_URL");
+  });
+
+  it("throws when ORACLE_SUBMISSION_POLL_INTERVAL_MS is below minimum", () => {
+    const env = {
+      ...ORACLE_WORKER_ENV,
+      ORACLE_SUBMISSION_POLL_INTERVAL_MS: "100",
+    };
+    expect(() => loadOracleWorkerConfig(env)).toThrow(
+      "ORACLE_SUBMISSION_POLL_INTERVAL_MS"
+    );
+  });
+});
+
+describe("loadFinalizationConfig", () => {
+  it("loads valid finalization config with defaults", () => {
+    const config = loadFinalizationConfig({});
+    expect(config.intervalMs).toBe(60000);
+    expect(config.challengeWindowSeconds).toBe(3600);
+    expect(config.logLevel).toBe("info");
+  });
+
+  it("throws when FINALIZATION_INTERVAL_MS is below minimum", () => {
+    const env = { FINALIZATION_INTERVAL_MS: "500" };
+    expect(() => loadFinalizationConfig(env)).toThrow(
+      "FINALIZATION_INTERVAL_MS"
+    );
+  });
+
+  it("throws on invalid FINALIZATION_LOG_LEVEL", () => {
+    const env = { FINALIZATION_LOG_LEVEL: "verbose" };
+    expect(() => loadFinalizationConfig(env)).toThrow("FINALIZATION_LOG_LEVEL");
+  });
+});
+
+describe("ConfigValidationError", () => {
+  it("has statusCode 400 on invalid input", () => {
+    const env = { ...BASE_ENV, NODE_ENV: "invalid" };
+    try {
+      loadBaseConfig(env);
+      throw new Error("expected to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConfigValidationError);
+      expect((err as ConfigValidationError).statusCode).toBe(400);
+    }
+  });
+
+  it("has statusCode 400 when DATABASE_URL is missing", () => {
+    const env = { ...BASE_ENV, DATABASE_URL: undefined };
+    expect(() => loadBaseConfig(env)).toThrow(ConfigValidationError);
+    try {
+      loadBaseConfig(env);
+    } catch (err) {
+      expect((err as ConfigValidationError).statusCode).toBe(400);
+    }
   });
 });

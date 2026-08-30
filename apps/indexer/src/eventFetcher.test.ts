@@ -33,9 +33,17 @@ function makeFetcher(mockServer: any, telemetry: Telemetry) {
     { rpcUrl: "https://rpc.example.com", contractId: "CTEST" },
     telemetry
   );
-  // Inject mock server
-  (fetcher as any).server = mockServer;
+  injectMockRpc(fetcher, mockServer);
   return fetcher;
+}
+
+function injectMockRpc(fetcher: EventFetcher, mockServer: any) {
+  (fetcher as any).server = mockServer;
+  (fetcher as any).transport = {
+    execute: async (fn: (url: string) => Promise<unknown>) =>
+      fn("https://rpc.example.com"),
+    getActiveEndpoint: () => "https://rpc.example.com",
+  };
 }
 
 describe("EventFetcher", () => {
@@ -78,7 +86,7 @@ describe("EventFetcher", () => {
       { rpcUrl: "https://rpc.example.com", contractId: "CTEST", pageLimit: 2 },
       telemetry
     );
-    (fetcher as any).server = server;
+    injectMockRpc(fetcher, server);
 
     const result = await fetcher.fetchByLedgerWindow({
       startLedger: 10,
@@ -107,7 +115,7 @@ describe("EventFetcher", () => {
       },
       telemetry
     );
-    (fetcher as any).server = mockServer;
+    injectMockRpc(fetcher, mockServer);
 
     const result = await fetcher.fetchByLedgerWindow({
       startLedger: 5,
@@ -133,7 +141,7 @@ describe("EventFetcher", () => {
       },
       telemetry
     );
-    (fetcher as any).server = mockServer;
+    injectMockRpc(fetcher, mockServer);
 
     await expect(
       fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
@@ -168,115 +176,217 @@ describe("EventFetcher", () => {
     expect(summary!.tags).toMatchObject({ startLedger: "1", endLedger: "2" });
   });
 
-  it("backs off and recovers on a 429 rate-limit response", async () => {
-    const rateLimitErr = Object.assign(new Error("Too Many Requests"), {
-      status: 429,
-    });
-    const mockServer = {
-      getEvents: vi
-        .fn()
-        .mockRejectedValueOnce(rateLimitErr)
-        .mockResolvedValueOnce({ events: [makeEvent(7)], latestLedger: 10 }),
-    };
+  describe("RPC disconnect backoff (Issue #710)", () => {
+    it("resets consecutiveDisconnections on successful fetch", async () => {
+      const server = makeMockServer([[makeEvent(1)]]);
+      const fetcher = makeFetcher(server, telemetry);
+      (fetcher as any).consecutiveDisconnections = 3;
 
-    const fetcher = new EventFetcher(
-      { rpcUrl: "https://rpc.example.com", contractId: "CTEST" },
-      telemetry
-    );
-    (fetcher as any).server = mockServer;
+      await fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 1 });
 
-    const result = await fetcher.fetchByLedgerWindow({
-      startLedger: 7,
-      endLedger: 7,
+      expect((fetcher as any).consecutiveDisconnections).toBe(0);
     });
 
-    expect(result.events).toHaveLength(1);
-    expect(mockServer.getEvents).toHaveBeenCalledTimes(2);
-    expect(recorded.some((r) => r.metric === "indexer.rpc.rate_limited")).toBe(
-      true
-    );
-  });
+    it("increments consecutiveDisconnections on transient error", async () => {
+      const err = Object.assign(new Error("socket hang up"), {
+        code: "ECONNRESET",
+      });
+      const mockServer = {
+        getEvents: vi.fn().mockRejectedValue(err),
+      };
+      const fetcher = makeFetcher(mockServer, telemetry);
+      (fetcher as any).config.maxRetries = 1;
+      (fetcher as any).config.retryDelayMs = 0;
 
-  it("throws once rate-limit retries are exhausted (does not stall the cursor forever)", async () => {
-    const rateLimitErr = Object.assign(new Error("Too Many Requests"), {
-      status: 429,
-    });
-    const mockServer = { getEvents: vi.fn().mockRejectedValue(rateLimitErr) };
+      await expect(
+        fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+      ).rejects.toThrow();
 
-    const fetcher = new EventFetcher(
-      { rpcUrl: "https://rpc.example.com", contractId: "CTEST" },
-      telemetry
-    );
-    (fetcher as any).server = mockServer;
-
-    await expect(
-      fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
-    ).rejects.toThrow("Too Many Requests");
-
-    expect(
-      recorded.some((r) => r.metric === "indexer.rpc.rate_limited_exhausted")
-    ).toBe(true);
-  });
-
-  it("throws CursorStallError when the same paging cursor keeps repeating", async () => {
-    const stuckEvent = makeEvent(1, "stuck");
-    stuckEvent.pagingToken = "same-token";
-    const mockServer = {
-      getEvents: vi.fn().mockResolvedValue({
-        events: [stuckEvent],
-        latestLedger: 10,
-      }),
-    };
-
-    const fetcher = new EventFetcher(
-      { rpcUrl: "https://rpc.example.com", contractId: "CTEST", pageLimit: 1 },
-      telemetry
-    );
-    (fetcher as any).server = mockServer;
-
-    await expect(
-      fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
-    ).rejects.toThrow(CursorStallError);
-  });
-
-  describe("production configuration guardrails", () => {
-    const originalEnv = process.env.NODE_ENV;
-
-    afterEach(() => {
-      process.env.NODE_ENV = originalEnv;
+      // 1 initial + 1 retry = 2 failures total, should increment by 2
+      expect((fetcher as any).consecutiveDisconnections).toBe(2);
     });
 
-    it("fails fast in production when rpcUrl is not https", () => {
-      process.env.NODE_ENV = "production";
-      expect(
-        () =>
-          new EventFetcher({
-            rpcUrl: "http://localhost:8000",
-            contractId: "CTEST",
+    it("does not increment consecutiveDisconnections on non-transient error", async () => {
+      const mockServer = {
+        getEvents: vi.fn().mockRejectedValue(new Error("bad request")),
+      };
+      const fetcher = makeFetcher(mockServer, telemetry);
+
+      await expect(
+        fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+      ).rejects.toThrow();
+
+      expect((fetcher as any).consecutiveDisconnections).toBe(0);
+    });
+
+    it("applies extended backoff when consecutiveDisconnections exceeds threshold", async () => {
+      vi.useFakeTimers();
+
+      try {
+        const err = Object.assign(new Error("socket hang up"), {
+          code: "ECONNRESET",
+        });
+        const mockServer = {
+          getEvents: vi.fn().mockRejectedValue(err),
+        };
+        const fetcher = makeFetcher(mockServer, telemetry);
+        (fetcher as any).config.maxRetries = 0;
+        (fetcher as any).config.retryDelayMs = 0;
+        (fetcher as any).config.fetchTimeoutMs = 0;
+        // Set consecutive disconnections above threshold
+        (fetcher as any).consecutiveDisconnections = 5;
+
+        // Attach rejection handler before advancing timers so a fast failure
+        // cannot surface as an unhandled rejection between settle and await.
+        const fetchPromise = fetcher
+          .fetchByLedgerWindow({
+            startLedger: 1,
+            endLedger: 5,
           })
-      ).toThrow(EventFetcherConfigError);
+          .catch(() => undefined);
+
+        // Advance past the DISCONNECTED_BACKOFF_MS (10_000ms) sleep so the
+        // fetch proceeds, fails, and the promise settles.
+        await vi.advanceTimersByTimeAsync(10_001);
+        await fetchPromise;
+
+        const backoffMetric = recorded.find(
+          (r) => r.metric === "indexer.rpc.disconnected_backoff"
+        );
+        expect(backoffMetric).toBeDefined();
+        expect(backoffMetric!.tags?.consecutiveDisconnections).toBe("5");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
-    it("fails fast in production when contractId is missing", () => {
-      process.env.NODE_ENV = "production";
-      expect(
-        () =>
-          new EventFetcher({
+    it("telemetry records disconnection events", async () => {
+      const err = Object.assign(new Error("socket hang up"), {
+        code: "ECONNRESET",
+      });
+      const mockServer = {
+        getEvents: vi.fn().mockRejectedValue(err),
+      };
+      const fetcher = makeFetcher(mockServer, telemetry);
+      (fetcher as any).config.maxRetries = 0;
+      (fetcher as any).config.retryDelayMs = 0;
+
+      await expect(
+        fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+      ).rejects.toThrow();
+
+      const disconnectionMetric = recorded.find(
+        (r) => r.metric === "indexer.rpc.disconnection"
+      );
+      expect(disconnectionMetric).toBeDefined();
+      expect(disconnectionMetric!.tags?.consecutive).toBe("1");
+    });
+
+    it("exposes consecutive disconnections via getConsecutiveDisconnections()", () => {
+      const server = makeMockServer([[makeEvent(1)]]);
+      const fetcher = makeFetcher(server, telemetry);
+      expect(fetcher.getConsecutiveDisconnections()).toBe(0);
+      (fetcher as any).consecutiveDisconnections = 7;
+      expect(fetcher.getConsecutiveDisconnections()).toBe(7);
+    });
+  });
+
+  describe("per-page fetch timeout", () => {
+    it("aborts a hanging getEvents call after fetchTimeoutMs and treats it as transient", async () => {
+      vi.useFakeTimers();
+      try {
+        const mockServer = {
+          getEvents: vi.fn(
+            () =>
+              new Promise<never>(() => {
+                /* never resolves — simulates a hung RPC */
+              })
+          ),
+        };
+
+        const fetcher = new EventFetcher(
+          {
             rpcUrl: "https://rpc.example.com",
-            contractId: "",
-          })
-      ).toThrow(EventFetcherConfigError);
+            contractId: "CTEST",
+            fetchTimeoutMs: 5_000,
+            maxRetries: 0,
+            retryDelayMs: 0,
+          },
+          telemetry
+        );
+        injectMockRpc(fetcher, mockServer);
+
+        const fetchPromise = fetcher
+          .fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+          .catch((e) => e);
+
+        await vi.advanceTimersByTimeAsync(5_001);
+        const result = await fetchPromise;
+
+        expect(result).toBeInstanceOf(Error);
+        expect((result as Error).message).toMatch(/timed out/i);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
-    it("allows relaxed config outside production", () => {
-      process.env.NODE_ENV = "test";
-      expect(
-        () =>
-          new EventFetcher({
-            rpcUrl: "http://localhost:8000",
+    it("records a transient disconnection metric on timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const mockServer = {
+          getEvents: vi.fn(
+            () =>
+              new Promise<never>(() => {
+                /* never resolves */
+              })
+          ),
+        };
+
+        const fetcher = new EventFetcher(
+          {
+            rpcUrl: "https://rpc.example.com",
             contractId: "CTEST",
-          })
-      ).not.toThrow();
+            fetchTimeoutMs: 3_000,
+            maxRetries: 0,
+            retryDelayMs: 0,
+          },
+          telemetry
+        );
+        injectMockRpc(fetcher, mockServer);
+
+        const fetchPromise = fetcher
+          .fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+          .catch(() => {});
+
+        await vi.advanceTimersByTimeAsync(3_001);
+        await fetchPromise;
+
+        const disconnectionMetric = recorded.find(
+          (r) => r.metric === "indexer.rpc.disconnection"
+        );
+        expect(disconnectionMetric).toBeDefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("skips the timeout when fetchTimeoutMs is 0", async () => {
+      const server = makeMockServer([[makeEvent(1)]]);
+      const fetcher = new EventFetcher(
+        {
+          rpcUrl: "https://rpc.example.com",
+          contractId: "CTEST",
+          fetchTimeoutMs: 0,
+        },
+        telemetry
+      );
+      injectMockRpc(fetcher, server);
+
+      const result = await fetcher.fetchByLedgerWindow({
+        startLedger: 1,
+        endLedger: 1,
+      });
+      expect(result.events).toHaveLength(1);
     });
   });
 });

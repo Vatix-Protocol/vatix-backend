@@ -1,31 +1,36 @@
 export interface IndexerMetricsSnapshot {
   latestIndexedLedgerSequence: number | null;
-  eventsSkippedUnknownTopicTotal: number;
-  eventsSkippedUnknownTopicByTopic: Record<string, number>;
+  latestNetworkLedgerSequence: number | null;
+  /** Difference between the latest network ledger and the indexed ledger, or null if both are unknown. */
+  lag: number | null;
+  /** Total number of ledger gaps detected since process start. */
+  gapDetectedTotal: number;
+  /** Total number of ledgers back-filled during gap catch-up since process start. */
+  backfillLedgersTotal: number;
+  /** Total number of event parse errors (all parsers) since process start. */
+  parseErrorTotal: number;
 }
 
 /** Typed payload used when logging a metrics snapshot. */
 export interface IndexerMetricsLog {
   event: "indexer.metrics.snapshot";
   latestIndexedLedgerSequence: number | null;
-  eventsSkippedUnknownTopicTotal: number;
-}
-
-/** Typed payload used when logging an individual unknown-topic skip. */
-export interface UnknownTopicSkipLog {
-  event: "indexer.events.skipped_unknown_topic";
-  topic: string;
-  requestId?: string;
-  eventsSkippedUnknownTopicTotal: number;
+  latestNetworkLedgerSequence: number | null;
+  lag: number | null;
+  gapDetectedTotal: number;
+  backfillLedgersTotal: number;
+  parseErrorTotal: number;
 }
 
 export class InternalIndexerMetricsService {
   private latestIndexedLedgerSequence: number | null = null;
-  private eventsSkippedUnknownTopicTotal = 0;
-  private readonly eventsSkippedUnknownTopicByTopic = new Map<
-    string,
-    number
-  >();
+  private latestNetworkLedgerSequence: number | null = null;
+  /** Running count of gaps detected since process start. */
+  private gapDetectedTotal = 0;
+  /** Running total of ledgers back-filled since process start. */
+  private backfillLedgersTotal = 0;
+  /** Running total of event parse errors (all parsers) since process start. */
+  private parseErrorTotal = 0;
 
   setLatestIndexedLedgerSequence(sequence: number): void {
     this.latestIndexedLedgerSequence = sequence;
@@ -35,43 +40,69 @@ export class InternalIndexerMetricsService {
     return this.latestIndexedLedgerSequence;
   }
 
-  /**
-   * Record that a raw chain event was silently dropped because its topic
-   * did not match any known handler. Without this counter, these drops are
-   * invisible — no dashboard, no alert — and can mask lost trades,
-   * resolutions, or admin actions. Returns a structured log payload the
-   * caller can pass straight to its logger (never logs secrets, only the
-   * topic name and an optional correlation id).
-   */
-  incrementEventsSkippedUnknownTopic(
-    topic: string,
-    requestId?: string
-  ): UnknownTopicSkipLog {
-    this.eventsSkippedUnknownTopicTotal += 1;
-    this.eventsSkippedUnknownTopicByTopic.set(
-      topic,
-      (this.eventsSkippedUnknownTopicByTopic.get(topic) ?? 0) + 1
-    );
-
-    return {
-      event: "indexer.events.skipped_unknown_topic",
-      topic,
-      requestId,
-      eventsSkippedUnknownTopicTotal: this.eventsSkippedUnknownTopicTotal,
-    };
+  setLatestNetworkLedgerSequence(sequence: number): void {
+    this.latestNetworkLedgerSequence = sequence;
   }
 
-  getEventsSkippedUnknownTopicTotal(): number {
-    return this.eventsSkippedUnknownTopicTotal;
+  getLatestNetworkLedgerSequence(): number | null {
+    return this.latestNetworkLedgerSequence;
+  }
+
+  /** Compute the current lag: networkLedger - indexedLedger. Returns null when either value is unknown. */
+  getLag(): number | null {
+    if (
+      this.latestNetworkLedgerSequence === null ||
+      this.latestIndexedLedgerSequence === null
+    ) {
+      return null;
+    }
+    return Math.max(
+      0,
+      this.latestNetworkLedgerSequence - this.latestIndexedLedgerSequence
+    );
+  }
+
+  /**
+   * Increment the gap-detected counter by `count` (defaults to 1).
+   * Called once per detected discontinuity.
+   */
+  incrementGapDetected(count = 1): void {
+    this.gapDetectedTotal += count;
+  }
+
+  getGapDetectedTotal(): number {
+    return this.gapDetectedTotal;
+  }
+
+  /**
+   * Increment the backfill-ledgers counter by the number of ledgers
+   * that were re-fetched during a gap catch-up.
+   */
+  incrementBackfillLedgers(count: number): void {
+    this.backfillLedgersTotal += count;
+  }
+
+  getBackfillLedgersTotal(): number {
+    return this.backfillLedgersTotal;
+  }
+
+  /** Increment the parse-error counter by `count` (defaults to 1). */
+  incrementParseError(count = 1): void {
+    this.parseErrorTotal += count;
+  }
+
+  getParseErrorTotal(): number {
+    return this.parseErrorTotal;
   }
 
   getSnapshot(): IndexerMetricsSnapshot {
     return {
       latestIndexedLedgerSequence: this.latestIndexedLedgerSequence,
-      eventsSkippedUnknownTopicTotal: this.eventsSkippedUnknownTopicTotal,
-      eventsSkippedUnknownTopicByTopic: Object.fromEntries(
-        this.eventsSkippedUnknownTopicByTopic
-      ),
+      latestNetworkLedgerSequence: this.latestNetworkLedgerSequence,
+      lag: this.getLag(),
+      gapDetectedTotal: this.gapDetectedTotal,
+      backfillLedgersTotal: this.backfillLedgersTotal,
+      parseErrorTotal: this.parseErrorTotal,
     };
   }
 
@@ -79,7 +110,11 @@ export class InternalIndexerMetricsService {
     return {
       event: "indexer.metrics.snapshot",
       latestIndexedLedgerSequence: this.latestIndexedLedgerSequence,
-      eventsSkippedUnknownTopicTotal: this.eventsSkippedUnknownTopicTotal,
+      latestNetworkLedgerSequence: this.latestNetworkLedgerSequence,
+      lag: this.getLag(),
+      gapDetectedTotal: this.gapDetectedTotal,
+      backfillLedgersTotal: this.backfillLedgersTotal,
+      parseErrorTotal: this.parseErrorTotal,
     };
   }
 }

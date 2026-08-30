@@ -146,6 +146,7 @@ export async function cleanDatabase(client?: PrismaClient): Promise<void> {
   const prisma = client ?? getTestPrismaClient();
 
   // Delete in order respecting foreign key constraints
+  await prisma.trade.deleteMany();
   await prisma.order.deleteMany();
   await prisma.userPosition.deleteMany();
   await prisma.market.deleteMany();

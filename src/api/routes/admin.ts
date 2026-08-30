@@ -1,25 +1,81 @@
-import type { FastifyInstance } from "fastify";
+import { randomBytes } from "crypto";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
+import {
+  getAnalyticsPrismaClient,
+  isAnalyticsDatabaseConfigured,
+} from "../../services/analytics-prisma.js";
+import { positionReconciliationService } from "../../services/position-reconciliation.js";
 import { requireAdmin } from "../middleware/adminGuard.js";
 import { requireApiKey } from "../middleware/apiKeyAuth.js";
+import {
+  InvalidMarketTransitionError,
+  MarketNotFoundError,
+  PreconditionFailedError,
+  ValidationError,
+} from "../middleware/errors.js";
+import {
+  canTransition,
+  type MarketLifecycleState,
+} from "../../../packages/shared/src/marketLifecycle.js";
+import { adminLimiter } from "../middleware/rateLimiter.js";
+import { success } from "../middleware/responses.js";
+import { computeMarketEtag } from "./market.dto.js";
+import { BreakGlassService } from "../../services/break-glass.js";
+import { createLogger } from "../../../apps/indexer/src/logger.js";
 
 export async function adminRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
 
-  // All routes in this plugin require both API key and admin role
+  // All routes in this plugin require API key, admin role, and the admin rate limit tier.
+  fastify.addHook("onRequest", adminLimiter);
   fastify.addHook("onRequest", requireApiKey);
   fastify.addHook("onRequest", requireAdmin);
 
-  // GET /admin/markets - list all markets including cancelled
-  fastify.get("/admin/markets", async () => {
+  // GET /admin/markets - list all non-deleted markets (excluding soft-deleted)
+  fastify.get("/admin/markets", async (_request, reply) => {
     const markets = await prisma.market.findMany({
+      where: { deletedAt: null },
       orderBy: { createdAt: "desc" },
     });
-    return { markets, count: markets.length };
+    success(reply, { markets, count: markets.length });
+  });
+
+  // GET /admin/analytics/summary - aggregate reporting stats (#743).
+  // Reads from the analytics (read-only) database connection so heavy
+  // aggregate queries don't compete with primary OLTP traffic. Falls back
+  // to the primary connection when ANALYTICS_DATABASE_URL is unset.
+  fastify.get("/admin/analytics/summary", async (_request, reply) => {
+    const analyticsPrisma = getAnalyticsPrismaClient();
+
+    const [marketsByStatus, totalTrades, tradeVolume] = await Promise.all([
+      analyticsPrisma.market.groupBy({
+        by: ["status"],
+        _count: { _all: true },
+      }),
+      analyticsPrisma.trade.count(),
+      analyticsPrisma.trade.aggregate({ _sum: { quantity: true } }),
+    ]);
+
+    success(reply, {
+      source: isAnalyticsDatabaseConfigured() ? "replica" : "primary",
+      marketsByStatus: Object.fromEntries(
+        marketsByStatus.map((row) => [row.status, row._count._all])
+      ),
+      totalTrades,
+      totalTradedQuantity: tradeVolume._sum.quantity ?? 0,
+    });
   });
 
   // PATCH /admin/markets/:id/status - update market status
-  fastify.patch<{ Params: { id: string }; Body: { status: string } }>(
+  // Supports optimistic concurrency via the If-Match header: when present,
+  // it must match the market's current ETag (as returned by GET /markets/:id)
+  // or the update is rejected with 412 Precondition Failed.
+  fastify.patch<{
+    Params: { id: string };
+    Body: { status: string };
+    Headers: { "if-match"?: string };
+  }>(
     "/admin/markets/:id/status",
     {
       schema: {
@@ -43,14 +99,458 @@ export async function adminRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { id } = request.params;
       const { status } = request.body;
+      const ifMatch = request.headers["if-match"];
+
+      const existing = await prisma.market.findUnique({ where: { id } });
+      if (!existing || existing.deletedAt !== null) {
+        throw new MarketNotFoundError(id);
+      }
+
+      if (
+        ifMatch &&
+        ifMatch !== "*" &&
+        ifMatch !== computeMarketEtag(existing)
+      ) {
+        throw new PreconditionFailedError();
+      }
+
+      // The shared lifecycle matrix is the only place transitions are encoded.
+      if (
+        !canTransition(
+          existing.status as MarketLifecycleState,
+          status as MarketLifecycleState
+        )
+      ) {
+        throw new InvalidMarketTransitionError(existing.status, status);
+      }
 
       const market = await prisma.market.update({
         where: { id },
         data: { status: status as any },
       });
 
-      reply.code(200);
-      return { market };
+      reply.header("etag", computeMarketEtag(market));
+      success(reply, { market });
+    }
+  );
+
+  // POST /admin/markets/:id/break-glass/halt - Initiate market halt
+  // Step 1: First admin initiates, gets an approval token
+  // Step 2: Second admin uses token to execute
+  fastify.post<{
+    Params: { id: string };
+    Body: { reason?: string };
+    Headers: { "x-approval-token"?: string };
+  }>(
+    "/admin/markets/:id/break-glass/halt",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+        body: {
+          type: "object",
+          properties: {
+            reason: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+      const { reason } = request.body;
+      const approvalToken = request.headers["x-approval-token"];
+      const actor = (request as any).adminKey || "unknown";
+      const requestId = randomBytes(16).toString("hex");
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      // If approval token provided, execute the halt
+      if (approvalToken) {
+        const result = await breakGlass.executeWithApproval(
+          {
+            marketId,
+            action: "halt",
+            actor,
+            requestId,
+            reason,
+            approvalToken,
+          },
+          actor
+        );
+        success(reply, result);
+      } else {
+        // Otherwise, initiate approval request
+        const approval = await breakGlass.initiateApproval({
+          marketId,
+          action: "halt",
+          initiator: actor,
+          requestId,
+          reason,
+        });
+        reply.status(202).send({
+          status: "approval_required",
+          requestId: approval.requestId,
+          token: approval.token,
+          expiresAt: approval.expiresAt.toISOString(),
+          message:
+            "Second admin approval required. Use token in X-Approval-Token header.",
+        });
+      }
+    }
+  );
+
+  // POST /admin/markets/:id/break-glass/cancel-all - Initiate cancel all orders
+  fastify.post<{
+    Params: { id: string };
+    Body: { reason?: string };
+    Headers: { "x-approval-token"?: string };
+  }>(
+    "/admin/markets/:id/break-glass/cancel-all",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+        body: {
+          type: "object",
+          properties: {
+            reason: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+      const { reason } = request.body;
+      const approvalToken = request.headers["x-approval-token"];
+      const actor = (request as any).adminKey || "unknown";
+      const requestId = randomBytes(16).toString("hex");
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      if (approvalToken) {
+        const result = await breakGlass.executeWithApproval(
+          {
+            marketId,
+            action: "cancel-all",
+            actor,
+            requestId,
+            reason,
+            approvalToken,
+          },
+          actor
+        );
+        success(reply, result);
+      } else {
+        const approval = await breakGlass.initiateApproval({
+          marketId,
+          action: "cancel-all",
+          initiator: actor,
+          requestId,
+          reason,
+        });
+        reply.status(202).send({
+          status: "approval_required",
+          requestId: approval.requestId,
+          token: approval.token,
+          expiresAt: approval.expiresAt.toISOString(),
+          message:
+            "Second admin approval required. Use token in X-Approval-Token header.",
+        });
+      }
+    }
+  );
+
+  // POST /admin/markets/:id/break-glass/resume - Resume a halted market
+  fastify.post<{
+    Params: { id: string };
+    Body: { reason?: string };
+    Headers: { "x-approval-token"?: string };
+  }>(
+    "/admin/markets/:id/break-glass/resume",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+        body: {
+          type: "object",
+          properties: {
+            reason: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+      const { reason } = request.body;
+      const approvalToken = request.headers["x-approval-token"];
+      const actor = (request as any).adminKey || "unknown";
+      const requestId = randomBytes(16).toString("hex");
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      if (approvalToken) {
+        const result = await breakGlass.executeWithApproval(
+          {
+            marketId,
+            action: "resume",
+            actor,
+            requestId,
+            reason,
+            approvalToken,
+          },
+          actor
+        );
+        success(reply, result);
+      } else {
+        const approval = await breakGlass.initiateApproval({
+          marketId,
+          action: "resume",
+          initiator: actor,
+          requestId,
+          reason,
+        });
+        reply.status(202).send({
+          status: "approval_required",
+          requestId: approval.requestId,
+          token: approval.token,
+          expiresAt: approval.expiresAt.toISOString(),
+          message:
+            "Second admin approval required. Use token in X-Approval-Token header.",
+        });
+      }
+    }
+  );
+
+  // GET /admin/markets/:id/break-glass/audit - View break-glass audit log
+  fastify.get<{ Params: { id: string } }>(
+    "/admin/markets/:id/break-glass/audit",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id: marketId } = request.params;
+
+      const breakGlass = new BreakGlassService(
+        prisma,
+        createLogger(process.env.LOG_LEVEL as any)
+      );
+
+      const auditLog = await breakGlass.getAuditLog(marketId);
+      success(reply, {
+        marketId,
+        actions: auditLog.map((action) => ({
+          id: action.id,
+          action: action.action,
+          actor: action.actor,
+          beforeStatus: action.beforeStatus,
+          afterStatus: action.afterStatus,
+          ordersCancelled: action.ordersCancelled,
+          collateralReleased: action.collateralReleased.toString(),
+          reason: action.reason,
+          createdAt: action.createdAt.toISOString(),
+        })),
+      });
+    }
+  );
+
+  // GET /admin/outbox/quarantined - list quarantined settlement outbox entries
+  fastify.get<{ Querystring: { limit?: string; offset?: string } }>(
+    "/admin/outbox/quarantined",
+    {
+      schema: {
+        querystring: {
+          type: "object",
+          properties: {
+            limit: { type: "string" },
+            offset: { type: "string" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const limit = Math.min(
+        Number(request.query.limit) || 50,
+        500
+      );
+      const offset = Number(request.query.offset) || 0;
+
+      const client = prisma as unknown as {
+        outboxEvent: {
+          findMany: (args: unknown) => Promise<Array<any>>;
+          count: (args: unknown) => Promise<number>;
+        };
+      };
+
+      const [entries, total] = await Promise.all([
+        client.outboxEvent.findMany({
+          where: { status: "QUARANTINED" },
+          orderBy: { quarantinedAt: "desc" },
+          select: {
+            tradeId: true,
+            attempts: true,
+            lastError: true,
+            quarantinedAt: true,
+            createdAt: true,
+            payload: true,
+          },
+          skip: offset,
+          take: limit,
+        }),
+        client.outboxEvent.count({
+          where: { status: "QUARANTINED" },
+        }),
+      ]);
+
+      success(reply, {
+        entries: entries.map((e: any) => ({
+          tradeId: e.tradeId,
+          attempts: e.attempts,
+          lastError: e.lastError,
+          quarantinedAt: e.quarantinedAt?.toISOString(),
+          createdAt: e.createdAt.toISOString(),
+          payload: e.payload,
+        })),
+        total,
+        limit,
+        offset,
+      });
+    }
+  );
+
+  // POST /admin/outbox/quarantined/:tradeId/retry - retry a quarantined entry
+  fastify.post<{ Params: { tradeId: string } }>(
+    "/admin/outbox/quarantined/:tradeId/retry",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["tradeId"],
+          properties: { tradeId: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { tradeId } = request.params;
+
+      const client = prisma as unknown as {
+        outboxEvent: {
+          updateMany: (args: unknown) => Promise<{ count: number }>;
+          findFirst: (args: unknown) => Promise<any>;
+        };
+      };
+
+      const entry = await client.outboxEvent.findFirst({
+        where: { tradeId },
+      });
+
+      if (!entry) {
+        reply.status(404).send({ error: "Outbox entry not found", tradeId });
+        return;
+      }
+
+      if (entry.status !== "QUARANTINED") {
+        reply.status(400).send({
+          error: "Entry is not quarantined",
+          tradeId,
+          currentStatus: entry.status,
+        });
+        return;
+      }
+
+      await client.outboxEvent.updateMany({
+        where: { tradeId },
+        data: {
+          status: "FAILED",
+          attempts: 0,
+          nextAttemptAt: new Date(),
+          quarantinedAt: null,
+        },
+      });
+
+      success(reply, {
+        message: "Entry moved back to FAILED status for retry",
+        tradeId,
+      });
+    }
+  );
+
+  // POST /admin/outbox/quarantined/:tradeId/discard - discard a quarantined entry
+  fastify.post<{ Params: { tradeId: string } }>(
+    "/admin/outbox/quarantined/:tradeId/discard",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["tradeId"],
+          properties: { tradeId: { type: "string" } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { tradeId } = request.params;
+
+      const client = prisma as unknown as {
+        outboxEvent: {
+          updateMany: (args: unknown) => Promise<{ count: number }>;
+          findFirst: (args: unknown) => Promise<any>;
+        };
+      };
+
+      const entry = await client.outboxEvent.findFirst({
+        where: { tradeId },
+      });
+
+      if (!entry) {
+        reply.status(404).send({ error: "Outbox entry not found", tradeId });
+        return;
+      }
+
+      if (entry.status !== "QUARANTINED") {
+        reply.status(400).send({
+          error: "Entry is not quarantined",
+          tradeId,
+          currentStatus: entry.status,
+        });
+        return;
+      }
+
+      await client.outboxEvent.updateMany({
+        where: { tradeId },
+        data: {
+          status: "PUBLISHED",
+          publishedAt: new Date(),
+          quarantinedAt: null,
+        },
+      });
+
+      success(reply, {
+        message: "Entry marked as PUBLISHED (discarded from settlement)",
+        tradeId,
+      });
     }
   );
 }

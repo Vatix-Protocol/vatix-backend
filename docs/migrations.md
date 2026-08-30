@@ -158,13 +158,13 @@ pnpm prisma:validate
 
 #### What it checks
 
-| Check | Description |
-|---|---|
-| Migration files present | Fails if `prisma/migrations/` contains no directories |
-| SQL readability | Fails if any `migration.sql` cannot be read |
-| Dangerous operations | Warns on `DROP TABLE`, `DROP COLUMN`, `DROP INDEX`, or bare `DELETE FROM` |
-| Schema sync | Runs `prisma migrate diff` and fails if schema and migrations diverge |
-| Client generation | Runs `prisma generate` and fails if the Prisma client cannot be built |
+| Check                   | Description                                                               |
+| ----------------------- | ------------------------------------------------------------------------- |
+| Migration files present | Fails if `prisma/migrations/` contains no directories                     |
+| SQL readability         | Fails if any `migration.sql` cannot be read                               |
+| Dangerous operations    | Warns on `DROP TABLE`, `DROP COLUMN`, `DROP INDEX`, or bare `DELETE FROM` |
+| Schema sync             | Runs `prisma migrate diff` and fails if schema and migrations diverge     |
+| Client generation       | Runs `prisma generate` and fails if the Prisma client cannot be built     |
 
 Exit code `0` means all checks passed; exit code `1` means at least one error was found. Warnings are printed but do not cause failure.
 
@@ -250,6 +250,8 @@ Prisma doesn't support automatic rollbacks. Manual rollback process:
 2. **Manually write reverse SQL** in the migration file
 
 3. **Test rollback** thoroughly on staging
+
+For the full step-by-step procedure (pre-checks, backup, resolving the failed migration, post-checks), including current caveats for the soft-delete and trade index migrations and expand/contract rollback hazards, see [Migration Rollback Procedure](./migration-rollback.md).
 
 ## Migration Scripts
 

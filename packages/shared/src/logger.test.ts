@@ -53,6 +53,18 @@ describe("Logger", () => {
     delete process.env.LOG_LEVEL;
   });
 
+  it("throws LoggerValidationError for invalid constructor prefix", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => new Logger(42 as any)).toThrow(LoggerValidationError);
+  });
+
+  it("throws LoggerValidationError for invalid explicit log level", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => new Logger("api", "verbose" as any)).toThrow(
+      LoggerValidationError
+    );
+  });
+
   it("includes the prefix in output", () => {
     const log = new Logger("indexer", "info");
     log.info("started");
@@ -68,6 +80,12 @@ describe("Logger", () => {
     expect(
       (console.debug as ReturnType<typeof vi.fn>).mock.calls[0][0]
     ).toContain("api:routes");
+  });
+
+  it("throws LoggerValidationError for invalid child prefix", () => {
+    const parent = new Logger("api", "debug");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => parent.child(123 as any)).toThrow(LoggerValidationError);
   });
 
   it("suppresses messages below the active level", () => {
@@ -88,8 +106,12 @@ describe("Logger input validation", () => {
     const log = new Logger("", "debug");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => log.info(42 as any)).toThrow(LoggerValidationError);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect(() => log.info(42 as any)).toMatchObject({ statusCode: 400 });
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      log.info(42 as any);
+    } catch (error) {
+      expect(error).toMatchObject({ statusCode: 400 });
+    }
   });
 
   it("throws for null message", () => {

@@ -1,17 +1,6 @@
-/**
- * Standardised error envelope returned by every API error response.
- *
- * Machine-readable: `code`   – stable snake_case identifier, safe to switch on.
- * Human-readable:  `message` – plain-English description, may change between releases.
- * Correlation:     `requestId` – ties the response to server logs.
- * Extra context:   `metadata`  – optional structured details (e.g. field-level errors).
- */
-export interface ErrorEnvelope {
-  code: string;
-  message: string;
-  error?: string;
-  statusCode: number;
-  requestId?: string;
-  fields?: Record<string, string>;
-  stack?: string;
-}
+// Error response format — re-exports the shared envelope (#793) so API
+// consumers keep importing from `../types/errors.js` unchanged.
+
+export type { ErrorEnvelope as ErrorResponse } from "../../packages/shared/src/errors.js";
+export { ContractError } from "../api/middleware/errors.js";
+

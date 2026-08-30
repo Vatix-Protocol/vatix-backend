@@ -18,7 +18,9 @@ Override the global limit via the `BODY_LIMIT_BYTES` environment variable:
 BODY_LIMIT_BYTES=65536
 ```
 
-The value is read once at server startup. Changes require a restart.
+The value is validated by `parseApiEnv()` at server startup — it must be a
+positive integer. An invalid or missing value falls back to the default of
+**65 536 bytes**. Changes require a restart.
 
 ## Response
 

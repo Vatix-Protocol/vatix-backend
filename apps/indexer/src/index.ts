@@ -37,3 +37,4 @@ export type {
   BatchWriteResult,
   BatchWriter,
 } from "./batchWriter.js";
+export { PrismaBatchWriter } from "./batchWriter.js";

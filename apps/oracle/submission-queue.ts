@@ -8,6 +8,7 @@
  */
 
 import type { ProviderResult, ResolutionRequest } from "./provider-adapter.js";
+import type { ILogger } from "../../packages/shared/src/logger.js";
 
 /** Possible states of a queued submission. */
 export type SubmissionStatus = "pending" | "submitted" | "failed";
@@ -29,6 +30,17 @@ export interface SubmissionQueueItem {
   /** ISO timestamp of the last attempt, if any. */
   lastAttemptAt?: string;
   /** Error message from the last failed attempt, if any. */
+  lastError?: string;
+}
+
+export interface SubmissionQueueLogMeta {
+  id: string;
+  marketId: string;
+  oracleAddress: string;
+  status: SubmissionStatus;
+  enqueuedAt: string;
+  attempts?: number;
+  lastAttemptAt?: string;
   lastError?: string;
 }
 
@@ -102,21 +114,27 @@ export function validateSubmissionQueueItem(
   return item as SubmissionQueueItem;
 }
 
+/**
+ * In-memory submission queue (deprecated — use Redis via apps/workers/src/oracle/redis-submission-queue.ts).
+ * Provided for backwards compatibility during migration.
+ */
 export class SubmissionQueue {
   private items: SubmissionQueueItem[] = [];
-  
-  // Use structured logging
-  constructor(private readonly logger: { info: (msg: string, meta?: any) => void; warn: (msg: string, meta?: any) => void; error: (msg: string, meta?: any) => void }) {}
+
+  constructor(private readonly logger: ILogger) {}
 
   enqueue(item: SubmissionQueueItem): void {
     validateSubmissionQueueItem(item);
     this.items.push(item);
-    this.logger.info("Submission queued successfully", {
+    this.logger.info("Oracle submission queued", {
       id: item.id,
       marketId: item.request.marketId,
       oracleAddress: item.request.oracleAddress,
       status: item.status,
-      enqueuedAt: item.enqueuedAt
-    });
+      enqueuedAt: item.enqueuedAt,
+      attempts: item.attempts,
+      lastAttemptAt: item.lastAttemptAt,
+      lastError: item.lastError,
+    } satisfies SubmissionQueueLogMeta);
   }
 }

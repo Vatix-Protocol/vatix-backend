@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   matchOrder,
   MatchingOrder,
@@ -339,6 +339,29 @@ describe("matchOrder", () => {
       expect(result.trades.length).toBe(2);
       expect(result.remainingOrder?.quantity).toBe(50);
     });
+
+    it("should invoke the trade fill hook for each executed match", () => {
+      orderBook.addOrder(createBookOrder("sell-1", "ask", 0.45, 30, 1000));
+      orderBook.addOrder(createBookOrder("sell-2", "ask", 0.48, 40, 2000));
+
+      const onTradeFilled = vi.fn();
+      const buyOrder = createMatchingOrder("buy-1", "BUY", 0.5, 100);
+
+      const result = matchOrder(buyOrder, orderBook, {
+        onTradeFilled,
+      });
+
+      expect(result.trades.length).toBe(2);
+      expect(onTradeFilled).toHaveBeenCalledTimes(2);
+      expect(onTradeFilled).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ sellOrderId: "sell-1" })
+      );
+      expect(onTradeFilled).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ sellOrderId: "sell-2" })
+      );
+    });
   });
 
   describe("Order Book Integrity", () => {
@@ -678,6 +701,48 @@ describe("matchOrder", () => {
         (d) => d.userAddress === seller
       );
       expect(sellerDelta?.yesSharesDelta).toBe(-100);
+    });
+
+    it("should reject self-trade when buyer and seller addresses match (#703)", () => {
+      const sameUser =
+        "GSELF1234567890123456789012345678901234567890123456789012";
+      orderBook.addOrder(
+        createBookOrder("sell-1", "ask", 0.5, 100, 1000, sameUser)
+      );
+
+      const buyOrder = createMatchingOrder("buy-1", "BUY", 0.5, 100, sameUser);
+
+      const result = matchOrder(buyOrder, orderBook);
+
+      // No trades should occur for self-trade
+      expect(result.trades.length).toBe(0);
+      // The opposing order should still be in the book (or properly skipped)
+      expect(result.remainingOrder).not.toBeNull();
+      expect(result.remainingOrder?.quantity).toBe(100);
+    });
+
+    it("should still match with other users after skipping self-trade orders (#703)", () => {
+      const sameUser =
+        "GSELF1234567890123456789012345678901234567890123456789012";
+      const otherUser =
+        "GOTHER1234567890123456789012345678901234567890123456789012";
+
+      // Add self order at best price, then another user's order
+      orderBook.addOrder(
+        createBookOrder("sell-1", "ask", 0.45, 30, 1000, sameUser)
+      );
+      orderBook.addOrder(
+        createBookOrder("sell-2", "ask", 0.5, 70, 2000, otherUser)
+      );
+
+      const buyOrder = createMatchingOrder("buy-1", "BUY", 0.5, 100, sameUser);
+
+      const result = matchOrder(buyOrder, orderBook);
+
+      // Should skip self-trade (sell-1) and match with sell-2
+      expect(result.trades.length).toBe(1);
+      expect(result.trades[0].sellOrderId).toBe("sell-2");
+      expect(result.trades[0].quantity).toBe(70);
     });
   });
 

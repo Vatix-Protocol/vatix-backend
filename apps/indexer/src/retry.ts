@@ -28,6 +28,23 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Compute a jittered exponential backoff delay for the given attempt.
+ *
+ * Uses "equal jitter": half of the exponential delay is guaranteed, the
+ * other half is randomized. Backoff still grows with the attempt count,
+ * but retries from many callers failing at the same time no longer land
+ * on the same schedule (thundering herd).
+ */
+export function jitteredBackoffMs(
+  baseDelayMs: number,
+  attempt: number
+): number {
+  const exponential = baseDelayMs * 2 ** attempt;
+  const half = exponential / 2;
+  return half + Math.random() * half;
+}
+
 export interface RetryOptions {
   /** Maximum number of retry attempts after the first failure. */
   maxRetries: number;
@@ -75,7 +92,7 @@ export async function withRetry<T>(
       if (isLast || !isTransientError(err)) {
         throw err;
       }
-      await sleep(retryDelayMs * 2 ** attempt);
+      await sleep(jitteredBackoffMs(retryDelayMs, attempt));
     }
   }
 

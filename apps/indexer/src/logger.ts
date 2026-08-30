@@ -1,13 +1,20 @@
-import { redactMeta } from "../../packages/shared/src/logRedactor.js";
+import { redactMeta } from "../../../packages/shared/src/logRedactor.js";
 
 export interface Logger {
   debug(message: string, meta?: Record<string, unknown>): void;
   info(message: string, meta?: Record<string, unknown>): void;
   warn(message: string, meta?: Record<string, unknown>): void;
   error(message: string, meta?: Record<string, unknown>): void;
+  child(childPrefix: string): Logger;
 }
 
-type LogLevel = "debug" | "info" | "warn" | "error";
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+function stringifyLogPayload(payload: Record<string, unknown>): string {
+  return JSON.stringify(payload, (_key, value) =>
+    typeof value === "bigint" ? value.toString() : value
+  );
+}
 
 const LOG_LEVEL_WEIGHT: Record<LogLevel, number> = {
   debug: 10,
@@ -35,7 +42,7 @@ export function createLogger(level: LogLevel): Logger {
     };
     const safeMeta = redactMeta(meta);
     const payload = safeMeta ? { ...base, ...safeMeta } : base;
-    const line = JSON.stringify(payload);
+    const line = stringifyLogPayload(payload);
 
     if (logLevel === "error") {
       console.error(line);
@@ -50,5 +57,6 @@ export function createLogger(level: LogLevel): Logger {
     info: (message, meta) => write("info", message, meta),
     warn: (message, meta) => write("warn", message, meta),
     error: (message, meta) => write("error", message, meta),
+    child: (_childPrefix: string) => createLogger(level),
   };
 }

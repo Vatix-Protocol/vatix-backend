@@ -1,11 +1,30 @@
-import type { NormalizedTrade, NormalizedResolution } from "./types.js";
+import type {
+  NormalizedTrade,
+  NormalizedResolution,
+  NormalizedCollateralDeposit,
+} from "./types.js";
+import type {
+  PersistedTrade,
+  PersistedResolution,
+  PersistedCollateralDeposit,
+  PersistedMarketCreated,
+  DuplicateEventLogger,
+} from "./idempotency.js";
+import { insertAllIfNew, insertIfNew } from "./idempotency.js";
+import { sharesRawToInt } from "./decimalUtils.js";
+import { getPrismaClient } from "../../../src/services/prisma.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
+import type { PrismaClient } from "../../../src/generated/prisma/client/index.js";
+import { sleep } from "./retry.js";
 
 export type BatchRecord =
-  | { kind: "trade"; data: NormalizedTrade }
-  | { kind: "resolution"; data: NormalizedResolution };
+  | { kind: "trade"; data: PersistedTrade }
+  | { kind: "resolution"; data: PersistedResolution }
+  | { kind: "collateral_deposited"; data: PersistedCollateralDeposit }
+  | { kind: "market_created"; data: PersistedMarketCreated };
 
 export interface BatchWriteError {
-  record: BatchRecord;
+  record: Record<string, unknown>;
   error: string;
 }
 
@@ -19,3 +38,369 @@ export interface BatchWriter {
   write(records: BatchRecord[]): Promise<BatchWriteResult>;
   flush(): Promise<void>;
 }
+
+const CHAIN_RESOLUTION_SOURCE_PREFIX = "chain:market_resolved";
+/** Stellar null account — used when the on-chain tuple omits oracle address. */
+const UNKNOWN_OPERATOR_ADDRESS =
+  "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+/**
+ * Prisma/Postgres error codes that are safe to retry — the operation did not
+ * partially commit so repeating it is idempotent given the write-idempotency
+ * guarantees already in place.
+ *
+ * P1001 — Cannot reach database server
+ * P1008 — Operations timed out
+ * P1017 — Server closed the connection
+ * 40001 — Serialization failure (Postgres)
+ * 40P01 — Deadlock detected (Postgres)
+ * P2002 — Unique constraint violation (#946). Every `create()` issued inside
+ *   this transaction targets a row keyed by `idempotencyKey`, so this code
+ *   can only mean a concurrent batch writer (another instance, or an
+ *   overlapping retry of this same event range under Horizon's
+ *   at-least-once delivery) committed the identical idempotent record
+ *   between our dedup read and our insert. Postgres aborts the whole
+ *   transaction on the conflicting statement, so we cannot locally
+ *   downgrade it to a skip — retrying is safe and correct: the next
+ *   attempt's dedup check will see the now-committed row and classify it
+ *   as a duplicate instead of racing it again.
+ */
+const RETRYABLE_PRISMA_CODES = new Set([
+  "P1001",
+  "P1008",
+  "P1017",
+  "40001",
+  "40P01",
+  "P2002",
+]);
+
+const BATCH_WRITE_MAX_RETRIES = 3;
+const BATCH_WRITE_RETRY_DELAY_MS = 200;
+
+function isBatchWriteRetryable(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code: string = (err as any).code ?? (err as any).errorCode ?? "";
+  return RETRYABLE_PRISMA_CODES.has(code);
+}
+
+export class PrismaBatchWriter implements BatchWriter {
+  private readonly prisma = getPrismaClient();
+
+  constructor(private readonly logger?: ILogger) {}
+
+  async write(records: BatchRecord[]): Promise<BatchWriteResult> {
+    if (records.length === 0) {
+      return { written: 0, skipped: 0, errors: [] };
+    }
+
+    let written = 0;
+    let skipped = 0;
+    const errors: BatchWriteError[] = [];
+    const duplicateLogger: DuplicateEventLogger | undefined = this.logger
+      ? {
+          info: (message, meta) => this.logger!.info(message, meta),
+        }
+      : undefined;
+
+    // Retry the transaction on transient DB errors (connection reset,
+    // serialisation failures, deadlocks). Each batch is idempotent thanks to
+    // the indexerProcessedEvent deduplication layer so retrying is safe.
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= BATCH_WRITE_MAX_RETRIES; attempt++) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          // Reset per-attempt counters inside the transaction so a retry
+          // starts from a clean slate.
+          written = 0;
+          skipped = 0;
+          errors.length = 0;
+
+          const keyedRecords = records.map((record) => ({
+            ...record,
+            idempotencyKey: record.data.idempotencyKey,
+          }));
+          const recordByKey = new Map(
+            records.map((record) => [record.data.idempotencyKey, record])
+          );
+
+          const deduped = await insertAllIfNew(
+            keyedRecords,
+            async (record) => {
+              const existing = await tx.indexerProcessedEvent.findUnique({
+                where: { idempotencyKey: record.idempotencyKey },
+              });
+
+              return existing ? null : record;
+            },
+            { logger: duplicateLogger }
+          );
+
+          skipped += deduped.duplicateCount;
+
+          // A record failing to persist must abort and roll back the whole
+          // transaction rather than committing the records that already
+          // succeeded — a batch is applied atomically or not at all, so a
+          // retry never has to reason about a half-applied batch (Issue #756).
+          for (const dedupedRecord of deduped.inserted) {
+            const record = recordByKey.get(dedupedRecord.idempotencyKey);
+            if (!record) {
+              continue;
+            }
+
+            const result = await insertIfNew(
+              record.data,
+              async (persisted) =>
+                this.persistRecord(
+                  tx,
+                  record,
+                  persisted as
+                    | PersistedTrade
+                    | PersistedResolution
+                    | PersistedCollateralDeposit
+                    | PersistedMarketCreated
+                ),
+              { logger: duplicateLogger }
+            );
+
+            if (result.status === "inserted") {
+              written += 1;
+            } else {
+              skipped += 1;
+            }
+          }
+        });
+
+        // Transaction succeeded — exit the retry loop
+        return { written, skipped, errors };
+      } catch (err) {
+        lastError = err;
+        const isLast = attempt === BATCH_WRITE_MAX_RETRIES;
+
+        if (!isLast && isBatchWriteRetryable(err)) {
+          const delay = BATCH_WRITE_RETRY_DELAY_MS * 2 ** attempt;
+          this.logger?.warn("Transient DB error in batch write, retrying", {
+            attempt: attempt + 1,
+            maxRetries: BATCH_WRITE_MAX_RETRIES,
+            delayMs: delay,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          await sleep(delay);
+          continue;
+        }
+
+        throw err;
+      }
+    }
+
+    // Unreachable — satisfies TypeScript
+    throw lastError;
+  }
+
+  async flush(): Promise<void> {
+    // Single $transaction per write() — nothing buffered between batches.
+  }
+
+  private async persistRecord(
+    tx: Omit<
+      PrismaClient,
+      "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
+    >,
+    record: BatchRecord,
+    persisted:
+      | PersistedTrade
+      | PersistedResolution
+      | PersistedCollateralDeposit
+      | PersistedMarketCreated
+  ): Promise<
+    | PersistedTrade
+    | PersistedResolution
+    | PersistedCollateralDeposit
+    | PersistedMarketCreated
+    | null
+  > {
+    const existing = await tx.indexerProcessedEvent.findUnique({
+      where: { idempotencyKey: persisted.idempotencyKey },
+    });
+    if (existing) {
+      return null;
+    }
+
+    await tx.indexerProcessedEvent.create({
+      data: {
+        idempotencyKey: persisted.idempotencyKey,
+        eventKind: record.kind,
+        ledger: persisted.ledger,
+      },
+    });
+
+    if (record.kind === "trade") {
+      const trade = persisted as PersistedTrade;
+      await tx.indexedTrade.create({
+        data: {
+          idempotencyKey: trade.idempotencyKey,
+          eventId: trade.eventId,
+          ledger: trade.ledger,
+          marketId: trade.marketId,
+          traderAddress: trade.traderAddress,
+          counterpartyAddress: trade.counterpartyAddress,
+          direction: trade.direction,
+          outcome: trade.outcome,
+          priceRaw: trade.priceRaw.toString(),
+          quantityRaw: trade.quantityRaw.toString(),
+          buyOrderId: trade.buyOrderId,
+          sellOrderId: trade.sellOrderId,
+        },
+      });
+      await this.reconcileTradeIntoPositions(tx, trade);
+    } else if (record.kind === "resolution") {
+      const resolution = persisted as PersistedResolution;
+      await tx.resolutionCandidate.create({
+        data: {
+          marketId: resolution.marketId,
+          proposedOutcome: resolution.outcome === "YES",
+          source: `${CHAIN_RESOLUTION_SOURCE_PREFIX}:${resolution.contractId}`,
+          status: "PROPOSED",
+          operatorAddress:
+            resolution.oracleAddress.trim() !== ""
+              ? resolution.oracleAddress
+              : UNKNOWN_OPERATOR_ADDRESS,
+          idempotencyKey: resolution.idempotencyKey,
+          confidenceScore: resolution.confidenceScore ?? null,
+        },
+      });
+    } else if (record.kind === "collateral_deposited") {
+      // collateral_deposited — logged for audit; position accounting handled by a worker.
+      const deposit = persisted as PersistedCollateralDeposit;
+      await (tx as any).collateralDeposit.create({
+        data: {
+          idempotencyKey: deposit.idempotencyKey,
+          eventId: deposit.eventId,
+          ledger: deposit.ledger,
+          contractId: deposit.contractId,
+          account: deposit.account,
+          marketId: deposit.marketId,
+          amountRaw: deposit.amountRaw.toString(),
+        },
+      });
+    } else {
+      const market = persisted as PersistedMarketCreated;
+      await tx.market.upsert({
+        where: { id: market.marketId },
+        create: {
+          id: market.marketId,
+          question: market.question,
+          endTime: new Date(market.endTime),
+          oracleAddress: market.oracleAddress,
+          status: market.status,
+        },
+        update: {
+          question: market.question,
+          endTime: new Date(market.endTime),
+          oracleAddress: market.oracleAddress,
+          status: market.status,
+        },
+      });
+    }
+
+    return persisted;
+  }
+
+  /**
+   * Upsert UserPosition rows for both sides of an indexed trade.
+   * Silently skips if the market doesn't exist yet in Postgres (FK violation),
+   * ensuring a missing market row never blocks trade ingestion.
+   */
+  private async reconcileTradeIntoPositions(
+    tx: Omit<
+      PrismaClient,
+      "$connect" | "$disconnect" | "$on" | "$transaction" | "$extends"
+    >,
+    trade: PersistedTrade
+  ): Promise<void> {
+    // #948: validated bigint -> Number boundary (rejects negative/non-integer/
+    // precision-losing quantities) instead of a bare `Number(raw)`, which
+    // silently truncates past Number.MAX_SAFE_INTEGER.
+    let quantity: number;
+    try {
+      quantity = sharesRawToInt(trade.quantityRaw);
+    } catch (err) {
+      this.logger?.warn(
+        "Skipping position reconciliation: invalid trade quantity",
+        {
+          idempotencyKey: trade.idempotencyKey,
+          marketId: trade.marketId,
+          quantityRaw: trade.quantityRaw.toString(),
+          error: err instanceof Error ? err.message : String(err),
+        }
+      );
+      return;
+    }
+    if (quantity <= 0) return;
+
+    const traderYesDelta =
+      trade.outcome === "YES"
+        ? trade.direction === "buy"
+          ? quantity
+          : -quantity
+        : 0;
+    const traderNoDelta =
+      trade.outcome === "NO"
+        ? trade.direction === "buy"
+          ? quantity
+          : -quantity
+        : 0;
+
+    try {
+      await tx.userPosition.upsert({
+        where: {
+          marketId_userAddress: {
+            marketId: trade.marketId,
+            userAddress: trade.traderAddress,
+          },
+        },
+        create: {
+          marketId: trade.marketId,
+          userAddress: trade.traderAddress,
+          yesShares: Math.max(0, traderYesDelta),
+          noShares: Math.max(0, traderNoDelta),
+        },
+        update: {
+          yesShares: { increment: traderYesDelta },
+          noShares: { increment: traderNoDelta },
+        },
+      });
+
+      await tx.userPosition.upsert({
+        where: {
+          marketId_userAddress: {
+            marketId: trade.marketId,
+            userAddress: trade.counterpartyAddress,
+          },
+        },
+        create: {
+          marketId: trade.marketId,
+          userAddress: trade.counterpartyAddress,
+          yesShares: Math.max(0, -traderYesDelta),
+          noShares: Math.max(0, -traderNoDelta),
+        },
+        update: {
+          yesShares: { increment: -traderYesDelta },
+          noShares: { increment: -traderNoDelta },
+        },
+      });
+    } catch (err) {
+      this.logger?.warn("Skipping position reconciliation for indexed trade", {
+        idempotencyKey: trade.idempotencyKey,
+        marketId: trade.marketId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+/** @deprecated Use PersistedTrade in BatchRecord after withIdempotencyKey(). */
+export type {
+  NormalizedTrade,
+  NormalizedResolution,
+  NormalizedCollateralDeposit,
+};

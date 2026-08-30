@@ -1,5 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
-import { isTransientError, withRetry, RetryValidationError } from "./retry.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import {
+  isTransientError,
+  withRetry,
+  RetryValidationError,
+  jitteredBackoffMs,
+} from "./retry.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 // ─── isTransientError ────────────────────────────────────────────────────────
 
@@ -41,6 +48,39 @@ describe("isTransientError", () => {
   });
 });
 
+// ─── jitteredBackoffMs ─────────────────────────────────────────────────────────
+
+describe("jitteredBackoffMs", () => {
+  it("returns half the exponential delay when Math.random returns 0", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    expect(jitteredBackoffMs(100, 0)).toBe(50);
+    expect(jitteredBackoffMs(100, 2)).toBe(200);
+  });
+
+  it("approaches the full exponential delay as Math.random approaches 1", () => {
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    expect(jitteredBackoffMs(100, 0)).toBe(100);
+    expect(jitteredBackoffMs(100, 2)).toBe(400);
+  });
+
+  it("stays within [half, full] of the exponential delay", () => {
+    const base = 50;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const exponential = base * 2 ** attempt;
+      for (let i = 0; i < 20; i++) {
+        const delay = jitteredBackoffMs(base, attempt);
+        expect(delay).toBeGreaterThanOrEqual(exponential / 2);
+        expect(delay).toBeLessThanOrEqual(exponential);
+      }
+    }
+  });
+
+  it("returns 0 for a zero base delay regardless of attempt", () => {
+    expect(jitteredBackoffMs(0, 0)).toBe(0);
+    expect(jitteredBackoffMs(0, 5)).toBe(0);
+  });
+});
+
 // ─── withRetry ───────────────────────────────────────────────────────────────
 
 describe("withRetry", () => {
@@ -64,6 +104,20 @@ describe("withRetry", () => {
     const result = await withRetry(fn, { maxRetries: 3, retryDelayMs: 0 });
     expect(result).toBe("recovered");
     expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it("applies exponential backoff between retries", async () => {
+    vi.useFakeTimers();
+    const transient = Object.assign(new Error("socket hang up"), {
+      code: "ECONNRESET",
+    });
+    const fn = vi.fn().mockRejectedValueOnce(transient).mockResolvedValue("ok");
+
+    const resultPromise = withRetry(fn, { maxRetries: 1, retryDelayMs: 100 });
+    await vi.runAllTimersAsync();
+    await expect(resultPromise).resolves.toBe("ok");
+    expect(fn).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 
   it("throws after exhausting all retries", async () => {

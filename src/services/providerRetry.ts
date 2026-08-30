@@ -9,6 +9,8 @@ export interface RetryOptions {
   factor?: number;
   /** Enable full jitter to avoid retry storms under provider outage. */
   jitter?: boolean;
+  /** Called immediately before waiting for a retry. */
+  onRetry?: (error: Error, attempt: number, delayMs: number) => void;
 }
 
 const DEFAULT_RETRY_OPTIONS: Required<RetryOptions> = {
@@ -17,6 +19,7 @@ const DEFAULT_RETRY_OPTIONS: Required<RetryOptions> = {
   maxDelayMs: 2000,
   factor: 2,
   jitter: true,
+  onRetry: undefined,
 };
 
 export class RetryableError extends Error {
@@ -101,8 +104,10 @@ export async function retryWithBackoff<T>(
 ): Promise<T> {
   const config = { ...DEFAULT_RETRY_OPTIONS, ...options };
   let lastError: unknown;
+  let attempts = 0;
 
   for (let attempt = 1; attempt <= config.maxAttempts; attempt += 1) {
+    attempts = attempt;
     try {
       return await operation();
     } catch (error) {
@@ -115,13 +120,18 @@ export async function retryWithBackoff<T>(
       }
 
       const delay = calculateDelay(attempt, config);
+      config.onRetry?.(
+        error instanceof Error ? error : new Error(String(error)),
+        attempt,
+        delay
+      );
       await sleep(delay);
     }
   }
 
   throw new ProviderRetryError(
-    `Provider operation failed after ${config.maxAttempts} attempts: ${getErrorDescription(lastError)}`,
-    config.maxAttempts,
+    `Provider operation failed after ${attempts} attempts: ${getErrorDescription(lastError)}`,
+    attempts,
     lastError
   );
 }

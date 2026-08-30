@@ -1,18 +1,13 @@
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../services/prisma.js";
 import {
   STELLAR_PUBLIC_KEY_REGEX,
   validateUserAddress,
+  sanitizeUserAddress,
 } from "../../matching/validation.js";
-import { ValidationError } from "../middleware/errors.js";
+import { NotFoundError, ValidationError } from "../middleware/errors.js";
 import { heavyReadLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
-
-interface PositionResult {
-  yesShares: number;
-  noShares: number;
-  [key: string]: any;
-}
 
 interface WalletExposureRow {
   marketId: string;
@@ -25,24 +20,39 @@ interface WalletExposureRow {
   updatedAt: Date;
   /** Realized PnL for settled positions (unit: shares * price, i.e. collateral units).
    *  Derived from market.outcome and locked collateral at settlement.
+   *  Only present when the request opts in via ?includePnl=true.
    *  Null when position is not yet settled. */
-  pnlRealized: string | null;
+  pnlRealized?: string | null;
   /** Unrealized PnL for open positions.
    *  Pricing source: best-bid mid-price from open orders on this market snapshot.
+   *  Only present when the request opts in via ?includePnl=true.
    *  Null when position is settled or no open orders exist to price the position. */
-  pnlUnrealized: string | null;
+  pnlUnrealized?: string | null;
 }
 
 interface WalletPositionsResponse {
   wallet: string;
   exposures: WalletExposureRow[];
   count: number;
-  /** Sum of pnlRealized across all settled positions. Currency: collateral units (8 decimal places). */
-  pnlRealized: string;
-  /** Sum of pnlUnrealized across all open positions that could be priced. Currency: collateral units (8 decimal places). */
-  pnlUnrealized: string;
-  /** Total PnL = pnlRealized + pnlUnrealized. Currency: collateral units (8 decimal places). */
-  pnlTotal: string;
+  /** Sum of pnlRealized across all settled positions. Currency: collateral units (8 decimal places).
+   *  Only present when the request opts in via ?includePnl=true. */
+  pnlRealized?: string;
+  /** Sum of pnlUnrealized across all open positions that could be priced. Currency: collateral units (8 decimal places).
+   *  Only present when the request opts in via ?includePnl=true. */
+  pnlUnrealized?: string;
+  /** Total PnL = pnlRealized + pnlUnrealized. Currency: collateral units (8 decimal places).
+   *  Only present when the request opts in via ?includePnl=true. */
+  pnlTotal?: string;
+}
+
+interface GetWalletPositionsParams {
+  wallet: string;
+}
+
+interface GetWalletPositionsQuery {
+  /** Opt into PnL calculation. Defaults to false — PnL pricing requires an
+   *  extra order-book query per market, so it's skipped unless requested. */
+  includePnl?: boolean;
 }
 
 /**
@@ -133,10 +143,88 @@ function addFixedPoint(a: string, b: string): string {
   return `${sign}${wholeOut}.${fracOut}`;
 }
 
+/**
+ * Compute the non-stale locked collateral for a wallet on a list of markets
+ * by querying both CLOB and indexed (on-chain) trades.
+ */
+async function getCalculatedCollateralMap(
+  prisma: ReturnType<typeof getPrismaClient>,
+  wallet: string,
+  marketIds: string[]
+): Promise<Map<string, number>> {
+  if (marketIds.length === 0) {
+    return new Map();
+  }
+
+  const [clobTrades, indexedTrades] = await Promise.all([
+    prisma.trade.findMany({
+      where: {
+        marketId: { in: marketIds },
+        OR: [{ buyerAddress: wallet }, { sellerAddress: wallet }],
+      },
+    }),
+    prisma.indexedTrade.findMany({
+      where: {
+        marketId: { in: marketIds },
+        OR: [{ traderAddress: wallet }, { counterpartyAddress: wallet }],
+      },
+    }),
+  ]);
+
+  const marketCollateralMap = new Map<string, number>();
+  const processedTrades = new Set<string>();
+
+  for (const trade of clobTrades) {
+    const key = `${trade.buyOrderId}:${trade.sellOrderId}`;
+    processedTrades.add(key);
+
+    const cost = Number(trade.price) * trade.quantity;
+    const current = marketCollateralMap.get(trade.marketId) ?? 0;
+    if (trade.buyerAddress === wallet) {
+      marketCollateralMap.set(trade.marketId, current + cost);
+    } else if (trade.sellerAddress === wallet) {
+      marketCollateralMap.set(trade.marketId, current - cost);
+    }
+  }
+
+  for (const trade of indexedTrades) {
+    const key = `${trade.buyOrderId}:${trade.sellOrderId}`;
+    if (processedTrades.has(key)) {
+      continue;
+    }
+    processedTrades.add(key);
+
+    const price = Number(trade.priceRaw) / 10_000_000;
+    const quantity = Number(trade.quantityRaw);
+    const cost = price * quantity;
+    const current = marketCollateralMap.get(trade.marketId) ?? 0;
+
+    const isBuyer =
+      (trade.direction === "buy" && trade.traderAddress === wallet) ||
+      (trade.direction === "sell" && trade.counterpartyAddress === wallet);
+
+    const isSeller =
+      (trade.direction === "sell" && trade.traderAddress === wallet) ||
+      (trade.direction === "buy" && trade.counterpartyAddress === wallet);
+
+    if (isBuyer) {
+      marketCollateralMap.set(trade.marketId, current + cost);
+    } else if (isSeller) {
+      marketCollateralMap.set(trade.marketId, current - cost);
+    }
+  }
+
+  return marketCollateralMap;
+}
+
 export default async function positionsRouter(server: FastifyInstance) {
-  server.get(
+  server.get<{
+    Params: GetWalletPositionsParams;
+    Querystring: GetWalletPositionsQuery;
+  }>(
     "/wallets/:wallet/positions",
     {
+      onRequest: [heavyReadLimiter],
       schema: {
         params: {
           type: "object",
@@ -150,12 +238,30 @@ export default async function positionsRouter(server: FastifyInstance) {
             },
           },
         },
+        querystring: {
+          type: "object",
+          properties: {
+            includePnl: {
+              type: "boolean",
+              description:
+                "When true, computes and includes realized/unrealized PnL per position and in the response summary. Defaults to false.",
+            },
+          },
+        },
       },
     },
-    async (request, reply) => {
-      const { wallet } = request.params as { wallet: string };
+    async (
+      request: FastifyRequest<{
+        Params: GetWalletPositionsParams;
+        Querystring: GetWalletPositionsQuery;
+      }>,
+      reply: FastifyReply
+    ) => {
+      const { wallet: rawWallet } = request.params;
+      const { includePnl = false } = request.query;
       const prisma = getPrismaClient();
 
+      const wallet = sanitizeUserAddress(rawWallet) ?? "";
       const addressError = validateUserAddress(wallet);
       if (addressError) {
         throw new ValidationError(addressError);
@@ -176,10 +282,11 @@ export default async function positionsRouter(server: FastifyInstance) {
         orderBy: { updatedAt: "desc" },
       });
 
-      // Fetch best bid/ask per market for unrealized PnL pricing
+      // Fetch best bid/ask per market for unrealized PnL pricing — skipped
+      // unless PnL was requested, since it's an extra query per market.
       const marketIds = [...new Set(positions.map((p) => p.marketId))];
       const orderGroups =
-        marketIds.length > 0
+        includePnl && marketIds.length > 0
           ? await (prisma as any).order.groupBy({
               by: ["marketId", "side"],
               where: {
@@ -213,10 +320,35 @@ export default async function positionsRouter(server: FastifyInstance) {
           midPriceMap.set(marketId, null);
         }
       }
+      const collateralMap = await getCalculatedCollateralMap(
+        prisma,
+        wallet,
+        marketIds
+      );
 
       const exposures: WalletExposureRow[] = positions.map((position) => {
         const market = position.market as any;
-        const lockedCollateral = position.lockedCollateral.toString();
+        const computedCollateral = collateralMap.get(position.marketId);
+        const lockedCollateral =
+          computedCollateral !== undefined
+            ? computedCollateral.toFixed(8)
+            : position.lockedCollateral.toString();
+
+        const base: WalletExposureRow = {
+          marketId: market.id,
+          marketQuestion: market.question,
+          yesShares: position.yesShares,
+          noShares: position.noShares,
+          netExposure: position.yesShares - position.noShares,
+          lockedCollateral,
+          isSettled: position.isSettled,
+          updatedAt: position.updatedAt,
+        };
+
+        if (!includePnl) {
+          return base;
+        }
+
         let pnlRealized: string | null = null;
         let pnlUnrealized: string | null = null;
 
@@ -237,87 +369,128 @@ export default async function positionsRouter(server: FastifyInstance) {
           );
         }
 
-        return {
-          marketId: market.id,
-          marketQuestion: market.question,
-          yesShares: position.yesShares,
-          noShares: position.noShares,
-          netExposure: position.yesShares - position.noShares,
-          lockedCollateral,
-          isSettled: position.isSettled,
-          updatedAt: position.updatedAt,
-          pnlRealized,
-          pnlUnrealized,
-        };
+        return { ...base, pnlRealized, pnlUnrealized };
       });
 
-      const ZERO = "0.00000000";
-      const pnlRealized = exposures
-        .filter((e) => e.pnlRealized !== null)
-        .reduce((acc, e) => addFixedPoint(acc, e.pnlRealized!), ZERO);
-      const pnlUnrealized = exposures
-        .filter((e) => e.pnlUnrealized !== null)
-        .reduce((acc, e) => addFixedPoint(acc, e.pnlUnrealized!), ZERO);
-      const pnlTotal = addFixedPoint(pnlRealized, pnlUnrealized);
-
       request.log.info(
-        { wallet, positionCount: exposures.length },
+        { wallet, positionCount: exposures.length, includePnl },
         "wallet positions fetched"
       );
 
-      success(reply, {
+      const response: WalletPositionsResponse = {
         wallet,
         exposures,
         count: exposures.length,
-        pnlRealized,
-        pnlUnrealized,
-        pnlTotal,
-      });
+      };
+
+      if (includePnl) {
+        const ZERO = "0.00000000";
+        response.pnlRealized = exposures
+          .filter((e) => e.pnlRealized !== null && e.pnlRealized !== undefined)
+          .reduce((acc, e) => addFixedPoint(acc, e.pnlRealized!), ZERO);
+        response.pnlUnrealized = exposures
+          .filter(
+            (e) => e.pnlUnrealized !== null && e.pnlUnrealized !== undefined
+          )
+          .reduce((acc, e) => addFixedPoint(acc, e.pnlUnrealized!), ZERO);
+        response.pnlTotal = addFixedPoint(
+          response.pnlRealized,
+          response.pnlUnrealized
+        );
+      }
+
+      success(reply, response);
     }
   );
 
-  // Heavy read: findMany with market JOIN — apply stricter limit.
-  server.get(
-    "/positions/user/:address",
+  server.get<{
+    Params: { wallet: string; marketId: string };
+  }>(
+    "/wallets/:wallet/positions/:marketId",
     {
       onRequest: [heavyReadLimiter],
       schema: {
         params: {
           type: "object",
-          required: ["address"],
+          required: ["wallet", "marketId"],
           properties: {
-            address: {
+            wallet: {
               type: "string",
               pattern: STELLAR_PUBLIC_KEY_REGEX.source,
               description:
                 "Stellar public key (StrKey): starts with G and is 56 chars using [A-Z2-7]",
             },
+            marketId: {
+              type: "string",
+              description: "Market ID to fetch position for",
+            },
           },
         },
       },
     },
-    async (request, reply) => {
-      const { address } = request.params as { address: string };
+    async (
+      request: FastifyRequest<{
+        Params: { wallet: string; marketId: string };
+      }>,
+      reply: FastifyReply
+    ) => {
+      const { wallet: rawWallet, marketId } = request.params;
       const prisma = getPrismaClient();
 
-      const addressError = validateUserAddress(address);
+      // Sanitize before validation — strip whitespace, uppercase, remove
+      // control characters — exactly as the list route does so both routes
+      // enforce identical identity normalisation.
+      const wallet = sanitizeUserAddress(rawWallet) ?? "";
+      const addressError = validateUserAddress(wallet);
       if (addressError) {
         throw new ValidationError(addressError);
       }
 
-      const positions = await prisma.userPosition.findMany({
-        where: { userAddress: address },
-        include: { market: true },
+      const position = await prisma.userPosition.findFirst({
+        where: { userAddress: wallet, marketId },
+        include: {
+          market: {
+            select: {
+              id: true,
+              question: true,
+              outcome: true,
+              status: true,
+            },
+          },
+        },
       });
 
-      const results = positions.map((p: PositionResult) => ({
-        ...p,
-        potentialPayoutIfYes: p.yesShares,
-        potentialPayoutIfNo: p.noShares,
-        netPosition: p.yesShares - p.noShares,
-      }));
+      if (!position) {
+        throw new NotFoundError(
+          `No position found for wallet in market ${marketId}`
+        );
+      }
 
-      reply.status(200).send(results);
+      const collateralMap = await getCalculatedCollateralMap(prisma, wallet, [
+        marketId,
+      ]);
+      const computedCollateral = collateralMap.get(marketId);
+
+      const market = position.market as any;
+      const lockedCollateral =
+        computedCollateral !== undefined
+          ? computedCollateral.toFixed(8)
+          : position.lockedCollateral.toString();
+
+      const exposure: WalletExposureRow = {
+        marketId: market.id,
+        marketQuestion: market.question,
+        yesShares: position.yesShares,
+        noShares: position.noShares,
+        netExposure: position.yesShares - position.noShares,
+        lockedCollateral,
+        isSettled: position.isSettled,
+        updatedAt: position.updatedAt,
+      };
+
+      request.log.info({ wallet, marketId }, "wallet market position fetched");
+
+      success(reply, { wallet, marketId, position: exposure });
     }
   );
 }

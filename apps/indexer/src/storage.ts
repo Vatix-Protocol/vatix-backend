@@ -1,5 +1,5 @@
 import { getPrismaClient } from "../../../src/services/prisma.js";
-import type { Logger } from "./logger.js";
+import type { ILogger } from "../../../packages/shared/src/logger.js";
 
 /** Thrown when the production storage path is misconfigured. Fail fast, no silent fallback. */
 export class CursorStorageConfigError extends Error {
@@ -31,41 +31,24 @@ export type CursorTransactionClient = Parameters<
 export interface CursorStorageClient {
   loadCursor(): Promise<string | null>;
   saveCursor(cursor: string): Promise<void>;
-  /**
-   * Persist `cursor` and run `writeBatch` inside a single database
-   * transaction. If `writeBatch` throws (or the DB rejects the write), the
-   * cursor upsert is rolled back as well — the cursor can never advance
-   * without the corresponding batch being durably committed.
-   *
-   * `expectedPreviousCursor`, when provided, is compared against the
-   * currently stored cursor inside the same transaction; a mismatch means
-   * another writer already advanced the cursor (e.g. a stale matching
-   * leader) and raises `CursorConflictError` instead of silently
-   * overwriting it.
-   */
-  saveCursorWithBatch(
-    cursor: string,
-    writeBatch: (tx: CursorTransactionClient) => Promise<void>,
-    expectedPreviousCursor?: string | null
-  ): Promise<void>;
+  /** Load the last known ledger hash for reorg detection. */
+  loadLedgerHash(): Promise<string | null>;
+  /** Persist the ledger hash associated with the current cursor. */
+  saveLedgerHash(hash: string): Promise<void>;
 }
+
+const CURSOR_KEY_HASH_SUFFIX = ":ledger_hash";
 
 export class PrismaCursorStorageClient implements CursorStorageClient {
   private readonly prisma = getPrismaClient();
+  private readonly hashCursorKey: string;
 
   constructor(
     private readonly networkId: string,
     private readonly cursorKey: string,
-    private readonly logger?: Logger
+    private readonly logger?: ILogger
   ) {
-    if (
-      process.env.NODE_ENV === "production" &&
-      (!networkId || !cursorKey)
-    ) {
-      throw new CursorStorageConfigError(
-        "PrismaCursorStorageClient requires networkId and cursorKey in production; refusing to persist a cursor under an empty/ambiguous key"
-      );
-    }
+    this.hashCursorKey = `${cursorKey}${CURSOR_KEY_HASH_SUFFIX}`;
   }
 
   async loadCursor(): Promise<string | null> {
@@ -77,11 +60,11 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
         },
       },
       select: {
-        cursor: true,
+        cursorValue: true,
       },
     });
 
-    const cursor = row?.cursor ?? null;
+    const cursor = row?.cursorValue ?? null;
     this.logger?.debug("Ledger cursor loaded", {
       networkId: this.networkId,
       cursorKey: this.cursorKey,
@@ -92,28 +75,73 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
   }
 
   async saveCursor(cursor: string): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
-      await tx.indexerCursor.upsert({
-        where: {
-          networkId_cursorKey: {
-            networkId: this.networkId,
-            cursorKey: this.cursorKey,
-          },
-        },
-        create: {
+    await this.prisma.indexerCursor.upsert({
+      where: {
+        networkId_cursorKey: {
           networkId: this.networkId,
           cursorKey: this.cursorKey,
-          cursor,
         },
-        update: {
-          cursor,
-        },
-      });
+      },
+      create: {
+        networkId: this.networkId,
+        cursorKey: this.cursorKey,
+        cursorValue: cursor,
+      },
+      update: {
+        cursorValue: cursor,
+      },
     });
-    this.logger?.debug("Ledger cursor saved", {
+    this.logger?.info("Indexer cursor saved", {
+      event: "indexer.cursor.saved",
+      cursorValue: cursor,
       networkId: this.networkId,
       cursorKey: this.cursorKey,
-      cursor,
+    });
+  }
+
+  async loadLedgerHash(): Promise<string | null> {
+    const row = await this.prisma.indexerCursor.findUnique({
+      where: {
+        networkId_cursorKey: {
+          networkId: this.networkId,
+          cursorKey: this.hashCursorKey,
+        },
+      },
+      select: {
+        cursorValue: true,
+      },
+    });
+
+    const hash = row?.cursorValue ?? null;
+    this.logger?.debug("Ledger hash loaded", {
+      networkId: this.networkId,
+      cursorKey: this.hashCursorKey,
+      hashFound: hash !== null,
+    });
+    return hash;
+  }
+
+  async saveLedgerHash(hash: string): Promise<void> {
+    await this.prisma.indexerCursor.upsert({
+      where: {
+        networkId_cursorKey: {
+          networkId: this.networkId,
+          cursorKey: this.hashCursorKey,
+        },
+      },
+      create: {
+        networkId: this.networkId,
+        cursorKey: this.hashCursorKey,
+        cursorValue: hash,
+      },
+      update: {
+        cursorValue: hash,
+      },
+    });
+    this.logger?.info("Ledger hash saved", {
+      event: "indexer.ledger_hash.saved",
+      cursorKey: this.hashCursorKey,
+      networkId: this.networkId,
     });
   }
 

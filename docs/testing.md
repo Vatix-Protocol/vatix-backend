@@ -14,9 +14,47 @@ tests/
 ├── helpers/
 │   └── test-database.ts     # Database testing utilities
 ├── integration/
-│   ├── markets.test.ts      # Markets endpoint integration tests
-│   └── positions.test.ts    # Positions endpoint integration tests
-└── sample.test.ts           # Sample test demonstrating setup
+│   ├── helpers/
+│   │   └── build-test-app.ts  # Shared Fastify harness (sets API_KEY/ADMIN_TOKEN, clearRateLimitStores)
+│   ├── health.test.ts         # Real GET /v1/health against live test DB + degraded path
+│   ├── markets.test.ts        # Markets endpoint integration tests
+│   ├── orders.test.ts         # Order creation, validation, persistence, listing, matching
+│   ├── admin.test.ts          # Auth guard matrix + admin market mutations
+│   └── positions.test.ts      # Positions endpoint integration tests
+└── sample.test.ts             # Sample test demonstrating setup
+```
+
+## Integration Test Matrix
+
+| Test file           | Route prefix                                                  | What it tests                                                                                                    |
+| ------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `health.test.ts`    | `GET /v1/health`                                              | Real DB ok path; degraded path (mocked Prisma failure)                                                           |
+| `markets.test.ts`   | `GET /v1/markets`                                             | Pagination, status filter, response envelope                                                                     |
+| `orders.test.ts`    | `POST /v1/orders`, `GET /v1/orders/user/:address`             | Creation (201), DB persistence, decimal serialization, all 400 validation paths, status filter, CLOB matching    |
+| `admin.test.ts`     | `GET /v1/admin/markets`, `PATCH /v1/admin/markets/:id/status` | Five auth guard combinations (401/403), list includes CANCELLED, status mutation, invalid enum (400), unknown ID |
+| `positions.test.ts` | `GET /v1/wallets/:wallet/positions`                           | Position listing and PnL                                                                                         |
+
+### Auth guards
+
+`requireApiKey` checks the `x-api-key` header against `API_KEY` env var.  
+`requireAdmin` checks `Authorization: Bearer <token>` against `ADMIN_TOKEN` env var.  
+Admin routes require both. Tests cover: no headers → 401, API key only → 401, Bearer only → 401, wrong key → 401, wrong token → 403.
+
+### Shared test harness
+
+`tests/integration/helpers/build-test-app.ts` exports `buildTestApp({ plugins })` — builds a minimal Fastify instance with the real error handler, registers each plugin under `/v1`, sets `API_KEY`/`ADMIN_TOKEN` defaults.
+
+See [error-handler.md](./error-handler.md) for the error envelope shape, custom error classes, and `NODE_ENV` behaviour.  
+Call `resetRateLimits()` from the same module in `beforeEach` to prevent rate-limit state bleeding between tests.
+
+### Required environment variables for integration tests
+
+```
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vatix
+REDIS_URL=redis://localhost:6379
+NODE_ENV=test
+API_KEY=test-api-key          # set automatically by buildTestApp if absent
+ADMIN_TOKEN=test-admin-token  # set automatically by buildTestApp if absent
 ```
 
 ## Test Types
@@ -351,6 +389,101 @@ node --inspect-brk node_modules/.bin/vitest
 DEBUG=* npm test -- specific-test.test.ts
 ```
 
+## Coverage Floors
+
+The project enforces minimum code coverage thresholds (configured in `vitest.config.ts`):
+
+- **Lines:** 80%
+- **Functions:** 80%
+- **Branches:** 80%
+- **Statements:** 80%
+
+### Checking Coverage Locally
+
+```bash
+# Generate coverage report
+pnpm test:coverage
+
+# Coverage reports available in ./coverage/
+# Open ./coverage/index.html in a browser for detailed report
+```
+
+### CI Coverage Floor
+
+The CI workflow runs `pnpm exec vitest run --coverage` and enforces the thresholds.
+If coverage drops below the floor, the CI job fails. To adjust the floor:
+
+1. Update `vitest.config.ts` thresholds in the `coverage.thresholds` section
+2. Ensure the change is intentional (increasing thresholds is preferred)
+3. Submit a PR explaining the rationale
+
+## Matching Lease Enforcement
+
+The matching engine uses a Redis-backed leader lease to enforce single-writer behavior: only one API process may match orders at a time. This prevents double-fills and book inconsistency under horizontal scaling.
+
+### Running Tests with Lease Enforcement
+
+By default, tests run with `MATCHING_LEASE_ENFORCED=false` (lease is bypassed), allowing all instances to match orders. To test with production-like behavior (lease actually enforced):
+
+```bash
+# Run integration tests with lease enforced
+MATCHING_LEASE_ENFORCED=true pnpm test:integration
+
+# Or run the matching-engine tests specifically
+pnpm test:matching
+```
+
+### CI Lease Enforcement Job
+
+The CI workflow runs two integration test passes:
+
+1. **Default (lease disabled):** `MATCHING_LEASE_ENFORCED=false` — tests the baseline API behavior
+2. **Lease enforced:** `MATCHING_LEASE_ENFORCED=true` — validates single-writer behavior (rejects concurrent matching from non-leaders with 503 MatchingUnavailable)
+
+The lease-enforced job catches regressions where matching logic inadvertently violates the single-writer invariant.
+
+### Configuring Lease Behavior
+
+Lease timing is configurable via environment variables:
+
+- `MATCHING_LEASE_TTL_MS` — Lease expiry in Redis (default: 15000 ms)
+- `MATCHING_LEASE_RENEW_INTERVAL_MS` — Heartbeat renewal interval (default: 5000 ms)
+- `MATCHING_LEASE_ENFORCED` — Enable/disable enforcement (default: `true` in production, `false` in tests)
+
+### Exercising the Lease Path from an Integration Test
+
+`buildTestApp` (the integration route harness) bypasses the lease by default.
+Pass `enableLease: true` to run a route test through the real production
+single-writer gate:
+
+```ts
+const app = await buildTestApp({ plugins: [ordersRoutes], enableLease: true });
+// MATCHING_LEASE_ENFORCED is forced to "true" and the Redis-backed lease is
+// acquired before the app is ready; matchingService.placeOrder now runs the
+// same leaderLease.isLeader() check it runs in production.
+await app.close(); // releases the lease and restores the previous env value
+```
+
+Enablement is **fail-fast**: if the lease cannot be acquired (Redis
+unreachable, or another holder owns it) `buildTestApp` throws rather than
+silently returning a lease-disabled app.
+
+## Test Infrastructure & External Dependencies
+
+Each test only needs the backing services it actually exercises. In
+particular:
+
+- **Prisma seed / schema tests** (`prisma/seed.test.ts`,
+  `prisma/schema.test.ts`) and the seed script itself (`prisma/seed.ts`)
+  require **only Postgres** — never Redis. `prisma/seed-no-redis.test.ts`
+  is a regression guard that fails if a Redis import creeps into that path.
+  The seed script also refuses to run when `NODE_ENV=production`.
+- **Fills SSE resume after trim**
+  (`tests/integration/fills-stream-xtrim.test.ts`) covers the Redis `XTRIM`
+  case: when a client's resume cursor has been trimmed from the audit
+  stream, missed fills are backfilled from Postgres and the request only
+  returns `410 stream_gap` when Postgres also cannot serve the cursor.
+
 ## Best Practices Summary
 
 1. **Write tests first** (TDD when possible)
@@ -359,4 +492,6 @@ DEBUG=* npm test -- specific-test.test.ts
 4. **Use descriptive names** - Test should document behavior
 5. **Maintain test independence** - Tests shouldn't depend on each other
 6. **Review coverage reports** - Aim for meaningful coverage, not just metrics
-7. **Update tests with code** - Keep tests in sync with implementation
+7. **Test with lease enforced** - Run `MATCHING_LEASE_ENFORCED=true` locally to catch single-writer violations
+8. **Monitor coverage trends** - Coverage floors prevent silent regressions in test quality
+9. **Update tests with code** - Keep tests in sync with implementation

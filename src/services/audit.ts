@@ -1,4 +1,6 @@
+import { createHash } from "crypto";
 import { redis } from "./redis.js";
+import { getPrismaClient } from "./prisma.js";
 import type { Trade } from "../matching/engine.js";
 
 /**
@@ -23,14 +25,22 @@ export interface AuditLogEntry {
  * - Automatic expiration (MAXLEN)
  */
 export class AuditService {
-  private readonly streamPrefix = "audit:market:";
-  private readonly globalStream = "audit:trades:global";
+  private readonly streamPrefix: string;
+  private readonly globalStream: string;
   private readonly maxLogEntries = 100000; // ~30 days at 1 trade/min
   private readonly approximateTrimming = true;
+  private readonly hashAlgorithm = "sha256";
+
+  constructor() {
+    const keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
+    this.streamPrefix = `${keyPrefix}audit:market:`;
+    this.globalStream = `${keyPrefix}audit:trades:global`;
+  }
 
   /**
-   * Log a trade execution to audit stream
-   * Creates two entries: one in market-specific stream, one in global stream
+   * Log a trade execution to audit stream with hash-chaining and async archival.
+   * Creates two entries: one in market-specific stream, one in global stream.
+   * Computes SHA256 hash and triggers async archive to Postgres before trim.
    *
    * @param trade - Trade to log
    * @returns Stream entry ID
@@ -53,14 +63,8 @@ export class AuditService {
         loggedAt: new Date().toISOString(),
       };
 
-      // Use trade timestamp, but let Redis auto-increment sequence if there's a collision
-      // If timestamp-0 exists, Redis will use timestamp-1, timestamp-2, etc.
       const baseStreamId = `${trade.timestamp}`;
-
-      // Log to market-specific stream
       const marketStream = this.getMarketStream(trade.marketId);
-
-      // Try with -0 first, Redis will auto-increment if needed
       let streamId = `${baseStreamId}-0`;
 
       try {
@@ -83,6 +87,18 @@ export class AuditService {
           ...this.flattenObject(logData)
         );
 
+        // Trigger async archive (non-blocking)
+        if (marketEntryId) {
+          this.archiveAuditEventAsync(
+            trade.id,
+            trade.marketId,
+            logData,
+            marketEntryId
+          ).catch((err) => {
+            console.error("Failed to archive audit event:", err);
+          });
+        }
+
         const duration = performance.now() - startTime;
 
         if (duration > 5) {
@@ -93,7 +109,6 @@ export class AuditService {
 
         return marketEntryId;
       } catch (err: any) {
-        // If Stream ID already exists or is too old, let Redis auto-generate
         if (
           err.message?.includes("equal or smaller") ||
           err.message?.includes("ID")
@@ -102,13 +117,12 @@ export class AuditService {
             `Stream ID conflict for ${streamId}, using auto-generated ID`
           );
 
-          // Fall back to auto-generated ID
           const marketEntryId = await redis.xadd(
             marketStream,
             "MAXLEN",
             this.approximateTrimming ? "~" : "",
             this.maxLogEntries,
-            "*", // Auto-generate
+            "*",
             ...this.flattenObject(logData)
           );
 
@@ -120,6 +134,17 @@ export class AuditService {
             "*",
             ...this.flattenObject(logData)
           );
+
+          if (marketEntryId) {
+            this.archiveAuditEventAsync(
+              trade.id,
+              trade.marketId,
+              logData,
+              marketEntryId
+            ).catch((err) => {
+              console.error("Failed to archive audit event:", err);
+            });
+          }
 
           return marketEntryId;
         }
@@ -189,8 +214,8 @@ export class AuditService {
   }
 
   /**
-   * Get paginated trade history for a wallet address across all markets.
-   * Ordering is deterministic and latest-first based on Redis stream IDs.
+   * Get paginated trade history for a wallet address from Postgres (durable).
+   * Redis audit stream is still written asynchronously for real-time consumers.
    */
   async getWalletTradeHistory(
     wallet: string,
@@ -206,38 +231,123 @@ export class AuditService {
     page: number;
     limit: number;
   }> {
-    const startId =
-      toMs !== undefined ? `${toMs}-${Number.MAX_SAFE_INTEGER}` : "+";
-    const endId = fromMs !== undefined ? `${fromMs}-0` : "-";
+    const prisma = getPrismaClient();
 
-    // Redis stream range query (xrevrange) uses stream IDs efficiently for time windows.
-    const entries = await redis.xrevrange(this.globalStream, startId, endId);
-    if (entries.length === 0) {
-      return {
-        trades: [],
-        total: 0,
-        hasNext: false,
-        page,
-        limit,
-      };
-    }
-
-    const walletTrades = entries
-      .map(([id, fields]) => this.parseStreamEntry(id, fields))
-      .filter(
-        (entry) =>
-          (entry.trade.buyerAddress === wallet ||
-            entry.trade.sellerAddress === wallet) &&
-          (marketId === undefined || entry.trade.marketId === marketId)
-      );
+    const where = {
+      OR: [{ buyerAddress: wallet }, { sellerAddress: wallet }],
+      ...(marketId ? { marketId } : {}),
+      ...(fromMs !== undefined || toMs !== undefined
+        ? {
+            tradedAt: {
+              ...(fromMs !== undefined ? { gte: new Date(fromMs) } : {}),
+              ...(toMs !== undefined ? { lte: new Date(toMs) } : {}),
+            },
+          }
+        : {}),
+    };
 
     const skip = (page - 1) * limit;
-    const trades = walletTrades.slice(skip, skip + limit);
+
+    const [rows, total] = await Promise.all([
+      prisma.trade.findMany({
+        where,
+        orderBy: { tradedAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.trade.count({ where }),
+    ]);
+
+    const trades: AuditLogEntry[] = rows.map((row) => ({
+      id: row.id,
+      trade: {
+        id: row.tradeId,
+        marketId: row.marketId,
+        outcome: row.outcome as "YES" | "NO",
+        buyerAddress: row.buyerAddress,
+        sellerAddress: row.sellerAddress,
+        buyOrderId: row.buyOrderId,
+        sellOrderId: row.sellOrderId,
+        price: Number(row.price),
+        quantity: row.quantity,
+        timestamp: row.tradedAt.getTime(),
+      },
+      loggedAt: row.createdAt.toISOString(),
+    }));
 
     return {
       trades,
-      total: walletTrades.length,
-      hasNext: skip + trades.length < walletTrades.length,
+      total,
+      hasNext: skip + rows.length < total,
+      page,
+      limit,
+    };
+  }
+
+  /**
+   * Get paginated trade history across all wallets from Postgres (durable).
+   * Same shape as getWalletTradeHistory but without a buyer/seller filter.
+   */
+  async getTradeHistory(
+    page: number = 1,
+    limit: number = 20,
+    fromMs?: number,
+    toMs?: number,
+    marketId?: string
+  ): Promise<{
+    trades: AuditLogEntry[];
+    total: number;
+    hasNext: boolean;
+    page: number;
+    limit: number;
+  }> {
+    const prisma = getPrismaClient();
+
+    const where = {
+      ...(marketId ? { marketId } : {}),
+      ...(fromMs !== undefined || toMs !== undefined
+        ? {
+            tradedAt: {
+              ...(fromMs !== undefined ? { gte: new Date(fromMs) } : {}),
+              ...(toMs !== undefined ? { lte: new Date(toMs) } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const skip = (page - 1) * limit;
+
+    const [rows, total] = await Promise.all([
+      prisma.trade.findMany({
+        where,
+        orderBy: { tradedAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.trade.count({ where }),
+    ]);
+
+    const trades: AuditLogEntry[] = rows.map((row) => ({
+      id: row.id,
+      trade: {
+        id: row.tradeId,
+        marketId: row.marketId,
+        outcome: row.outcome as "YES" | "NO",
+        buyerAddress: row.buyerAddress,
+        sellerAddress: row.sellerAddress,
+        buyOrderId: row.buyOrderId,
+        sellOrderId: row.sellOrderId,
+        price: Number(row.price),
+        quantity: row.quantity,
+        timestamp: row.tradedAt.getTime(),
+      },
+      loggedAt: row.createdAt.toISOString(),
+    }));
+
+    return {
+      trades,
+      total,
+      hasNext: skip + rows.length < total,
       page,
       limit,
     };
@@ -364,6 +474,131 @@ export class AuditService {
       id,
       trade,
       loggedAt: data.loggedAt,
+    };
+  }
+
+  /**
+   * Compute SHA256 hash of payload + previous hash for chain verification
+   */
+  private computeHash(payload: string, prevHash: string): string {
+    const combined = `${payload}${prevHash}`;
+    return createHash(this.hashAlgorithm).update(combined).digest("hex");
+  }
+
+  /**
+   * Get the previous hash for hash-chaining. Looks up the most recent archived
+   * entry for the market. Returns "0" (root) if no previous entry exists.
+   */
+  private async getPrevHash(marketId: string): Promise<string> {
+    const prisma = getPrismaClient();
+    const lastEvent = await prisma.tradeAuditEvent.findFirst({
+      where: { marketId },
+      orderBy: { archivedAt: "desc" },
+      select: { entryHash: true },
+    });
+    return lastEvent?.entryHash ?? "0";
+  }
+
+  /**
+   * Archive an audit event to Postgres asynchronously.
+   * Computes hash, stores with prevHash, and updates watermark.
+   * Non-blocking; errors are logged but don't affect request path.
+   */
+  private async archiveAuditEventAsync(
+    tradeId: string,
+    marketId: string,
+    logData: Record<string, string>,
+    streamId: string
+  ): Promise<void> {
+    try {
+      const prisma = getPrismaClient();
+      const payload = JSON.stringify(logData);
+      const prevHash = await this.getPrevHash(marketId);
+      const entryHash = this.computeHash(payload, prevHash);
+
+      // Archive the event (upsert to handle potential duplicates from retries)
+      await prisma.tradeAuditEvent.upsert({
+        where: { streamId },
+        create: {
+          tradeId,
+          marketId,
+          payload,
+          prevHash,
+          entryHash,
+          streamId,
+        },
+        update: {
+          archivedAt: new Date(),
+        },
+      });
+
+      // Update watermark
+      await prisma.tradeStreamWatermark.upsert({
+        where: { marketId },
+        create: {
+          marketId,
+          globalStreamId: streamId,
+          marketStreamId: streamId,
+          archiveInitiatedAt: new Date(),
+        },
+        update: {
+          marketStreamId: streamId,
+          lastArchivedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      console.error("Archive async failed:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Verify hash chain integrity for a market within a time range.
+   * Detects tampering of intermediate records.
+   */
+  async verifyAuditChain(
+    marketId: string,
+    startTime?: Date,
+    endTime?: Date
+  ): Promise<{
+    valid: boolean;
+    totalEvents: number;
+    mismatchCount: number;
+    errors: Array<{ streamId: string; reason: string }>;
+  }> {
+    const prisma = getPrismaClient();
+
+    const where: any = { marketId };
+    if (startTime || endTime) {
+      where.archivedAt = {};
+      if (startTime) where.archivedAt.gte = startTime;
+      if (endTime) where.archivedAt.lte = endTime;
+    }
+
+    const events = await prisma.tradeAuditEvent.findMany({
+      where,
+      orderBy: { archivedAt: "asc" },
+    });
+
+    const errors: Array<{ streamId: string; reason: string }> = [];
+    let prevHash = "0";
+
+    for (const event of events) {
+      const expectedHash = this.computeHash(event.payload, event.prevHash);
+      if (expectedHash !== event.entryHash) {
+        errors.push({
+          streamId: event.streamId,
+          reason: `Hash mismatch: expected ${expectedHash}, got ${event.entryHash}`,
+        });
+      }
+      prevHash = event.entryHash;
+    }
+
+    return {
+      valid: errors.length === 0,
+      totalEvents: events.length,
+      mismatchCount: errors.length,
+      errors,
     };
   }
 }

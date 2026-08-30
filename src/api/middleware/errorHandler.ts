@@ -1,11 +1,32 @@
-// Global error handler middleware for Fastify
-// Single source of truth for all error normalization and logging
+// Error handler middleware for Fastify
 
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
-import { ValidationError, AppError } from "./errors.js";
-import type { ErrorEnvelope } from "../../types/errors.js";
+import {
+  AppError,
+  ValidationError,
+  NotFoundError,
+  UnauthorizedError,
+  ForbiddenError,
+  ContractError,
+  MatchingUnavailableError,
+  ServiceUnavailableError,
+} from "./errors.js";
+import type { ErrorResponse } from "../../types/errors.js";
+import { createErrorEnvelope } from "../../../packages/shared/src/errors.js";
+import { config } from "../../config.js";
 
-const isProduction = () => process.env.NODE_ENV === "production";
+function resolveCode(error: Error, statusCode: number): string {
+  if (error instanceof ValidationError) return "VALIDATION_ERROR";
+  if (error instanceof NotFoundError) return "NOT_FOUND";
+  if (error instanceof UnauthorizedError) return "UNAUTHORIZED";
+  if (error instanceof ForbiddenError) return "FORBIDDEN";
+  if (error instanceof MatchingUnavailableError) return "MATCHING_UNAVAILABLE";
+  if (error instanceof ServiceUnavailableError) return "SERVICE_UNAVAILABLE";
+  if (error instanceof ContractError || error.name === "ContractError") return "CONTRACT_ERROR";
+  if (error instanceof AppError) return error.code;
+  if (statusCode >= 500) return "INTERNAL_ERROR";
+  return "BAD_REQUEST";
+}
 
 // Centralized error handler for Fastify
 // Catches all unhandled errors and returns consistent error responses
@@ -14,57 +35,63 @@ export function errorHandler(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
-  const statusCode =
-    "statusCode" in error && typeof error.statusCode === "number"
-      ? error.statusCode
-      : 500;
+  // Determine status code
+  let statusCode = 500;
+  if ("statusCode" in error && typeof error.statusCode === "number") {
+    statusCode = error.statusCode;
+  } else if (error instanceof ContractError || error.name === "ContractError") {
+    statusCode = 400;
+  }
 
+  // Determine if it's a client error (4xx) or server error (5xx)
   const isClientError = statusCode >= 400 && statusCode < 500;
   const isServerError = statusCode >= 500;
 
+  // Get request ID for tracking
+  const requestId = request.id;
+
+  // Log error with appropriate level
   const logContext = {
-    requestId: request.id,
+    requestId,
     method: request.method,
-    path: request.url,
+    url: request.url,
     statusCode,
-    message: error.message,
-    // Always include stack in logs for server errors regardless of environment
-    ...(isServerError && { stack: error.stack }),
+    error: error.message,
   };
 
   if (isClientError) {
-    request.log.warn(logContext, "Client request error");
+    // Client errors are expected (bad input, not found, etc.)
+    request.log.warn(logContext, "Client error");
   } else if (isServerError) {
-    request.log.error(logContext, "Unhandled request error");
+    // Server errors are unexpected and need investigation
+    request.log.error(
+      {
+        ...logContext,
+        stack: error.stack,
+      },
+      "Server error"
+    );
   }
 
-  // Build error response — hide internals in production
+  // Build error response
   let errorMessage = error.message;
-  if (isProduction() && isServerError) {
+
+  // hide internal error details in prod
+  if (process.env.NODE_ENV === "production" && isServerError) {
     errorMessage = "Internal server error";
   }
 
-  const envelope: ErrorEnvelope = {
-    code:
-      error instanceof AppError
-        ? error.code
-        : statusCode >= 500
-          ? "internal_error"
-          : String(statusCode),
+  const response: ErrorResponse = createErrorEnvelope({
     message: errorMessage,
-    error: errorMessage,
+    code: resolveCode(error, statusCode),
+    requestId,
     statusCode,
-    requestId: request.id,
-    // Include stack trace in response body only outside production
-    ...(!isProduction() && isServerError && { stack: error.stack }),
-  };
+    fields:
+      error instanceof ValidationError && error.fields
+        ? error.fields
+        : undefined,
+  });
 
-  // Attach field-level details as metadata for ValidationError
-  if (error instanceof ValidationError && error.fields) {
-    (envelope as ErrorEnvelope & { metadata?: unknown }).metadata = {
-      fields: error.fields,
-    };
-  }
-
-  reply.status(statusCode).send(envelope);
+  // Send error response
+  reply.status(statusCode).send(response);
 }

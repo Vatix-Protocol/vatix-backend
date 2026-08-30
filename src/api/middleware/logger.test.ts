@@ -1,7 +1,64 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import crypto from "node:crypto";
 import Fastify, { FastifyInstance } from "fastify";
-import { requestLogger } from "./logger.js";
+import {
+  requestLogger,
+  isSensitiveHeader,
+  REQUEST_LOG_FIELDS,
+  REQUEST_LOG_OPTIONAL_FIELDS,
+  RESPONSE_LOG_FIELDS,
+} from "./logger.js";
+
+function assertStructuredLog(
+  obj: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): void {
+  const allowed = new Set([...required, ...optional]);
+  for (const key of Object.keys(obj)) {
+    expect(allowed.has(key)).toBe(true);
+  }
+  for (const key of required) {
+    expect(obj).toHaveProperty(key);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// isSensitiveHeader unit tests (#965)
+// ---------------------------------------------------------------------------
+
+describe("isSensitiveHeader", () => {
+  it("marks authorization as sensitive", () => {
+    expect(isSensitiveHeader("authorization")).toBe(true);
+    expect(isSensitiveHeader("Authorization")).toBe(true);
+  });
+
+  it("marks x-signature as sensitive", () => {
+    expect(isSensitiveHeader("x-signature")).toBe(true);
+    expect(isSensitiveHeader("X-Signature")).toBe(true);
+  });
+
+  it("marks x-admin-token as sensitive", () => {
+    expect(isSensitiveHeader("x-admin-token")).toBe(true);
+    expect(isSensitiveHeader("X-Admin-Token")).toBe(true);
+  });
+
+  it("marks x-api-key as sensitive", () => {
+    expect(isSensitiveHeader("x-api-key")).toBe(true);
+  });
+
+  it("marks cookie as sensitive", () => {
+    expect(isSensitiveHeader("cookie")).toBe(true);
+  });
+
+  it("does NOT mark content-type as sensitive", () => {
+    expect(isSensitiveHeader("content-type")).toBe(false);
+  });
+
+  it("does NOT mark x-request-id as sensitive", () => {
+    expect(isSensitiveHeader("x-request-id")).toBe(false);
+  });
+});
 
 describe("Request Logger Middleware", () => {
   let server: FastifyInstance;
@@ -63,6 +120,34 @@ describe("Request Logger Middleware", () => {
     expect(JSON.stringify(log![0])).not.toContain("session");
     // Body must not appear
     expect(log![0]).not.toHaveProperty("body");
+  });
+
+  it("does not log x-signature header value", async () => {
+    server.get("/test", async () => ({ ok: true }));
+    await server.inject({
+      method: "GET",
+      url: "/test",
+      headers: { "x-signature": "sig_abc123supersecret" },
+    });
+
+    const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+    expect(log).toBeDefined();
+    expect(JSON.stringify(log![0])).not.toContain("sig_abc123supersecret");
+    expect(log![0]).not.toHaveProperty("x-signature");
+  });
+
+  it("does not log x-admin-token header value", async () => {
+    server.get("/test", async () => ({ ok: true }));
+    await server.inject({
+      method: "GET",
+      url: "/test",
+      headers: { "x-admin-token": "admintoken_supersecret" },
+    });
+
+    const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+    expect(log).toBeDefined();
+    expect(JSON.stringify(log![0])).not.toContain("admintoken_supersecret");
+    expect(log![0]).not.toHaveProperty("x-admin-token");
   });
 
   it("response log contains requestId, statusCode, and numeric durationMs", async () => {
@@ -151,6 +236,42 @@ describe("Request Logger Middleware", () => {
     expect(response.statusCode).toBe(200);
     const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
     expect(log![0]).not.toHaveProperty("userAddress");
+  });
+
+  describe("logger format contract (min-031)", () => {
+    it("request logs use only documented structured fields", async () => {
+      server.get("/test", async () => ({ ok: true }));
+      await server.inject({ method: "GET", url: "/test" });
+
+      const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "request");
+      expect(log).toBeDefined();
+      assertStructuredLog(
+        log![0] as Record<string, unknown>,
+        REQUEST_LOG_FIELDS,
+        REQUEST_LOG_OPTIONAL_FIELDS
+      );
+      expect(log![0].type).toBe("request");
+      expect(typeof log![0].requestId).toBe("string");
+      expect(typeof log![0].method).toBe("string");
+      expect(typeof log![0].path).toBe("string");
+      expect(typeof log![1]).toBe("string");
+    });
+
+    it("response logs use only documented structured fields with numeric statusCode and durationMs", async () => {
+      server.get("/test", async () => ({ ok: true }));
+      await server.inject({ method: "GET", url: "/test" });
+
+      const log = mockLogInfo.mock.calls.find((c) => c[0]?.type === "response");
+      expect(log).toBeDefined();
+      assertStructuredLog(
+        log![0] as Record<string, unknown>,
+        RESPONSE_LOG_FIELDS
+      );
+      expect(log![0].type).toBe("response");
+      expect(typeof log![0].statusCode).toBe("number");
+      expect(typeof log![0].durationMs).toBe("number");
+      expect(typeof log![1]).toBe("string");
+    });
   });
 
   it("honours X-Correlation-ID as the request ID when genReqId uses it", async () => {

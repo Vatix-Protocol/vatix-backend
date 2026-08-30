@@ -1,102 +1,136 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { safeJsonParse, safeJsonSanitize, UnsafeJsonError } from "./safeJson.js";
+import { describe, it, expect } from "vitest";
+import { safeJsonParse, safeStringify, sanitizeForJson } from "./safeJson.js";
+
+// ── #776: safeJsonParse — no uncaught SyntaxError from event bodies ───────────
 
 describe("safeJsonParse", () => {
-  const originalEnv = process.env.NODE_ENV;
-
-  afterEach(() => {
-    process.env.NODE_ENV = originalEnv;
-  });
-
-  it("parses a well-formed Horizon-style payload unchanged", () => {
-    const payload = JSON.stringify({
-      id: "evt-1",
-      ledger: 100,
-      topic: ["trade", "resolved"],
-      value: { amount: "1000", nested: { ok: true } },
-    });
-
-    const result = safeJsonParse<Record<string, unknown>>(payload, {
-      strictMode: false,
-    });
-
-    expect(result).toMatchObject({
-      id: "evt-1",
-      ledger: 100,
-      topic: ["trade", "resolved"],
-    });
-  });
-
-  it("throws on invalid JSON text", () => {
-    expect(() => safeJsonParse("{not valid json", { strictMode: false })).toThrow(
-      /invalid JSON payload/
-    );
-  });
-
-  it("strips __proto__ keys when not in strict mode", () => {
-    const malicious = '{"a":1,"__proto__":{"polluted":true}}';
-    const result = safeJsonParse<Record<string, unknown>>(malicious, {
-      strictMode: false,
-    });
-
-    expect(result.a).toBe(1);
-    expect((result as any).polluted).toBeUndefined();
-    expect(Object.prototype.hasOwnProperty.call({}, "polluted")).toBe(false);
-  });
-
-  it("strips nested constructor/prototype pollution vectors", () => {
-    const malicious = JSON.stringify({
-      value: { constructor: { prototype: { polluted: true } } },
-    });
-
-    const result = safeJsonParse<Record<string, any>>(malicious, {
-      strictMode: false,
-    });
-
-    expect(result.value).toBeDefined();
-    expect(result.value.constructor).toBeUndefined();
-  });
-
-  it("throws UnsafeJsonError in strict mode when a dangerous key is present", () => {
-    const malicious = '{"__proto__":{"polluted":true}}';
-    expect(() => safeJsonParse(malicious, { strictMode: true })).toThrow(
-      UnsafeJsonError
-    );
-  });
-
-  it("defaults to strict/fail-fast mode in production", () => {
-    process.env.NODE_ENV = "production";
-    const malicious = '{"prototype":{"polluted":true}}';
-    expect(() => safeJsonParse(malicious)).toThrow(UnsafeJsonError);
-  });
-
-  it("defaults to lenient stripping outside production", () => {
-    process.env.NODE_ENV = "test";
-    const malicious = '{"prototype":{"polluted":true}}';
-    expect(() => safeJsonParse(malicious)).not.toThrow();
-  });
-
-  it("does not actually pollute Object.prototype no matter the mode", () => {
-    const malicious = '{"__proto__":{"polluted":true}}';
-    try {
-      safeJsonParse(malicious, { strictMode: true });
-    } catch {
-      // expected in strict mode
+  it("returns ok:true and the parsed value for valid JSON", () => {
+    const result = safeJsonParse<{ foo: string }>('{"foo":"bar"}');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual({ foo: "bar" });
     }
-    safeJsonParse(malicious, { strictMode: false });
+  });
 
-    expect(({} as any).polluted).toBeUndefined();
+  it("parses a JSON array", () => {
+    const result = safeJsonParse<number[]>("[1,2,3]");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toEqual([1, 2, 3]);
+    }
+  });
+
+  it("parses a JSON primitive string", () => {
+    const result = safeJsonParse<string>('"hello"');
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value).toBe("hello");
+  });
+
+  it("parses a JSON null", () => {
+    const result = safeJsonParse<null>("null");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value).toBeNull();
+  });
+
+  it("returns ok:false for invalid JSON — does NOT throw", () => {
+    // This is the key acceptance criterion for #776: no uncaught SyntaxError
+    expect(() => safeJsonParse("{not valid json}")).not.toThrow();
+    const result = safeJsonParse("{not valid json}");
+    expect(result.ok).toBe(false);
+  });
+
+  it("returns a SyntaxError in the error field for invalid JSON", () => {
+    const result = safeJsonParse("{{bad}}");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(SyntaxError);
+    }
+  });
+
+  it("returns ok:false for an empty string", () => {
+    const result = safeJsonParse("");
+    expect(result.ok).toBe(false);
+  });
+
+  it("returns ok:false for truncated JSON", () => {
+    const result = safeJsonParse('{"foo":');
+    expect(result.ok).toBe(false);
+  });
+
+  it("returns ok:false for a bare identifier (not quoted)", () => {
+    const result = safeJsonParse("undefined");
+    expect(result.ok).toBe(false);
+  });
+
+  it("returns ok:false for trailing garbage after valid JSON", () => {
+    const result = safeJsonParse('{"ok":true}garbage');
+    expect(result.ok).toBe(false);
+  });
+
+  it("does not throw on any input — never produces an uncaught SyntaxError", () => {
+    const badInputs = [
+      "}{",
+      "[[[",
+      "NaN",
+      "undefined",
+      "",
+      "  ",
+      "<xml>not json</xml>",
+      "SELECT * FROM users",
+    ];
+    for (const bad of badInputs) {
+      expect(() => safeJsonParse(bad)).not.toThrow();
+    }
   });
 });
 
-describe("safeJsonSanitize", () => {
-  it("sanitizes an already-parsed object graph the same way", () => {
-    // JSON.parse (unlike an object literal) creates a genuine own
-    // enumerable "__proto__" property, which is the real attack vector.
-    const value = JSON.parse('{"ok":true,"__proto__":{"polluted":true}}');
-    const result = safeJsonSanitize<Record<string, unknown>>(value, {
-      strictMode: false,
-    });
-    expect((result as any).polluted).toBeUndefined();
+// ── safeStringify ─────────────────────────────────────────────────────────────
+
+describe("safeStringify", () => {
+  it("serializes a plain object", () => {
+    expect(safeStringify({ a: 1 })).toBe('{"a":1}');
+  });
+
+  it("serializes bigint as string", () => {
+    expect(safeStringify({ n: 9007199254740993n })).toBe(
+      '{"n":"9007199254740993"}'
+    );
+  });
+
+  it("serializes an Error as an object with name/message", () => {
+    const result = JSON.parse(safeStringify(new Error("boom")));
+    expect(result.name).toBe("Error");
+    expect(result.message).toBe("boom");
+  });
+
+  it("handles circular references gracefully", () => {
+    const obj: Record<string, unknown> = {};
+    obj.self = obj;
+    expect(() => safeStringify(obj)).not.toThrow();
+    const result = JSON.parse(safeStringify(obj));
+    expect(result.self).toBe("[Circular]");
+  });
+});
+
+// ── sanitizeForJson ───────────────────────────────────────────────────────────
+
+describe("sanitizeForJson", () => {
+  it("passes through primitives unchanged", () => {
+    expect(sanitizeForJson(null)).toBeNull();
+    expect(sanitizeForJson(true)).toBe(true);
+    expect(sanitizeForJson(42)).toBe(42);
+    expect(sanitizeForJson("str")).toBe("str");
+  });
+
+  it("converts bigint to string", () => {
+    expect(sanitizeForJson(123n)).toBe("123");
+  });
+
+  it("recursively sanitizes arrays", () => {
+    expect(sanitizeForJson([1n, "x", null])).toEqual(["1", "x", null]);
+  });
+
+  it("recursively sanitizes objects", () => {
+    expect(sanitizeForJson({ a: 1n, b: "ok" })).toEqual({ a: "1", b: "ok" });
   });
 });

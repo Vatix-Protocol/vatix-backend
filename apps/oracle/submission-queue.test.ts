@@ -8,6 +8,7 @@ import type {
   SubmissionQueueSnapshot,
   SubmissionStatus,
 } from "./submission-queue.js";
+import type { ILogger } from "../../packages/shared/src/logger.js";
 import {
   validateSubmissionQueueItem,
   SubmissionQueueValidationError,
@@ -146,5 +147,61 @@ describe("validateSubmissionQueueItem", () => {
     expect(() =>
       validateSubmissionQueueItem({ ...makeItem(), enqueuedAt: "" })
     ).toThrow(SubmissionQueueValidationError);
+  });
+});
+
+// ─── SubmissionQueue ─────────────────────────────────────────────────────────
+
+import { SubmissionQueue } from "./submission-queue.js";
+
+describe("SubmissionQueue", () => {
+  it("enqueues a valid item and logs it", () => {
+    const logs: Array<{
+      level: string;
+      msg: string;
+      meta?: Record<string, unknown>;
+    }> = [];
+    const mockLogger: ILogger = {
+      debug: () => {},
+      info: (msg: string, meta?: Record<string, unknown>) =>
+        logs.push({ level: "info", msg, meta }),
+      warn: (msg: string, meta?: Record<string, unknown>) =>
+        logs.push({ level: "warn", msg, meta }),
+      error: (msg: string, meta?: Record<string, unknown>) =>
+        logs.push({ level: "error", msg, meta }),
+      child: () => mockLogger,
+    };
+
+    const queue = new SubmissionQueue(mockLogger);
+    const item = makeItem();
+
+    queue.enqueue(item);
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0].level).toBe("info");
+    expect(logs[0].msg).toBe("Oracle submission queued");
+    expect(logs[0].meta).toMatchObject({
+      id: item.id,
+      marketId: item.request.marketId,
+      oracleAddress: item.request.oracleAddress,
+      status: item.status,
+      enqueuedAt: item.enqueuedAt,
+    });
+  });
+
+  it("throws when enqueueing an invalid item", () => {
+    const mockLogger = {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      child: () => mockLogger,
+    };
+
+    const queue = new SubmissionQueue(mockLogger);
+
+    expect(() => queue.enqueue(null as any)).toThrow(
+      SubmissionQueueValidationError
+    );
   });
 });

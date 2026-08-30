@@ -62,22 +62,22 @@ export class TimeoutValidationError extends Error {
  */
 export function validateTimeout(timeoutMs: unknown): number {
   if (typeof timeoutMs !== "number" || isNaN(timeoutMs as number)) {
-    throw new TimeoutValidationError(
-      `Invalid timeout value: ${timeoutMs}`
-    );
+    throw new TimeoutValidationError(`Invalid timeout value: ${timeoutMs}`);
   }
 
   if (timeoutMs < MIN_TIMEOUT_MS) {
-    console.warn(
-      `Timeout ${timeoutMs}ms is below minimum ${MIN_TIMEOUT_MS}ms, clamping`
-    );
+    console.warn("Timeout is below minimum, clamping", {
+      providedTimeoutMs: timeoutMs,
+      minTimeoutMs: MIN_TIMEOUT_MS,
+    });
     return MIN_TIMEOUT_MS;
   }
 
   if (timeoutMs > MAX_TIMEOUT_MS) {
-    console.warn(
-      `Timeout ${timeoutMs}ms exceeds maximum ${MAX_TIMEOUT_MS}ms, clamping`
-    );
+    console.warn("Timeout exceeds maximum, clamping", {
+      providedTimeoutMs: timeoutMs,
+      maxTimeoutMs: MAX_TIMEOUT_MS,
+    });
     return MAX_TIMEOUT_MS;
   }
 
@@ -133,6 +133,12 @@ export function createTimeoutSignal(
 }
 
 /**
+ * A function that executes an operation with support for abort signaling.
+ * Used with withTimeout to handle long-running operations.
+ */
+export type TimeoutHandler<T> = (signal: AbortSignal) => Promise<T>;
+
+/**
  * Execute an async operation with a timeout.
  * If the operation exceeds the timeout, it is aborted and a timeout error is returned.
  *
@@ -141,7 +147,7 @@ export function createTimeoutSignal(
  * @returns Promise resolving to a TimedResult
  */
 export async function withTimeout<T>(
-  operation: (signal: AbortSignal) => Promise<T>,
+  operation: TimeoutHandler<T>,
   config: TimeoutConfig
 ): Promise<TimedResult<T>> {
   const startTime = performance.now();
@@ -177,9 +183,11 @@ export async function withTimeout<T>(
         error.message === config.errorMessage);
 
     if (isTimeout) {
-      console.warn(
-        `[TimeoutUtils] Operation timed out after ${config.timeoutMs}ms (${durationMs.toFixed(0)}ms elapsed)`
-      );
+      console.warn("Operation timed out", {
+        context: "TimeoutUtils",
+        configuredTimeoutMs: config.timeoutMs,
+        elapsedDurationMs: Number(durationMs.toFixed(0)),
+      });
     }
 
     return {

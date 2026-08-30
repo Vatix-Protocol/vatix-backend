@@ -21,7 +21,10 @@ export function getPrismaClient(): PrismaClient {
     const isProduction = config.nodeEnv === "production";
 
     // create postgres connection pool — URL already validated at startup via config
-    pgPool = new Pool({ connectionString: config.databaseUrl });
+    pgPool = new Pool({
+      connectionString: config.databaseUrl,
+      max: config.databasePoolSize,
+    });
     const adapter = new PrismaPg(pgPool);
 
     prismaInstance = new PrismaClient({
@@ -62,22 +65,15 @@ export async function disconnectPrisma(): Promise<void> {
   }
 }
 
-/**
- * set up graceful shutdown handlers
- */
-function setupGracefulShutdown(): void {
-  const shutdown = async (signal: string) => {
-    console.log(`\n${signal} received. Closing database connection...`);
-    await disconnectPrisma();
-    process.exit(0);
-  };
+// Note: this module intentionally does NOT register its own SIGINT/SIGTERM
+// handlers. Every entrypoint that imports getPrismaClient()/disconnectPrisma()
+// (the API server, indexer, oracle, and each worker) already owns a single
+// graceful-shutdown sequence (via packages/shared/src/shutdown.ts or an
+// equivalent local implementation) that drains in-flight work before calling
+// disconnectPrisma() and exiting. A second, module-level handler here used to
+// race that sequence: it awaited only disconnectPrisma() and called
+// process.exit(0) as soon as that resolved, which is almost always faster
+// than the real shutdown's drain step — so the process could exit mid-request
+// or mid-job while the "real" handler was still cleaning up.
 
-  // handle different termination signals
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("beforeExit", async () => {
-    await disconnectPrisma();
-  });
-}
-
-setupGracefulShutdown();
+export { rateLimiter } from "../api/middleware/rateLimiter.js";

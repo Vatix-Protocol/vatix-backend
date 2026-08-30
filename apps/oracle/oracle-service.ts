@@ -12,9 +12,17 @@ import type {
   ProviderResult,
   ResolutionRequest,
 } from "./provider-adapter.js";
-import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
+import { DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
 import { withRetry, RetryConfig, isRetryableError } from "./retry-utils.js";
-import type { Logger } from "../indexer/src/logger.js";
+import type { ILogger } from "../../packages/shared/src/logger.js";
+import type { SubmissionQueueItem } from "./submission-queue.js";
+import { SubmissionQueue } from "./submission-queue.js";
+import { oracleFailClosedTotal } from "../../src/services/metrics.js";
+
+/**
+ * Callback invoked when a resolution succeeds and should be enqueued.
+ */
+export type EnqueueCallback = (item: SubmissionQueueItem) => Promise<void>;
 
 /**
  * Oracle service configuration.
@@ -28,10 +36,18 @@ export interface OracleServiceConfig {
   enableFallback?: boolean;
   /** Default timeout for resolution requests */
   defaultTimeoutMs?: number;
+  /** Timeout for the primary provider, in milliseconds */
+  primaryTimeoutMs?: number;
+  /** Timeout for the fallback provider, in milliseconds */
+  fallbackTimeoutMs?: number;
   /** Retry configuration for provider calls */
   retryConfig?: Partial<RetryConfig>;
   /** Structured logger — defaults to a no-op logger if omitted */
-  logger?: Logger;
+  logger?: ILogger;
+  /** Optional submission queue for enqueuing resolved reports */
+  submissionQueue?: SubmissionQueue;
+  /** Optional enqueue callback (alternative to submissionQueue) */
+  enqueueCallback?: EnqueueCallback;
 }
 
 /**
@@ -50,17 +66,41 @@ export interface OracleMetrics {
   totalAttempts: number;
   /** Total retry attempts across all primary resolutions */
   retryCount: number;
+  /** Total provider outage events — all providers (primary + fallback) failed */
+  totalOutageCount: number;
 }
 
 /**
  * Oracle service for market resolution.
  * Uses primary adapter by default, switches to fallback on primary failure.
+ * Optionally enqueues successful resolutions for on-chain submission.
+ *
+ * ## Failover policy (explicit timeouts, fail-closed)
+ *
+ * 1. The primary adapter is called first with timeout `primaryTimeoutMs`
+ *    (defaults to 30 seconds). Retries are applied per `retryConfig.maxRetries`
+ *    with exponential back-off (see retry-utils.ts).
+ * 2. If the primary fails with a **retryable** (transient) error after all
+ *    retries, and `enableFallback` is true, the fallback adapter is tried with
+ *    timeout `fallbackTimeoutMs` (defaults to 30 seconds).
+ *    Retryable errors: network failures, 5xx responses, timeouts.
+ *    Non-retryable errors (4xx client errors, invalid responses) skip
+ *    the fallback and are re-thrown immediately.
+ * 3. If both primary and fallback fail or timeout, the oracle fails closed:
+ *    no resolution is returned or enqueued. An `oracleFailClosedTotal` metric
+ *    is incremented and an error is thrown.
+ * 4. Production mode enforces fail-closed behavior (no silent fallback to
+ *    stale or default values).
+ * 5. Successful resolutions are enqueued via `submissionQueue` or
+ *    `enqueueCallback` when configured.
  */
 export class OracleService {
   private primaryAdapter: ProviderAdapter;
   private fallbackAdapter: ProviderAdapter;
   private config: OracleServiceConfig;
-  private readonly logger: Logger;
+  private readonly logger: ILogger;
+  private submissionQueue?: SubmissionQueue;
+  private enqueueCallback?: EnqueueCallback;
 
   private metrics: OracleMetrics = {
     primarySuccessCount: 0,
@@ -69,23 +109,34 @@ export class OracleService {
     fallbackFailureCount: 0,
     totalAttempts: 0,
     retryCount: 0,
+    totalOutageCount: 0,
   };
 
   constructor(config: OracleServiceConfig) {
     this.primaryAdapter = config.primaryAdapter;
     this.fallbackAdapter = config.fallbackAdapter;
-    this.logger = config.logger ?? {
+    const isProduction = process.env.NODE_ENV === "production";
+    const noOpLogger: ILogger = {
       debug: () => {},
       info: () => {},
       warn: () => {},
       error: () => {},
+      child: () => noOpLogger,
     };
+    this.logger = config.logger ?? noOpLogger;
+    this.submissionQueue = config.submissionQueue;
+    this.enqueueCallback = config.enqueueCallback;
     this.config = {
-      enableFallback: true,
+      enableFallback: !isProduction,
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+      primaryTimeoutMs: DEFAULT_TIMEOUT_MS,
+      fallbackTimeoutMs: DEFAULT_TIMEOUT_MS,
       retryConfig: { maxRetries: 0 },
       ...config,
     };
+    if (isProduction) {
+      this.config.enableFallback = false;
+    }
   }
 
   /**
@@ -98,20 +149,28 @@ export class OracleService {
    */
   async resolve(request: ResolutionRequest): Promise<ProviderResult> {
     this.metrics.totalAttempts++;
+    const requestId = request.marketId;
 
     try {
       // Attempt primary provider
       this.logger.info("Resolving market via primary provider", {
         marketId: request.marketId,
+        requestId,
       });
 
+      const primaryRequest = {
+        ...request,
+        timeoutMs: this.config.primaryTimeoutMs ?? this.config.defaultTimeoutMs,
+      };
+
       const result = await withRetry(
-        () => this.primaryAdapter.resolve(request),
+        () => this.primaryAdapter.resolve(primaryRequest),
         this.config.retryConfig,
         (error, attempt, delay) => {
           this.metrics.retryCount++;
           this.logger.warn("Primary provider retry", {
             marketId: request.marketId,
+            requestId,
             attempt,
             delayMs: Math.round(delay),
             error: error.message,
@@ -122,13 +181,19 @@ export class OracleService {
       this.metrics.primarySuccessCount++;
       this.logger.info("Primary provider resolved market", {
         marketId: request.marketId,
+        requestId,
         source: result.source,
       });
+
+      // Enqueue for on-chain submission if configured
+      await this.enqueueResult(request, result);
+
       return result;
     } catch (primaryError) {
       this.metrics.primaryFailureCount++;
       this.logger.error("Primary provider failed", {
         marketId: request.marketId,
+        requestId,
         error:
           primaryError instanceof Error
             ? primaryError.message
@@ -163,20 +228,38 @@ export class OracleService {
   ): Promise<ProviderResult> {
     this.logger.warn("Falling back to secondary provider", {
       marketId: request.marketId,
+      requestId: request.marketId,
     });
 
     try {
-      const result = await this.fallbackAdapter.resolve(request);
+      const fallbackRequest = {
+        ...request,
+        timeoutMs:
+          this.config.fallbackTimeoutMs ?? this.config.defaultTimeoutMs,
+      };
+
+      const result = await this.fallbackAdapter.resolve(fallbackRequest);
       this.metrics.fallbackUsageCount++;
       this.logger.info("Fallback provider resolved market", {
         marketId: request.marketId,
+        requestId: request.marketId,
         source: result.source,
       });
+
+      // Enqueue for on-chain submission if configured
+      await this.enqueueResult(request, result);
+
       return result;
     } catch (fallbackError) {
       this.metrics.fallbackFailureCount++;
-      this.logger.error("Fallback provider failed", {
+      this.metrics.totalOutageCount++;
+      oracleFailClosedTotal.inc();
+      this.logger.error("All providers unreachable — total provider outage", {
+        event: "oracle.total_outage",
         marketId: request.marketId,
+        requestId: request.marketId,
+        primaryFailureCount: this.metrics.primaryFailureCount,
+        fallbackFailureCount: this.metrics.fallbackFailureCount,
         error:
           fallbackError instanceof Error
             ? fallbackError.message
@@ -226,6 +309,7 @@ export class OracleService {
       fallbackFailureCount: 0,
       totalAttempts: 0,
       retryCount: 0,
+      totalOutageCount: 0,
     };
   }
 
@@ -241,5 +325,41 @@ export class OracleService {
    */
   getFallbackAdapter(): ProviderAdapter {
     return this.fallbackAdapter;
+  }
+
+  /**
+   * Enqueue a resolved result for on-chain submission.
+   * Skips if no queue or callback is configured.
+   */
+  private async enqueueResult(
+    request: ResolutionRequest,
+    result: ProviderResult
+  ): Promise<void> {
+    if (!this.submissionQueue && !this.enqueueCallback) {
+      return;
+    }
+
+    try {
+      const item: SubmissionQueueItem = {
+        id: `${request.marketId}-${Date.now()}`,
+        request,
+        result,
+        status: "pending",
+        enqueuedAt: new Date().toISOString(),
+        attempts: 0,
+      };
+
+      if (this.enqueueCallback) {
+        await this.enqueueCallback(item);
+      } else if (this.submissionQueue) {
+        this.submissionQueue.enqueue(item);
+      }
+    } catch (error) {
+      this.logger.error("Failed to enqueue resolution for submission", {
+        marketId: request.marketId,
+        requestId: request.marketId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }

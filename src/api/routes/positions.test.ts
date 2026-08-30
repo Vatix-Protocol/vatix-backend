@@ -7,7 +7,7 @@ import { errorHandler } from "../middleware/errorHandler";
 const mockPositions = [
   {
     id: "test-pos-1",
-    userAddress: "GBAHUIO7S6NXF2654321098765432109876543210987654321098765",
+    userAddress: "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO",
     marketId: "market-1",
     yesShares: 50,
     noShares: 10,
@@ -23,7 +23,7 @@ const mockPositions = [
   },
   {
     id: "test-pos-2",
-    userAddress: "GBAHUIO7S6NXF2654321098765432109876543210987654321098765",
+    userAddress: "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO",
     marketId: "market-2",
     yesShares: 100,
     noShares: 0,
@@ -55,20 +55,36 @@ const mockOrderGroupBy = [
   },
 ];
 
+const mockPrisma = {
+  userPosition: {
+    findMany: vi.fn().mockResolvedValue(mockPositions),
+    findFirst: vi.fn(),
+  },
+  order: {
+    groupBy: vi.fn().mockResolvedValue(mockOrderGroupBy),
+  },
+  trade: {
+    findMany: vi.fn().mockResolvedValue([]),
+  },
+  indexedTrade: {
+    findMany: vi.fn().mockResolvedValue([]),
+  },
+  $disconnect: vi.fn(),
+};
+
 vi.mock("../../services/prisma", () => ({
-  getPrismaClient: () => ({
-    userPosition: {
-      findMany: vi.fn().mockResolvedValue(mockPositions),
-    },
-    order: {
-      groupBy: vi.fn().mockResolvedValue(mockOrderGroupBy),
-    },
-    $disconnect: vi.fn(),
-  }),
+  getPrismaClient: () => mockPrisma,
   disconnectPrisma: vi.fn(),
 }));
 
 vi.mock("../../matching/validation", () => ({
+  sanitizeUserAddress: (addr: unknown) =>
+    typeof addr === "string"
+      ? addr
+          .trim()
+          .toUpperCase()
+          .replace(/[\x00-\x1F\x7F]/g, "")
+      : null,
   validateUserAddress: (addr: string) =>
     /^G[A-Z2-7]{55}$/.test(addr) ? null : "Invalid Stellar address",
   STELLAR_PUBLIC_KEY_REGEX: /^G[A-Z2-7]{55}$/,
@@ -86,35 +102,39 @@ describe("Positions Route", () => {
     return app;
   };
 
-  it("should return 400 for invalid address on legacy endpoint", async () => {
+  it("should return 400 for invalid address on canonical endpoint", async () => {
     const app = await createTestServer();
     const response = await app.inject({
       method: "GET",
-      url: "/positions/user/0xInvalidAddress",
+      url: "/wallets/0xInvalidAddress/positions",
     });
     expect(response.statusCode).toBe(400);
   });
 
-  it("should return 200 and calculate correct payout structure on legacy endpoint", async () => {
+  it("should return 200 and calculate correct payout structure on canonical endpoint", async () => {
     const app = await createTestServer();
     const validAddress =
-      "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+      "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
-      url: `/positions/user/${validAddress}`,
+      url: `/wallets/${validAddress}/positions`,
     });
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
-    expect(Array.isArray(body)).toBe(true);
-    expect(body[0].potentialPayoutIfYes).toBe(50);
-    expect(body[0].potentialPayoutIfNo).toBe(10);
-    expect(body[0].netPosition).toBe(40);
-    expect(body[0].market.question).toBe("Will it rain?");
+    expect(body.success).toBe(true);
+    expect(body.data.wallet).toBe(validAddress);
+    expect(body.data.exposures[0]).toMatchObject({
+      marketId: "market-1",
+      marketQuestion: "Will it rain?",
+      yesShares: 50,
+      noShares: 10,
+      netExposure: 40,
+    });
   });
 
   it("should return wallet exposure rows with standardized success response", async () => {
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
       url: `/wallets/${wallet}/positions`,
@@ -135,12 +155,30 @@ describe("Positions Route", () => {
     });
   });
 
-  it("should include pnlRealized on settled positions", async () => {
+  it("should omit PnL fields by default (includePnl not set)", async () => {
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
       url: `/wallets/${wallet}/positions`,
+    });
+    const { data } = JSON.parse(response.body);
+
+    expect(data.pnlRealized).toBeUndefined();
+    expect(data.pnlUnrealized).toBeUndefined();
+    expect(data.pnlTotal).toBeUndefined();
+    for (const exposure of data.exposures) {
+      expect(exposure.pnlRealized).toBeUndefined();
+      expect(exposure.pnlUnrealized).toBeUndefined();
+    }
+  });
+
+  it("should include pnlRealized on settled positions when includePnl=true", async () => {
+    const app = await createTestServer();
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
+    const response = await app.inject({
+      method: "GET",
+      url: `/wallets/${wallet}/positions?includePnl=true`,
     });
     const { data } = JSON.parse(response.body);
 
@@ -150,12 +188,12 @@ describe("Positions Route", () => {
     expect(settled.pnlUnrealized).toBeNull();
   });
 
-  it("should include pnlUnrealized on open positions using mid-price", async () => {
+  it("should include pnlUnrealized on open positions using mid-price when includePnl=true", async () => {
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
-      url: `/wallets/${wallet}/positions`,
+      url: `/wallets/${wallet}/positions?includePnl=true`,
     });
     const { data } = JSON.parse(response.body);
 
@@ -167,12 +205,12 @@ describe("Positions Route", () => {
     expect(open.pnlRealized).toBeNull();
   });
 
-  it("should return correct pnlTotal, pnlRealized, pnlUnrealized summary", async () => {
+  it("should return correct pnlTotal, pnlRealized, pnlUnrealized summary when includePnl=true", async () => {
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
-      url: `/wallets/${wallet}/positions`,
+      url: `/wallets/${wallet}/positions?includePnl=true`,
     });
     const { data } = JSON.parse(response.body);
 
@@ -182,17 +220,17 @@ describe("Positions Route", () => {
     expect(data.pnlTotal).toBe("46.50000000");
   });
 
-  it("should return 200 with empty list and zero totals for new wallet (empty state)", async () => {
+  it("should return 200 with empty list and zero totals for new wallet (empty state, includePnl=true)", async () => {
     const { getPrismaClient } = await import("../../services/prisma");
     const prisma = getPrismaClient() as any;
     prisma.userPosition.findMany.mockResolvedValueOnce([]);
     prisma.order.groupBy.mockResolvedValueOnce([]);
 
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
-      url: `/wallets/${wallet}/positions`,
+      url: `/wallets/${wallet}/positions?includePnl=true`,
     });
 
     expect(response.statusCode).toBe(200);
@@ -205,22 +243,37 @@ describe("Positions Route", () => {
     expect(body.data.pnlTotal).toBe("0.00000000");
   });
 
-  it("should return null pnlUnrealized when no open orders exist to price position", async () => {
+  it("should return null pnlUnrealized when no open orders exist to price position (includePnl=true)", async () => {
     const { getPrismaClient } = await import("../../services/prisma");
     const prisma = getPrismaClient() as any;
     prisma.userPosition.findMany.mockResolvedValueOnce([mockPositions[0]]);
     prisma.order.groupBy.mockResolvedValueOnce([]); // no orders
 
     const app = await createTestServer();
-    const wallet = "GBAHUIO7S6NXF2654321098765432109876543210987654321098765";
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
     const response = await app.inject({
       method: "GET",
-      url: `/wallets/${wallet}/positions`,
+      url: `/wallets/${wallet}/positions?includePnl=true`,
     });
 
     const { data } = JSON.parse(response.body);
     expect(data.exposures[0].pnlUnrealized).toBeNull();
     expect(data.pnlUnrealized).toBe("0.00000000");
+  });
+
+  it("should not query the order book when includePnl is not set", async () => {
+    const { getPrismaClient } = await import("../../services/prisma");
+    const prisma = getPrismaClient() as any;
+    prisma.order.groupBy.mockClear();
+
+    const app = await createTestServer();
+    const wallet = "GINJ46CDSMNOSKETX3K5DU44435TGRWIQEM7ZVI3ON3BTOOFVJJHTWXO";
+    await app.inject({
+      method: "GET",
+      url: `/wallets/${wallet}/positions`,
+    });
+
+    expect(prisma.order.groupBy).not.toHaveBeenCalled();
   });
 
   it("should return 400 for invalid wallet identifier on wallet exposure endpoint", async () => {

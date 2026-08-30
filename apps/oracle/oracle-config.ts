@@ -11,6 +11,7 @@ import {
   getOraclePollIntervalMs,
   DEFAULT_POLL_INTERVAL_MS,
 } from "./oracle-scheduler.js";
+import { DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -30,6 +31,10 @@ export interface OracleConfig {
    * Present only when `ORACLE_SECRET_KEY` is set in the environment.
    */
   secretKey: string | undefined;
+  /** Timeout for the primary oracle provider, in milliseconds. */
+  primaryTimeoutMs: number;
+  /** Timeout for the fallback oracle provider, in milliseconds. */
+  fallbackTimeoutMs: number;
 }
 
 const VALID_LOG_LEVELS: ReadonlySet<string> = new Set([
@@ -62,11 +67,25 @@ export function loadOracleConfig(env: Env = process.env): OracleConfig {
 
   const logLevel = parseLogLevel(env["ORACLE_LOG_LEVEL"], "ORACLE_LOG_LEVEL");
 
+  const primaryTimeoutMs = parseOptionalPositiveInt(
+    env["ORACLE_PRIMARY_TIMEOUT_MS"],
+    "ORACLE_PRIMARY_TIMEOUT_MS",
+    DEFAULT_TIMEOUT_MS
+  );
+
+  const fallbackTimeoutMs = parseOptionalPositiveInt(
+    env["ORACLE_FALLBACK_TIMEOUT_MS"],
+    "ORACLE_FALLBACK_TIMEOUT_MS",
+    DEFAULT_TIMEOUT_MS
+  );
+
   return {
     pollIntervalMs,
     challengeWindowSeconds,
     logLevel,
     secretKey: env["ORACLE_SECRET_KEY"] ?? undefined,
+    primaryTimeoutMs,
+    fallbackTimeoutMs,
   };
 }
 
@@ -81,7 +100,9 @@ function parseOptionalPositiveInt(
 
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 1) {
-    throw new Error(`${name} must be a positive integer, got: ${JSON.stringify(raw)}`);
+    throw new Error(
+      `${name} must be a positive integer, got: ${JSON.stringify(raw)}`
+    );
   }
 
   return value;

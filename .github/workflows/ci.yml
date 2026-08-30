@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
 
     services:
@@ -47,12 +47,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: ".nvmrc"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
+          version: 10
 
       - name: Get pnpm store directory
         id: pnpm-cache
@@ -61,7 +61,7 @@ jobs:
           echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
 
       - name: Setup pnpm cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -71,10 +71,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Enforce engine parity (Node/pnpm)
+        run: pnpm engines:check
+
       - name: Generate Prisma Client
         run: pnpm prisma:generate
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+
+      - name: Check code formatting
+        run: pnpm format:check
+
+      - name: Check TypeScript (src)
+        run: pnpm tsc --noEmit
+
+      - name: Check TypeScript (apps + packages)
+        run: pnpm tsc --noEmit -p apps/tsconfig.json
+
+      - name: Check TypeScript (packages)
+        run: pnpm tsc --noEmit -p packages/tsconfig.json
 
       - name: Create shadow database
         run: psql postgresql://postgres:postgres@localhost:5432/postgres -c "CREATE DATABASE vatix_shadow;"
@@ -90,137 +105,32 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
 
-      - name: Run unit tests
-        run: pnpm test:run
+      - name: Run unit tests (with coverage)
+        run: pnpm exec vitest run --exclude 'tests/integration/**' --exclude '**/*.integration.test.ts' --coverage
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
           REDIS_URL: redis://localhost:6379
           NODE_ENV: test
+          ADMIN_TOKEN: test-admin-token
+          MATCHING_LEASE_ENFORCED: "false"
 
-      - name: Run integration tests
+      - name: Run integration tests (lease disabled)
         run: pnpm test:integration
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
           REDIS_URL: redis://localhost:6379
           NODE_ENV: test
+          ADMIN_TOKEN: test-admin-token
+          MATCHING_LEASE_ENFORCED: "false"
 
-      - name: Run tests with coverage
-        run: pnpm test:coverage --reporter=verbose --outputFile=test-results/results.json
+      - name: Run integration tests (lease enforced)
+        run: pnpm test:integration
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
           REDIS_URL: redis://localhost:6379
           NODE_ENV: test
-
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results
-          path: test-results/
-          retention-days: 7
-
-      - name: Upload coverage reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-report
-          path: coverage/
-          retention-days: 7
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
-        if: always()
-        with:
-          files: ./coverage/coverage-final.json
-          flags: unittests
-          name: codecov-umbrella
-          fail_ci_if_error: false
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: 8
-
-      - name: Get pnpm store directory
-        id: pnpm-cache
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v3
-        with:
-          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Generate Prisma Client
-        run: pnpm exec prisma generate
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
-
-      - name: Check code formatting
-        run: pnpm format:check
-
-      - name: Check TypeScript
-        run: pnpm tsc --noEmit
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: 8
-
-      - name: Get pnpm store directory
-        id: pnpm-cache
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v3
-        with:
-          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Generate Prisma Client
-        run: pnpm prisma:generate
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+          ADMIN_TOKEN: test-admin-token
+          MATCHING_LEASE_ENFORCED: "true"
 
       - name: Build
         run: pnpm build

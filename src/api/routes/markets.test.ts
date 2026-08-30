@@ -18,6 +18,10 @@ vi.mock("../../services/prisma.js", () => ({
   getPrismaClient: () => mockPrismaClient,
 }));
 
+vi.mock("../middleware/rateLimiter", () => ({
+  heavyReadLimiter: async () => {},
+}));
+
 describe("GET /markets", () => {
   let app: FastifyInstance;
 
@@ -45,6 +49,7 @@ describe("GET /markets", () => {
           outcome: null,
           createdAt: new Date("2026-01-01T00:00:00Z"),
           updatedAt: new Date("2026-01-01T00:00:00Z"),
+          deletedAt: null,
         },
         {
           id: "market-2",
@@ -56,6 +61,7 @@ describe("GET /markets", () => {
           outcome: null,
           createdAt: new Date("2026-01-02T00:00:00Z"),
           updatedAt: new Date("2026-01-02T00:00:00Z"),
+          deletedAt: null,
         },
       ];
 
@@ -79,7 +85,7 @@ describe("GET /markets", () => {
       expect(body.data.markets[1].id).toBe("market-2");
 
       expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
-        where: {},
+        where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: 50,
       });
@@ -114,6 +120,7 @@ describe("GET /markets", () => {
         outcome: null,
         createdAt: new Date("2026-01-01T00:00:00Z"),
         updatedAt: new Date("2026-01-01T00:00:00Z"),
+        deletedAt: null,
       };
 
       (
@@ -169,6 +176,7 @@ describe("GET /markets", () => {
         outcome: null,
         createdAt: new Date("2026-01-01T00:00:00Z"),
         updatedAt: new Date("2026-01-01T00:00:00Z"),
+        deletedAt: null,
       };
       const mockOrders = [
         {
@@ -229,6 +237,7 @@ describe("GET /markets", () => {
         outcome: null,
         createdAt: new Date("2026-01-01T00:00:00Z"),
         updatedAt: new Date("2026-01-01T00:00:00Z"),
+        deletedAt: null,
       };
 
       (
@@ -264,6 +273,7 @@ describe("GET /markets", () => {
           outcome: null,
           createdAt: new Date("2026-01-01T00:00:00Z"),
           updatedAt: new Date("2026-01-01T00:00:00Z"),
+          deletedAt: null,
         },
       ];
 
@@ -282,7 +292,7 @@ describe("GET /markets", () => {
       expect(body.data.markets[0].status).toBe("ACTIVE");
 
       expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
-        where: { status: "ACTIVE" },
+        where: { status: "ACTIVE", deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: 50,
       });
@@ -300,6 +310,7 @@ describe("GET /markets", () => {
           outcome: true,
           createdAt: new Date("2026-01-01T00:00:00Z"),
           updatedAt: new Date("2026-01-16T00:00:00Z"),
+          deletedAt: null,
         },
       ];
 
@@ -318,7 +329,7 @@ describe("GET /markets", () => {
       expect(body.data.markets[0].status).toBe("RESOLVED");
 
       expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
-        where: { status: "RESOLVED" },
+        where: { status: "RESOLVED", deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: 50,
       });
@@ -336,6 +347,7 @@ describe("GET /markets", () => {
           outcome: null,
           createdAt: new Date("2026-01-01T00:00:00Z"),
           updatedAt: new Date("2026-01-15T00:00:00Z"),
+          deletedAt: null,
         },
       ];
 
@@ -354,7 +366,7 @@ describe("GET /markets", () => {
       expect(body.data.markets[0].status).toBe("CANCELLED");
 
       expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
-        where: { status: "CANCELLED" },
+        where: { status: "CANCELLED", deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: 50,
       });
@@ -431,6 +443,7 @@ describe("GET /markets", () => {
         outcome: null,
         createdAt: new Date("2026-01-25T10:00:00Z"),
         updatedAt: new Date("2026-01-25T10:00:00Z"),
+        deletedAt: null,
       };
 
       (
@@ -469,6 +482,7 @@ describe("GET /markets", () => {
         outcome: true,
         createdAt: new Date("2026-01-01T00:00:00Z"),
         updatedAt: new Date("2026-01-21T00:00:00Z"),
+        deletedAt: null,
       };
 
       (
@@ -502,6 +516,7 @@ describe("GET /markets", () => {
           outcome: null,
           createdAt: new Date("2026-01-25T00:00:00Z"),
           updatedAt: new Date("2026-01-25T00:00:00Z"),
+          deletedAt: null,
         },
         {
           id: "market-2",
@@ -513,6 +528,7 @@ describe("GET /markets", () => {
           outcome: null,
           createdAt: new Date("2026-01-20T00:00:00Z"),
           updatedAt: new Date("2026-01-20T00:00:00Z"),
+          deletedAt: null,
         },
         {
           id: "market-1",
@@ -524,6 +540,7 @@ describe("GET /markets", () => {
           outcome: null,
           createdAt: new Date("2026-01-15T00:00:00Z"),
           updatedAt: new Date("2026-01-15T00:00:00Z"),
+          deletedAt: null,
         },
       ];
 
@@ -557,6 +574,7 @@ describe("GET /markets", () => {
           outcome: null,
           createdAt: new Date("2026-01-01T00:00:00Z"),
           updatedAt: new Date("2026-01-01T00:00:00Z"),
+          deletedAt: null,
         },
         {
           id: "market-2",
@@ -568,6 +586,7 @@ describe("GET /markets", () => {
           outcome: null,
           createdAt: new Date("2026-01-02T00:00:00Z"),
           updatedAt: new Date("2026-01-02T00:00:00Z"),
+          deletedAt: null,
         },
       ];
 
@@ -582,7 +601,7 @@ describe("GET /markets", () => {
 
       expect(response.statusCode).toBe(200);
       expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
-        where: {},
+        where: { deletedAt: null },
         orderBy: { endTime: "asc" },
         take: 50,
       });
@@ -599,7 +618,7 @@ describe("GET /markets", () => {
       });
 
       expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
-        where: {},
+        where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: 50,
       });
@@ -623,13 +642,23 @@ describe("GET /markets", () => {
       expect(response.statusCode).toBe(400);
     });
 
-    it("should reject unsupported query parameters", async () => {
+    it("should ignore unsupported query parameters", async () => {
+      (
+        mockPrismaClient.market.findMany as ReturnType<typeof vi.fn>
+      ).mockResolvedValue([]);
+
       const response = await app.inject({
         method: "GET",
         url: "/markets?unsupported=true",
       });
 
-      expect(response.statusCode).toBe(400);
+      // Unsupported parameters are silently ignored
+      expect(response.statusCode).toBe(200);
+      expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
+        where: { deletedAt: null },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      });
     });
   });
 
@@ -645,7 +674,7 @@ describe("GET /markets", () => {
       });
 
       expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
-        where: {},
+        where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: 50,
       });
@@ -662,7 +691,7 @@ describe("GET /markets", () => {
       });
 
       expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
-        where: {},
+        where: { deletedAt: null },
         orderBy: { createdAt: "desc" },
         take: 10,
       });
@@ -715,6 +744,7 @@ describe("GET /markets/:id", () => {
         outcome: null,
         createdAt: new Date("2026-01-25T10:00:00Z"),
         updatedAt: new Date("2026-01-25T10:00:00Z"),
+        deletedAt: null,
       };
 
       (
@@ -729,7 +759,7 @@ describe("GET /markets/:id", () => {
       expect(response.statusCode).toBe(200);
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty("data");
-      expect(body.data).toMatchObject({
+      expect(body.data.market).toMatchObject({
         id: mockMarket.id,
         question: mockMarket.question,
         endTime: mockMarket.endTime.toISOString(),
@@ -761,8 +791,8 @@ describe("GET /markets/:id", () => {
       expect(response.statusCode).toBe(404);
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty("code", "market_not_found");
-      expect(body).toHaveProperty("message");
-      expect(body.message).toContain("non-existent-id");
+      expect(body).toHaveProperty("error");
+      expect(body.error).toContain("non-existent-id");
     });
   });
 });

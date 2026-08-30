@@ -4,10 +4,11 @@
  * Covers primary resolution, fallback switching, metrics, and error handling.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { OracleService } from "./oracle-service.js";
 import { PrimaryAdapter } from "./primary-adapter.js";
 import { FallbackAdapter } from "./fallback-adapter.js";
+import { oracleFailClosedTotal } from "../../src/services/metrics.js";
 import type {
   ProviderAdapter,
   ProviderResult,
@@ -53,6 +54,10 @@ describe("OracleService", () => {
     });
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe("primary resolution", () => {
     it("should resolve using primary adapter when it succeeds", async () => {
       const result = await oracleService.resolve({
@@ -80,6 +85,26 @@ describe("OracleService", () => {
   });
 
   describe("fallback switching", () => {
+    it("fails closed in production without invoking an off-chain fallback", async () => {
+      vi.stubEnv("NODE_ENV", "production");
+      const failingPrimary = createMockAdapter("primary", true);
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter,
+        enableFallback: true,
+      });
+
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow("primary provider failed");
+
+      expect(fallbackAdapter.resolve).not.toHaveBeenCalled();
+    });
+
     it("should switch to fallback when primary fails", async () => {
       const failingPrimary = createMockAdapter("primary", true);
       const service = new OracleService({
@@ -183,6 +208,80 @@ describe("OracleService", () => {
       const metrics = oracleService.getMetrics();
       expect(metrics.primarySuccessCount).toBe(0);
       expect(metrics.totalAttempts).toBe(0);
+    });
+  });
+
+  describe("failover timeout policy", () => {
+    it("should pass primary timeout to primary adapter", async () => {
+      const primaryAdapter = createMockAdapter("primary", false);
+      const spy = vi.spyOn(primaryAdapter, "resolve");
+
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        enableFallback: true,
+        primaryTimeoutMs: 25000,
+      });
+
+      await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(spy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          timeoutMs: 25000,
+        })
+      );
+    });
+
+    it("should pass fallback timeout to fallback adapter on failover", async () => {
+      const failingPrimary = createMockAdapter("primary", true);
+      const fallbackAdapter = createMockAdapter("fallback", false);
+      const spy = vi.spyOn(fallbackAdapter, "resolve");
+
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter,
+        enableFallback: true,
+        primaryTimeoutMs: 5000,
+        fallbackTimeoutMs: 25000,
+      });
+
+      await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(spy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          timeoutMs: 25000,
+        })
+      );
+    });
+
+    it("should increment fail-closed metric when both adapters fail", async () => {
+      const failingPrimary = createMockAdapter("primary", true);
+      const failingFallback = createMockAdapter("fallback", true);
+
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter: failingFallback,
+        enableFallback: true,
+      });
+
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow();
+
+      const metrics = service.getMetrics();
+      expect(metrics.totalOutageCount).toBe(1);
     });
   });
 
@@ -290,6 +389,163 @@ describe("OracleService", () => {
       expect(result.source).toBe("fallback");
       expect(primaryAdapter.resolve).toHaveBeenCalledTimes(3); // Initial + 2 retries
       expect(fallbackAdapter.resolve).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("fail closed — total provider outage", () => {
+    it("does not call enqueue callback when both primary and fallback fail", async () => {
+      const failingPrimary = createMockAdapter("primary", true);
+      const failingFallback = createMockAdapter("fallback", true);
+      const enqueueCallback = vi.fn().mockResolvedValue(undefined);
+
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter: failingFallback,
+        enableFallback: true,
+        enqueueCallback,
+      });
+
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow("All providers failed");
+
+      // Enqueue must never be called when all providers fail
+      expect(enqueueCallback).not.toHaveBeenCalled();
+    });
+
+    it("increments totalOutageCount metric on total provider failure", async () => {
+      const failingPrimary = createMockAdapter("primary", true);
+      const failingFallback = createMockAdapter("fallback", true);
+
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter: failingFallback,
+        enableFallback: true,
+      });
+
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow();
+
+      const metrics = service.getMetrics();
+      expect(metrics.totalOutageCount).toBe(1);
+      expect(metrics.primaryFailureCount).toBe(1);
+      expect(metrics.fallbackFailureCount).toBe(1);
+    });
+
+    it("emits the vatix_oracle_fail_closed_total prometheus counter on total provider failure", async () => {
+      const failingPrimary = createMockAdapter("primary", true);
+      const failingFallback = createMockAdapter("fallback", true);
+
+      const service = new OracleService({
+        primaryAdapter: failingPrimary,
+        fallbackAdapter: failingFallback,
+        enableFallback: true,
+      });
+
+      const before = (await oracleFailClosedTotal.get()).values[0]?.value ?? 0;
+
+      await expect(
+        service.resolve({
+          marketId: "market-001",
+          oracleAddress:
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        })
+      ).rejects.toThrow();
+
+      const after = (await oracleFailClosedTotal.get()).values[0]?.value ?? 0;
+      expect(after).toBe(before + 1);
+    });
+
+    it("does not increment totalOutageCount when primary succeeds", async () => {
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        enableFallback: true,
+      });
+
+      await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      const metrics = service.getMetrics();
+      expect(metrics.totalOutageCount).toBe(0);
+      expect(metrics.primarySuccessCount).toBe(1);
+    });
+  });
+
+  describe("enqueue callback", () => {
+    it("should invoke enqueue callback on successful resolution", async () => {
+      const enqueueCallback = vi.fn().mockResolvedValue(undefined);
+
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        enqueueCallback,
+      });
+
+      await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(enqueueCallback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: expect.any(String),
+          request: expect.objectContaining({
+            marketId: "market-001",
+          }),
+          status: "pending",
+        })
+      );
+    });
+
+    it("should not break resolution if enqueue fails", async () => {
+      const enqueueCallback = vi
+        .fn()
+        .mockRejectedValue(new Error("Queue error"));
+
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+        enqueueCallback,
+      });
+
+      const result = await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(result.source).toBe("primary");
+      expect(enqueueCallback).toHaveBeenCalled();
+    });
+
+    it("should skip enqueue if not configured", async () => {
+      const service = new OracleService({
+        primaryAdapter,
+        fallbackAdapter,
+      });
+
+      const result = await service.resolve({
+        marketId: "market-001",
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      });
+
+      expect(result.source).toBe("primary");
+      // No error, enqueue was skipped gracefully
     });
   });
 });

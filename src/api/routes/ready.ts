@@ -1,27 +1,38 @@
 /**
  * GET /v1/ready — Readiness endpoint
  *
- * Checks that all critical downstream dependencies are healthy before
+ * Checks that all CRITICAL downstream dependencies are healthy before
  * reporting the service as ready to serve traffic.
  *
  * Liveness vs Readiness:
  *   - Liveness  (GET /v1/health): the process is alive and the HTTP server
- *     is responding. No dependency checks.
- *   - Readiness (GET /v1/ready):  the process can serve valid data. Fails
- *     when a critical dependency (DB, index freshness) is unavailable.
+ *     is responding. No hard dependency checks — a healthy status here
+ *     means Kubernetes should NOT restart the pod.
+ *   - Readiness (GET /v1/ready): the process can serve valid data. Returns
+ *     503 when any CRITICAL dependency is unavailable so the load balancer
+ *     stops routing traffic to this instance while it recovers.
+ *
+ * Dependency criticality tiers:
+ *   CRITICAL  — DB, index freshness: must be ok for 200.
+ *   WARNING   — Redis: blips are expected; a Redis outage must NOT kill pods
+ *               (the service degrades gracefully — rate-limit windows reset,
+ *               order-book cache misses fall through to Postgres). Redis
+ *               status is surfaced in the response body for observability
+ *               but does NOT drive the HTTP status code.
  *
  * Response shape:
  *   {
  *     "ready": boolean,
  *     "dependencies": {
- *       "database": { "status": "ok" | "error", "error"?: string },
+ *       "database":       { "status": "ok" | "error", "error"?: string },
+ *       "redis":          { "status": "ok" | "error", "error"?: string },
  *       "indexFreshness": { "status": "ok" | "stale" | "error", "error"?: string }
  *     }
  *   }
  *
  * HTTP status:
- *   200 — all critical dependencies healthy
- *   503 — one or more critical dependencies failed
+ *   200 — all CRITICAL dependencies healthy (Redis may be degraded)
+ *   503 — one or more CRITICAL dependencies failed
  *
  * @module src/api/routes/ready
  */
@@ -29,7 +40,10 @@
 import type { FastifyInstance } from "fastify";
 
 /** Maximum age (ms) before the index is considered stale. Default: 5 minutes. */
-export const INDEX_STALENESS_THRESHOLD_MS = 5 * 60 * 1000;
+const thresholdEnv = process.env.INDEX_STALENESS_THRESHOLD_MS;
+export const INDEX_STALENESS_THRESHOLD_MS = thresholdEnv
+  ? parseInt(thresholdEnv, 10)
+  : 300_000;
 
 export type DependencyStatus = "ok" | "error" | "stale";
 
@@ -42,6 +56,8 @@ export interface ReadyResponse {
   ready: boolean;
   dependencies: {
     database: DependencyResult;
+    /** Redis is a WARNING-tier dependency — degraded Redis does NOT block readiness. */
+    redis: DependencyResult;
     indexFreshness: DependencyResult;
   };
 }
@@ -51,8 +67,14 @@ export interface ReadyResponse {
  * in tests without touching real infrastructure.
  */
 export interface ReadyDeps {
-  /** Returns true if the database is reachable. Throws on failure. */
+  /** Throws if the database is unreachable. */
   checkDatabase(): Promise<void>;
+  /**
+   * Throws if the Redis instance is unreachable.
+   * NOTE: Redis failures set redis.status = "error" in the response but do
+   * NOT change the HTTP status code — Redis is a WARNING-tier dependency.
+   */
+  checkRedis(): Promise<void>;
   /**
    * Returns the timestamp (ms since epoch) of the most recent indexed
    * event, or null if no events have been indexed yet.
@@ -71,17 +93,21 @@ export function readyRoute(deps: ReadyDeps) {
     fastify.get("/ready", async (_request, reply) => {
       const now = deps.now ? deps.now() : Date.now();
 
-      const [dbResult, indexResult] = await Promise.all([
+      const [dbResult, redisResult, indexResult] = await Promise.all([
         checkDb(deps),
+        checkRedis(deps),
         checkIndexFreshness(deps, now),
       ]);
 
+      // CRITICAL tier: DB and index freshness determine readiness.
+      // Redis is WARNING-only — blips must not remove the pod from rotation.
       const ready = dbResult.status === "ok" && indexResult.status === "ok";
 
       const body: ReadyResponse = {
         ready,
         dependencies: {
           database: dbResult,
+          redis: redisResult,
           indexFreshness: indexResult,
         },
       };
@@ -94,6 +120,18 @@ export function readyRoute(deps: ReadyDeps) {
 async function checkDb(deps: ReadyDeps): Promise<DependencyResult> {
   try {
     await deps.checkDatabase();
+    return { status: "ok" };
+  } catch (err) {
+    return {
+      status: "error",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+async function checkRedis(deps: ReadyDeps): Promise<DependencyResult> {
+  try {
+    await deps.checkRedis();
     return { status: "ok" };
   } catch (err) {
     return {

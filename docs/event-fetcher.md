@@ -1,71 +1,53 @@
-# Event Fetcher (Horizon/RPC pagination and rate limiting)
+# EventFetcher
 
-`apps/indexer/src/eventFetcher.ts` pulls contract events from the Stellar
-RPC/Horizon `getEvents` endpoint for a given ledger window, transparently
-paginating with the `pagingToken` cursor returned by the server.
+## Overview
 
-## Rate limiting (429s)
+The `EventFetcher` class retrieves raw Soroban contract events from a Stellar RPC node. It is the
+first stage of the indexer pipeline — downstream parsers and the batch writer depend on the
+events it returns.
 
-Horizon/RPC endpoints return HTTP 429 under burst polling. The fetcher now
-treats 429 as a distinct case from generic transient network errors:
+## How it works
 
-- 429 responses are retried up to `DEFAULT_MAX_RATE_LIMIT_RETRIES` (5) times
-  and do **not** consume the normal `maxRetries` transient-error budget.
-- If the response includes a `Retry-After` header, that value is honored;
-  otherwise an exponential backoff (`1s, 2s, 4s, ...`) is used.
-- Every rate-limit event is recorded via telemetry
-  (`indexer.rpc.rate_limited`, and `indexer.rpc.rate_limited_exhausted` when
-  the retry budget is exhausted) tagged with a per-fetch `requestId` for
-  correlation across logs.
-- If retries are exhausted, the fetcher throws instead of silently dropping
-  the page — callers must not advance the ledger cursor on failure (see
-  `docs/architecture.md` and the storage cursor contract).
+1. The caller provides a `LedgerWindow` (start and end ledger sequence numbers).
+2. `fetchByLedgerWindow()` pages through `server.getEvents()` results, collecting every event
+   whose ledger falls within the requested window.
+3. Each RPC page is retried with exponential back-off when a transient error is detected
+   (network timeouts, 5xx responses). Non-transient errors propagate immediately.
+4. Raw `EventResponse` objects are mapped to `RawChainEvent` — a minimal, serialisation-safe
+   shape that downstream parsers consume.
 
-## Cursor stall detection
+## Configuration
 
-If Horizon returns the same `pagingToken` across `MAX_STALL_ITERATIONS` (3)
-consecutive pages, the fetcher raises `CursorStallError` rather than looping
-forever. This prevents a stuck cursor from silently starving the ingestion
-loop of new events while still reporting "success".
+`EventFetcher` is instantiated with an `EventFetcherConfig`:
 
-## Production vs. development
+| Field          | Type     | Required | Default | Description                                   |
+| -------------- | -------- | -------- | ------- | --------------------------------------------- |
+| `rpcUrl`       | `string` | Yes      | —       | Stellar Soroban RPC endpoint URL              |
+| `contractId`   | `string` | Yes      | —       | Contract whose events are fetched             |
+| `maxRetries`   | `number` | No       | `3`     | Maximum retry attempts for transient failures |
+| `retryDelayMs` | `number` | No       | `500`   | Base delay before first retry (doubles each)  |
+| `pageLimit`    | `number` | No       | `100`   | Events per RPC page request                   |
 
-`EventFetcher`'s constructor is fail-fast in `NODE_ENV=production`:
+## Retry strategy
 
-- `rpcUrl` must be an `https://` endpoint. A local/insecure endpoint throws
-  `EventFetcherConfigError` immediately — there is no silent fallback to an
-  unauthenticated or plaintext RPC in production.
-- `contractId` must be set. Without it the fetcher would otherwise poll
-  every contract on the network, which is never the intended production
-  behavior.
+Retries use exponential back-off: `retryDelayMs * 2^attempt`. Only errors identified as
+transient by `isTransientError()` (from `retry.ts`) trigger a retry; all other errors are
+thrown immediately. After `maxRetries` consecutive transient failures the last error is
+re-thrown.
 
-Outside production (`NODE_ENV` unset or `test`/`development`), these checks
-are relaxed so local stubs and integration tests can point at
-`http://localhost` RPC mocks.
+## Telemetry
 
-## Observability
+Two metrics are recorded via the injected `Telemetry` interface:
 
-Every `fetchByLedgerWindow` call generates a `requestId` (UUID) that is
-attached to all telemetry emitted for that call
-(`indexer.rpc.page_fetched`, `indexer.rpc.error`, `indexer.rpc.rate_limited`,
-`indexer.rpc.cursor_stalled`, `indexer.events.fetched`), so a single burst of
-429s or a stalled cursor can be traced end-to-end in logs/metrics. No
-secrets (RPC auth tokens, keys) are ever included in telemetry tags or log
-lines.
+| Metric                     | Description                               |
+| -------------------------- | ----------------------------------------- |
+| `indexer.events.fetched`   | Total events returned for a ledger window |
+| `indexer.rpc.page_fetched` | Events returned per RPC page              |
+| `indexer.rpc.error`        | Emitted when an RPC call fails terminally |
 
-## Testing
+## Related source files
 
-Unit tests live in `apps/indexer/src/eventFetcher.test.ts` and cover:
-
-- Pagination across multiple pages.
-- Transient network error retries.
-- 429 rate-limit backoff and recovery, and exhaustion after
-  `DEFAULT_MAX_RATE_LIMIT_RETRIES`.
-- Cursor stall detection (`CursorStallError`).
-- Production fail-fast guardrails for `rpcUrl`/`contractId`.
-
-Run via the existing workspace test script:
-
-```
-pnpm test
-```
+- `apps/indexer/src/eventFetcher.ts` — implementation
+- `apps/indexer/src/types.ts` — `EventFetcherConfig`, `RawChainEvent`, `LedgerWindow`
+- `apps/indexer/src/retry.ts` — `isTransientError()` and `sleep()` helpers
+- `apps/indexer/src/telemetry.ts` — `Telemetry` interface and console default
