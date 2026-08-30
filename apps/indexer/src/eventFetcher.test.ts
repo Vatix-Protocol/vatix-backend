@@ -1,5 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { EventFetcher } from "./eventFetcher.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  EventFetcher,
+  EventFetcherConfigError,
+  CursorStallError,
+} from "./eventFetcher.js";
 import type { Telemetry } from "./telemetry.js";
 
 const makeEvent = (ledger: number, id = `evt-${ledger}`) => ({
@@ -162,5 +166,117 @@ describe("EventFetcher", () => {
     expect(summary).toBeDefined();
     expect(summary!.value).toBe(2);
     expect(summary!.tags).toMatchObject({ startLedger: "1", endLedger: "2" });
+  });
+
+  it("backs off and recovers on a 429 rate-limit response", async () => {
+    const rateLimitErr = Object.assign(new Error("Too Many Requests"), {
+      status: 429,
+    });
+    const mockServer = {
+      getEvents: vi
+        .fn()
+        .mockRejectedValueOnce(rateLimitErr)
+        .mockResolvedValueOnce({ events: [makeEvent(7)], latestLedger: 10 }),
+    };
+
+    const fetcher = new EventFetcher(
+      { rpcUrl: "https://rpc.example.com", contractId: "CTEST" },
+      telemetry
+    );
+    (fetcher as any).server = mockServer;
+
+    const result = await fetcher.fetchByLedgerWindow({
+      startLedger: 7,
+      endLedger: 7,
+    });
+
+    expect(result.events).toHaveLength(1);
+    expect(mockServer.getEvents).toHaveBeenCalledTimes(2);
+    expect(recorded.some((r) => r.metric === "indexer.rpc.rate_limited")).toBe(
+      true
+    );
+  });
+
+  it("throws once rate-limit retries are exhausted (does not stall the cursor forever)", async () => {
+    const rateLimitErr = Object.assign(new Error("Too Many Requests"), {
+      status: 429,
+    });
+    const mockServer = { getEvents: vi.fn().mockRejectedValue(rateLimitErr) };
+
+    const fetcher = new EventFetcher(
+      { rpcUrl: "https://rpc.example.com", contractId: "CTEST" },
+      telemetry
+    );
+    (fetcher as any).server = mockServer;
+
+    await expect(
+      fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+    ).rejects.toThrow("Too Many Requests");
+
+    expect(
+      recorded.some((r) => r.metric === "indexer.rpc.rate_limited_exhausted")
+    ).toBe(true);
+  });
+
+  it("throws CursorStallError when the same paging cursor keeps repeating", async () => {
+    const stuckEvent = makeEvent(1, "stuck");
+    stuckEvent.pagingToken = "same-token";
+    const mockServer = {
+      getEvents: vi.fn().mockResolvedValue({
+        events: [stuckEvent],
+        latestLedger: 10,
+      }),
+    };
+
+    const fetcher = new EventFetcher(
+      { rpcUrl: "https://rpc.example.com", contractId: "CTEST", pageLimit: 1 },
+      telemetry
+    );
+    (fetcher as any).server = mockServer;
+
+    await expect(
+      fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+    ).rejects.toThrow(CursorStallError);
+  });
+
+  describe("production configuration guardrails", () => {
+    const originalEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalEnv;
+    });
+
+    it("fails fast in production when rpcUrl is not https", () => {
+      process.env.NODE_ENV = "production";
+      expect(
+        () =>
+          new EventFetcher({
+            rpcUrl: "http://localhost:8000",
+            contractId: "CTEST",
+          })
+      ).toThrow(EventFetcherConfigError);
+    });
+
+    it("fails fast in production when contractId is missing", () => {
+      process.env.NODE_ENV = "production";
+      expect(
+        () =>
+          new EventFetcher({
+            rpcUrl: "https://rpc.example.com",
+            contractId: "",
+          })
+      ).toThrow(EventFetcherConfigError);
+    });
+
+    it("allows relaxed config outside production", () => {
+      process.env.NODE_ENV = "test";
+      expect(
+        () =>
+          new EventFetcher({
+            rpcUrl: "http://localhost:8000",
+            contractId: "CTEST",
+          })
+      ).not.toThrow();
+    });
   });
 });
