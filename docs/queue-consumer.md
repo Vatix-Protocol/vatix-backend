@@ -251,19 +251,25 @@ above.
 
 ### Health Probes
 
-Workers don't expose their own HTTP probes; consumer liveness is inferred from
-the API's readiness endpoint, which checks the shared Redis/DB dependencies
-the workers also rely on:
+Workers expose their own HTTP probes via `apps/workers/src/health-server.ts`
+(`/live` and `/ready`, see [health-probes.md](health-probes.md#workers-health-probes)).
+Previously workers had no bootstrapped health server, so k8s deployments were
+liveness-probing the API's `/v1/health` instead — which reports the *API*
+process's liveness, not the worker's. Under that setup a worker process could
+be wedged (event loop blocked, poll loop dead) while the API stayed healthy,
+so k8s never restarted it; conversely, pointing a worker's liveness at a
+dependency-checking endpoint (like `/ready`) causes k8s to restart worker pods
+on a transient Redis/DB blip, which can drop in-flight settlement/oracle jobs
+mid-processing. Each worker entrypoint should call `startHealthServer()` and
+configure k8s with:
 
 ```bash
-curl -s http://localhost:3000/v1/ready
-curl -s http://localhost:3000/v1/health
+curl -s http://localhost:$WORKERS_HEALTH_PORT/live   # liveness  — no deps
+curl -s http://localhost:$WORKERS_HEALTH_PORT/ready  # readiness — DB + Redis
 ```
 
-`/v1/health` confirms the HTTP server is alive; `/v1/ready` additionally checks
-database and indexer health before traffic is routed. Neither endpoint is
-rate-limited (see [RATE_LIMIT_POLICY.md](../RATE_LIMIT_POLICY.md)), so they are
-safe to poll frequently from an orchestrator or monitoring probe.
+Neither endpoint is rate-limited (see [RATE_LIMIT_POLICY.md](../RATE_LIMIT_POLICY.md)),
+so they are safe to poll frequently from an orchestrator or monitoring probe.
 
 ## Related Documentation
 
