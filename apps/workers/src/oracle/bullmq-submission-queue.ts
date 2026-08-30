@@ -12,7 +12,7 @@ import { Queue, Worker, type Job } from "bullmq";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
 import {
-  DEFAULT_JOB_OPTIONS,
+  ORACLE_SUBMISSION_JOB_OPTIONS,
   redisConnectionFromEnv,
   submissionQueueName,
 } from "../../../packages/shared/src/queue-config.js";
@@ -36,7 +36,7 @@ export class BullMQSubmissionQueue {
     this.logger = logger;
     this.queue = new Queue<SubmissionQueueItem>(submissionQueueName(), {
       connection: redisConnectionFromEnv(),
-      defaultJobOptions: DEFAULT_JOB_OPTIONS,
+      defaultJobOptions: ORACLE_SUBMISSION_JOB_OPTIONS,
     });
 
     // BullMQ (via EventEmitter) forwards Redis connection errors as "error"
@@ -67,7 +67,7 @@ export class BullMQSubmissionQueue {
     }
 
     await this.queue.add(item.request.marketId, item, {
-      ...DEFAULT_JOB_OPTIONS,
+      ...ORACLE_SUBMISSION_JOB_OPTIONS,
       jobId,
     });
 
