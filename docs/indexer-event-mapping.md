@@ -45,6 +45,8 @@ When a parser encounters an event with a topic symbol it does not recognize, it 
 
 **DB write:** `IndexedTrade` row via `PrismaBatchWriter`. `priceRaw` and `quantityRaw` stored as `String` (bigint serialized) to avoid precision loss. `PrismaBatchWriter` also reconciles the trade into both parties' `UserPosition.yesShares`/`noShares` (`Int` columns) — since `quantity` is already whole integer shares (no fixed-point scale, unlike `price`/collateral), this conversion is a validated bigint→Number bounds check rather than a division; see `sharesRawToInt` in [Decimal/share conversion utilities](#decimalshare-conversion-utilities) below.
 
+**Order id join validation:** `buy_order_id`/`sell_order_id` must resolve to a real `Order.id` (a `uuid()` per `prisma/schema.prisma`). `tradeParser.ts` always rejects an empty order id, and in `NODE_ENV=production` additionally rejects any value that isn't UUID-shaped — this is a dev-fixture allowance only, since non-UUID ids (e.g. legacy fixtures like `"buy-1"`) can never join to a CLOB `Order` row. A production rejection increments `indexer.parser.unjoinable_order_id` (tags: `parser`, `eventId`, `contractId`, `ledger`).
+
 ---
 
 ## 2. `collateral_deposited`
@@ -58,6 +60,8 @@ When a parser encounters an event with a topic symbol it does not recognize, it 
 | `[2]` | ScvI128   | `bigint`    | `amountRaw` |
 
 **DB write:** `CollateralDeposit` row via `PrismaBatchWriter`. `amountRaw` is stored as `String` (bigint serialized) to avoid precision loss, matching `IndexedTrade.priceRaw`/`quantityRaw`. Position accounting against `UserPosition` is handled separately by a worker — `batchWriter` only persists the raw deposit for audit/reconciliation.
+
+**Scale validation:** `collateralDepositedParser.ts` now validates every `amountRaw` against the same 7-decimal / `Decimal(20,8)` bounds `decimalUtils.amountRawToDecimal` enforces (see [Decimal/share conversion utilities](#decimalshare-conversion-utilities)), and rejects zero/negative amounts. In `NODE_ENV=production` it additionally rejects an `amount` that decodes as a plain JS `number` instead of a `bigint` — the on-chain `i128` type always decodes to `bigint`, so a `number` signals a wrong-width/wrong-scale decode path rather than a legitimate deposit. A rejection increments `indexer.parser.invalid_collateral_scale` (tags: `parser`, `eventId`, `contractId`, `ledger`).
 
 ---
 
@@ -78,6 +82,8 @@ The contract does not publish an oracle address on this event, so `oracleAddress
 **Payload — legacy ScvVec 3-tuple:** `[market_id: u32, outcome: bool, resolved_at: u64]` all inside the value (no second topic). Same field semantics as above; `oracleAddress` is also `""`.
 
 **Payload — legacy ScvMap:** Keys `market_id` (ScvSymbol), `outcome` (ScvSymbol `"YES"`/`"NO"`), `oracle` (ScvSymbol), all inside the value. `oracle` is required on this path; its absence throws `ResolutionParseError`.
+
+**Production vs. local stubs:** Both legacy shapes (ScvVec tuple and legacy ScvMap) exist only to decode local devnet/test fixtures and are rejected with a `ResolutionParseError` when `NODE_ENV=production` (or the `nodeEnv` option passed to `parseResolutionEvent`/`parseResolutionEvents` is `"production"`). Only the canonical on-chain shape (`topics[1]=market_id`, value `{outcome, resolved_at}`) is accepted in production. A rejection in production increments `indexer.parser.legacy_shape_rejected` (tags: `parser`, `eventId`, `contractId`, `ledger`) so operators can see a contract/topic regression instead of silently getting `ResolutionCandidate` rows with a blank `oracleAddress`.
 
 **DB write:** `ResolutionCandidate` row with `status = "PROPOSED"`, `source = "chain:market_resolved:{contractId}"`.
 

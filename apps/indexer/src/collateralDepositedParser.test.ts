@@ -54,7 +54,9 @@ describe("parseCollateralDepositedEvent", () => {
   });
 
   it("handles large i128 amounts without precision loss", () => {
-    const big = 9_999_999_999_999_999_999n;
+    // Largest value that still fits the Decimal(20,8) column
+    // amountRawToDecimal backs (999_999_999_999 * 10^7).
+    const big = 9_999_999_999_990_000_000n;
     const d = parseCollateralDepositedEvent(
       makeEvent({ valueXdr: makeDepositValueXdr("GABC", 1, big) })
     );
@@ -201,5 +203,85 @@ describe("parseCollateralDepositedEvents", () => {
         ledger: "100",
       })
     );
+  });
+});
+
+describe("collateral amount scale validation", () => {
+  // Gap this covers: the parser previously accepted any i128 amount as-is,
+  // with no check against the 7-decimal / Decimal(20,8) scale the rest of
+  // the system (amountRawToDecimal, CollateralDeposit columns) assumes for
+  // it — so a wrongly-scaled or out-of-range amount would pass the parser
+  // silently and only surface later, far from the event that caused it.
+  // These tests fail against the pre-fix parser, which has no such check.
+
+  it("rejects an amount that exceeds the Decimal(20,8) collateral range", () => {
+    const tooLarge = 10_000_000_000_000_000_000n; // just over MAX_RAW
+    expect(() =>
+      parseCollateralDepositedEvent(
+        makeEvent({ valueXdr: makeDepositValueXdr("GABC", 1, tooLarge) })
+      )
+    ).toThrow(CollateralDepositedParseError);
+  });
+
+  it("rejects a zero amount", () => {
+    expect(() =>
+      parseCollateralDepositedEvent(
+        makeEvent({ valueXdr: makeDepositValueXdr("GABC", 1, 0n) })
+      )
+    ).toThrow(CollateralDepositedParseError);
+  });
+
+  it("rejects a negative amount", () => {
+    expect(() =>
+      parseCollateralDepositedEvent(
+        makeEvent({ valueXdr: makeDepositValueXdr("GABC", 1, -500n) })
+      )
+    ).toThrow(CollateralDepositedParseError);
+  });
+
+  it("emits invalid_collateral_scale metric when an amount fails validation", () => {
+    const telemetry: Telemetry = {
+      record: vi.fn(),
+      startSpan: vi.fn(() => ({ end: vi.fn() })),
+    };
+    const events = [
+      makeEvent({
+        id: "evt-bad-scale",
+        valueXdr: makeDepositValueXdr("GABC", 1, -1n),
+      }),
+    ];
+    const { deposits, errors } = parseCollateralDepositedEvents(events, {
+      telemetry,
+    });
+    expect(deposits).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect(telemetry.record).toHaveBeenCalledWith(
+      "indexer.parser.invalid_collateral_scale",
+      1,
+      expect.objectContaining({
+        parser: "collateral_deposited",
+        eventId: "evt-bad-scale",
+      })
+    );
+  });
+
+  it("rejects a plain-number amount in production but allows it in dev", () => {
+    // Simulate a non-i128 decode path by building the tuple with a JS
+    // number amount instead of a bigint (nativeToScVal picks i32/i64 for
+    // small numbers, not i128 — this is the "wrong width" shape).
+    const numberAmountXdr = nativeToScVal(["GABC", 1, 500]).toXDR("base64");
+
+    expect(() =>
+      parseCollateralDepositedEvent(
+        makeEvent({ valueXdr: numberAmountXdr }),
+        { nodeEnv: "production" }
+      )
+    ).toThrow(CollateralDepositedParseError);
+
+    const d = parseCollateralDepositedEvent(
+      makeEvent({ valueXdr: numberAmountXdr }),
+      { nodeEnv: "development" }
+    );
+    expect(d.amountRaw).toBe(500n);
   });
 });

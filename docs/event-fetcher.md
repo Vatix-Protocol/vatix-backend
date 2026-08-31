@@ -30,10 +30,20 @@ events it returns.
 
 ## Retry strategy
 
-Retries use exponential back-off: `retryDelayMs * 2^attempt`. Only errors identified as
-transient by `isTransientError()` (from `retry.ts`) trigger a retry; all other errors are
-thrown immediately. After `maxRetries` consecutive transient failures the last error is
-re-thrown.
+`retry.ts` classifies every failure via `classifyError()` into one of three buckets instead
+of a single transient/non-transient split:
+
+| Classification | Examples                                   | Behavior                                                              |
+| --------------- | ------------------------------------------- | ---------------------------------------------------------------------- |
+| `fatal`         | Parse errors (`*ParseError`), non-429 4xx   | Never retried, even with attempts remaining — the payload is wrong.   |
+| `rate_limited`  | HTTP 429                                    | Retried with `Retry-After` (if present) or `retryDelayMs * rateLimitBackoffMultiplier` (default `4`) exponential backoff. |
+| `transient`     | Network error codes (`ECONNRESET`, ...), 5xx | Retried with standard `retryDelayMs * 2^attempt` exponential backoff.  |
+
+`isTransientError()` is kept for backwards compatibility (`true` for `transient` or
+`rate_limited`) but new callers should use `classifyError()` directly. This split exists
+specifically so a parse error is never retried forever — regardless of what its `.code` or
+message happens to look like — while a genuine 429/5xx from the Stellar RPC still backs off
+and recovers. After `maxRetries` consecutive retryable failures the last error is re-thrown.
 
 ## Telemetry
 

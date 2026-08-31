@@ -86,17 +86,45 @@ function marketIdFromTopic(topicsXdr: string[], eventId: string): string {
 }
 
 /**
+ * Legacy payload shapes (ScvVec tuple, legacy ScvMap) predate the real
+ * on-chain `MarketResolvedEvent` layout and were only ever needed to decode
+ * fixtures from local devnet stubs. Accepting them in production means a
+ * misconfigured or downgraded contract can silently produce
+ * `ResolutionCandidate` rows with an empty/garbage `oracleAddress` instead
+ * of failing the batch — see the issue this const documents. Threaded
+ * through from `parseResolutionEvent`/`parseResolutionEvents`, defaulting
+ * to `process.env.NODE_ENV` so callers never need to pass it explicitly in
+ * real deployments.
+ */
+export function isProductionEnv(nodeEnv: string): boolean {
+  return nodeEnv === "production";
+}
+
+/**
  * Supports three payload shapes:
  *   - Real on-chain (topics[1]=market_id: u32, value=ScvMap{outcome, resolved_at})
- *   - Legacy ScvVec tuple (value=[market_id, outcome, resolved_at])
- *   - Legacy ScvMap (value={ market_id, outcome, oracle })
+ *   - Legacy ScvVec tuple (value=[market_id, outcome, resolved_at]) — dev/test stub only
+ *   - Legacy ScvMap (value={ market_id, outcome, oracle }) — dev/test stub only
+ *
+ * In production (`nodeEnv === "production"`) the two legacy shapes throw
+ * instead of being silently accepted, so a contract/topic drift never
+ * results in a resolution being dropped or mis-attributed off-chain.
  */
 function parseResolutionPayload(
   decoded: unknown,
   topicsXdr: string[],
-  eventId: string
+  eventId: string,
+  nodeEnv: string
 ): ResolutionPayload {
   if (Array.isArray(decoded)) {
+    if (isProductionEnv(nodeEnv)) {
+      throw new ResolutionParseError(
+        "Legacy ScvVec tuple resolution payload is not permitted in production — " +
+          "the contract must emit the canonical MarketResolvedEvent shape " +
+          "(topics[1]=market_id, value={outcome, resolved_at})",
+        eventId
+      );
+    }
     if (decoded.length < 2) {
       throw new ResolutionParseError(
         "Tuple resolution payload must include market_id and outcome",
@@ -122,6 +150,14 @@ function parseResolutionPayload(
   const map = decoded as Record<string, unknown>;
 
   if ("market_id" in map) {
+    if (isProductionEnv(nodeEnv)) {
+      throw new ResolutionParseError(
+        "Legacy ScvMap resolution payload is not permitted in production — " +
+          "the contract must emit the canonical MarketResolvedEvent shape " +
+          "(topics[1]=market_id, value={outcome, resolved_at})",
+        eventId
+      );
+    }
     // Legacy ScvMap payload: market_id, outcome, and oracle all in the value.
     const oracleAddress = map.oracle != null ? String(map.oracle) : "";
     if (oracleAddress === "") {
@@ -149,14 +185,25 @@ function parseResolutionPayload(
   };
 }
 
+export interface ParseResolutionEventOptions {
+  telemetry?: Telemetry;
+  /** Defaults to `process.env.NODE_ENV`; override in tests only. */
+  nodeEnv?: string;
+}
+
 /**
  * Parse a single RawChainEvent into a NormalizedResolution.
  *
- * @throws ResolutionParseError if the event is not a resolution event or payload is malformed
+ * @throws ResolutionParseError if the event is not a resolution event, the
+ *   payload is malformed, or (in production) the payload uses a legacy
+ *   dev-stub shape instead of the canonical on-chain layout.
  */
 export function parseResolutionEvent(
-  event: RawChainEvent
+  event: RawChainEvent,
+  options?: ParseResolutionEventOptions
 ): NormalizedResolution {
+  const nodeEnv = options?.nodeEnv ?? process.env.NODE_ENV ?? "development";
+
   if (!isResolutionEvent(event.topicsXdr)) {
     throw new ResolutionParseError(
       `Event topic is not "${RESOLUTION_EVENT_TOPIC}"`,
@@ -175,7 +222,20 @@ export function parseResolutionEvent(
     );
   }
 
-  const payload = parseResolutionPayload(decoded, event.topicsXdr, event.id);
+  let payload: ResolutionPayload;
+  try {
+    payload = parseResolutionPayload(decoded, event.topicsXdr, event.id, nodeEnv);
+  } catch (err) {
+    if (isProductionEnv(nodeEnv)) {
+      options?.telemetry?.record("indexer.parser.legacy_shape_rejected", 1, {
+        parser: "resolution",
+        eventId: event.id,
+        contractId: event.contractId,
+        ledger: String(event.ledger),
+      });
+    }
+    throw err;
+  }
 
   return {
     eventId: event.id,
@@ -195,7 +255,7 @@ export function parseResolutionEvent(
  */
 export function parseResolutionEvents(
   events: RawChainEvent[],
-  options?: { telemetry?: Telemetry }
+  options?: ParseResolutionEventOptions
 ): {
   resolutions: NormalizedResolution[];
   errors: ResolutionParseError[];
@@ -203,6 +263,7 @@ export function parseResolutionEvents(
   const resolutions: NormalizedResolution[] = [];
   const errors: ResolutionParseError[] = [];
   const telemetry = options?.telemetry;
+  const nodeEnv = options?.nodeEnv ?? process.env.NODE_ENV ?? "development";
 
   for (const event of events) {
     if (!isResolutionEvent(event.topicsXdr)) {
@@ -215,7 +276,7 @@ export function parseResolutionEvents(
       continue;
     }
     try {
-      resolutions.push(parseResolutionEvent(event));
+      resolutions.push(parseResolutionEvent(event, { telemetry, nodeEnv }));
     } catch (err) {
       errors.push(
         err instanceof ResolutionParseError
