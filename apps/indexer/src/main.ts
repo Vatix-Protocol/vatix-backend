@@ -7,6 +7,8 @@ import { PrismaCursorStorageClient } from "./storage.js";
 import { EventFetcher } from "./eventFetcher.js";
 import { PrismaBatchWriter } from "./batchWriter.js";
 import { checkStartupHealth, checkLiveDependencies } from "./startupHealth.js";
+import { buildIndexerHttpServer } from "./httpServer.js";
+import type { FastifyInstance } from "fastify";
 import {
   disconnectPrisma,
   getPrismaClient,
@@ -138,6 +140,24 @@ async function bootstrap(): Promise<void> {
     metrics: metrics.toLogFields(),
   });
 
+  // Read-only HTTP surface (GET /markets, /markets/:id) is opt-in — the
+  // indexer's default role is off-chain event ingestion with no exposed
+  // port. Without an explicit flag here, an operator could accidentally
+  // wire this up in front of a public load balancer with no CORS review;
+  // requiring INDEXER_HTTP_ENABLED=true makes exposing it a deliberate,
+  // logged decision. See apps/indexer/src/httpServer.ts and
+  // apps/indexer/src/middleware/cors.ts for the origin-allowlist policy.
+  let httpApp: FastifyInstance | undefined;
+  if (process.env.INDEXER_HTTP_ENABLED === "true") {
+    const httpPort = Number(process.env.INDEXER_HTTP_PORT ?? 3100);
+    httpApp = await buildIndexerHttpServer();
+    await httpApp.listen({ port: httpPort, host: "0.0.0.0" });
+    logger.info("Indexer HTTP surface listening", {
+      port: httpPort,
+      nodeEnv: config.nodeEnv,
+    });
+  }
+
   const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
   let isShuttingDown = false;
 
@@ -166,6 +186,9 @@ async function bootstrap(): Promise<void> {
     try {
       // Stop ingestion loop and flush checkpoint
       await ingestionLoop.stop();
+      if (httpApp) {
+        await httpApp.close();
+      }
       await disconnectPrisma();
       clearTimeout(timeoutHandle);
 
