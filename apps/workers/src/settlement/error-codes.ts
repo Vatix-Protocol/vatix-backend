@@ -32,6 +32,7 @@ export type SettlementErrorCode =
   | "STELLAR_TX_INSUFFICIENT_FUNDS"
   | "STELLAR_TX_BAD_SEQUENCE"
   | "STELLAR_TX_BAD_AUTH"
+  | "INVALID_SIGNATURE"
   | "SOROBAN_CONTRACT_ERROR"
   | "HORIZON_RATE_LIMITED"
   | "INVALID_PAYLOAD"
@@ -53,6 +54,19 @@ export interface SettlementErrorInfo {
  */
 export function isRetryable(info: SettlementErrorInfo): boolean {
   return info.status === "transient";
+}
+
+/**
+ * Returns true when a classified error should be quarantined (moved to the
+ * dead-letter/quarantine path) rather than retried. This is the same
+ * condition as `!isRetryable(info)` today, but named and exported
+ * separately so callers express *intent* ("should this stop consuming
+ * retry budget and RPC calls") rather than re-deriving it from
+ * retryability, and so the two can diverge later without a call-site
+ * rewrite.
+ */
+export function shouldQuarantine(info: SettlementErrorInfo): boolean {
+  return !isRetryable(info);
 }
 
 const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
@@ -119,6 +133,20 @@ const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
     code: "STELLAR_TX_BAD_AUTH",
     status: "fatal",
     message: "Transaction rejected: signature validation failed (tx_bad_auth)",
+  },
+  /**
+   * The settlement payload's own signature failed local verification
+   * *before* submission (distinct from the on-chain tx_bad_auth rejection
+   * above). Fatal and quarantined immediately — retrying will re-derive
+   * the same invalid signature every time and only burn RPC quota against
+   * a request that was never going to succeed (the reported gap: retrying
+   * InvalidSignature forever).
+   */
+  INVALID_SIGNATURE: {
+    code: "INVALID_SIGNATURE",
+    status: "fatal",
+    message:
+      "Settlement payload signature failed local verification (InvalidSignature)",
   },
   /**
    * Soroban contract invocation returned an error code (trap, panic, or
@@ -248,6 +276,20 @@ export function classifySettlementError(
       ...ERROR_REGISTRY.STELLAR_TX_BAD_SEQUENCE,
       message: error.message,
     };
+  }
+
+  // ── Local signature verification failure (pre-submission) ────────────────
+  // Checked before the on-chain tx_bad_auth bucket below: this is the
+  // client-side "InvalidSignature" case — the payload never even reached
+  // the network — and must be distinguished from an on-chain rejection so
+  // operators can tell "our signer is broken" apart from "the network
+  // rejected our signed tx".
+  if (
+    error.name === "InvalidSignature" ||
+    msg.includes("invalidsignature") ||
+    msg.includes("invalid signature")
+  ) {
+    return { ...ERROR_REGISTRY.INVALID_SIGNATURE, message: error.message };
   }
 
   // ── Soroban/Horizon: auth / signature failure ─────────────────────────────

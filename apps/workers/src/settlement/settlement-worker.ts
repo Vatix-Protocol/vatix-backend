@@ -20,10 +20,14 @@ import {
   classifySettlementError,
   annotateError,
   isRetryable,
+  shouldQuarantine,
   type SettlementErrorInfo,
   type SettlementErrorStatus,
 } from "./error-codes.js";
-import { settlementDuplicateSkippedTotal } from "../../../../src/services/metrics.js";
+import {
+  settlementDuplicateSkippedTotal,
+  settlementErrorQuarantinedTotal,
+} from "../../../../src/services/metrics.js";
 
 /** Retry config for individual Stellar RPC calls (getAccount, prepareTransaction,
  *  sendTransaction). Bounded and short-lived so a transient RPC blip is absorbed
@@ -209,6 +213,12 @@ export class SettlementWorker {
       const permanent = !isRetryable(errorInfo);
 
       this.retryClassificationCounts[errorInfo.status]++;
+
+      if (shouldQuarantine(errorInfo)) {
+        // e.g. INVALID_SIGNATURE / STELLAR_TX_BAD_AUTH — retrying these
+        // forever would just burn RPC quota re-deriving the same rejection.
+        settlementErrorQuarantinedTotal.inc({ code: errorInfo.code });
+      }
 
       this.logger.info("Settlement job error classified", {
         jobId: job.id,
