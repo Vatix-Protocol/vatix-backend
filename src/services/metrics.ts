@@ -120,3 +120,17 @@ export const oracleSubmissionConfirmationLatency = new client.Histogram({
   registers: [metricsRegistry],
   buckets: [100, 500, 1000, 2500, 5000, 10000, 30000, 60000, 120000],
 });
+
+/**
+ * Incremented once per broken link found while verifying a trade audit hash
+ * chain — a `prevHash` that does not match the preceding entry's `entryHash`.
+ * A non-zero rate means archived rows were deleted or expired out from under
+ * the chain (issue #952): the hash chain can no longer prove completeness and
+ * a restore drill from backup is required. Labelled by market.
+ */
+export const auditChainGapTotal = new client.Counter({
+  name: "vatix_audit_chain_gap_total",
+  help: "Total broken links detected in trade audit hash chains (missing/expired archived rows)",
+  labelNames: ["market_id"],
+  registers: [metricsRegistry],
+});
