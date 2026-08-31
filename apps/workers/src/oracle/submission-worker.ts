@@ -43,6 +43,7 @@ import {
   checkOnChainStatus,
   claimSubmissionIntent,
   computePayloadHash,
+  isDefinitivelyConfirmed,
   recordBroadcast,
   recordConfirmed,
   recordFailed,
@@ -119,6 +120,18 @@ export class SubmissionWorker {
       assertPassphraseMatchesDeployment(
         this.stellarConfig.networkPassphrase,
         config.stellarNetwork ?? process.env.STELLAR_NETWORK ?? "testnet"
+      );
+    } else if (process.env.NODE_ENV === "production") {
+      // Defense in depth alongside main.ts's own bootstrap validation: this
+      // worker must never construct successfully in production without
+      // on-chain config, since the off-chain fallback below
+      // (updateOnSuccess/broadcastAndConfirm) marks oracle reports
+      // CONFIRMED without ever touching the chain.
+      throw new Error(
+        "SubmissionWorker requires a Stellar config in production " +
+          "(STELLAR_RPC_URL, MARKET_CONTRACT_ID/INDEXER_CONTRACT_ID, " +
+          "SOROBAN_NETWORK_PASSPHRASE, ORACLE_SECRET_KEY) — refusing to fall " +
+          "back to off-chain-only confirmation."
       );
     }
   }
@@ -432,7 +445,23 @@ export class SubmissionWorker {
     for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       const txStatus = await server.getTransaction(sendResult.hash);
-      if (txStatus.status === StellarRpc.Api.GetTransactionStatus.SUCCESS) {
+      if (
+        txStatus.status === StellarRpc.Api.GetTransactionStatus.SUCCESS &&
+        !isDefinitivelyConfirmed(txStatus)
+      ) {
+        // Status says SUCCESS but the response is missing the ledger
+        // metadata a genuinely-included transaction always carries — do
+        // not mark CONFIRMED on the hash-keyed status flag alone. Keep
+        // polling; if this persists until MAX_POLL_ATTEMPTS it falls
+        // through to the ambiguous path below rather than a false
+        // confirmation.
+        this.logger.warn(
+          "resolve_market getTransaction reported SUCCESS without ledger metadata, treating as unconfirmed",
+          { marketId, hash: sendResult.hash }
+        );
+        continue;
+      }
+      if (isDefinitivelyConfirmed(txStatus)) {
         this.logger.info("resolve_market confirmed on-chain", {
           marketId,
           hash: sendResult.hash,

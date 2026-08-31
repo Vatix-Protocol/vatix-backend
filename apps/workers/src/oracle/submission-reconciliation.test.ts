@@ -15,6 +15,7 @@ vi.mock("@stellar/stellar-sdk", () => ({
 import {
   checkOnChainStatus,
   computePayloadHash,
+  isDefinitivelyConfirmed,
   reconcileInFlightSubmissions,
   claimSubmissionIntent,
   recordBroadcast,
@@ -55,14 +56,52 @@ describe("computePayloadHash", () => {
   });
 });
 
+describe("isDefinitivelyConfirmed (Issue 4 — hash-only confirm marks CONFIRMED too early)", () => {
+  it("is true only for SUCCESS with a positive ledger number", () => {
+    expect(isDefinitivelyConfirmed({ status: "SUCCESS", ledger: 10 })).toBe(
+      true
+    );
+  });
+
+  it("is false for SUCCESS missing ledger metadata — must not be trusted on status alone", () => {
+    expect(isDefinitivelyConfirmed({ status: "SUCCESS" } as any)).toBe(false);
+    expect(
+      isDefinitivelyConfirmed({ status: "SUCCESS", ledger: 0 } as any)
+    ).toBe(false);
+    expect(
+      isDefinitivelyConfirmed({ status: "SUCCESS", ledger: NaN } as any)
+    ).toBe(false);
+  });
+
+  it("is false for any non-SUCCESS status regardless of ledger", () => {
+    expect(
+      isDefinitivelyConfirmed({ status: "FAILED", ledger: 10 } as any)
+    ).toBe(false);
+    expect(
+      isDefinitivelyConfirmed({ status: "NOT_FOUND", ledger: 10 } as any)
+    ).toBe(false);
+  });
+});
+
 describe("checkOnChainStatus", () => {
-  it("returns CONFIRMED on SUCCESS", async () => {
+  it("returns CONFIRMED on SUCCESS with ledger metadata", async () => {
+    const server = {
+      getTransaction: vi
+        .fn()
+        .mockResolvedValue({ status: "SUCCESS", ledger: 10 }),
+    };
+    await expect(
+      checkOnChainStatus(server as any, "hash1", new Date())
+    ).resolves.toBe("CONFIRMED");
+  });
+
+  it("does not confirm on SUCCESS status alone when ledger metadata is missing (Issue 4)", async () => {
     const server = {
       getTransaction: vi.fn().mockResolvedValue({ status: "SUCCESS" }),
     };
     await expect(
       checkOnChainStatus(server as any, "hash1", new Date())
-    ).resolves.toBe("CONFIRMED");
+    ).resolves.toBe("AMBIGUOUS");
   });
 
   it("returns FAILED on an on-chain FAILED status", async () => {
@@ -144,7 +183,9 @@ describe("reconcileInFlightSubmissions", () => {
       },
     ]);
     const server = {
-      getTransaction: vi.fn().mockResolvedValue({ status: "SUCCESS" }),
+      getTransaction: vi
+        .fn()
+        .mockResolvedValue({ status: "SUCCESS", ledger: 10 }),
     };
 
     const summary = await reconcileInFlightSubmissions(
@@ -237,7 +278,7 @@ describe("reconcileInFlightSubmissions", () => {
       getTransaction: vi
         .fn()
         .mockRejectedValueOnce(new Error("RPC unreachable"))
-        .mockResolvedValueOnce({ status: "SUCCESS" }),
+        .mockResolvedValueOnce({ status: "SUCCESS", ledger: 20 }),
     };
 
     const summary = await reconcileInFlightSubmissions(

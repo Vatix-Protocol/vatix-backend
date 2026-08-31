@@ -204,6 +204,32 @@ export type ChainCheckResult = "CONFIRMED" | "FAILED" | "AMBIGUOUS";
  * that point the tx may simply not have propagated to this RPC node yet, or
  * may still be included in an upcoming ledger.
  */
+/**
+ * True only when a `getTransaction` response reports SUCCESS *and* carries
+ * the ledger metadata that a genuinely-included transaction always has.
+ *
+ * Closes the "hash-only confirm marks CONFIRMED too early" gap: a bare
+ * `status === SUCCESS` check trusts a single boolean-ish field keyed only
+ * by hash. Requiring a positive `ledger` number alongside it means a
+ * malformed, truncated, or (in a multi-RPC-endpoint setup) inconsistent
+ * response can't silently promote a submission to CONFIRMED — it falls
+ * through to the ambiguous path instead, where the normal retry/reconcile
+ * loop re-checks rather than trusting it once.
+ */
+export function isDefinitivelyConfirmed(
+  txStatus: Pick<
+    StellarRpc.Api.GetTransactionResponse,
+    "status" | "ledger"
+  >
+): boolean {
+  return (
+    txStatus.status === StellarRpc.Api.GetTransactionStatus.SUCCESS &&
+    typeof txStatus.ledger === "number" &&
+    Number.isFinite(txStatus.ledger) &&
+    txStatus.ledger > 0
+  );
+}
+
 export async function checkOnChainStatus(
   server: Pick<StellarRpc.Server, "getTransaction">,
   txHash: string,
@@ -211,7 +237,7 @@ export async function checkOnChainStatus(
 ): Promise<ChainCheckResult> {
   const txStatus = await server.getTransaction(txHash);
 
-  if (txStatus.status === StellarRpc.Api.GetTransactionStatus.SUCCESS) {
+  if (isDefinitivelyConfirmed(txStatus)) {
     return "CONFIRMED";
   }
   if (txStatus.status === StellarRpc.Api.GetTransactionStatus.FAILED) {

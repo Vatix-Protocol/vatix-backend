@@ -409,6 +409,61 @@ describe("SubmissionWorker", () => {
       expect(row).toMatchObject({ status: "CONFIRMED", txHash: "txhash123" });
     });
 
+    it("Issue 4: does not confirm on a SUCCESS status missing ledger metadata — keeps polling until a genuine confirmation arrives", async () => {
+      vi.useFakeTimers();
+      const submission = createTestSubmission();
+      stellarMocks.getAccount.mockResolvedValueOnce({
+        accountId: () => "GSOURCEACCOUNT",
+      });
+      stellarMocks.prepareTransaction.mockResolvedValueOnce({
+        sign: vi.fn(),
+      });
+      stellarMocks.sendTransaction.mockResolvedValueOnce({
+        status: "PENDING",
+        hash: "txhash-nolegder",
+      });
+      // First poll: status says SUCCESS but has no ledger — must not be
+      // trusted as confirmation on the hash/status flag alone.
+      stellarMocks.getTransaction.mockResolvedValueOnce({
+        status: "SUCCESS",
+      });
+      // Second poll: a genuine confirmation with ledger metadata.
+      stellarMocks.getTransaction.mockResolvedValueOnce({
+        status: "SUCCESS",
+        ledger: 55,
+      });
+      mockPrisma.resolutionCandidate.upsert.mockResolvedValueOnce({
+        id: "candidate-1",
+      });
+
+      const stellarWorker = new SubmissionWorker(
+        mockQueue as any,
+        mockPrisma as any,
+        {
+          submissionMaxRetries: 3,
+          consumerName: "test-consumer",
+          logger: mockLogger,
+          stellar: TEST_STELLAR_CONFIG,
+        }
+      );
+
+      const runPromise = stellarWorker.processSubmission(submission);
+      await vi.runAllTimersAsync();
+      await runPromise;
+
+      expect(stellarMocks.getTransaction).toHaveBeenCalledTimes(2);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("without ledger metadata"),
+        expect.objectContaining({ hash: "txhash-nolegder" })
+      );
+      const row = mockPrisma.oracleReport.rows.get("market-1");
+      expect(row).toMatchObject({
+        status: "CONFIRMED",
+        txHash: "txhash-nolegder",
+      });
+      vi.useRealTimers();
+    });
+
     it("persists the tx hash immediately on broadcast, before confirmation is known (#996)", async () => {
       vi.useFakeTimers();
       try {
@@ -578,6 +633,41 @@ describe("SubmissionWorker", () => {
       // Definite on-chain failure clears the row for a fresh broadcast.
       const row = mockPrisma.oracleReport.rows.get("market-1");
       expect(row).toMatchObject({ status: "PENDING", txHash: null });
+    });
+  });
+
+  describe("Issue 4: production must not silently fall back to off-chain confirmation", () => {
+    const originalEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalEnv;
+    });
+
+    it("throws at construction time in production when no Stellar config is provided", () => {
+      process.env.NODE_ENV = "production";
+
+      expect(
+        () =>
+          new SubmissionWorker(mockQueue as any, mockPrisma as any, {
+            submissionMaxRetries: 3,
+            consumerName: "test-consumer",
+            logger: mockLogger,
+            // stellar intentionally omitted
+          })
+      ).toThrow(/refusing to fall back to off-chain-only confirmation/);
+    });
+
+    it("still allows the off-chain stub path outside production (local/dev)", () => {
+      process.env.NODE_ENV = "development";
+
+      expect(
+        () =>
+          new SubmissionWorker(mockQueue as any, mockPrisma as any, {
+            submissionMaxRetries: 3,
+            consumerName: "test-consumer",
+            logger: mockLogger,
+          })
+      ).not.toThrow();
     });
   });
 
