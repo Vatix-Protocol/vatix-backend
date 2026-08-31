@@ -2,6 +2,7 @@ export interface ReconciliationConfig {
   intervalMs: number;
   maxRunMs: number;
   autoRecoveryEnabled: boolean;
+  dryRun: boolean;
 }
 
 export function loadReconciliationConfig(): ReconciliationConfig {
@@ -15,6 +16,7 @@ export function loadReconciliationConfig(): ReconciliationConfig {
   );
   const autoRecoveryEnabled =
     process.env.AUTO_RECOVERY_ENABLED?.toLowerCase() === "true";
+  const dryRun = process.env.RECONCILIATION_DRY_RUN?.toLowerCase() === "true";
 
   if (isNaN(intervalMs) || intervalMs < 1000) {
     throw new Error(
@@ -32,5 +34,6 @@ export function loadReconciliationConfig(): ReconciliationConfig {
     intervalMs,
     maxRunMs,
     autoRecoveryEnabled,
+    dryRun,
   };
 }
