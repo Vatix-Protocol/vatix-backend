@@ -1,6 +1,6 @@
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
-import { lockResolutionCandidate } from "./resolutionLock.js";
+import { lockResolutionCandidateOrThrow } from "./resolutionLock.js";
 
 /**
  * Thrown when a challenge is submitted for a candidate that either doesn't
@@ -58,7 +58,7 @@ export async function challengeResolutionCandidate(
   actor: string
 ): Promise<ChallengeResult> {
   return prisma.$transaction(async (tx) => {
-    const locked = await lockResolutionCandidate(tx, candidateId);
+    const locked = await lockResolutionCandidateOrThrow(tx, candidateId, logger);
 
     if (!locked) {
       throw new ChallengeNotFoundError(candidateId);
