@@ -22,6 +22,13 @@ just the data layer (for host-run development) or the fully containerized stack.
 | `migrate`             | `tools`, `migrate`                      | `vatix-migrate`             | One-off `prisma migrate deploy` job                |
 | `load-test`           | `tools`, `load-test`                    | `vatix-load-test`           | One-off local order-placement load test (~100 rps) |
 
+`finalization-worker`, `oracle-worker`, and `settlement-worker` have no HTTP
+port to probe, so each declares a `healthcheck:` that greps `/proc/1/cmdline`
+for its entrypoint script — `docker compose ps` and `docker inspect` report
+`unhealthy` if the process has crash-looped or hung, instead of the workers
+profile silently going dark (no trades settling, no resolutions finalizing)
+with every container still showing as "running".
+
 Container names match the ones referenced in
 [`docs/runbooks/incident-runbook.md`](runbooks/incident-runbook.md), so
 commands like `docker logs vatix-indexer` work as documented there.

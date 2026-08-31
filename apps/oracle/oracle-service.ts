@@ -48,6 +48,30 @@ export interface OracleServiceConfig {
   submissionQueue?: SubmissionQueue;
   /** Optional enqueue callback (alternative to submissionQueue) */
   enqueueCallback?: EnqueueCallback;
+  /**
+   * Minimum acceptable confidence (0-1) for a result to be enqueued.
+   * Results below this threshold are rejected and fail-closed rather than
+   * being silently enqueued with weak signal. Defaults to 0.75.
+   */
+  minConfidenceThreshold?: number;
+}
+
+/**
+ * Error thrown when a resolution succeeds but its confidence score is below
+ * the configured `minConfidenceThreshold`. This is a fail-closed condition:
+ * the result is never enqueued for on-chain submission.
+ */
+export class LowConfidenceResultError extends Error {
+  constructor(
+    public readonly marketId: string,
+    public readonly confidence: number,
+    public readonly threshold: number
+  ) {
+    super(
+      `Resolution for market ${marketId} has confidence ${confidence} below required threshold ${threshold}`
+    );
+    this.name = "LowConfidenceResultError";
+  }
 }
 
 /**
@@ -132,6 +156,7 @@ export class OracleService {
       primaryTimeoutMs: DEFAULT_TIMEOUT_MS,
       fallbackTimeoutMs: DEFAULT_TIMEOUT_MS,
       retryConfig: { maxRetries: 0 },
+      minConfidenceThreshold: 0.75,
       ...config,
     };
     if (isProduction) {
@@ -184,6 +209,8 @@ export class OracleService {
         requestId,
         source: result.source,
       });
+
+      this.assertConfidence(request, result);
 
       // Enqueue for on-chain submission if configured
       await this.enqueueResult(request, result);
@@ -245,6 +272,8 @@ export class OracleService {
         requestId: request.marketId,
         source: result.source,
       });
+
+      this.assertConfidence(request, result);
 
       // Enqueue for on-chain submission if configured
       await this.enqueueResult(request, result);
@@ -325,6 +354,45 @@ export class OracleService {
    */
   getFallbackAdapter(): ProviderAdapter {
     return this.fallbackAdapter;
+  }
+
+  /**
+   * Fail closed when a resolution's confidence falls below the configured
+   * `minConfidenceThreshold`. Partial-success, low-confidence results must
+   * never reach the submission queue — silently enqueuing a weak signal is
+   * how bad resolutions end up on-chain.
+   *
+   * @throws {LowConfidenceResultError} If confidence is below threshold.
+   */
+  private assertConfidence(
+    request: ResolutionRequest,
+    result: ProviderResult
+  ): void {
+    const threshold = this.config.minConfidenceThreshold ?? 0.75;
+
+    if (result.confidence >= threshold) {
+      return;
+    }
+
+    this.metrics.totalOutageCount++;
+    oracleFailClosedTotal.inc();
+    this.logger.error(
+      "Refusing to enqueue low-confidence resolution — failing closed",
+      {
+        event: "oracle.low_confidence_fail_closed",
+        marketId: request.marketId,
+        requestId: request.marketId,
+        confidence: result.confidence,
+        threshold,
+        source: result.source,
+      }
+    );
+
+    throw new LowConfidenceResultError(
+      request.marketId,
+      result.confidence,
+      threshold
+    );
   }
 
   /**

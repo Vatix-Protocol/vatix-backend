@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { nativeToScVal } from "@stellar/stellar-sdk";
 import {
   parseMarketCreatedChainEvent,
   parseMarketCreatedEvents,
@@ -114,6 +115,47 @@ describe("parseMarketCreatedChainEvent", () => {
       expect.fail("should have thrown");
     } catch (err) {
       expect((err as MarketCreatedParseError).eventId).toBe("bad-evt");
+    }
+  });
+
+  // ── #986: reject rather than truncate an over-length question ───────────
+  // Truncating a question that exceeds the contract's cap would desync the
+  // indexed `markets.question` column from what actually landed on chain.
+  function makeValueXdrWithQuestion(question: string): string {
+    return nativeToScVal(
+      { question, end_time: 1234567890n },
+      { type: "instance" }
+    ).toXDR("base64");
+  }
+
+  it("accepts a question exactly at the 499-char contract cap", () => {
+    const question = "Q".repeat(499);
+    const m = parseMarketCreatedChainEvent(
+      makeEvent({ valueXdr: makeValueXdrWithQuestion(question) })
+    );
+    expect(m.question).toBe(question);
+    expect(m.question).toHaveLength(499);
+  });
+
+  it("throws MarketCreatedParseError when question exceeds the 499-char contract cap", () => {
+    const question = "Q".repeat(500);
+    expect(() =>
+      parseMarketCreatedChainEvent(
+        makeEvent({ valueXdr: makeValueXdrWithQuestion(question) })
+      )
+    ).toThrow(MarketCreatedParseError);
+  });
+
+  it("does not truncate an over-length question in the thrown error", () => {
+    const question = "Q".repeat(600);
+    try {
+      parseMarketCreatedChainEvent(
+        makeEvent({ valueXdr: makeValueXdrWithQuestion(question) })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as MarketCreatedParseError).message).toContain("600");
+      expect((err as MarketCreatedParseError).message).toContain("499");
     }
   });
 });

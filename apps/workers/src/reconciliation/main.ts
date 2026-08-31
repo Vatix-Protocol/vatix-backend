@@ -8,10 +8,18 @@ async function main() {
   try {
     const config = loadReconciliationConfig();
 
+    if (config.dryRun && process.env.NODE_ENV === "production") {
+      logger.warn(
+        "Reconciliation worker running with RECONCILIATION_DRY_RUN=true in production — no positions will be recovered",
+        { dryRun: true }
+      );
+    }
+
     logger.info("Reconciliation worker starting", {
       intervalMs: config.intervalMs,
       maxRunMs: config.maxRunMs,
       autoRecoveryEnabled: config.autoRecoveryEnabled,
+      dryRun: config.dryRun,
     });
 
     const job = new ReconciliationJob(
@@ -30,7 +38,7 @@ async function main() {
       }
 
       inFlight = job
-        .run()
+        .run(config.dryRun)
         .then((result) => {
           logger.info("Reconciliation cycle completed", { ...result });
         })

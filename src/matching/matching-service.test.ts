@@ -5,6 +5,7 @@ import {
   MatchingUnavailableError,
   MarketNotActiveError,
   MarketNotFoundError,
+  MarketExpiredError,
   OrderConflictError,
 } from "../api/middleware/errors.js";
 
@@ -364,6 +365,7 @@ describe("MatchingService", () => {
         id: "market-1",
         status: "ACTIVE",
         deletedAt: null,
+        endTime: new Date(Date.now() + 86_400_000),
       });
       mockPrismaClient.order.findMany.mockResolvedValue([]);
       mockTx.order.create.mockResolvedValue({
@@ -417,6 +419,7 @@ describe("MatchingService", () => {
         id: "market-1",
         status: "ACTIVE",
         deletedAt: null,
+        endTime: new Date(Date.now() + 86_400_000),
       });
       mockPrismaClient.order.findMany.mockResolvedValue([]);
       mockTx.order.create.mockResolvedValue({
@@ -499,11 +502,78 @@ describe("MatchingService", () => {
         id: "market-1",
         status: "ACTIVE",
         deletedAt: new Date(),
+        endTime: new Date(Date.now() + 86_400_000),
       });
 
       await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
         MarketNotFoundError
       );
+    });
+  });
+
+  describe("placeOrder market expiry check (#951)", () => {
+    const orderInput = {
+      marketId: "market-1",
+      userAddress: "GUSER1234567890123456789012345678901234567890123456",
+      side: "BUY" as const,
+      outcome: "YES" as const,
+      price: 0.5,
+      quantity: 10,
+    };
+
+    it("rejects with MarketExpiredError when endTime has passed but status is still ACTIVE (expiry worker lagging)", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: null,
+        endTime: new Date(Date.now() - 1000),
+      });
+
+      const error = await matchingService
+        .placeOrder(orderInput)
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(MarketExpiredError);
+      expect(error.code).toBe("market_expired");
+      expect(error.statusCode).toBe(409);
+      // Rejected before any book/order state was touched or any trade minted.
+      expect(mockPrismaClient.order.findMany).not.toHaveBeenCalled();
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects at the exact endTime boundary (inclusive)", async () => {
+      const now = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: null,
+        endTime: new Date(now),
+      });
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        MarketExpiredError
+      );
+    });
+
+    it("allows matching while endTime is still in the future", async () => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: null,
+        endTime: new Date(Date.now() + 60_000),
+      });
+      mockPrismaClient.order.findMany.mockResolvedValue([]);
+      mockTx.order.create.mockResolvedValue({
+        id: "order-4",
+        ...orderInput,
+        status: "FILLED",
+        filledQuantity: orderInput.quantity,
+      });
+
+      await expect(
+        matchingService.placeOrder(orderInput)
+      ).resolves.toBeDefined();
     });
   });
 

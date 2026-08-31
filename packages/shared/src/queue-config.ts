@@ -10,7 +10,7 @@
 import type { JobsOptions } from "bullmq";
 
 /**
- * Default job options applied to every enqueued job unless overridden.
+ * Job options for the settlement queue (on-chain trade settlement).
  *
  * - attempts:         3 retries before moving to DLQ
  * - backoff:          exponential, starting at 1 s (1 s, 2 s, 4 s …)
@@ -18,12 +18,41 @@ import type { JobsOptions } from "bullmq";
  * - removeOnFail:     false — retain ALL failed jobs as DLQ so they can be
  *                     inspected and replayed without data loss
  */
-export const DEFAULT_JOB_OPTIONS: JobsOptions = {
+export const SETTLEMENT_JOB_OPTIONS: JobsOptions = {
   attempts: 3,
   backoff: { type: "exponential", delay: 1_000 },
   removeOnComplete: { count: 100 },
   removeOnFail: false,
 };
+
+/**
+ * Job options for the oracle submission queue (Stellar contract calls
+ * that finalize market resolution). Oracle submissions are more transient
+ * failure-prone (RPC rate limits, ledger congestion) than settlement, so
+ * they get more attempts with a shorter initial backoff to keep resolution
+ * latency low without hammering the RPC endpoint.
+ *
+ * - attempts:         8 retries before moving to DLQ
+ * - backoff:          exponential, starting at 500 ms (500 ms, 1 s, 2 s …)
+ * - removeOnComplete: keep the last 100 completed jobs for observability
+ * - removeOnFail:     false — retain ALL failed jobs as DLQ so they can be
+ *                     inspected and replayed without data loss
+ */
+export const ORACLE_SUBMISSION_JOB_OPTIONS: JobsOptions = {
+  attempts: 8,
+  backoff: { type: "exponential", delay: 500 },
+  removeOnComplete: { count: 100 },
+  removeOnFail: false,
+};
+
+/**
+ * @deprecated Use {@link SETTLEMENT_JOB_OPTIONS} or
+ * {@link ORACLE_SUBMISSION_JOB_OPTIONS} explicitly. Kept as an alias to
+ * SETTLEMENT_JOB_OPTIONS for backward compatibility with existing callers;
+ * do not add new usages of this export since a single shared default is
+ * exactly the bug this module fixes (#issue: queue-config backoff split).
+ */
+export const DEFAULT_JOB_OPTIONS: JobsOptions = SETTLEMENT_JOB_OPTIONS;
 
 /**
  * Returns the fully-qualified BullMQ queue name for the settlement worker.
@@ -53,12 +82,28 @@ export function submissionQueueName(): string {
   return process.env.SUBMISSION_QUEUE_NAME ?? "oracle-submissions";
 }
 
-/** Build a Redis connection config from the environment. */
+/**
+ * Build a Redis connection config from the environment.
+ *
+ * In production, falling back to localhost when REDIS_URL is unset is a
+ * silent misconfiguration: the queue would connect to a Redis instance that
+ * almost certainly isn't the production broker, and jobs (settlement,
+ * oracle submissions) would appear to enqueue successfully while never
+ * reaching a worker that processes real trades. Fail fast instead so the
+ * process crashes at startup rather than silently dropping production
+ * trades/resolutions.
+ */
 export function redisConnectionFromEnv(): {
   host: string;
   port: number;
   password?: string;
 } {
+  if (!process.env.REDIS_URL && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "REDIS_URL is required in production (NODE_ENV=production) — refusing to fall back to localhost:6379 for queue connections"
+    );
+  }
+
   const raw = process.env.REDIS_URL ?? "redis://localhost:6379";
   // Strip scheme, split auth@hostport
   const noScheme = raw.replace(/^rediss?:\/\//, "");

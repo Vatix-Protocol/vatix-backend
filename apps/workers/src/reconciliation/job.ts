@@ -17,8 +17,20 @@ export class ReconciliationJob {
     this.autoRecoveryEnabled = autoRecoveryEnabled;
   }
 
-  async run(): Promise<ReconciliationJobResult> {
+  /**
+   * Runs a reconciliation pass.
+   *
+   * @param dryRun - When true, forces auto-recovery off for this run
+   * regardless of the configured `autoRecoveryEnabled`, so operators can
+   * preview drift (what reconciliation *would* correct) without mutating
+   * any positions. Previously the only way to avoid mutation was to
+   * redeploy with `AUTO_RECOVERY_ENABLED=false`, which meant drift could
+   * not be previewed without also disabling real recovery.
+   */
+  async run(dryRun = false): Promise<ReconciliationJobResult> {
     const startTime = performance.now();
+    const runId = `recon-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const effectiveAutoRecovery = dryRun ? false : this.autoRecoveryEnabled;
 
     try {
       const prisma = getPrismaClient();
@@ -34,8 +46,10 @@ export class ReconciliationJob {
       });
 
       this.logger.info("Reconciliation job started", {
+        runId,
         marketCount: markets.length,
-        autoRecoveryEnabled: this.autoRecoveryEnabled,
+        autoRecoveryEnabled: effectiveAutoRecovery,
+        dryRun,
       });
 
       const results: BulkReconciliationResult[] = [];
@@ -46,6 +60,7 @@ export class ReconciliationJob {
         const elapsedMs = performance.now() - startTime;
         if (elapsedMs > this.maxRunMs) {
           this.logger.warn("Reconciliation job exceeded maxRunMs", {
+            runId,
             elapsedMs,
             maxRunMs: this.maxRunMs,
             marketsProcessed: results.length,
@@ -57,21 +72,24 @@ export class ReconciliationJob {
         try {
           const result = await positionReconciliationService.reconcileMarket(
             market.id,
-            this.autoRecoveryEnabled
+            effectiveAutoRecovery
           );
 
           results.push(result);
 
           this.logger.debug("Reconciliation completed for market", {
+            runId,
             marketId: market.id,
             totalWallets: result.totalWallets,
             driftCount: result.driftCount,
             recoveredCount: result.recoveredCount,
             duration: result.duration,
+            dryRun,
           });
         } catch (error) {
           failedMarkets++;
           this.logger.error("Failed to reconcile market", {
+            runId,
             marketId: market.id,
             error: (error as Error).message,
           });
@@ -87,16 +105,19 @@ export class ReconciliationJob {
       };
 
       this.logger.info("Reconciliation job completed", {
+        runId,
         marketCount: results.length,
         failedMarkets,
         totalWallets: aggregateStats.reconciledCount,
         driftDetected: aggregateStats.driftCount,
         recovered: aggregateStats.recoveredCount,
         duration: totalDuration,
+        dryRun,
       });
 
       return {
         success: failedMarkets === 0,
+        dryRun,
         totalMarkets: markets.length,
         completedMarkets: results.length,
         failedMarkets,
@@ -105,6 +126,7 @@ export class ReconciliationJob {
       };
     } catch (error) {
       this.logger.error("Reconciliation job failed", {
+        runId,
         error: (error as Error).message,
       });
       throw error;

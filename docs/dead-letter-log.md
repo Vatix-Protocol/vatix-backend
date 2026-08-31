@@ -87,8 +87,48 @@ Run tests:
 pnpm test:run
 ```
 
+## Two dead-letter stores
+
+There are **two independent** places a failed job can end up. They are not
+interchangeable and have separate tooling.
+
+| Store                             | Written by                                                            | Contains                                                                                            | Operator tool           |
+| --------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ----------------------- |
+| Raw streams `vatix:dead-letter:*` | `logDeadLetter()` (this module), from `settlement-worker.ts` etc.     | Messages rejected as **non-retryable** (bad payload, permanent error) before/without BullMQ retries | `pnpm replay:dlq`       |
+| BullMQ `failed` set (per queue)   | BullMQ itself, when a job exhausts `attempts` (`removeOnFail: false`) | **Retry-exhausted** settlement / oracle jobs                                                        | `pnpm dlq` (issue #953) |
+
+### BullMQ DLQ CLI (`pnpm dlq`)
+
+`scripts/dlq.ts` (module `apps/workers/src/consumers/bullmq-dlq.ts`) is the
+operator path for the BullMQ `failed` set — previously only reachable via
+`redis-cli`. It resolves the queue name via `queue-config.ts`, so `--queue`
+takes the alias `settlement` or `oracle`.
+
+```bash
+pnpm dlq stats     --queue settlement
+pnpm dlq list      --queue oracle --limit 50
+pnpm dlq retry     --queue settlement --job <jobId>
+pnpm dlq retry-all --queue settlement --limit 50 --dry-run
+pnpm dlq retry-all --queue settlement --limit 50 --yes
+pnpm dlq discard   --queue oracle --job <jobId> --yes
+```
+
+- `retry` / `retry-all` re-queue through BullMQ (`job.retry("failed")`) so
+  attempt counters and locks stay consistent — never edit Redis keys directly.
+- `retry-all` collects per-job failures instead of aborting the batch and
+  exits non-zero if any job could not be retried. `--dry-run` previews and
+  mutates nothing.
+- **Production/dev split:** in `NODE_ENV=production`, `retry-all` (non-dry-run)
+  and `discard` refuse to run without `--yes` (exit code 2). Outside
+  production they run unguarded for a frictionless local loop.
+- Every line is structured JSON carrying a `correlationId` for the invocation;
+  payloads are only surfaced by `list`, never logged by `retry`/`discard`.
+- Unit tests: `apps/workers/src/consumers/bullmq-dlq.test.ts`. Integration
+  test (real Redis + worker): `tests/integration/bullmq-dlq.test.ts`.
+
 ## Related Documentation
 
 - [Architecture Overview](architecture.md) — How workers fit into the system
 - [Graceful Shutdown](graceful-shutdown.md) — Worker shutdown patterns
 - [Logger](logger.md) — Structured logging conventions
+- [Incident Runbook — Incident 6](runbooks/incident-runbook.md#incident-6-queue-backlog-settlement--oracle-submission) — queue backlog response

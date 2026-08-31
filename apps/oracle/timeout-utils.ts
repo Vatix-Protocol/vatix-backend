@@ -23,6 +23,16 @@ export const MIN_TIMEOUT_MS = 1_000;
 export const MAX_TIMEOUT_MS = 300_000;
 
 /**
+ * Documented per-role timeout policy (docs/architecture.md, "Oracle failover
+ * policy"). These are the values operators are told to expect; adapters
+ * should reference these named constants rather than the generic
+ * `DEFAULT_TIMEOUT_MS` so a future policy change can't silently diverge
+ * between what's documented and what a given adapter actually enforces.
+ */
+export const PRIMARY_PROVIDER_TIMEOUT_POLICY_MS = 30_000;
+export const FALLBACK_PROVIDER_TIMEOUT_POLICY_MS = 30_000;
+
+/**
  * Timeout configuration options.
  */
 export interface TimeoutConfig {
@@ -57,15 +67,32 @@ export class TimeoutValidationError extends Error {
 /**
  * Validate that a timeout value is within acceptable bounds.
  *
+ * In `NODE_ENV=production`, an out-of-range timeout is a configuration bug
+ * and fails fast (throws) rather than being silently clamped to a different
+ * value than what was configured — a silently-clamped timeout is exactly
+ * the kind of divergence-from-policy that let production run with different
+ * effective timeouts than docs/architecture.md described. Outside
+ * production, the value is clamped with a warning so local/dev stubs keep
+ * working without ceremony.
+ *
  * @param timeoutMs - Timeout value to validate
- * @returns The validated timeout value (clamped to bounds)
+ * @returns The validated timeout value (clamped to bounds outside production)
+ * @throws {TimeoutValidationError} If the value is invalid, or out of bounds
+ *   while running in production.
  */
 export function validateTimeout(timeoutMs: unknown): number {
+  const isProduction = process.env.NODE_ENV === "production";
+
   if (typeof timeoutMs !== "number" || isNaN(timeoutMs as number)) {
     throw new TimeoutValidationError(`Invalid timeout value: ${timeoutMs}`);
   }
 
   if (timeoutMs < MIN_TIMEOUT_MS) {
+    if (isProduction) {
+      throw new TimeoutValidationError(
+        `Timeout ${timeoutMs}ms is below the minimum of ${MIN_TIMEOUT_MS}ms — refusing to silently clamp in production`
+      );
+    }
     console.warn("Timeout is below minimum, clamping", {
       providedTimeoutMs: timeoutMs,
       minTimeoutMs: MIN_TIMEOUT_MS,
@@ -74,6 +101,11 @@ export function validateTimeout(timeoutMs: unknown): number {
   }
 
   if (timeoutMs > MAX_TIMEOUT_MS) {
+    if (isProduction) {
+      throw new TimeoutValidationError(
+        `Timeout ${timeoutMs}ms exceeds the maximum of ${MAX_TIMEOUT_MS}ms — refusing to silently clamp in production`
+      );
+    }
     console.warn("Timeout exceeds maximum, clamping", {
       providedTimeoutMs: timeoutMs,
       maxTimeoutMs: MAX_TIMEOUT_MS,

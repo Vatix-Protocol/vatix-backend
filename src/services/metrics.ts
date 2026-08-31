@@ -122,59 +122,15 @@ export const oracleSubmissionConfirmationLatency = new client.Histogram({
 });
 
 /**
- * Incremented every time two finalization workers race for the same
- * resolution_candidates row and one of them observes the row already
- * transitioned by the other (lock contention, not a failure).
+ * Incremented once per broken link found while verifying a trade audit hash
+ * chain — a `prevHash` that does not match the preceding entry's `entryHash`.
+ * A non-zero rate means archived rows were deleted or expired out from under
+ * the chain (issue #952): the hash chain can no longer prove completeness and
+ * a restore drill from backup is required. Labelled by market.
  */
-export const finalizationLockContentionTotal = new client.Counter({
-  name: "vatix_finalization_lock_contention_total",
-  help: "Total number of resolution_candidates row-lock contention events",
-  registers: [metricsRegistry],
-});
-
-/**
- * Incremented when acquiring the resolution_candidates row lock throws
- * (DB unreachable, deadlock detected, statement timeout, etc). In
- * production this must fail the finalization job rather than silently
- * proceeding without the lock.
- */
-export const finalizationLockFailuresTotal = new client.Counter({
-  name: "vatix_finalization_lock_failures_total",
-  help: "Total number of resolution_candidates row-lock acquisition failures",
-  registers: [metricsRegistry],
-});
-
-/**
- * Incremented when BullMQ reports a stalled settlement job. A stalled job
- * that gets picked up by a second worker before the first one's lock
- * expires is exactly the double-apply-settle_trade failure mode this
- * metric exists to make visible.
- */
-export const settlementJobStalledTotal = new client.Counter({
-  name: "vatix_settlement_job_stalled_total",
-  help: "Total number of settlement jobs BullMQ reported as stalled",
-  registers: [metricsRegistry],
-});
-
-/**
- * Incremented when the settlement worker detects it is processing a job
- * whose idempotency key was already claimed by another attempt, and skips
- * re-executing settle_trade.
- */
-export const settlementDuplicateSkippedTotal = new client.Counter({
-  name: "vatix_settlement_duplicate_skipped_total",
-  help: "Total number of duplicate settlement job executions skipped",
-  registers: [metricsRegistry],
-});
-
-/**
- * Incremented when a settlement error is classified as fatal/invalid_input
- * and therefore quarantined (moved to the dead-letter path) instead of
- * being retried indefinitely.
- */
-export const settlementErrorQuarantinedTotal = new client.Counter({
-  name: "vatix_settlement_error_quarantined_total",
-  help: "Total number of settlement job errors quarantined instead of retried",
-  labelNames: ["code"] as const,
+export const auditChainGapTotal = new client.Counter({
+  name: "vatix_audit_chain_gap_total",
+  help: "Total broken links detected in trade audit hash chains (missing/expired archived rows)",
+  labelNames: ["market_id"],
   registers: [metricsRegistry],
 });

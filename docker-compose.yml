@@ -112,6 +112,21 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # No HTTP surface, so liveness is checked against PID 1's cmdline
+    # (the container's tsx entrypoint) instead of a port. Without this,
+    # a crash-looped or hung finalization worker in the "workers"/"full"
+    # profile reports no unhealthy state to `docker compose ps` and
+    # resolution finalization can silently stop advancing.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "grep -q finalization/main.ts /proc/1/cmdline || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   oracle-worker:
     build:
@@ -134,6 +149,15 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # See finalization-worker above: same PID-1 liveness pattern. Without
+    # it, a hung oracle-worker silently stops consuming the oracle
+    # submission queue and resolutions never reach chain.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q oracle/main.ts /proc/1/cmdline || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   settlement-worker:
     build:
@@ -152,6 +176,19 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # See finalization-worker above: same PID-1 liveness pattern. Without
+    # it, a hung settlement-worker silently stops consuming the
+    # settlement queue and matched trades never settle on-chain.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "grep -q settlement/consumer.ts /proc/1/cmdline || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # One-off migration runner — not part of any long-running profile.
   # Usage: docker compose --profile tools run --rm migrate

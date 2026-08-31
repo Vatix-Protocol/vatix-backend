@@ -147,7 +147,10 @@ describe("loadFinalizationConfig", () => {
   it("loads valid finalization config with defaults", () => {
     const config = loadFinalizationConfig({});
     expect(config.intervalMs).toBe(60000);
-    expect(config.challengeWindowSeconds).toBe(3600);
+    // Defaults to the on-chain window (ORACLE_CHALLENGE_WINDOW_SECONDS), not a stub.
+    expect(config.challengeWindowSeconds).toBe(86400);
+    expect(config.onChainChallengeWindowSeconds).toBe(86400);
+    expect(config.challengeWindowOverridden).toBe(false);
     expect(config.logLevel).toBe("info");
   });
 
@@ -161,6 +164,52 @@ describe("loadFinalizationConfig", () => {
   it("throws on invalid FINALIZATION_LOG_LEVEL", () => {
     const env = { FINALIZATION_LOG_LEVEL: "verbose" };
     expect(() => loadFinalizationConfig(env)).toThrow("FINALIZATION_LOG_LEVEL");
+  });
+
+  // Issue #950: the finalization challenge window must match the on-chain
+  // resolution contract window (ORACLE_CHALLENGE_WINDOW_SECONDS).
+  describe("challenge window / on-chain contract drift", () => {
+    it("defaults challengeWindowSeconds to ORACLE_CHALLENGE_WINDOW_SECONDS when no override is set", () => {
+      const config = loadFinalizationConfig({
+        ORACLE_CHALLENGE_WINDOW_SECONDS: "43200",
+      });
+      expect(config.challengeWindowSeconds).toBe(43200);
+      expect(config.onChainChallengeWindowSeconds).toBe(43200);
+      expect(config.challengeWindowOverridden).toBe(false);
+    });
+
+    it("throws in production when FINALIZATION_CHALLENGE_WINDOW_SECONDS drifts from the on-chain window", () => {
+      const env = {
+        NODE_ENV: "production",
+        ORACLE_CHALLENGE_WINDOW_SECONDS: "86400",
+        FINALIZATION_CHALLENGE_WINDOW_SECONDS: "3600",
+      };
+      expect(() => loadFinalizationConfig(env)).toThrow(ConfigValidationError);
+      expect(() => loadFinalizationConfig(env)).toThrow(
+        "must match the on-chain resolution contract window"
+      );
+    });
+
+    it("allows a matching override in production", () => {
+      const config = loadFinalizationConfig({
+        NODE_ENV: "production",
+        ORACLE_CHALLENGE_WINDOW_SECONDS: "86400",
+        FINALIZATION_CHALLENGE_WINDOW_SECONDS: "86400",
+      });
+      expect(config.challengeWindowSeconds).toBe(86400);
+      expect(config.challengeWindowOverridden).toBe(false);
+    });
+
+    it("allows a drifting override outside production but flags it", () => {
+      const config = loadFinalizationConfig({
+        NODE_ENV: "development",
+        ORACLE_CHALLENGE_WINDOW_SECONDS: "86400",
+        FINALIZATION_CHALLENGE_WINDOW_SECONDS: "3600",
+      });
+      expect(config.challengeWindowSeconds).toBe(3600);
+      expect(config.onChainChallengeWindowSeconds).toBe(86400);
+      expect(config.challengeWindowOverridden).toBe(true);
+    });
   });
 });
 

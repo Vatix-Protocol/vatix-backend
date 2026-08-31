@@ -415,25 +415,82 @@ export function loadIndexerConfig(env: Env = processEnv): IndexerConfig {
 
 export interface FinalizationConfig {
   intervalMs: number;
+  /**
+   * Challenge window (seconds) the finalization worker enforces before a
+   * PROPOSED candidate becomes eligible for on-chain finalization. This MUST
+   * equal {@link FinalizationConfig.onChainChallengeWindowSeconds} — a drift
+   * lets the worker finalize markets earlier or later than the resolution
+   * contract allows. In production the loader fails fast if they disagree.
+   */
   challengeWindowSeconds: number;
+  /**
+   * Canonical challenge window enforced by the on-chain resolution contract,
+   * sourced from ORACLE_CHALLENGE_WINDOW_SECONDS (the single value shared with
+   * the API and oracle scheduler). Used to detect backend/chain drift.
+   */
+  onChainChallengeWindowSeconds: number;
+  /**
+   * True when FINALIZATION_CHALLENGE_WINDOW_SECONDS is set to a value that
+   * differs from the on-chain window. Only reachable outside production
+   * (production rejects the drift in the loader); the worker logs a warning
+   * on startup so the local stub is never silent.
+   */
+  challengeWindowOverridden: boolean;
   logLevel: LogLevel;
 }
 
 /**
  * Loads and validates finalization worker config.
  *
+ * The challenge window defaults to ORACLE_CHALLENGE_WINDOW_SECONDS — the same
+ * value the API and oracle scheduler use and the one that must match the
+ * on-chain resolution contract. FINALIZATION_CHALLENGE_WINDOW_SECONDS remains
+ * as a dev/test-only override; in NODE_ENV=production a value that drifts from
+ * the on-chain window is a fatal ConfigValidationError (issue #950).
+ *
  * @param env - Defaults to process.env. Pass a custom object in tests.
  */
 export function loadFinalizationConfig(
   env: Env = processEnv
 ): FinalizationConfig {
-  return {
-    intervalMs: requireMinNumber("FINALIZATION_INTERVAL_MS", env, 1000, 60_000),
-    challengeWindowSeconds: requireNonNegativeNumber(
+  const nodeEnv = loadNodeEnv(env);
+  const onChainChallengeWindowSeconds = requirePositiveInt(
+    "ORACLE_CHALLENGE_WINDOW_SECONDS",
+    env,
+    { fallback: 86_400 }
+  );
+
+  const rawOverride = env["FINALIZATION_CHALLENGE_WINDOW_SECONDS"];
+  const hasOverride = rawOverride !== undefined && rawOverride !== "";
+  let challengeWindowSeconds = onChainChallengeWindowSeconds;
+
+  if (hasOverride) {
+    challengeWindowSeconds = requireNonNegativeNumber(
       "FINALIZATION_CHALLENGE_WINDOW_SECONDS",
       env,
-      3600
-    ),
+      onChainChallengeWindowSeconds
+    );
+    if (
+      nodeEnv === "production" &&
+      challengeWindowSeconds !== onChainChallengeWindowSeconds
+    ) {
+      throw new ConfigValidationError(
+        `FINALIZATION_CHALLENGE_WINDOW_SECONDS (${challengeWindowSeconds}) must ` +
+          `match the on-chain resolution contract window ` +
+          `ORACLE_CHALLENGE_WINDOW_SECONDS (${onChainChallengeWindowSeconds}) in ` +
+          `production. A drift lets the finalization worker finalize markets ` +
+          `too early or too late relative to the chain. Remove the override or ` +
+          `align the two values.`
+      );
+    }
+  }
+
+  return {
+    intervalMs: requireMinNumber("FINALIZATION_INTERVAL_MS", env, 1000, 60_000),
+    challengeWindowSeconds,
+    onChainChallengeWindowSeconds,
+    challengeWindowOverridden:
+      hasOverride && challengeWindowSeconds !== onChainChallengeWindowSeconds,
     logLevel: loadLogLevel("FINALIZATION_LOG_LEVEL", env, "info"),
   };
 }

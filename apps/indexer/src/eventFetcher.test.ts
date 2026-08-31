@@ -1,5 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { EventFetcher } from "./eventFetcher.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  EventFetcher,
+  EventFetcherConfigError,
+  CursorStallError,
+} from "./eventFetcher.js";
 import type { Telemetry } from "./telemetry.js";
 
 const makeEvent = (ledger: number, id = `evt-${ledger}`) => ({

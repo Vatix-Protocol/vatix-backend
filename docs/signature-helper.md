@@ -107,3 +107,29 @@ import { verifyResolutionReport } from "../apps/oracle/signature-helper";
 
 const isValid = verifyResolutionReport(signedReport);
 ```
+
+## Signature Envelope Versioning (#993)
+
+`SignedResolutionReport` carries a `version` field:
+
+- **`2`** (current, `CURRENT_SIGNATURE_VERSION`): the envelope described
+  above — domain **and** network-passphrase separated. `signResolutionReport`
+  always stamps new reports with `version: 2`.
+- **`1`** (legacy) or a missing `version`: a pre-#978 signature, computed
+  over `{"domain": ..., "payload": ...}` **without** the network passphrase.
+  These signatures verify identically on any Stellar network, which means a
+  testnet resolution report can be replayed as a valid mainnet one (or vice
+  versa) — a cross-network replay attack.
+
+`verifyResolutionReport` treats `version: 1` / missing `version` as legacy:
+
+- In `NODE_ENV=production`, it **throws `LegacySignatureRejectedError`**
+  rather than silently falling back to the weaker legacy check. Production
+  must never accept a passphrase-less signature.
+- Outside production, legacy reports are still verified (using the pre-#978
+  canonical form) to support a migration window, and each verification logs
+  an `oracle.legacy_signature_verified` warning.
+
+Any oracle key rotation or resigning workflow should re-sign outstanding
+legacy reports with `signResolutionReport` (which always emits `version: 2`)
+before production cutover.

@@ -842,21 +842,32 @@ pm2 restart settlement-worker
 
 **B. Re-run failed jobs once the root cause is fixed**
 
-BullMQ jobs must be retried through the API (not by editing Redis keys
-directly) so retry counters and locks stay consistent:
+Use the DLQ CLI (issue #953) — it retries jobs through BullMQ so retry
+counters and locks stay consistent, and never needs raw `redis-cli`.
+`--queue` takes the alias `settlement` or `oracle`.
 
 ```bash
-node -e '
-const { Queue } = require("bullmq");
-const q = new Queue("vatix:settlement-trades", { connection: { url: process.env.REDIS_URL } });
-(async () => {
-  const failed = await q.getFailed(0, 50);
-  for (const job of failed) await job.retry();
-  console.log(`retried ${failed.length} jobs`);
-  await q.close();
-})();
-'
+# See what is dead-lettered
+pnpm dlq stats --queue settlement
+pnpm dlq list  --queue settlement --limit 50
+
+# Preview, then retry the whole failed set (production needs --yes)
+pnpm dlq retry-all --queue settlement --limit 50 --dry-run
+pnpm dlq retry-all --queue settlement --limit 50 --yes
+
+# One job at a time
+pnpm dlq retry   --queue oracle --job <jobId>
+pnpm dlq discard --queue oracle --job <jobId> --yes   # permanent — only for confirmed poison
 ```
+
+`retry-all` reports per-job failures without aborting the batch and exits
+non-zero if any job could not be retried. For a non-retryable poison job,
+`discard` after you have captured its payload from `pnpm dlq list`.
+
+> The older `pnpm replay:dlq` script drains a _different_ store — the raw
+> `vatix:dead-letter:*` Redis streams written for messages rejected as
+> non-retryable before they ever entered BullMQ. It does not touch the
+> BullMQ `failed` set.
 
 **C. Escalate to manual settlement (last resort)**
 
@@ -947,6 +958,15 @@ ORDER BY created_at DESC;
    finalization attempt) may have caused the transaction to abort
 4. **Bug in adjudication logic** — the finalization job's confidence comparison or
    competing candidate query may have failed silently
+5. **Challenge window drift (issue #950)** — the finalization worker enforces
+   `FINALIZATION_CHALLENGE_WINDOW_SECONDS`, which defaults to (and in production
+   **must** equal) `ORACLE_CHALLENGE_WINDOW_SECONDS` — the window the on-chain
+   resolution contract enforces. If the two disagree the worker finalizes too
+   early or too late relative to the chain. In `NODE_ENV=production` the worker
+   refuses to start on a mismatch; outside production it starts but logs
+   `Finalization challenge window overridden and drifts from the on-chain
+resolution contract window` at `warn`. Grep the worker's startup logs for
+   `onChainChallengeWindowSeconds` and confirm it matches the contract.
 
 ### Response Steps
 

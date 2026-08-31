@@ -12,8 +12,20 @@ interface ReadyResponse {
   };
 }
 
+/**
+ * Readiness probe — checks that this worker instance can reach its
+ * dependencies (database, Redis) and should therefore receive traffic /
+ * be counted as available. This is deliberately separate from `/live`
+ * (see live.ts): liveness must not depend on external services, or a
+ * transient DB/Redis blip triggers pod restarts instead of a brief,
+ * self-healing removal from rotation.
+ */
 export async function readyRoutes(fastify: FastifyInstance) {
-  fastify.get<{ Reply: ReadyResponse }>("/ready", async (_request, reply) => {
+  fastify.get<{ Reply: ReadyResponse }>("/ready", async (request, reply) => {
+    const requestId =
+      (request.headers["x-request-id"] as string | undefined) ?? request.id;
+    reply.header("x-request-id", requestId);
+
     let dbStatus: "ok" | "error" = "ok";
     let dbError: string | undefined;
 
@@ -39,6 +51,21 @@ export async function readyRoutes(fastify: FastifyInstance) {
     }
 
     const ready = dbStatus === "ok" && redisStatus === "ok";
+
+    if (!ready) {
+      // Log without secrets: dbError/redisError are driver error messages
+      // (e.g. "connection refused"), never connection strings or credentials.
+      request.log.warn(
+        {
+          requestId,
+          dbStatus,
+          redisStatus,
+          ...(dbError ? { dbError } : {}),
+          ...(redisError ? { redisError } : {}),
+        },
+        "Workers readiness check failed"
+      );
+    }
 
     return reply.status(ready ? 200 : 503).send({
       ready,
