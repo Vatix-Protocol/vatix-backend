@@ -6,7 +6,7 @@ import type {
 } from "./types.js";
 import { isChallengeWindowOpen } from "../../../../src/oracle/challengeWindow.js";
 import { RESOLVABLE_MARKET_STATUSES } from "../../../../packages/shared/src/marketLifecycle.js";
-import { lockResolutionCandidate } from "./resolutionLock.js";
+import { lockResolutionCandidateOrThrow } from "./resolutionLock.js";
 
 /**
  * Configuration for a single FinalizationJob run.
@@ -214,7 +214,11 @@ export class FinalizationJob {
           // concurrent challenge write takes the same lock (see
           // resolutionLock.ts); whichever transaction commits first wins,
           // and the loser sees the post-commit status here and aborts.
-          const locked = await lockResolutionCandidate(tx, candidate.id);
+          const locked = await lockResolutionCandidateOrThrow(
+            tx,
+            candidate.id,
+            this.logger
+          );
 
           if (
             !locked ||

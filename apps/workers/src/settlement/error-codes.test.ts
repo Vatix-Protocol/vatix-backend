@@ -3,6 +3,7 @@ import {
   classifySettlementError,
   annotateError,
   isRetryable,
+  shouldQuarantine,
 } from "./error-codes.js";
 
 describe("classifySettlementError", () => {
@@ -117,6 +118,34 @@ describe("classifySettlementError", () => {
     expect(isRetryable(info)).toBe(false);
   });
 
+  // ── Issue 3: InvalidSignature must be fatal/quarantined, not retried forever ──
+
+  it("classifies a local InvalidSignature (by error.name) as INVALID_SIGNATURE (fatal, quarantined)", () => {
+    const err = new Error("payload signature did not verify");
+    err.name = "InvalidSignature";
+    const info = classifySettlementError(err);
+    expect(info.code).toBe("INVALID_SIGNATURE");
+    expect(info.status).toBe("fatal");
+    expect(isRetryable(info)).toBe(false);
+    expect(shouldQuarantine(info)).toBe(true);
+  });
+
+  it("classifies 'invalid signature' by message as INVALID_SIGNATURE (fatal, quarantined)", () => {
+    const err = new Error("Invalid signature for oracle payload");
+    const info = classifySettlementError(err);
+    expect(info.code).toBe("INVALID_SIGNATURE");
+    expect(shouldQuarantine(info)).toBe(true);
+  });
+
+  it("does not confuse an on-chain tx_bad_auth rejection with a local InvalidSignature", () => {
+    // Regression guard: this message contains "signature" but must still
+    // resolve to the existing STELLAR_TX_BAD_AUTH bucket, not the new
+    // INVALID_SIGNATURE one, since it names tx_bad_auth explicitly.
+    const err = new Error("tx_bad_auth: signature verification failed");
+    const info = classifySettlementError(err);
+    expect(info.code).toBe("STELLAR_TX_BAD_AUTH");
+  });
+
   it("classifies wasm trap as SOROBAN_CONTRACT_ERROR (fatal)", () => {
     const err = new Error("wasm trap: unreachable instruction executed");
     const info = classifySettlementError(err);
@@ -213,6 +242,35 @@ describe("isRetryable", () => {
       isRetryable({
         code: "INVALID_PAYLOAD",
         status: "invalid_input",
+        message: "",
+      })
+    ).toBe(false);
+  });
+});
+
+describe("shouldQuarantine", () => {
+  it("matches !isRetryable for fatal and invalid_input statuses", () => {
+    expect(
+      shouldQuarantine({
+        code: "INVALID_SIGNATURE",
+        status: "fatal",
+        message: "",
+      })
+    ).toBe(true);
+    expect(
+      shouldQuarantine({
+        code: "INVALID_PAYLOAD",
+        status: "invalid_input",
+        message: "",
+      })
+    ).toBe(true);
+  });
+
+  it("is false for transient (retryable) errors", () => {
+    expect(
+      shouldQuarantine({
+        code: "STELLAR_RPC_UNAVAILABLE",
+        status: "transient",
         message: "",
       })
     ).toBe(false);

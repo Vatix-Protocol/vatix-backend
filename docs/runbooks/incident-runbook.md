@@ -19,6 +19,7 @@ This runbook provides step-by-step guidance for responding to common backend inc
 - [Incident 5: Oracle Resolution Failure](#incident-5-oracle-resolution-failure)
 - [Incident 6: Queue Backlog (Settlement / Oracle Submission)](#incident-6-queue-backlog-settlement--oracle-submission)
 - [Incident 7: Stuck CHALLENGED Resolution Candidates](#incident-7-stuck-challenged-resolution-candidates)
+- [Incident 8: Duplicate Settlement / Finalization Race](#incident-8-duplicate-settlement--finalization-race)
 - [Post-Incident Process](#post-incident-process)
 - [Useful Commands & Queries](#useful-commands--queries)
 - [Contact & Resources](#contact--resources)
@@ -1074,6 +1075,84 @@ resulting severity.
 - [ ] Alert: if count > 1 and growing over 10 minutes
 - [ ] Finalization logs: alert on adjudication failures or transaction aborts
 - [ ] E2E test: file a challenge, verify finalization adjudicates it within 2 cycles
+
+---
+
+## Incident 8: Duplicate Settlement / Finalization Race
+
+### Symptoms
+
+- `settle_trade` invoked twice for the same trade id (visible as two Soroban
+  txs with the same trade id in a short window).
+- Two `resolution_candidates` rows for the same market flip status in
+  conflicting order, or a finalization admin action appears to "undo" itself.
+- Oracle submission worker logs show a `resolve_market` broadcast for a
+  market that a restart or a second replica already confirmed.
+
+### Detection
+
+```bash
+# Finalization lock contention / hard failures
+curl -s localhost:9090/metrics | grep vatix_finalization_lock
+
+# Settlement job stalls and duplicate-skip events
+curl -s localhost:9090/metrics | grep -E 'vatix_settlement_job_stalled_total|vatix_settlement_duplicate_skipped_total'
+
+# Settlement errors quarantined vs retried, by code
+curl -s localhost:9090/metrics | grep vatix_settlement_error_quarantined_total
+
+# Oracle submissions stuck ambiguous (crash between broadcast and confirm)
+curl -s localhost:9090/metrics | grep vatix_oracle_submission_ambiguous_total
+```
+
+### Response Steps
+
+#### Step 1: Identify which layer raced
+
+- `vatix_finalization_lock_failures_total` increasing → the Postgres
+  `SELECT ... FOR UPDATE` on `resolution_candidates` is failing (DB
+  unreachable, deadlock, statement timeout). As of this runbook update,
+  `resolutionLock.ts` fails the finalization job fast on this condition in
+  every environment — it no longer silently proceeds without the lock. Check
+  `apps/workers` logs for `ResolutionLockError`.
+- `vatix_settlement_job_stalled_total` increasing → BullMQ is reclaiming
+  jobs whose worker didn't renew its lock in time (slow RPC, GC pause,
+  process kill). Check `lockDuration`/`stalledInterval` in
+  `apps/workers/src/settlement/bullmq-consumer.ts` against actual settlement
+  latency; a stalled job is retried under the settlement worker's own
+  idempotency key, so retries should surface as
+  `vatix_settlement_duplicate_skipped_total`, not a second on-chain call.
+- `vatix_settlement_error_quarantined_total{code="STELLAR_TX_BAD_AUTH"}` (or
+  `INVALID_SIGNATURE`) increasing → a bad signing key is being retried; this
+  is now quarantined (moved to dead-letter) rather than retried forever, so
+  check the dead-letter log for the affected trade ids and rotate/verify the
+  signer key.
+- `vatix_oracle_submission_ambiguous_total` increasing → confirmation is
+  correctly refusing to resubmit while chain state is unclear (see Incident
+  5 for the oracle-specific flow).
+
+#### Step 2: Verify on-chain state before touching the DB
+
+```bash
+# Look up the actual tx(s) for the trade/market in question via Horizon/RPC
+# before assuming the DB row is wrong — the DB is the thing that can lie,
+# the ledger cannot.
+```
+
+#### Step 3: Remediation
+
+- If a genuine double-apply reached the chain: this is a SEV-1 — engage
+  on-call immediately, do not attempt a silent DB-only fix. Follow
+  [Escalation Procedures](#escalation-procedures).
+- If it's lock/stall contention without a double-apply: no action needed
+  beyond confirming the metrics settle back to baseline; the retry/backoff
+  path is designed to absorb this.
+
+### Prevention
+
+- [ ] Alert: `vatix_finalization_lock_failures_total` rate > 0 over 5m
+- [ ] Alert: `vatix_settlement_job_stalled_total` rate > 0 sustained over 10m
+- [ ] Dashboard: `vatix_settlement_error_quarantined_total` by `code`, reviewed weekly for signing/config issues that need a human fix rather than a retry
 
 ---
 
