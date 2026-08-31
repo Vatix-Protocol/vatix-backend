@@ -23,6 +23,7 @@ import {
   type SettlementErrorInfo,
   type SettlementErrorStatus,
 } from "./error-codes.js";
+import { settlementDuplicateSkippedTotal } from "../../../../src/services/metrics.js";
 
 /** Retry config for individual Stellar RPC calls (getAccount, prepareTransaction,
  *  sendTransaction). Bounded and short-lived so a transient RPC blip is absorbed
@@ -313,6 +314,7 @@ export class SettlementWorker {
     );
 
     if (!claimed) {
+      settlementDuplicateSkippedTotal.inc();
       this.logger.info("Settlement job skipped (already processed)", {
         tradeId,
         jobId: job.id,
