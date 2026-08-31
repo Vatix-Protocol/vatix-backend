@@ -1,10 +1,38 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { Keypair } from "@stellar/stellar-sdk";
 import {
   signResolutionReport,
   verifyResolutionReport,
+  LegacySignatureRejectedError,
+  CURRENT_SIGNATURE_VERSION,
 } from "./signature-helper.js";
-import type { ResolutionPayload } from "./signature-helper.js";
+import type {
+  ResolutionPayload,
+  SignedResolutionReport,
+} from "./signature-helper.js";
+
+/** Builds a pre-#978 legacy report: domain-separated only, no network passphrase. */
+function signLegacyReport(
+  payload: ResolutionPayload,
+  keypair: Keypair
+): SignedResolutionReport {
+  const legacyMessage = Buffer.from(
+    JSON.stringify({
+      domain: "vatix.oracle-resolution.v1",
+      payload: {
+        marketId: payload.marketId,
+        outcome: payload.outcome,
+        timestamp: payload.timestamp,
+      },
+    }),
+    "utf8"
+  );
+  return {
+    payload,
+    signature: keypair.sign(legacyMessage).toString("base64"),
+    publicKey: keypair.publicKey(),
+  };
+}
 
 const testKeypair = Keypair.random();
 const SECRET = testKeypair.secret();
@@ -137,5 +165,55 @@ describe("verifyResolutionReport", () => {
     const tampered = { ...report, publicKey: other.publicKey() };
 
     expect(verifyResolutionReport(tampered)).toBe(false);
+  });
+});
+
+describe("signature envelope versioning (#993)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("stamps newly signed reports with the current version", () => {
+    const report = signResolutionReport(basePayload, SECRET);
+    expect(report.version).toBe(CURRENT_SIGNATURE_VERSION);
+    expect(CURRENT_SIGNATURE_VERSION).toBe(2);
+  });
+
+  it("rejects a legacy (passphrase-less) signature in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(
+      "SOROBAN_NETWORK_PASSPHRASE",
+      "Public Global Stellar Network ; September 2015"
+    );
+    const legacy = signLegacyReport(basePayload, testKeypair);
+
+    expect(() => verifyResolutionReport(legacy)).toThrow(
+      LegacySignatureRejectedError
+    );
+  });
+
+  it("still verifies a legacy signature outside production", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const legacy = signLegacyReport(basePayload, testKeypair);
+
+    expect(verifyResolutionReport(legacy)).toBe(true);
+  });
+
+  it("rejects a current (v2) signature verified as if it were legacy-tampered to v1", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(
+      "SOROBAN_NETWORK_PASSPHRASE",
+      "Public Global Stellar Network ; September 2015"
+    );
+    const report = signResolutionReport(
+      basePayload,
+      SECRET,
+      "Public Global Stellar Network ; September 2015"
+    );
+    const downgraded: SignedResolutionReport = { ...report, version: 1 };
+
+    expect(() => verifyResolutionReport(downgraded)).toThrow(
+      LegacySignatureRejectedError
+    );
   });
 });

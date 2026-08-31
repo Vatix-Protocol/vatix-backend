@@ -100,6 +100,8 @@ store (a DB `UNIQUE` constraint on the event ID). See
 - In production (`NODE_ENV=production`), fallback is disabled and any primary failure fails closed immediately. No secondary off-chain result, stale value, or default value is accepted.
 - If the fallback also fails or times out, the oracle fails closed: no resolution is generated, and `vatix_oracle_fail_closed_total` is incremented. No trades are settled and no on-chain submission occurs until a provider becomes available again.
 - Non-transient errors (4xx, malformed responses) from the primary provider skip fallback and fail fast.
+- Resolutions must also meet `ORACLE_MIN_CONFIDENCE_THRESHOLD` (default `0.75`) to be enqueued for on-chain submission; a low-confidence primary or fallback result fails closed the same way a total outage does (#991).
+- Timeout values are validated against `apps/oracle/timeout-utils.ts` (`MIN_TIMEOUT_MS`/`MAX_TIMEOUT_MS`, 1s–5min). In production, an out-of-range timeout throws at construction/request time instead of being silently clamped, so a misconfigured deployment never runs with a different effective timeout than what's documented here (#992). Outside production, out-of-range values are clamped with a warning. `FallbackAdapter` defaults to the documented `FALLBACK_PROVIDER_TIMEOUT_POLICY_MS` (30s) rather than the generic timeout default, keeping the fallback chain's timeout traceable to this policy.
 - See `apps/oracle/oracle-service.ts` for implementation details and `apps/oracle/oracle-config.ts` for configuration.
 
 ### Market lifecycle
