@@ -61,6 +61,8 @@ When a parser encounters an event with a topic symbol it does not recognize, it 
 
 **DB write:** `CollateralDeposit` row via `PrismaBatchWriter`. `amountRaw` is stored as `String` (bigint serialized) to avoid precision loss, matching `IndexedTrade.priceRaw`/`quantityRaw`. Position accounting against `UserPosition` is handled separately by a worker — `batchWriter` only persists the raw deposit for audit/reconciliation.
 
+**Scale validation:** `collateralDepositedParser.ts` now validates every `amountRaw` against the same 7-decimal / `Decimal(20,8)` bounds `decimalUtils.amountRawToDecimal` enforces (see [Decimal/share conversion utilities](#decimalshare-conversion-utilities)), and rejects zero/negative amounts. In `NODE_ENV=production` it additionally rejects an `amount` that decodes as a plain JS `number` instead of a `bigint` — the on-chain `i128` type always decodes to `bigint`, so a `number` signals a wrong-width/wrong-scale decode path rather than a legitimate deposit. A rejection increments `indexer.parser.invalid_collateral_scale` (tags: `parser`, `eventId`, `contractId`, `ledger`).
+
 ---
 
 ## 3. `market_resolved`
