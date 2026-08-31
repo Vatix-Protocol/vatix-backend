@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { rpc as StellarRpc } from "@stellar/stellar-sdk";
 import type {
   EventFetcherConfig,
@@ -121,9 +122,11 @@ export class EventFetcher {
     const allEvents: RawChainEvent[] = [];
     let cursor: string | undefined;
     let latestLedger = 0;
+    let previousCursor: string | undefined;
+    let stallIterations = 0;
 
     do {
-      const page = await this.fetchPageWithRetry(startLedger, cursor);
+      const page = await this.fetchPageWithRetry(startLedger, requestId, cursor);
       latestLedger = page.latestLedger;
 
       const inWindow = page.events.filter((e) => {
@@ -146,11 +149,26 @@ export class EventFetcher {
         fullPage && last && lastLedger <= endLedger
           ? (last as any).pagingToken
           : undefined;
+
+      if (cursor !== undefined && cursor === previousCursor) {
+        stallIterations += 1;
+        if (stallIterations >= MAX_STALL_ITERATIONS) {
+          this.telemetry.record("indexer.rpc.cursor_stalled", 1, {
+            requestId,
+            cursor: cursor ?? "none",
+          });
+          throw new CursorStallError(cursor, stallIterations);
+        }
+      } else {
+        stallIterations = 0;
+      }
+      previousCursor = cursor;
     } while (cursor !== undefined);
 
     this.telemetry.record("indexer.events.fetched", allEvents.length, {
       startLedger: String(startLedger),
       endLedger: String(endLedger),
+      requestId,
     });
 
     return { events: allEvents, latestLedger };
@@ -163,6 +181,7 @@ export class EventFetcher {
    */
   private async fetchPageWithRetry(
     startLedger: number,
+    requestId: string,
     cursor?: string
   ): Promise<StellarRpc.Api.GetEventsResponse> {
     const { maxRetries, retryDelayMs, pageLimit, contractId, fetchTimeoutMs } =
