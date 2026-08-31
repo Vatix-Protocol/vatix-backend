@@ -327,3 +327,83 @@ describe("parseResolutionEvents", () => {
     );
   });
 });
+
+describe("production fail-fast on legacy resolution shapes", () => {
+  // Gap this covers: legacy dev-stub payload shapes (ScvVec tuple, legacy
+  // ScvMap without topics[1]=market_id) were previously accepted silently
+  // in every environment, including production, which meant a contract
+  // regression or topic drift produced ResolutionCandidate rows with a
+  // blank oracleAddress instead of failing loudly. These tests fail
+  // against the pre-fix parser (which has no `nodeEnv` gate at all).
+
+  it("rejects a legacy ScvVec tuple payload in production", () => {
+    const tupleXdr = nativeToScVal([7, false, 99n]).toXDR("base64");
+    expect(() =>
+      parseResolutionEvent(
+        makeEvent({
+          valueXdr: tupleXdr,
+          topicsXdr: [XDR.topic.marketResolvedEvent],
+        }),
+        { nodeEnv: "production" }
+      )
+    ).toThrow(ResolutionParseError);
+  });
+
+  it("rejects a legacy ScvMap payload in production", () => {
+    expect(() =>
+      parseResolutionEvent(
+        makeEvent({
+          valueXdr: XDR.value.resolvedYes,
+          topicsXdr: [XDR.topic.marketResolvedEvent],
+        }),
+        { nodeEnv: "production" }
+      )
+    ).toThrow(ResolutionParseError);
+  });
+
+  it("still parses the canonical on-chain shape in production", () => {
+    const r = parseResolutionEvent(makeEvent({ valueXdr: XDR.value.realYes }), {
+      nodeEnv: "production",
+    });
+    expect(r.outcome).toBe("YES");
+  });
+
+  it("still allows legacy shapes outside production (local stubs)", () => {
+    const r = parseResolutionEvent(
+      makeEvent({
+        valueXdr: XDR.value.resolvedYes,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      }),
+      { nodeEnv: "development" }
+    );
+    expect(r.outcome).toBe("YES");
+  });
+
+  it("emits a legacy_shape_rejected metric with correlation ids when rejecting in production", () => {
+    const telemetry: Telemetry = {
+      record: vi.fn(),
+      startSpan: vi.fn(() => ({ end: vi.fn() })),
+    };
+    const events = [
+      makeEvent({
+        id: "evt-legacy-1",
+        valueXdr: XDR.value.resolvedYes,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      }),
+    ];
+    const { resolutions, errors } = parseResolutionEvents(events, {
+      telemetry,
+      nodeEnv: "production",
+    });
+    expect(resolutions).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect(telemetry.record).toHaveBeenCalledWith(
+      "indexer.parser.legacy_shape_rejected",
+      1,
+      expect.objectContaining({
+        parser: "resolution",
+        eventId: "evt-legacy-1",
+      })
+    );
+  });
+});

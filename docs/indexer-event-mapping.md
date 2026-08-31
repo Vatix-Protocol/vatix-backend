@@ -79,6 +79,8 @@ The contract does not publish an oracle address on this event, so `oracleAddress
 
 **Payload — legacy ScvMap:** Keys `market_id` (ScvSymbol), `outcome` (ScvSymbol `"YES"`/`"NO"`), `oracle` (ScvSymbol), all inside the value. `oracle` is required on this path; its absence throws `ResolutionParseError`.
 
+**Production vs. local stubs:** Both legacy shapes (ScvVec tuple and legacy ScvMap) exist only to decode local devnet/test fixtures and are rejected with a `ResolutionParseError` when `NODE_ENV=production` (or the `nodeEnv` option passed to `parseResolutionEvent`/`parseResolutionEvents` is `"production"`). Only the canonical on-chain shape (`topics[1]=market_id`, value `{outcome, resolved_at}`) is accepted in production. A rejection in production increments `indexer.parser.legacy_shape_rejected` (tags: `parser`, `eventId`, `contractId`, `ledger`) so operators can see a contract/topic regression instead of silently getting `ResolutionCandidate` rows with a blank `oracleAddress`.
+
 **DB write:** `ResolutionCandidate` row with `status = "PROPOSED"`, `source = "chain:market_resolved:{contractId}"`.
 
 ---
