@@ -179,32 +179,32 @@ NODE_ENV must be one of development | test | production, got: "staging"
 
 Must be a positive integer, optionally within a bounded range.
 
-| Variable                                 | Min  | Max     | Default |
-| ---------------------------------------- | ---- | ------- | ------- |
-| `PORT`                                   | 1    | 65535   | `3000`  |
-| `BODY_LIMIT_BYTES`                       | 1    | —       | `65536` |
-| `RATE_LIMIT_MAX`                         | 1    | —       | `100`   |
-| `RATE_LIMIT_WINDOW_MS`                   | 1    | —       | `60000` |
-| `RATE_LIMIT_HEAVY_MAX`                   | 1    | —       | `20`    |
-| `RATE_LIMIT_HEAVY_WINDOW_MS`             | 1    | —       | `60000` |
-| `RATE_LIMIT_WRITE_MAX`                   | 1    | —       | `10`    |
-| `RATE_LIMIT_WRITE_WINDOW_MS`             | 1    | —       | `60000` |
-| `RATE_LIMIT_ADMIN_MAX`                   | 1    | —       | `30`    |
-| `RATE_LIMIT_ADMIN_WINDOW_MS`             | 1    | —       | `60000` |
-| `ORACLE_POLL_INTERVAL_MS`                | 5000 | 3600000 | `30000` |
-| `ORACLE_CHALLENGE_WINDOW_SECONDS`        | 1    | —       | `86400` |
-| `ORACLE_PRIMARY_TIMEOUT_MS`              | 1    | —       | `30000` |
-| `ORACLE_FALLBACK_TIMEOUT_MS`             | 1    | —       | `30000` |
-| `FINALIZATION_INTERVAL_MS`               | 1000 | —       | `60000` |
-| `FINALIZATION_CHALLENGE_WINDOW_SECONDS`  | 0    | —       | `3600`  |
-| `INDEXER_INGESTION_INTERVAL_MS`          | 100  | —       | `5000`  |
-| `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | 1    | —       | `10`    |
-| `REDIS_MAX_RETRIES`                      | 1    | —       | `3`     |
-| `REDIS_RETRY_BASE_DELAY`                 | 1    | —       | `100`   |
-| `REDIS_RETRY_MAX_DELAY`                  | 1    | —       | `2000`  |
-| `REDIS_CONNECT_TIMEOUT`                  | 1    | —       | `5000`  |
-| `MATCHING_LEASE_TTL_MS`                  | 1    | —       | `15000` |
-| `MATCHING_LEASE_RENEW_INTERVAL_MS`       | 1    | —       | `5000`  |
+| Variable                                 | Min  | Max     | Default                           |
+| ---------------------------------------- | ---- | ------- | --------------------------------- |
+| `PORT`                                   | 1    | 65535   | `3000`                            |
+| `BODY_LIMIT_BYTES`                       | 1    | —       | `65536`                           |
+| `RATE_LIMIT_MAX`                         | 1    | —       | `100`                             |
+| `RATE_LIMIT_WINDOW_MS`                   | 1    | —       | `60000`                           |
+| `RATE_LIMIT_HEAVY_MAX`                   | 1    | —       | `20`                              |
+| `RATE_LIMIT_HEAVY_WINDOW_MS`             | 1    | —       | `60000`                           |
+| `RATE_LIMIT_WRITE_MAX`                   | 1    | —       | `10`                              |
+| `RATE_LIMIT_WRITE_WINDOW_MS`             | 1    | —       | `60000`                           |
+| `RATE_LIMIT_ADMIN_MAX`                   | 1    | —       | `30`                              |
+| `RATE_LIMIT_ADMIN_WINDOW_MS`             | 1    | —       | `60000`                           |
+| `ORACLE_POLL_INTERVAL_MS`                | 5000 | 3600000 | `30000`                           |
+| `ORACLE_CHALLENGE_WINDOW_SECONDS`        | 1    | —       | `86400`                           |
+| `ORACLE_PRIMARY_TIMEOUT_MS`              | 1    | —       | `30000`                           |
+| `ORACLE_FALLBACK_TIMEOUT_MS`             | 1    | —       | `30000`                           |
+| `FINALIZATION_INTERVAL_MS`               | 1000 | —       | `60000`                           |
+| `FINALIZATION_CHALLENGE_WINDOW_SECONDS`  | 0    | —       | `ORACLE_CHALLENGE_WINDOW_SECONDS` |
+| `INDEXER_INGESTION_INTERVAL_MS`          | 100  | —       | `5000`                            |
+| `INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES` | 1    | —       | `10`                              |
+| `REDIS_MAX_RETRIES`                      | 1    | —       | `3`                               |
+| `REDIS_RETRY_BASE_DELAY`                 | 1    | —       | `100`                             |
+| `REDIS_RETRY_MAX_DELAY`                  | 1    | —       | `2000`                            |
+| `REDIS_CONNECT_TIMEOUT`                  | 1    | —       | `5000`                            |
+| `MATCHING_LEASE_TTL_MS`                  | 1    | —       | `15000`                           |
+| `MATCHING_LEASE_RENEW_INTERVAL_MS`       | 1    | —       | `5000`                            |
 
 **Error example:**
 
@@ -213,28 +213,19 @@ PORT must be a positive integer, got: "abc"
 PORT must be <= 65535, got: "99999"
 ```
 
-### Unit-interval variables
-
-Must be a finite number between `0` and `1` (inclusive).
-
-| Variable                            | Min | Max | Default |
-| ------------------------------------ | --- | --- | ------- |
-| `ORACLE_MIN_CONFIDENCE_THRESHOLD`   | 0   | 1   | `0.75`  |
-
-`ORACLE_MIN_CONFIDENCE_THRESHOLD` gates whether a resolved market result is
-enqueued for on-chain submission (#991). A resolution — from either the
-primary or fallback provider — whose `confidence` score falls below this
-threshold is treated as a fail-closed condition: it is never enqueued, an
-`oracle.low_confidence_fail_closed` log event is emitted, and the
-`oracleFailClosedTotal` metric is incremented, mirroring the existing
-`ALL_PROVIDERS_FAILED` outage path. Operators must raise this value
-explicitly to accept weaker signals; the default (`0.75`) errs toward
-dropping ambiguous resolutions rather than submitting them on-chain.
-
-**Error example:**
+**Cross-field check — challenge window (issue #950):**
+`FINALIZATION_CHALLENGE_WINDOW_SECONDS` defaults to
+`ORACLE_CHALLENGE_WINDOW_SECONDS` (the window enforced by the on-chain
+resolution contract, shared with the API and oracle scheduler). It remains
+settable as a **dev/test-only** override. In `NODE_ENV=production` a value that
+differs from `ORACLE_CHALLENGE_WINDOW_SECONDS` is a fatal `ConfigValidationError`
+— a drift lets the finalization worker finalize markets earlier or later than
+the chain allows. Outside production a drifting override is honoured but the
+finalization worker logs a `warn` on startup so the local stub is never silent.
 
 ```
-ORACLE_MIN_CONFIDENCE_THRESHOLD must be a number between 0 and 1, got: "1.5"
+FINALIZATION_CHALLENGE_WINDOW_SECONDS (3600) must match the on-chain resolution
+contract window ORACLE_CHALLENGE_WINDOW_SECONDS (86400) in production.
 ```
 
 ### Boolean variables

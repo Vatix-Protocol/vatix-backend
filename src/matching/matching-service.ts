@@ -23,6 +23,7 @@ import {
   MatchingUnavailableError,
   MarketNotFoundError,
   MarketNotActiveError,
+  MarketExpiredError,
   OrderConflictError,
 } from "../api/middleware/errors.js";
 import { orderbookHydratedMarketsGauge } from "../services/metrics.js";
@@ -428,6 +429,18 @@ class MatchingService {
 
       if (market.status !== "ACTIVE") {
         throw new MarketNotActiveError(input.marketId, market.status);
+      }
+
+      // Reject matches for a market whose trading window has closed even when
+      // its status is still ACTIVE (#951). The expiry worker flips ended
+      // markets to CANCELLED, but that job runs on an interval and can lag;
+      // until it catches up an ended market must not match a single new order.
+      // The route-level pre-check in validateMarketState() also enforces this,
+      // but the mutex wait here is unbounded — endTime can pass while an order
+      // sits queued behind a busy book — so the engine must re-check, exactly
+      // as it re-checks status above (#792).
+      if (market.endTime.getTime() <= Date.now()) {
+        throw new MarketExpiredError(input.marketId, market.endTime);
       }
 
       const book = await this.getOrHydrateBook(input.marketId, input.outcome);

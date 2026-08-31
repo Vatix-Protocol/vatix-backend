@@ -2,6 +2,8 @@ import { createHash } from "crypto";
 import { redis } from "./redis.js";
 import { getPrismaClient } from "./prisma.js";
 import type { Trade } from "../matching/engine.js";
+import { verifyAuditChainEvents, type AuditChainError } from "./auditChain.js";
+import { auditChainGapTotal } from "./metrics.js";
 
 /**
  * Audit log entry for a trade execution
@@ -553,8 +555,18 @@ export class AuditService {
   }
 
   /**
-   * Verify hash chain integrity for a market within a time range.
-   * Detects tampering of intermediate records.
+   * Verify hash chain integrity for a market, optionally within a time range.
+   *
+   * Detects both payload tampering (a row whose entryHash no longer matches
+   * sha256(payload + prevHash)) AND chain gaps — a row whose prevHash does not
+   * match the preceding row's entryHash, which is what a deleted or expired
+   * archive row looks like (issue #952). The old implementation tracked the
+   * previous hash but never compared it, so an archive that aged out left an
+   * undetectable hole in the chain.
+   *
+   * When a time range is supplied the slice legitimately starts partway down
+   * the chain, so the genesis ("first prevHash must be 0") check is skipped;
+   * a full-market verification still enforces it.
    */
   async verifyAuditChain(
     marketId: string,
@@ -564,12 +576,18 @@ export class AuditService {
     valid: boolean;
     totalEvents: number;
     mismatchCount: number;
-    errors: Array<{ streamId: string; reason: string }>;
+    gapCount: number;
+    errors: Array<{
+      streamId: string;
+      reason: string;
+      kind: AuditChainError["kind"];
+    }>;
   }> {
     const prisma = getPrismaClient();
 
+    const rangeApplied = Boolean(startTime || endTime);
     const where: any = { marketId };
-    if (startTime || endTime) {
+    if (rangeApplied) {
       where.archivedAt = {};
       if (startTime) where.archivedAt.gte = startTime;
       if (endTime) where.archivedAt.lte = endTime;
@@ -578,28 +596,37 @@ export class AuditService {
     const events = await prisma.tradeAuditEvent.findMany({
       where,
       orderBy: { archivedAt: "asc" },
+      select: {
+        streamId: true,
+        payload: true,
+        prevHash: true,
+        entryHash: true,
+      },
     });
 
-    const errors: Array<{ streamId: string; reason: string }> = [];
-    let prevHash = "0";
+    const result = verifyAuditChainEvents(events, {
+      expectGenesis: !rangeApplied,
+    });
 
-    for (const event of events) {
-      const expectedHash = this.computeHash(event.payload, event.prevHash);
-      if (expectedHash !== event.entryHash) {
-        errors.push({
-          streamId: event.streamId,
-          reason: `Hash mismatch: expected ${expectedHash}, got ${event.entryHash}`,
-        });
-      }
-      prevHash = event.entryHash;
+    if (result.gapCount > 0) {
+      auditChainGapTotal.inc({ market_id: marketId }, result.gapCount);
+      // In production a gap means archived rows were lost — surface loudly so
+      // the restore drill (docs/replay-forensics.md) is triggered rather than
+      // the caller quietly trusting an incomplete chain.
+      const line = JSON.stringify({
+        ts: new Date().toISOString(),
+        level: process.env.NODE_ENV === "production" ? "error" : "warn",
+        message: "Trade audit hash chain has gaps",
+        component: "audit-chain-verify",
+        marketId,
+        gapCount: result.gapCount,
+        totalEvents: result.totalEvents,
+      });
+      if (process.env.NODE_ENV === "production") console.error(line);
+      else console.warn(line);
     }
 
-    return {
-      valid: errors.length === 0,
-      totalEvents: events.length,
-      mismatchCount: errors.length,
-      errors,
-    };
+    return result;
   }
 }
 

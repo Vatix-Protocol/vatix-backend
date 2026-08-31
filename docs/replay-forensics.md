@@ -229,10 +229,22 @@ Verify hash chain integrity and detect tampering for a market's audit trail.
   "valid": true,
   "totalEvents": 1250,
   "mismatchCount": 0,
+  "gapCount": 0,
   "errors": [],
   "verifiedAt": "2026-07-29T12:00:00Z"
 }
 ```
+
+`mismatchCount` counts rows whose stored `entryHash` no longer matches
+`sha256(payload + prevHash)` — payload tampering. `gapCount` counts **broken
+chain links**: a row whose `prevHash` does not match the preceding row's
+`entryHash`, which is exactly what a deleted or expired archive row looks like
+(issue #952). Each error carries a `kind` of `hash_mismatch`, `chain_gap`, or
+`genesis`. A full-market verify (no `startTime`/`endTime`) also requires the
+first row to chain from the genesis hash `"0"`; a time-range verify does not,
+since the slice legitimately starts mid-chain. A non-zero `gapCount` also
+increments `vatix_audit_chain_gap_total{market_id=...}` and, in
+`NODE_ENV=production`, logs at `error` (component `audit-chain-verify`).
 
 ### GET /v1/admin/audit/watermark/:marketId
 
@@ -250,3 +262,61 @@ Get archived audit events for a market with pagination.
 
 - `limit`: Max events per page (default 100, max 1000)
 - `offset`: Skip N events (default 0)
+
+## Audit archive retention & restore drill (#952)
+
+### Retention policy
+
+`trade_audit_events` (Postgres) is the **permanent, append-only** record of
+every trade. It has **no TTL and no retention job** — rows are never deleted in
+normal operation. This is deliberate: the hash chain's guarantee (that no trade
+was silently removed or reordered) only holds if every link survives.
+
+- The Redis trade streams (`audit:market:*`, `audit:trades:global`) **do**
+  expire via `MAXLEN` (`AUDIT_STREAM_MAXLEN`, default 100 000 per market; the
+  global stream keeps 10×). The audit archiver drains each entry to Postgres
+  and advances a per-market watermark **before** trimming, so Redis expiry
+  never loses data — it only moves it to the durable tier.
+- Do **not** add a retention/purge job for `trade_audit_events` without first
+  running the restore drill below and wiring the restored rows back through the
+  chain. A purge that removes an interior row is now detected
+  (`verifyAuditChain` returns `valid: false`, `gapCount > 0`,
+  `vatix_audit_chain_gap_total` increments), but detection is not recovery.
+- Postgres point-in-time-recovery backups are the archive's backstop. Retain
+  base backups + WAL for at least the longest possible dispute/challenge
+  window plus the regulatory record-keeping period.
+
+### Restore drill (run quarterly in staging)
+
+Proves the archive can be rebuilt from backup and the chain re-verified.
+
+1. **Pick a market** with a non-trivial archived chain in staging:
+   ```sql
+   SELECT market_id, count(*) FROM trade_audit_events GROUP BY 1 ORDER BY 2 DESC LIMIT 5;
+   ```
+2. **Baseline** — verify the live chain is intact:
+   ```bash
+   curl -sS -XPOST "$API/v1/admin/audit/verify-chain" \
+     -H "x-api-key: $ADMIN_KEY" -H 'content-type: application/json' \
+     -d '{"marketId":"<id>"}' | jq '{valid, totalEvents, mismatchCount, gapCount}'
+   # expect: valid=true, mismatchCount=0, gapCount=0
+   ```
+3. **Restore** the `trade_audit_events` table (and `trade_stream_watermarks`)
+   into a scratch database from the most recent base backup + WAL replay.
+4. **Re-verify against the restore**: point a throwaway API instance at the
+   scratch DB (`DATABASE_URL=...scratch`) and re-run step 2. `valid` must be
+   `true` and `totalEvents` must match (or exceed, if trades continued) the
+   baseline.
+5. **Gap-detection check** — in the scratch DB delete one interior row and
+   confirm the verifier now fails:
+   ```sql
+   DELETE FROM trade_audit_events
+   WHERE id = (SELECT id FROM trade_audit_events WHERE market_id='<id>'
+               ORDER BY archived_at OFFSET 10 LIMIT 1);
+   ```
+   Re-run step 2 → expect `valid=false`, `gapCount>=1`, an error with
+   `kind:"chain_gap"`. Then re-insert the row (from the untouched backup) and
+   confirm the chain heals. This is exactly what
+   `tests/integration/audit-chain-retention.test.ts` asserts in CI.
+6. **Record** the drill date, restore duration (RTO), and the verified
+   `totalEvents` in the ops log. File a SEV-3 if any step fails.
