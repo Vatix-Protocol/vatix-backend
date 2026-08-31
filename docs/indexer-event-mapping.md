@@ -45,6 +45,8 @@ When a parser encounters an event with a topic symbol it does not recognize, it 
 
 **DB write:** `IndexedTrade` row via `PrismaBatchWriter`. `priceRaw` and `quantityRaw` stored as `String` (bigint serialized) to avoid precision loss. `PrismaBatchWriter` also reconciles the trade into both parties' `UserPosition.yesShares`/`noShares` (`Int` columns) — since `quantity` is already whole integer shares (no fixed-point scale, unlike `price`/collateral), this conversion is a validated bigint→Number bounds check rather than a division; see `sharesRawToInt` in [Decimal/share conversion utilities](#decimalshare-conversion-utilities) below.
 
+**Order id join validation:** `buy_order_id`/`sell_order_id` must resolve to a real `Order.id` (a `uuid()` per `prisma/schema.prisma`). `tradeParser.ts` always rejects an empty order id, and in `NODE_ENV=production` additionally rejects any value that isn't UUID-shaped — this is a dev-fixture allowance only, since non-UUID ids (e.g. legacy fixtures like `"buy-1"`) can never join to a CLOB `Order` row. A production rejection increments `indexer.parser.unjoinable_order_id` (tags: `parser`, `eventId`, `contractId`, `ledger`).
+
 ---
 
 ## 2. `collateral_deposited`

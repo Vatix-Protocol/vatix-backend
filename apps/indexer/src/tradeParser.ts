@@ -92,6 +92,50 @@ function toDirection(value: unknown, eventId: string): TradeDirection {
 }
 
 /**
+ * `Order.id` in `prisma/schema.prisma` is `@default(uuid())` — every CLOB
+ * order the matching engine creates has a UUID id. A settle_trade event
+ * carrying a `buy_order_id`/`sell_order_id` that isn't a UUID can never
+ * join back to a real `Order` row, which previously meant the trade was
+ * still written with an unjoinable order id instead of failing the batch.
+ */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Read and validate a CLOB order-id field.
+ *
+ * Always rejects empty/blank values (never joins to a real order in any
+ * environment). In production, also requires the id to match the UUID
+ * shape `Order.id` actually uses — non-UUID values only ever arise from
+ * local/dev fixtures — so a fill that can't be joined to a CLOB Order
+ * fails fast instead of being silently persisted unlinked.
+ */
+function toOrderId(
+  map: Record<string, unknown>,
+  key: string,
+  eventId: string,
+  nodeEnv: string
+): string {
+  const raw = String(field(map, key, eventId)).trim();
+  if (raw === "") {
+    throw new TradeParseError(`Field "${key}" must not be empty`, eventId);
+  }
+  if (isProductionEnv(nodeEnv) && !UUID_RE.test(raw)) {
+    throw new TradeParseError(
+      `Field "${key}" ("${raw}") is not a valid CLOB Order id (UUID) — ` +
+        "cannot join this fill to an Order in production",
+      eventId
+    );
+  }
+  return raw;
+}
+
+/** Mirrors resolutionParser.isProductionEnv — kept local to avoid a cross-parser import. */
+function isProductionEnv(nodeEnv: string): boolean {
+  return nodeEnv === "production";
+}
+
+/**
  * Determine whether the first topic XDR matches the trade_executed discriminator.
  */
 function isTradeEvent(topicsXdr: string[]): boolean {
@@ -111,9 +155,22 @@ function isTradeEvent(topicsXdr: string[]): boolean {
  *   market_id, trader, counterparty, direction, outcome,
  *   price, quantity, buy_order_id, sell_order_id
  *
- * @throws TradeParseError if the event is not a trade event or the payload is malformed
+ * @throws TradeParseError if the event is not a trade event, the payload is
+ *   malformed, or (in production) `buy_order_id`/`sell_order_id` cannot be
+ *   joined to a real CLOB `Order` row.
  */
-export function parseTradeEvent(event: RawChainEvent): NormalizedTrade {
+export interface ParseTradeEventOptions {
+  telemetry?: Telemetry;
+  /** Defaults to `process.env.NODE_ENV`; override in tests only. */
+  nodeEnv?: string;
+}
+
+export function parseTradeEvent(
+  event: RawChainEvent,
+  options?: ParseTradeEventOptions
+): NormalizedTrade {
+  const nodeEnv = options?.nodeEnv ?? process.env.NODE_ENV ?? "development";
+
   if (!isTradeEvent(event.topicsXdr)) {
     throw new TradeParseError(
       `Event topic is not "${TRADE_EVENT_TOPIC}"`,
@@ -158,8 +215,8 @@ export function parseTradeEvent(event: RawChainEvent): NormalizedTrade {
       "quantity",
       event.id
     ),
-    buyOrderId: String(field(map, "buy_order_id", event.id)),
-    sellOrderId: String(field(map, "sell_order_id", event.id)),
+    buyOrderId: toOrderId(map, "buy_order_id", event.id, nodeEnv),
+    sellOrderId: toOrderId(map, "sell_order_id", event.id, nodeEnv),
   };
 }
 
@@ -170,7 +227,7 @@ export function parseTradeEvent(event: RawChainEvent): NormalizedTrade {
  */
 export function parseTradeEvents(
   events: RawChainEvent[],
-  options?: { telemetry?: Telemetry }
+  options?: ParseTradeEventOptions
 ): {
   trades: NormalizedTrade[];
   errors: TradeParseError[];
@@ -178,6 +235,7 @@ export function parseTradeEvents(
   const trades: NormalizedTrade[] = [];
   const errors: TradeParseError[] = [];
   const telemetry = options?.telemetry;
+  const nodeEnv = options?.nodeEnv ?? process.env.NODE_ENV ?? "development";
 
   for (const event of events) {
     if (!isTradeEvent(event.topicsXdr)) {
@@ -190,8 +248,16 @@ export function parseTradeEvents(
       continue;
     }
     try {
-      trades.push(parseTradeEvent(event));
+      trades.push(parseTradeEvent(event, { telemetry, nodeEnv }));
     } catch (err) {
+      if (isProductionEnv(nodeEnv)) {
+        telemetry?.record("indexer.parser.unjoinable_order_id", 1, {
+          parser: "trade",
+          eventId: event.id,
+          contractId: event.contractId,
+          ledger: String(event.ledger),
+        });
+      }
       errors.push(
         err instanceof TradeParseError
           ? err
