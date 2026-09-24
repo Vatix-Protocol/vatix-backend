@@ -129,111 +129,14 @@ Snapshot-style position record per wallet/market/outcome (used for PnL queries).
 | `market_id`      | `uuid`          | FK → `markets.id` (cascade delete) |
 | `outcome`        | `Outcome?`      | `YES`, `NO`, or null               |
 | `quantity`       | `Int`           | Share quantity                     |
-| `valuation`      | `Decimal(20,8)` | Current valuation                  |
 | `created_at`     | `DateTime`      | Auto-set on insert                 |
 | `updated_at`     | `DateTime`      | Auto-updated                       |
 
 Unique constraint: `(wallet_address, market_id, outcome)`
 
-### `Trade`
+## Keeping this document in sync
 
-CLOB-engine trade records. Written atomically with order fills; `trade_id` is the idempotency key preventing duplicate writes on retry.
-
-| Column          | Type            | Notes                              |
-| --------------- | --------------- | ---------------------------------- |
-| `id`            | `uuid`          | Primary key                        |
-| `trade_id`      | `VarChar(256)`  | Unique idempotency key             |
-| `market_id`     | `uuid`          | FK → `markets.id`                  |
-| `outcome`       | `Outcome`       | `YES` or `NO`                      |
-| `buyer_address` | `VarChar(56)`   | Stellar wallet address of buyer    |
-| `seller_address`| `VarChar(56)`   | Stellar wallet address of seller   |
-| `buy_order_id`  | `uuid`          | FK reference to the buy order      |
-| `sell_order_id` | `uuid`          | FK reference to the sell order     |
-| `price`         | `Decimal(10,8)` | Execution price                    |
-| `quantity`      | `Int`           | Quantity traded                    |
-| `traded_at`     | `DateTime`      | When the trade occurred            |
-| `created_at`    | `DateTime`      | Auto-set on insert                 |
-
-Indexes: `market_id`, `buyer_address`, `seller_address`, `(buyer_address, traded_at DESC)`, `(seller_address, traded_at DESC)`
-
-### `IndexedTrade`
-
-On-chain trade events ingested by the indexer. Keyed by `idempotency_key` until fill reconciliation with CLOB orders exists.
-
-| Column                 | Type           | Notes                                   |
-| ---------------------- | -------------- | --------------------------------------- |
-| `id`                   | `uuid`         | Primary key                             |
-| `idempotency_key`      | `VarChar(64)`  | Unique; prevents duplicate ingestion    |
-| `event_id`             | `String`       | Stellar event identifier                |
-| `ledger`               | `Int`          | Ledger sequence number                  |
-| `market_id`            | `String`       | Market identifier from on-chain event   |
-| `trader_address`       | `VarChar(56)`  | Stellar address of the trader           |
-| `counterparty_address` | `VarChar(56)`  | Stellar address of the counterparty     |
-| `direction`            | `VarChar(8)`   | Trade direction (e.g. `BUY`, `SELL`)    |
-| `outcome`              | `VarChar(8)`   | Outcome string from on-chain event      |
-| `price_raw`            | `String`       | Raw price value (preserves precision)   |
-| `quantity_raw`         | `String`       | Raw quantity value (preserves precision)|
-| `buy_order_id`         | `String`       | Buy-side order reference                |
-| `sell_order_id`        | `String`       | Sell-side order reference               |
-| `created_at`           | `DateTime`     | Auto-set on insert                      |
-
-Indexes: `market_id`, `ledger`
-
-### `IndexerCursor`
-
-Tracks the Stellar ledger cursor position for the indexer.
-
-| Column         | Type       | Notes                             |
-| -------------- | ---------- | --------------------------------- |
-| `network_id`   | `String`   | Network identifier (composite PK) |
-| `cursor_key`   | `String`   | Cursor type key (composite PK)    |
-| `cursor_value` | `String?`  | Current cursor value              |
-| `created_at`   | `DateTime` | Auto-set on insert                |
-| `updated_at`   | `DateTime` | Auto-updated                      |
-
-### `OracleSourceAlias`
-
-Maps provider alias strings to canonical `OracleSource` enum values.
-
-| Column             | Type           | Notes                      |
-| ------------------ | -------------- | -------------------------- |
-| `id`               | `Int`          | Auto-increment primary key |
-| `alias`            | `String`       | Unique alias string        |
-| `canonical_source` | `OracleSource` | Canonical enum value       |
-| `created_at`       | `DateTime`     | Auto-set on insert         |
-
-## API Response DTOs
-
-### `GET /v1/wallets/:wallet/positions`
-
-This is the single canonical endpoint for wallet position data — it replaces
-the deprecated `/positions/user/:address` alias (see
-[docs/api-versioning.md](api-versioning.md)). PnL is opt-in via
-`?includePnl=true`; pricing requires an extra order-book query per market, so
-it's skipped by default.
-
-`WalletExposureRow`:
-
-| Field              | Type                 | Notes                                |
-| ------------------ | -------------------- | ------------------------------------ |
-| `marketId`         | `string`             |                                      |
-| `marketQuestion`   | `string`             |                                      |
-| `yesShares`        | `number`             |                                      |
-| `noShares`         | `number`             |                                      |
-| `netExposure`      | `number`             | `yesShares - noShares`               |
-| `lockedCollateral` | `string`             |                                      |
-| `isSettled`        | `boolean`            |                                      |
-| `updatedAt`        | `string` (date-time) |                                      |
-| `pnlRealized`      | `string \| null`     | Only present when `includePnl=true`. |
-| `pnlUnrealized`    | `string \| null`     | Only present when `includePnl=true`. |
-
-`WalletPositionsResponse`:
-
-| Field           | Type                  | Notes                                |
-| --------------- | --------------------- | ------------------------------------ |
-| `wallet`        | `string`              |                                      |
-| `exposures`     | `WalletExposureRow[]` |                                      |
-| `count`         | `number`              |                                      |
-| `pnlRealized`   | `string`              | Only present when `includePnl=true`. |
-| `pnlUnrealized` | `string`              | Only present when `includePnl=true`. |
-| `pnlTotal`      | `string`              | Only present when `includePnl=true`. |
+This document is a hand-maintained mirror of [`prisma/schema.prisma`](../prisma/schema.prisma).
+When you change a model, field, type, relation, enum, index, default, or nullability in the
+Prisma schema, update the corresponding table here in the same pull request. If the two
+diverge, the Prisma schema is the source of truth and this document is stale.
