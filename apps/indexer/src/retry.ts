@@ -43,6 +43,34 @@ export class RetryValidationError extends Error {
   }
 }
 
+/**
+ * Stable error code surfaced when retries are exhausted on a transient
+ * failure. Fail-closed: callers must not treat this as an empty result.
+ */
+export const RETRY_EXHAUSTED = "RETRY_EXHAUSTED";
+
+/**
+ * Thrown when a transient error persists past the configured retry budget.
+ * Carries a stable `code` and the underlying cause for observability.
+ */
+export class RetryExhaustedError extends Error {
+  readonly code = RETRY_EXHAUSTED;
+  readonly statusCode = 503;
+  readonly attempts: number;
+  constructor(attempts: number, cause?: unknown) {
+    super(
+      `retries exhausted after ${attempts} attempt(s): ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`
+    );
+    this.name = "RetryExhaustedError";
+    this.attempts = attempts;
+    if (cause !== undefined) {
+      (this as { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
 function validateRetryOptions(options: RetryOptions): void {
   if (!Number.isInteger(options.maxRetries) || options.maxRetries < 0) {
     throw new RetryValidationError("maxRetries must be a non-negative integer");
@@ -58,7 +86,9 @@ function validateRetryOptions(options: RetryOptions): void {
  * Execute `fn` with bounded retries on transient errors.
  *
  * @throws {RetryValidationError} When options are invalid (statusCode 400).
- * @throws The last error when retries are exhausted or the error is non-transient.
+ * @throws {RetryExhaustedError} When transient retries are exhausted
+ *   (statusCode 503, code RETRY_EXHAUSTED) — fail-closed.
+ * @throws The original error when it is non-transient (not retried).
  */
 export async function withRetry<T>(
   fn: () => Promise<T>,
@@ -72,8 +102,13 @@ export async function withRetry<T>(
       return await fn();
     } catch (err) {
       const isLast = attempt === maxRetries;
-      if (isLast || !isTransientError(err)) {
+      if (!isTransientError(err)) {
+        // Non-retryable: surface the original error unchanged.
         throw err;
+      }
+      if (isLast) {
+        // Fail-closed: never return partial/empty results on exhaustion.
+        throw new RetryExhaustedError(attempt + 1, err);
       }
       await sleep(retryDelayMs * 2 ** attempt);
     }

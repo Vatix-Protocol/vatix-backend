@@ -13,6 +13,46 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const DEFAULT_PAGE_LIMIT = 100;
 
+/**
+ * Stable error codes surfaced by the event fetcher. Callers can branch on
+ * `code` without parsing messages, and ops can alert on them.
+ */
+export type EventFetcherErrorCode =
+  | "EVENT_FETCH_RETRIES_EXHAUSTED"
+  | "EVENT_FETCH_NON_RETRYABLE";
+
+/**
+ * Fail-closed error thrown when a page cannot be fetched. We never return
+ * partial/empty results on failure so downstream settlement cannot act on
+ * an incomplete view of chain state.
+ */
+export class EventFetcherError extends Error {
+  readonly code: EventFetcherErrorCode;
+  readonly attempts: number;
+  readonly startLedger: number;
+  readonly cursor?: string;
+  readonly cause?: unknown;
+
+  constructor(
+    code: EventFetcherErrorCode,
+    message: string,
+    details: {
+      attempts: number;
+      startLedger: number;
+      cursor?: string;
+      cause?: unknown;
+    }
+  ) {
+    super(message);
+    this.name = "EventFetcherError";
+    this.code = code;
+    this.attempts = details.attempts;
+    this.startLedger = details.startLedger;
+    this.cursor = details.cursor;
+    this.cause = details.cause;
+  }
+}
+
 export class EventFetcher {
   private readonly server: StellarRpc.Server;
   private readonly config: Required<EventFetcherConfig>;
@@ -35,6 +75,9 @@ export class EventFetcher {
   /**
    * Fetch all raw chain events within [startLedger, endLedger].
    * Handles multi-page responses and retries on transient failures.
+   *
+   * Fail-closed: if any page cannot be fetched after retries, throws an
+   * `EventFetcherError` instead of returning a partial result.
    */
   async fetchByLedgerWindow(window: LedgerWindow): Promise<FetchEventsResult> {
     const { startLedger, endLedger } = window;
@@ -101,16 +144,34 @@ export class EventFetcher {
 
         return response;
       } catch (err) {
+        const transient = isTransientError(err);
         const isLast = attempt === maxRetries;
-        if (isLast || !isTransientError(err)) {
+
+        if (isLast || !transient) {
+          const code: EventFetcherErrorCode = transient
+            ? "EVENT_FETCH_RETRIES_EXHAUSTED"
+            : "EVENT_FETCH_NON_RETRYABLE";
+
           this.telemetry.record("indexer.rpc.error", 1, {
             attempt: String(attempt),
-            transient: String(isTransientError(err)),
+            transient: String(transient),
+            code,
           });
-          throw err;
+
+          throw new EventFetcherError(
+            code,
+            transient
+              ? `Event fetch exhausted ${maxRetries + 1} attempts for ledger ${startLedger}`
+              : `Event fetch failed with non-retryable error for ledger ${startLedger}`,
+            { attempts: attempt + 1, startLedger, cursor, cause: err }
+          );
         }
 
         const delay = retryDelayMs * 2 ** attempt;
+        this.telemetry.record("indexer.rpc.retry", 1, {
+          attempt: String(attempt),
+          delayMs: String(delay),
+        });
         console.warn(
           `[EventFetcher] transient error (attempt ${attempt + 1}), retrying in ${delay}ms`,
           err
@@ -120,7 +181,11 @@ export class EventFetcher {
     }
 
     // Unreachable — satisfies TypeScript
-    throw new Error("fetchPageWithRetry: exhausted retries");
+    throw new EventFetcherError(
+      "EVENT_FETCH_RETRIES_EXHAUSTED",
+      `Event fetch exhausted retries for ledger ${startLedger}`,
+      { attempts: maxRetries + 1, startLedger, cursor }
+    );
   }
 
   private toRawEvent(e: StellarRpc.Api.EventResponse): RawChainEvent {

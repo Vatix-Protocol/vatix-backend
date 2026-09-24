@@ -114,6 +114,39 @@ describe("EventFetcher", () => {
     expect(mockServer.getEvents).toHaveBeenCalledTimes(2);
   });
 
+  it("retries on transient error during pagination then succeeds", async () => {
+    const page1 = [makeEvent(10, "a"), makeEvent(11, "b")];
+    page1[1].pagingToken = "cursor-next";
+    const mockServer = {
+      getEvents: vi
+        .fn()
+        .mockResolvedValueOnce({ events: page1, latestLedger: 100 })
+        .mockRejectedValueOnce(
+          Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })
+        )
+        .mockResolvedValueOnce({ events: [makeEvent(12, "c")], latestLedger: 100 }),
+    };
+
+    const fetcher = new EventFetcher(
+      {
+        rpcUrl: "https://rpc.example.com",
+        contractId: "CTEST",
+        pageLimit: 2,
+        retryDelayMs: 0,
+      },
+      telemetry
+    );
+    (fetcher as any).server = mockServer;
+
+    const result = await fetcher.fetchByLedgerWindow({
+      startLedger: 10,
+      endLedger: 12,
+    });
+
+    expect(result.events).toHaveLength(3);
+    expect(mockServer.getEvents).toHaveBeenCalledTimes(3);
+  });
+
   it("throws after exhausting retries on transient error", async () => {
     const err = Object.assign(new Error("socket hang up"), {
       code: "ECONNRESET",
@@ -138,6 +171,31 @@ describe("EventFetcher", () => {
     expect(mockServer.getEvents).toHaveBeenCalledTimes(3); // 1 initial + 2 retries
   });
 
+  it("fails closed with a typed error after exhausting retries", async () => {
+    const err = Object.assign(new Error("socket hang up"), {
+      code: "ECONNRESET",
+    });
+    const mockServer = { getEvents: vi.fn().mockRejectedValue(err) };
+
+    const fetcher = new EventFetcher(
+      {
+        rpcUrl: "https://rpc.example.com",
+        contractId: "CTEST",
+        maxRetries: 1,
+        retryDelayMs: 0,
+      },
+      telemetry
+    );
+    (fetcher as any).server = mockServer;
+
+    await expect(
+      fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+    ).rejects.toMatchObject({
+      code: "EVENT_FETCH_RETRIES_EXHAUSTED",
+      retryable: true,
+    });
+  });
+
   it("throws immediately on non-transient error", async () => {
     const mockServer = {
       getEvents: vi.fn().mockRejectedValue(new Error("bad request")),
@@ -150,6 +208,45 @@ describe("EventFetcher", () => {
     ).rejects.toThrow("bad request");
 
     expect(mockServer.getEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed with a typed error on non-retryable error", async () => {
+    const mockServer = {
+      getEvents: vi.fn().mockRejectedValue(new Error("bad request")),
+    };
+
+    const fetcher = makeFetcher(mockServer, telemetry);
+
+    await expect(
+      fetcher.fetchByLedgerWindow({ startLedger: 1, endLedger: 5 })
+    ).rejects.toMatchObject({
+      code: "EVENT_FETCH_NON_RETRYABLE",
+      retryable: false,
+    });
+
+    expect(mockServer.getEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not double-process events on idempotent replay", async () => {
+    const server = makeMockServer([
+      [makeEvent(1, "a"), makeEvent(2, "b")],
+      [makeEvent(1, "a"), makeEvent(2, "b")],
+    ]);
+    const fetcher = makeFetcher(server, telemetry);
+
+    const first = await fetcher.fetchByLedgerWindow({
+      startLedger: 1,
+      endLedger: 2,
+    });
+    const second = await fetcher.fetchByLedgerWindow({
+      startLedger: 1,
+      endLedger: 2,
+    });
+
+    const ids = new Set([...first.events, ...second.events].map((e) => e.id));
+    expect(ids.size).toBe(2);
+    expect(first.events.map((e) => e.id)).toEqual(["a", "b"]);
+    expect(second.events.map((e) => e.id)).toEqual(["a", "b"]);
   });
 
   it("emits telemetry with fetched event count", async () => {
