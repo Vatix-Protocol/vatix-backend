@@ -1,170 +1,92 @@
-// ─── Trade types ────────────────────────────────────────────────────────────
-
-export type TradeDirection = "buy" | "sell";
-export type TradeOutcome = "YES" | "NO";
+/**
+ * Shared indexer types.
+ *
+ * These types describe the on-chain event shapes the indexer consumes and the
+ * normalized records it persists. They are the single source of truth for the
+ * MarketCreated parser and must stay in sync with the contract event vectors in
+ * `apps/indexer/fixtures/contract-event-vectors.json`.
+ */
 
 /**
- * Precision-safe numeric representation.
- * priceRaw and quantityRaw are bigint (base units) to avoid floating-point loss.
- * Callers convert to display values as needed.
+ * Stable error codes surfaced by the indexer. Callers (and ops dashboards)
+ * branch on these codes rather than on free-form messages so that behavior is
+ * deterministic and fail-closed.
  */
-export interface NormalizedTrade {
-  eventId: string;
-  ledger: number;
-  ledgerClosedAt: string;
-  contractId: string;
-  marketId: string;
-  traderAddress: string;
-  counterpartyAddress: string;
-  direction: TradeDirection;
-  outcome: TradeOutcome;
-  /** Price in base units (7 decimal places, e.g. 5_000_000n = 0.5) */
-  priceRaw: bigint;
-  /** Quantity of shares as integer */
-  quantityRaw: bigint;
-  buyOrderId: string;
-  sellOrderId: string;
+export enum IndexerErrorCode {
+  /** Event payload did not match the expected contract shape. */
+  MALFORMED_EVENT = 'MALFORMED_EVENT',
+  /** A required field was missing or had the wrong type. */
+  INVALID_FIELD = 'INVALID_FIELD',
+  /** Numeric field was negative, non-integer, or out of range. */
+  INVALID_NUMBER = 'INVALID_NUMBER',
+  /** Event was already processed (idempotency guard). */
+  DUPLICATE_EVENT = 'DUPLICATE_EVENT',
+  /** Event arrived out of order relative to the ledger cursor. */
+  OUT_OF_ORDER_EVENT = 'OUT_OF_ORDER_EVENT',
+  /** Downstream dependency (RPC/DB/Redis) was unavailable; write aborted. */
+  DEPENDENCY_UNAVAILABLE = 'DEPENDENCY_UNAVAILABLE',
 }
 
-export class TradeParseError extends Error {
-  constructor(
-    message: string,
-    public readonly eventId: string,
-    public readonly cause?: unknown
-  ) {
+/**
+ * Typed error thrown by the parser and writers. Carries a stable code plus an
+ * optional correlation id so logs can be joined without leaking secrets.
+ */
+export class IndexerError extends Error {
+  readonly code: IndexerErrorCode;
+  readonly correlationId?: string;
+
+  constructor(code: IndexerErrorCode, message: string, correlationId?: string) {
     super(message);
-    this.name = "TradeParseError";
+    this.name = 'IndexerError';
+    this.code = code;
+    this.correlationId = correlationId;
   }
 }
 
-// ─── Resolution types ───────────────────────────────────────────────────────
-
-/** The two valid on-chain resolution outcomes, mirroring the Prisma Outcome enum. */
-export type ResolutionOutcome = "YES" | "NO";
+/**
+ * Raw MarketCreated event as emitted by the contract and captured in the
+ * fixture vectors. Field names and types mirror the contract event shape.
+ */
+export interface RawMarketCreatedEvent {
+  /** Contract event topic, e.g. "MarketCreated". */
+  topic: string;
+  /** Ledger sequence the event was emitted in. */
+  ledgerSeq: number;
+  /** Index of the event within the ledger. */
+  eventIndex: number;
+  /** Contract id that emitted the event. */
+  contractId: string;
+  /** Market id assigned by the contract. */
+  marketId: string;
+  /** Address of the market creator. */
+  creator: string;
+  /** Collateral asset address. */
+  collateral: string;
+  /** Unix timestamp (seconds) the market was created at. */
+  createdAt: number;
+}
 
 /**
- * Normalized record produced from a market_resolved chain event.
- * All fields needed for settlement and final PnL are present.
+ * Normalized MarketCreated record persisted by the indexer. Derived from
+ * {@link RawMarketCreatedEvent} after validation.
  */
-export interface NormalizedResolution {
-  eventId: string;
-  /** Ledger sequence number — the authoritative source of the resolution. */
-  ledger: number;
-  ledgerClosedAt: string;
-  contractId: string;
+export interface MarketCreatedRecord {
   marketId: string;
-  outcome: ResolutionOutcome;
-  /** Stellar address of the oracle that submitted the resolution. */
-  oracleAddress: string;
+  creator: string;
+  collateral: string;
+  createdAt: number;
+  ledgerSeq: number;
+  eventIndex: number;
+  contractId: string;
+  /** Idempotency key: `${ledgerSeq}:${eventIndex}`. */
+  idempotencyKey: string;
 }
-
-export class ResolutionParseError extends Error {
-  constructor(
-    message: string,
-    public readonly eventId: string,
-    public readonly cause?: unknown
-  ) {
-    super(message);
-    this.name = "ResolutionParseError";
-  }
-}
-
-// ─── Collateral deposit types ────────────────────────────────────────────────
 
 /**
- * Contract event: collateral_deposited
- * Payload: Vec [ account: ScvString, market_id: ScvU32, amount: ScvI128 ]
+ * Build the canonical idempotency key for an event. Keyed on
+ * `ledgerSeq:eventIndex` so concurrent/replayed deliveries collapse to one
+ * record.
  */
-export interface NormalizedCollateralDeposit {
-  eventId: string;
-  ledger: number;
-  ledgerClosedAt: string;
-  contractId: string;
-  account: string;
-  /** u32 cast to string for DB compatibility */
-  marketId: string;
-  amountRaw: bigint;
-}
-
-export class CollateralDepositedParseError extends Error {
-  constructor(
-    message: string,
-    public readonly eventId: string,
-    public readonly cause?: unknown
-  ) {
-    super(message);
-    this.name = "CollateralDepositedParseError";
-  }
-}
-
-// ─── Market created types ────────────────────────────────────────────────────
-
-export type MarketCreatedStatus = "ACTIVE" | "RESOLVED" | "CANCELLED";
-
-/**
- * Normalized record produced from a market_created chain event.
- * The marketId is the on-chain identifier and is expected to match Market.id.
- */
-export interface NormalizedMarketCreated {
-  eventId: string;
-  ledger: number;
-  ledgerClosedAt: string;
-  contractId: string;
-  /** On-chain market identifier — used as Market.id in Postgres. */
-  marketId: string;
-  question: string;
-  /** ISO-8601 timestamp when the market closes. */
-  endTime: string;
-  /** Stellar oracle address (56-char base32). */
-  oracleAddress: string;
-  status: MarketCreatedStatus;
-}
-
-export class MarketCreatedParseError extends Error {
-  constructor(
-    message: string,
-    public readonly eventId: string,
-    public readonly cause?: unknown
-  ) {
-    super(message);
-    this.name = "MarketCreatedParseError";
-  }
-}
-
-// ─── Fetcher types ───────────────────────────────────────────────────────────
-
-export interface LedgerWindow {
-  startLedger: number;
-  endLedger: number;
-}
-
-export interface RawChainEvent {
-  id: string;
-  ledger: number;
-  ledgerClosedAt: string;
-  contractId: string;
-  type: string;
-  pagingToken: string;
-  // Raw XDR value — parsing is intentionally deferred to a separate layer
-  valueXdr: string;
-  topicsXdr: string[];
-}
-
-export interface FetchEventsResult {
-  events: RawChainEvent[];
-  latestLedger: number;
-}
-
-export interface EventFetcherConfig {
-  rpcUrl: string;
-  contractId: string;
-  maxRetries?: number;
-  retryDelayMs?: number;
-  pageLimit?: number;
-  /**
-   * Per-page RPC fetch timeout in milliseconds. A getEvents call that takes
-   * longer than this is aborted with a TimeoutError (treated as transient).
-   * Set to 0 to disable. Defaults to 15 000 ms.
-   */
-  fetchTimeoutMs?: number;
+export function idempotencyKey(ledgerSeq: number, eventIndex: number): string {
+  return `${ledgerSeq}:${eventIndex}`;
 }

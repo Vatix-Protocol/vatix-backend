@@ -11,6 +11,25 @@ import type { NormalizedMarketCreated } from "./types.js";
  */
 const MARKET_CREATED_TOPIC = "market_created_event";
 
+/**
+ * Stable error codes for MarketCreated parsing. These are part of the
+ * parser's public contract: downstream consumers (indexer pipeline, ops
+ * dashboards, alerting) key off these codes, so they must not change
+ * without a coordinated migration.
+ */
+export const MarketCreatedErrorCode = {
+  WRONG_TOPIC: "MARKET_CREATED_WRONG_TOPIC",
+  MISSING_MARKET_ID: "MARKET_CREATED_MISSING_MARKET_ID",
+  BAD_MARKET_ID_XDR: "MARKET_CREATED_BAD_MARKET_ID_XDR",
+  BAD_VALUE_XDR: "MARKET_CREATED_BAD_VALUE_XDR",
+  VALUE_NOT_MAP: "MARKET_CREATED_VALUE_NOT_MAP",
+  MISSING_QUESTION: "MARKET_CREATED_MISSING_QUESTION",
+  BAD_END_TIME: "MARKET_CREATED_BAD_END_TIME",
+} as const;
+
+export type MarketCreatedErrorCode =
+  (typeof MarketCreatedErrorCode)[keyof typeof MarketCreatedErrorCode];
+
 function decodeScVal(xdrBase64: string): unknown {
   return scValToNative(xdr.ScVal.fromXDR(xdrBase64, "base64"));
 }
@@ -24,12 +43,24 @@ function isMarketCreatedEvent(topicsXdr: string[]): boolean {
   }
 }
 
-/** Converts a Unix timestamp (seconds) or ISO-8601 string to an ISO-8601 string. */
+/**
+ * Converts a Unix timestamp (seconds) or ISO-8601 string to an ISO-8601 string.
+ * Fails closed: any value that cannot be unambiguously interpreted as a
+ * timestamp throws rather than silently defaulting.
+ */
 function toIsoEndTime(raw: unknown, eventId: string): string {
   if (typeof raw === "bigint") {
     return new Date(Number(raw) * 1000).toISOString();
   }
   if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) {
+      throw new MarketCreatedParseError(
+        `Invalid or missing "end_time": ${JSON.stringify(raw)}`,
+        eventId,
+        undefined,
+        MarketCreatedErrorCode.BAD_END_TIME
+      );
+    }
     return new Date(raw * 1000).toISOString();
   }
   if (typeof raw === "string") {
@@ -40,7 +71,9 @@ function toIsoEndTime(raw: unknown, eventId: string): string {
   }
   throw new MarketCreatedParseError(
     `Invalid or missing "end_time": ${JSON.stringify(raw)}`,
-    eventId
+    eventId,
+    undefined,
+    MarketCreatedErrorCode.BAD_END_TIME
   );
 }
 
@@ -64,12 +97,19 @@ export function parseMarketCreatedChainEvent(
   if (!isMarketCreatedEvent(event.topicsXdr)) {
     throw new MarketCreatedParseError(
       `Event topic is not "${MARKET_CREATED_TOPIC}"`,
-      event.id
+      event.id,
+      undefined,
+      MarketCreatedErrorCode.WRONG_TOPIC
     );
   }
 
   if (event.topicsXdr.length < 2) {
-    throw new MarketCreatedParseError("Missing market_id topic", event.id);
+    throw new MarketCreatedParseError(
+      "Missing market_id topic",
+      event.id,
+      undefined,
+      MarketCreatedErrorCode.MISSING_MARKET_ID
+    );
   }
 
   let marketIdRaw: unknown;
@@ -79,7 +119,21 @@ export function parseMarketCreatedChainEvent(
     throw new MarketCreatedParseError(
       "Failed to decode market_id topic XDR",
       event.id,
-      err
+      err,
+      MarketCreatedErrorCode.BAD_MARKET_ID_XDR
+    );
+  }
+
+  if (
+    typeof marketIdRaw !== "number" &&
+    typeof marketIdRaw !== "bigint" &&
+    typeof marketIdRaw !== "string"
+  ) {
+    throw new MarketCreatedParseError(
+      `Invalid market_id topic: ${JSON.stringify(marketIdRaw)}`,
+      event.id,
+      undefined,
+      MarketCreatedErrorCode.MISSING_MARKET_ID
     );
   }
 
@@ -90,7 +144,8 @@ export function parseMarketCreatedChainEvent(
     throw new MarketCreatedParseError(
       "Failed to decode event value XDR",
       event.id,
-      err
+      err,
+      MarketCreatedErrorCode.BAD_VALUE_XDR
     );
   }
 
@@ -99,10 +154,24 @@ export function parseMarketCreatedChainEvent(
     decoded === null ||
     Array.isArray(decoded)
   ) {
-    throw new MarketCreatedParseError("Event value is not an ScvMap", event.id);
+    throw new MarketCreatedParseError(
+      "Event value is not an ScvMap",
+      event.id,
+      undefined,
+      MarketCreatedErrorCode.VALUE_NOT_MAP
+    );
   }
 
   const map = decoded as Record<string, unknown>;
+
+  if (typeof map.question !== "string" || map.question.length === 0) {
+    throw new MarketCreatedParseError(
+      `Invalid or missing "question": ${JSON.stringify(map.question)}`,
+      event.id,
+      undefined,
+      MarketCreatedErrorCode.MISSING_QUESTION
+    );
+  }
 
   return {
     eventId: event.id,
@@ -110,7 +179,7 @@ export function parseMarketCreatedChainEvent(
     ledgerClosedAt: event.ledgerClosedAt,
     contractId: event.contractId,
     marketId: String(marketIdRaw),
-    question: String(map.question ?? ""),
+    question: map.question,
     endTime: toIsoEndTime(map.end_time, event.id),
     oracleAddress: "",
     status: "ACTIVE",
@@ -120,6 +189,12 @@ export function parseMarketCreatedChainEvent(
 /**
  * Parse a batch of raw events, skipping non-market-created events silently.
  * Errors are collected per-event so one bad payload never drops the batch.
+ *
+ * Idempotency: the same MarketCreated event may be replayed (retries,
+ * overlapping ledger ranges, reorg re-delivery). We dedupe on the stable
+ * (ledger, eventIndex) identity so downstream writers see each market
+ * exactly once. The first occurrence wins; later duplicates are dropped
+ * silently rather than surfaced as errors.
  */
 export function parseMarketCreatedEvents(events: RawChainEvent[]): {
   markets: NormalizedMarketCreated[];
@@ -127,16 +202,27 @@ export function parseMarketCreatedEvents(events: RawChainEvent[]): {
 } {
   const markets: NormalizedMarketCreated[] = [];
   const errors: MarketCreatedParseError[] = [];
+  const seen = new Set<string>();
 
   for (const event of events) {
     if (!isMarketCreatedEvent(event.topicsXdr)) continue;
+
+    const dedupeKey = `${event.ledger}:${event.eventIndex}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
     try {
       markets.push(parseMarketCreatedChainEvent(event));
     } catch (err) {
       errors.push(
         err instanceof MarketCreatedParseError
           ? err
-          : new MarketCreatedParseError(String(err), event.id, err)
+          : new MarketCreatedParseError(
+              String(err),
+              event.id,
+              err,
+              MarketCreatedErrorCode.BAD_VALUE_XDR
+            )
       );
     }
   }

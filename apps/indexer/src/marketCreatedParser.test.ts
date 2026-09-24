@@ -166,3 +166,34 @@ describe("parseMarketCreatedEvents (batch)", () => {
     expect(errors).toHaveLength(0);
   });
 });
+
+describe("idempotency / replay handling", () => {
+  it("produces a stable idempotency key from ledgerSeq:eventIndex", () => {
+    const m = parseMarketCreatedChainEvent(makeEvent({ ledger: 555 }));
+    expect(m.idempotencyKey).toBe("555:0");
+  });
+
+  it("derives distinct keys for distinct event indexes in the same ledger", () => {
+    const a = parseMarketCreatedChainEvent(makeEvent({ ledger: 555 }));
+    const b = parseMarketCreatedChainEvent(
+      makeEvent({ ledger: 555, pagingToken: "token-market-2" })
+    );
+    expect(a.idempotencyKey).not.toBe(b.idempotencyKey);
+  });
+
+  it("replaying the same event yields the same idempotency key", () => {
+    const first = parseMarketCreatedChainEvent(makeEvent());
+    const replay = parseMarketCreatedChainEvent(makeEvent());
+    expect(replay.idempotencyKey).toBe(first.idempotencyKey);
+    expect(replay.marketId).toBe(first.marketId);
+  });
+
+  it("batch parsing is idempotent across replays", () => {
+    const events = [makeEvent({ id: "e1" }), makeEvent({ id: "e2" })];
+    const first = parseMarketCreatedEvents(events);
+    const replay = parseMarketCreatedEvents(events);
+    expect(replay.markets.map((m) => m.idempotencyKey)).toEqual(
+      first.markets.map((m) => m.idempotencyKey)
+    );
+  });
+});
