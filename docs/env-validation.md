@@ -24,6 +24,41 @@ Two utilities work together for other services:
 
 ---
 
+## Fail-closed boot
+
+Env validation is **fail-closed**: when validation fails the process refuses to
+start. There is no partial boot and no silent fallback to defaults for required
+secrets. A missing or malformed required variable aborts startup before any
+listener binds, worker loop starts, or money-path code runs.
+
+Every validation failure is reported with a **stable error code** so operators
+and tests can assert on it without parsing free-form messages:
+
+| Code                 | Meaning                                                        |
+| -------------------- | -------------------------------------------------------------- |
+| `ENV_MISSING`        | A required variable is absent or empty.                        |
+| `ENV_INVALID`        | A variable is present but malformed (bad URL, enum, integer).  |
+| `ENV_UNSAFE_MAINNET` | Mainnet-affecting config was set without explicit opt-in.      |
+
+Failures are logged with the **variable name and error code only** — never the
+value — so secrets cannot leak into logs or crash reports.
+
+```
+[env] ENV_MISSING: DATABASE_URL
+[env] ENV_INVALID: NODE_ENV must be one of development | test | production
+[env] ENV_UNSAFE_MAINNET: STELLAR_NETWORK=mainnet requires ALLOW_MAINNET=true
+```
+
+### Testnet vs mainnet
+
+`STELLAR_NETWORK` selects the target network. Testnet is the default and is
+safe to boot. Any mainnet-affecting configuration requires an **explicit
+opt-in** via `ALLOW_MAINNET=true`; without it, boot fails closed with
+`ENV_UNSAFE_MAINNET`. This prevents an accidental mainnet boot from a testnet
+config or a drifted address set.
+
+---
+
 ## API boot validation (`parseApiEnv`)
 
 The HTTP API uses Zod to validate `NODE_ENV`, `PORT`, `DATABASE_URL`,
@@ -203,133 +238,3 @@ Must be a positive integer, optionally within a bounded range.
 | `REDIS_RETRY_BASE_DELAY`                 | 1    | —       | `100`                             |
 | `REDIS_RETRY_MAX_DELAY`                  | 1    | —       | `2000`                            |
 | `REDIS_CONNECT_TIMEOUT`                  | 1    | —       | `5000`                            |
-| `MATCHING_LEASE_TTL_MS`                  | 1    | —       | `15000`                           |
-| `MATCHING_LEASE_RENEW_INTERVAL_MS`       | 1    | —       | `5000`                            |
-
-**Error example:**
-
-```
-PORT must be a positive integer, got: "abc"
-PORT must be <= 65535, got: "99999"
-```
-
-**Cross-field check — challenge window (issue #950):**
-`FINALIZATION_CHALLENGE_WINDOW_SECONDS` defaults to
-`ORACLE_CHALLENGE_WINDOW_SECONDS` (the window enforced by the on-chain
-resolution contract, shared with the API and oracle scheduler). It remains
-settable as a **dev/test-only** override. In `NODE_ENV=production` a value that
-differs from `ORACLE_CHALLENGE_WINDOW_SECONDS` is a fatal `ConfigValidationError`
-— a drift lets the finalization worker finalize markets earlier or later than
-the chain allows. Outside production a drifting override is honoured but the
-finalization worker logs a `warn` on startup so the local stub is never silent.
-
-```
-FINALIZATION_CHALLENGE_WINDOW_SECONDS (3600) must match the on-chain resolution
-contract window ORACLE_CHALLENGE_WINDOW_SECONDS (86400) in production.
-```
-
-### Boolean variables
-
-Accepted values are the literal strings `true` or `false`; any other value
-throws a descriptive error. Unset uses the default.
-
-| Variable                  | Default | Effect when `false`                                                                                                  |
-| ------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------- |
-| `MATCHING_ENGINE_ENABLED` | `true`  | Startup order-book hydration is skipped; `POST` order placement returns 503. See `src/matching/matching-service.ts`. |
-
-**Error example:**
-
-```
-MATCHING_ENGINE_ENABLED must be "true" or "false", got: invalid value
-```
-
-### Optional strings with defaults
-
-These variables are safe to omit; a sensible default is used when absent.
-
-| Variable               | Default                                                                             |
-| ---------------------- | ----------------------------------------------------------------------------------- |
-| `STELLAR_NETWORK`      | `testnet`                                                                           |
-| `STELLAR_HORIZON_URL`  | `https://horizon-testnet.stellar.org`                                               |
-| `INDEXER_CURSOR_KEY`   | `ingestion`                                                                         |
-| `INDEXER_NETWORK_ID`   | `mainnet`                                                                           |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000,http://localhost:5173` (non-production) / empty (production) |
-
-### CORS origins
-
-`CORS_ALLOWED_ORIGINS` is a comma-separated list of allowed browser origins.
-
-```
-CORS_ALLOWED_ORIGINS=https://app.vatix.io,https://staging.vatix.io
-```
-
-In production, if this variable is not set, **no cross-origin requests are
-allowed**. In development and test the local dev server origins are permitted
-by default.
-
-**Production HTTPS enforcement:** when `NODE_ENV=production`, every origin in
-`CORS_ALLOWED_ORIGINS` must use the `https://` scheme. An `http://` or
-scheme-less origin causes a startup error:
-
-```
-CORS misconfiguration: all origins must use https:// in production.
-Insecure origin(s): http://app.vatix.io
-```
-
-### Redis connection retry
-
-The Redis client retries on connection failure using exponential backoff. All
-values are optional — the defaults are safe for most deployments.
-
-| Variable                 | Description                                             | Default |
-| ------------------------ | ------------------------------------------------------- | ------- |
-| `REDIS_MAX_RETRIES`      | Max reconnect attempts before the client gives up       | `3`     |
-| `REDIS_RETRY_BASE_DELAY` | Delay (ms) before the first retry; doubles each attempt | `100`   |
-| `REDIS_RETRY_MAX_DELAY`  | Upper cap (ms) on retry delay                           | `2000`  |
-| `REDIS_CONNECT_TIMEOUT`  | Socket connect timeout (ms)                             | `5000`  |
-
----
-
-## Security Notes
-
-The following variables are treated as secrets and are **never logged** in full,
-even at debug level:
-
-- `DATABASE_URL` (may contain password)
-- `ANALYTICS_DATABASE_URL` (may contain password)
-- `REDIS_URL` (may contain password)
-- `ORACLE_SECRET_KEY`
-- `API_KEY`
-- `ADMIN_TOKEN`
-
----
-
-## Adding a New Variable
-
-1. Add it to `.env.example` with a comment explaining purpose and whether it is required or optional.
-2. Add the validation call in the appropriate loader in `packages/shared/src/config.ts` using the existing helpers (`requireString`, `requirePositiveInt`, `loadUrl`, etc.).
-3. Add it to the relevant section of this document.
-4. If it is required at startup, add it to the `requireEnv()` call in the service entry point.
-
----
-
-## Testing Config Loaders
-
-All loaders accept an optional `env` parameter, making them testable without
-touching `process.env`:
-
-```ts
-import { loadBaseConfig } from "@vatix/shared";
-
-it("throws when DATABASE_URL is missing", () => {
-  expect(() =>
-    loadBaseConfig({
-      NODE_ENV: "test",
-      STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
-      // DATABASE_URL intentionally omitted
-    })
-  ).toThrow("Missing required environment variable: DATABASE_URL");
-});
-```
-
-See `packages/shared/src/config.ts` for the full list of validation helpers.

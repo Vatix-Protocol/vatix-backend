@@ -60,4 +60,41 @@ describe("loadIndexerConfig", () => {
     const cfg = loadIndexerConfig({ SOROBAN_NETWORK_PASSPHRASE: TESTNET });
     expect(cfg.horizonUrl).toBe("https://horizon-testnet.stellar.org");
   });
+
+  it("fails closed with ENV_MISSING when a required var is absent", () => {
+    expect(() => loadIndexerConfig({})).toThrow(/ENV_MISSING/);
+  });
+
+  it("fails closed with ENV_INVALID when a required var is blank", () => {
+    expect(() =>
+      loadIndexerConfig({ SOROBAN_NETWORK_PASSPHRASE: "  " })
+    ).toThrow(/ENV_INVALID/);
+  });
+
+  it("requires explicit opt-in for mainnet-affecting config", () => {
+    expect(() =>
+      loadIndexerConfig({ SOROBAN_NETWORK_PASSPHRASE: MAINNET })
+    ).toThrow(/ENV_UNSAFE_MAINNET/);
+  });
+
+  it("allows mainnet when explicitly opted in", () => {
+    const cfg = loadIndexerConfig({
+      SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+      VATIX_ALLOW_MAINNET: "true",
+    });
+    expect(cfg.sorobanNetworkPassphrase).toBe(MAINNET);
+  });
+
+  it("does not leak secret values in error messages", () => {
+    const secret = "super-secret-value";
+    try {
+      loadIndexerConfig({
+        SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+        VATIX_INDEXER_SECRET: secret,
+        VATIX_ALLOW_MAINNET: "not-a-bool",
+      });
+    } catch (err) {
+      expect(String(err)).not.toContain(secret);
+    }
+  });
 });
