@@ -143,3 +143,121 @@ export async function checkLiveDependencies(
 
   return { ready: errors.length === 0, skipped: false, errors };
 }
+
+// ─── Liveness vs readiness probes (#1081) ────────────────────────────────────
+//
+// Kubernetes (and most load balancers) distinguish two probes:
+//
+//   * liveness  — "is the process alive?" A failure means the container is
+//                 wedged and should be restarted. It must NOT depend on
+//                 downstream services: a DB outage should never cause a
+//                 restart storm.
+//   * readiness — "can this instance serve traffic right now?" A failure
+//                 means the instance is removed from the load-balancer pool
+//                 but is NOT restarted. It MUST fail closed when a critical
+//                 dependency (DB/Redis/RPC) is unavailable.
+//
+// `checkStartupHealth`/`checkLiveDependencies` above are startup-time gates.
+// The helpers below are the runtime probe semantics: `/health` is always
+// 200 while the event loop is responsive, `/ready` returns 503 (fail-closed)
+// whenever any critical dependency probe fails.
+
+/** Stable, machine-readable probe error codes (never leak raw messages). */
+export const PROBE_ERROR_CODES = {
+  DEPENDENCY_UNAVAILABLE: "DEPENDENCY_UNAVAILABLE",
+  PROBE_TIMEOUT: "PROBE_TIMEOUT",
+} as const;
+
+export type ProbeErrorCode =
+  (typeof PROBE_ERROR_CODES)[keyof typeof PROBE_ERROR_CODES];
+
+export interface ProbeError {
+  /** Short, log-friendly dependency name, e.g. "database" or "redis". */
+  dependency: string;
+  code: ProbeErrorCode;
+}
+
+export interface ProbeResponse {
+  status: 200 | 503;
+  body: {
+    status: "ok" | "unavailable";
+    /** Correlation id echoed from the request for log/trace stitching. */
+    correlationId: string;
+    errors: ProbeError[];
+  };
+}
+
+export interface ReadinessProbeOptions {
+  /** Correlation id from the inbound request (or freshly generated). */
+  correlationId: string;
+  /** Per-probe timeout in ms. Default 2000. */
+  timeoutMs?: number;
+  /** Injectable for tests; defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const DEFAULT_PROBE_TIMEOUT_MS = 2000;
+
+/**
+ * Liveness probe: the process is alive and the event loop is responsive.
+ * Deliberately dependency-free so a downstream outage never triggers a
+ * restart. Always returns 200.
+ */
+export function checkLiveness(correlationId: string): ProbeResponse {
+  return {
+    status: 200,
+    body: { status: "ok", correlationId, errors: [] },
+  };
+}
+
+/**
+ * Readiness probe: fail-closed. Runs every critical dependency probe and
+ * returns 503 with stable error codes if any of them is unavailable. Raw
+ * error messages are never surfaced — only the dependency name and a stable
+ * code — so connection strings, credentials, and internal addresses cannot
+ * leak through the probe response.
+ */
+export async function checkReadiness(
+  probes: DependencyProbe[],
+  options: ReadinessProbeOptions
+): Promise<ProbeResponse> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  const errors: ProbeError[] = [];
+
+  for (const probe of probes) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        probe.check(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(PROBE_ERROR_CODES.PROBE_TIMEOUT)),
+            timeoutMs
+          );
+        }),
+      ]);
+    } catch (err) {
+      const code =
+        err instanceof Error && err.message === PROBE_ERROR_CODES.PROBE_TIMEOUT
+          ? PROBE_ERROR_CODES.PROBE_TIMEOUT
+          : PROBE_ERROR_CODES.DEPENDENCY_UNAVAILABLE;
+      errors.push({ dependency: probe.name, code });
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    return {
+      status: 503,
+      body: { status: "unavailable", correlationId: options.correlationId, errors },
+    };
+  }
+
+  return {
+    status: 200,
+    body: { status: "ok", correlationId: options.correlationId, errors: [] },
+  };
+}

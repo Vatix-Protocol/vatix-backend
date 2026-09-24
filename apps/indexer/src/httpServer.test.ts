@@ -58,4 +58,76 @@ describe("buildIndexerHttpServer", () => {
 
     await app.close();
   });
+
+  // Issue #1081: liveness (/health) must stay 200 while the process is alive,
+  // independent of dependency state, so orchestrators do not restart a healthy
+  // process during a transient DB/Redis/RPC outage.
+  it("returns 200 from /health (liveness) regardless of dependency state", async () => {
+    const app = await buildIndexerHttpServer();
+    await app.ready();
+
+    const response = await app.inject({ method: "GET", url: "/health" });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.status).toBe("ok");
+
+    await app.close();
+  });
+
+  // Issue #1081: readiness (/ready) is fail-closed. When a critical dependency
+  // is unavailable it must return 503 with a stable error code and a
+  // correlation id, and must not leak connection strings or internal addresses.
+  it("returns 503 with a stable error code and correlation id from /ready when a dependency is down", async () => {
+    const app = await buildIndexerHttpServer({
+      readinessChecks: [
+        {
+          name: "db",
+          check: async () => {
+            throw new Error(
+              "connect ECONNREFUSED postgres://user:secret@10.0.0.5:5432/vatix"
+            );
+          },
+        },
+      ],
+    });
+    await app.ready();
+
+    const response = await app.inject({ method: "GET", url: "/ready" });
+
+    expect(response.statusCode).toBe(503);
+    const body = response.json();
+    expect(body.status).toBe("unavailable");
+    expect(body.code).toBe("DEPENDENCY_UNAVAILABLE");
+    expect(typeof body.correlationId).toBe("string");
+    expect(body.correlationId.length).toBeGreaterThan(0);
+
+    // Fail-closed responses must not leak secrets or internal addresses.
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("postgres://");
+    expect(serialized).not.toContain("10.0.0.5");
+
+    await app.close();
+  });
+
+  // Issue #1081: when every critical dependency is healthy, /ready reports 200
+  // so the orchestrator can route traffic to the instance.
+  it("returns 200 from /ready when all critical dependencies are healthy", async () => {
+    const app = await buildIndexerHttpServer({
+      readinessChecks: [
+        { name: "db", check: async () => undefined },
+        { name: "redis", check: async () => undefined },
+      ],
+    });
+    await app.ready();
+
+    const response = await app.inject({ method: "GET", url: "/ready" });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.status).toBe("ok");
+
+    await app.close();
+  });
 });
