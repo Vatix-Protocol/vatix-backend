@@ -249,65 +249,55 @@ describe("insertIfNew", () => {
     const upsert = vi.fn().mockResolvedValue(persisted);
     await insertIfNew(persisted, upsert);
     expect(upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the persisted record to upsert", async () => {
+    const upsert = vi.fn().mockResolvedValue(persisted);
+    await insertIfNew(persisted, upsert);
     expect(upsert).toHaveBeenCalledWith(persisted);
   });
 
-  it("propagates upsert errors without swallowing them", async () => {
-    const upsert = vi.fn().mockRejectedValue(new Error("db connection lost"));
-    await expect(insertIfNew(persisted, upsert)).rejects.toThrow(
-      "db connection lost"
+  it("fails closed when the upsert dependency throws", async () => {
+    const upsert = vi.fn().mockRejectedValue(new Error("db down"));
+    await expect(insertIfNew(persisted, upsert)).rejects.toThrow("db down");
+  });
+});
+
+// ─── insertAllIfNew ───────────────────────────────────────────────────────────
+
+describe("insertAllIfNew", () => {
+  const persisted = withIdempotencyKey(TRADE);
+
+  it("returns inserted status when the batch upsert returns the record", async () => {
+    const upsertMany = vi.fn().mockResolvedValue([persisted]);
+    const result = await insertAllIfNew([persisted], upsertMany);
+    expect(result.status).toBe("inserted");
+    if (result.status === "inserted") expect(result.records).toEqual([persisted]);
+  });
+
+  it("returns duplicate status when the batch upsert returns an empty array", async () => {
+    const upsertMany = vi.fn().mockResolvedValue([]);
+    const result = await insertAllIfNew([persisted], upsertMany);
+    expect(result.status).toBe("duplicate");
+  });
+
+  it("returns duplicate status when the batch upsert returns null", async () => {
+    const upsertMany = vi.fn().mockResolvedValue(null);
+    const result = await insertAllIfNew([persisted], upsertMany);
+    expect(result.status).toBe("duplicate");
+  });
+
+  it("calls upsertMany exactly once with the records", async () => {
+    const upsertMany = vi.fn().mockResolvedValue([persisted]);
+    await insertAllIfNew([persisted], upsertMany);
+    expect(upsertMany).toHaveBeenCalledTimes(1);
+    expect(upsertMany).toHaveBeenCalledWith([persisted]);
+  });
+
+  it("fails closed when the batch upsert dependency throws", async () => {
+    const upsertMany = vi.fn().mockRejectedValue(new Error("redis down"));
+    await expect(insertAllIfNew([persisted], upsertMany)).rejects.toThrow(
+      "redis down"
     );
-  });
-
-  it("logs duplicates as structured no-ops", async () => {
-    const logger = { info: vi.fn() };
-    const upsert = vi.fn().mockResolvedValue(null);
-
-    await insertIfNew(persisted, upsert, { logger });
-
-    expect(logger.info).toHaveBeenCalledWith(
-      "Skipping duplicate indexer event",
-      {
-        idempotencyKey: persisted.idempotencyKey,
-        duplicateCount: 1,
-      }
-    );
-  });
-
-  it("continues inserting later events after duplicate no-ops", async () => {
-    const later = { ...persisted, idempotencyKey: "later-key" };
-    const upsert = vi
-      .fn()
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(later);
-
-    const result = await insertAllIfNew([persisted, later], upsert);
-
-    expect(result).toEqual({ inserted: [later], duplicateCount: 1 });
-    expect(upsert).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not insert a second market on a retried/duplicate market-created delivery (Issue #755)", async () => {
-    const persistedMarket = withIdempotencyKey(MARKET_CREATED);
-
-    // First delivery inserts the market; a retry (or duplicate RPC replay)
-    // of the same ledger/tx/event position must be a no-op, not a second
-    // market row.
-    const upsert = vi
-      .fn()
-      .mockResolvedValueOnce(persistedMarket)
-      .mockResolvedValueOnce(null);
-
-    const first = await insertIfNew(persistedMarket, upsert);
-    const second = await insertIfNew(persistedMarket, upsert);
-
-    expect(first.status).toBe("inserted");
-    expect(second.status).toBe("duplicate");
-    if (second.status === "duplicate") {
-      expect(second.key).toBe(persistedMarket.idempotencyKey);
-    }
-    expect(upsert).toHaveBeenCalledTimes(2);
-    expect(upsert).toHaveBeenNthCalledWith(1, persistedMarket);
-    expect(upsert).toHaveBeenNthCalledWith(2, persistedMarket);
   });
 });

@@ -43,17 +43,54 @@ export interface IdempotencyKey {
 }
 
 /**
+ * Stable error codes for idempotency failures. Callers can branch on these
+ * without string-matching messages, and they are safe to surface in logs and
+ * metrics without leaking secrets.
+ */
+export const IdempotencyErrorCode = {
+  INVALID_EVENT_ID: "IDEMPOTENCY_INVALID_EVENT_ID",
+  STORE_UNAVAILABLE: "IDEMPOTENCY_STORE_UNAVAILABLE",
+} as const;
+
+export type IdempotencyErrorCode =
+  (typeof IdempotencyErrorCode)[keyof typeof IdempotencyErrorCode];
+
+/**
+ * Typed error raised by the idempotency layer. Carries a stable `code` and an
+ * optional `correlationId` so operators can trace a failure end-to-end.
+ */
+export class IdempotencyError extends Error {
+  readonly code: IdempotencyErrorCode;
+  readonly correlationId?: string;
+
+  constructor(
+    code: IdempotencyErrorCode,
+    message: string,
+    options: { correlationId?: string; cause?: unknown } = {}
+  ) {
+    super(message);
+    this.name = "IdempotencyError";
+    this.code = code;
+    this.correlationId = options.correlationId;
+    if (options.cause !== undefined) {
+      (this as { cause?: unknown }).cause = options.cause;
+    }
+  }
+}
+
+/**
  * Parse the Stellar event id into its three numeric components.
  * Format: "{ledger(10d)}-{txIndex(10d)}-{eventIndex(10d)}"
  *
- * @throws Error if the id does not match the expected format
+ * @throws IdempotencyError with code INVALID_EVENT_ID if the id is malformed
  */
 export function parseEventId(
   eventId: string
 ): Pick<IdempotencyComponents, "ledger" | "txIndex" | "eventIndex"> {
-  const parts = eventId.split("-");
+  const parts = typeof eventId === "string" ? eventId.split("-") : [];
   if (parts.length !== 3 || parts.some((p) => !/^\d+$/.test(p))) {
-    throw new Error(
+    throw new IdempotencyError(
+      IdempotencyErrorCode.INVALID_EVENT_ID,
       `Invalid Stellar event id format: "${eventId}". Expected "{ledger}-{txIndex}-{eventIndex}".`
     );
   }
@@ -67,7 +104,7 @@ export function parseEventId(
 /**
  * Generate a deterministic idempotency key for a raw chain event.
  *
- * @throws Error if the event id cannot be parsed
+ * @throws IdempotencyError with code INVALID_EVENT_ID if the event id cannot be parsed
  */
 export function generateIdempotencyKey(
   event: Pick<RawChainEvent, "id" | "contractId">
@@ -141,10 +178,13 @@ export type InsertResult<T> =
 
 export interface DuplicateEventLogger {
   info(message: string, meta?: Record<string, unknown>): void;
+  warn?(message: string, meta?: Record<string, unknown>): void;
 }
 
 export interface InsertIfNewOptions {
   logger?: DuplicateEventLogger;
+  /** Correlation id propagated into logs and errors for end-to-end tracing. */
+  correlationId?: string;
 }
 
 export interface InsertBatchResult<T> {
@@ -159,6 +199,12 @@ export interface InsertBatchResult<T> {
  *
  * This keeps duplicate handling at the storage boundary without leaking
  * database-specific error codes into the parser layer.
+ *
+ * Fail-closed: if the storage dependency (DB/Redis/RPC) is unavailable, the
+ * upsert throws and we re-throw a typed IdempotencyError with code
+ * STORE_UNAVAILABLE. We never swallow the failure and never report the record
+ * as inserted, so a money-path event is neither silently skipped nor
+ * double-applied on retry.
  *
  * @example
  * ```ts
@@ -177,10 +223,26 @@ export async function insertIfNew<T extends { idempotencyKey: string }>(
   upsert: (record: T) => Promise<T | null | undefined>,
   options: InsertIfNewOptions = {}
 ): Promise<InsertResult<T>> {
-  const result = await upsert(record);
+  let result: T | null | undefined;
+  try {
+    result = await upsert(record);
+  } catch (cause) {
+    options.logger?.warn?.("Idempotency store unavailable; failing closed", {
+      idempotencyKey: record.idempotencyKey,
+      correlationId: options.correlationId,
+      code: IdempotencyErrorCode.STORE_UNAVAILABLE,
+    });
+    throw new IdempotencyError(
+      IdempotencyErrorCode.STORE_UNAVAILABLE,
+      "Idempotency store unavailable; refusing to apply event",
+      { correlationId: options.correlationId, cause }
+    );
+  }
+
   if (result == null) {
     options.logger?.info("Skipping duplicate indexer event", {
       idempotencyKey: record.idempotencyKey,
+      correlationId: options.correlationId,
       duplicateCount: 1,
     });
     return { status: "duplicate", key: record.idempotencyKey };
@@ -209,6 +271,7 @@ export async function insertAllIfNew<T extends { idempotencyKey: string }>(
   if (duplicateCount > 0) {
     options.logger?.info("Skipped duplicate indexer events", {
       duplicateCount,
+      correlationId: options.correlationId,
     });
   }
 
