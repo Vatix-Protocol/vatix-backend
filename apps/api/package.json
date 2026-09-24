@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "API application for Vatix protocol",
   "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "scripts": {
     "dev": "tsx watch routes/index.ts",
     "start": "tsx routes/index.ts",

@@ -49,6 +49,29 @@ jobs:
         with:
           node-version-file: ".nvmrc"
 
+      - name: Verify Node 22 engine enforcement
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(tr -d '[:space:]' < .nvmrc)"
+          actual="$(node -p 'process.versions.node')"
+          echo "Expected Node (from .nvmrc): ${expected}"
+          echo "Actual Node: ${actual}"
+          case "${actual}" in
+            22.*) ;;
+            *)
+              echo "::error::CI must run on Node 22 (engines: >=22 <23); got ${actual}"
+              exit 1
+              ;;
+          esac
+          case "${expected}" in
+            22.*) ;;
+            *)
+              echo "::error::.nvmrc must pin Node 22 to match engines; got ${expected}"
+              exit 1
+              ;;
+          esac
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
