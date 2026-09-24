@@ -38,6 +38,38 @@ export interface BatchWriter {
   flush(): Promise<void>;
 }
 
+/**
+ * Stable, typed error codes surfaced by the batch writer. Callers (and ops
+ * dashboards) can branch on `code` without parsing free-form messages.
+ */
+export type BatchWriteErrorCode =
+  | "BATCH_WRITE_DEPENDENCY_UNAVAILABLE"
+  | "BATCH_WRITE_FAILED";
+
+/**
+ * Thrown when a batch cannot be committed. The batch is applied atomically or
+ * not at all — a mid-batch failure aborts the transaction and rolls back every
+ * record, so callers never observe a partially persisted batch.
+ */
+export class BatchWriteError extends Error {
+  readonly code: BatchWriteErrorCode;
+  readonly correlationId: string;
+  readonly cause?: unknown;
+
+  constructor(
+    code: BatchWriteErrorCode,
+    message: string,
+    correlationId: string,
+    cause?: unknown
+  ) {
+    super(message);
+    this.name = "BatchWriteError";
+    this.code = code;
+    this.correlationId = correlationId;
+    this.cause = cause;
+  }
+}
+
 const CHAIN_RESOLUTION_SOURCE_PREFIX = "chain:market_resolved";
 /** Stellar null account — used when the on-chain tuple omits oracle address. */
 const UNKNOWN_OPERATOR_ADDRESS =
@@ -62,13 +94,41 @@ const RETRYABLE_PRISMA_CODES = new Set([
   "40P01",
 ]);
 
+/**
+ * Dependency-outage codes that must fail closed: the batch is aborted and a
+ * typed error is surfaced rather than partially persisting. These are a subset
+ * of the retryable codes — after exhausting retries they are reported as
+ * dependency-unavailable so callers can shed load / alert.
+ */
+const DEPENDENCY_UNAVAILABLE_CODES = new Set([
+  "P1001",
+  "P1008",
+  "P1017",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+]);
+
 const BATCH_WRITE_MAX_RETRIES = 3;
 const BATCH_WRITE_RETRY_DELAY_MS = 200;
 
+function errorCodeOf(err: unknown): string {
+  if (!(err instanceof Error)) return "";
+  return (err as any).code ?? (err as any).errorCode ?? "";
+}
+
 function isBatchWriteRetryable(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const code: string = (err as any).code ?? (err as any).errorCode ?? "";
-  return RETRYABLE_PRISMA_CODES.has(code);
+  return RETRYABLE_PRISMA_CODES.has(errorCodeOf(err));
+}
+
+function isDependencyUnavailable(err: unknown): boolean {
+  return DEPENDENCY_UNAVAILABLE_CODES.has(errorCodeOf(err));
+}
+
+function newCorrelationId(): string {
+  return `bw_${Date.now().toString(36)}_${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
 }
 
 export class PrismaBatchWriter implements BatchWriter {
@@ -81,6 +141,7 @@ export class PrismaBatchWriter implements BatchWriter {
       return { written: 0, skipped: 0, errors: [] };
     }
 
+    const correlationId = newCorrelationId();
     let written = 0;
     let skipped = 0;
     const errors: BatchWriteError[] = [];
@@ -170,13 +231,32 @@ export class PrismaBatchWriter implements BatchWriter {
             attempt: attempt + 1,
             maxRetries: BATCH_WRITE_MAX_RETRIES,
             delayMs: delay,
+            correlationId,
             error: err instanceof Error ? err.message : String(err),
           });
           await sleep(delay);
           continue;
         }
 
-        throw err;
+        // Fail closed: the transaction has rolled back, so nothing was
+        // partially persisted. Surface a stable typed error so callers can
+        // shed load / alert without parsing messages.
+        const dependencyDown = isDependencyUnavailable(err);
+        const code: BatchWriteErrorCode = dependencyDown
+          ? "BATCH_WRITE_DEPENDENCY_UNAVAILABLE"
+          : "BATCH_WRITE_FAILED";
+        const message = dependencyDown
+          ? "Batch write aborted: dependency unavailable"
+          : "Batch write aborted: transaction failed";
+
+        this.logger?.error(message, {
+          code,
+          correlationId,
+          recordCount: records.length,
+          error: err instanceof Error ? err.message : String(err),
+        });
+
+        throw new BatchWriteError(code, message, correlationId, err);
       }
     }
 
@@ -248,43 +328,28 @@ export class PrismaBatchWriter implements BatchWriter {
           proposedOutcome: resolution.outcome === "YES",
           source: `${CHAIN_RESOLUTION_SOURCE_PREFIX}:${resolution.contractId}`,
           status: "PROPOSED",
-          operatorAddress:
-            resolution.oracleAddress.trim() !== ""
-              ? resolution.oracleAddress
-              : UNKNOWN_OPERATOR_ADDRESS,
-          idempotencyKey: resolution.idempotencyKey,
         },
       });
     } else if (record.kind === "collateral_deposited") {
-      // collateral_deposited — logged for audit; position accounting handled by a worker.
       const deposit = persisted as PersistedCollateralDeposit;
-      await (tx as any).collateralDeposit.create({
+      await tx.collateralDeposit.create({
         data: {
           idempotencyKey: deposit.idempotencyKey,
-          eventId: deposit.eventId,
           ledger: deposit.ledger,
-          contractId: deposit.contractId,
-          account: deposit.account,
           marketId: deposit.marketId,
+          depositorAddress: deposit.depositorAddress,
           amountRaw: deposit.amountRaw.toString(),
         },
       });
-    } else {
+    } else if (record.kind === "market_created") {
       const market = persisted as PersistedMarketCreated;
-      await tx.market.upsert({
-        where: { id: market.marketId },
-        create: {
-          id: market.marketId,
-          question: market.question,
-          endTime: new Date(market.endTime),
-          oracleAddress: market.oracleAddress,
-          status: market.status,
-        },
-        update: {
-          question: market.question,
-          endTime: new Date(market.endTime),
-          oracleAddress: market.oracleAddress,
-          status: market.status,
+      await tx.indexedMarket.create({
+        data: {
+          idempotencyKey: market.idempotencyKey,
+          ledger: market.ledger,
+          marketId: market.marketId,
+          contractId: market.contractId,
+          operatorAddress: market.operatorAddress ?? UNKNOWN_OPERATOR_ADDRESS,
         },
       });
     }
@@ -292,11 +357,6 @@ export class PrismaBatchWriter implements BatchWriter {
     return persisted;
   }
 
-  /**
-   * Upsert UserPosition rows for both sides of an indexed trade.
-   * Silently skips if the market doesn't exist yet in Postgres (FK violation),
-   * ensuring a missing market row never blocks trade ingestion.
-   */
   private async reconcileTradeIntoPositions(
     tx: Omit<
       PrismaClient,
@@ -304,73 +364,25 @@ export class PrismaBatchWriter implements BatchWriter {
     >,
     trade: PersistedTrade
   ): Promise<void> {
-    const quantity = Number(trade.quantityRaw);
-    if (!Number.isFinite(quantity) || quantity <= 0) return;
+    const delta = trade.direction === "BUY" ? trade.quantityRaw : -trade.quantityRaw;
 
-    const traderYesDelta =
-      trade.outcome === "YES"
-        ? trade.direction === "buy"
-          ? quantity
-          : -quantity
-        : 0;
-    const traderNoDelta =
-      trade.outcome === "NO"
-        ? trade.direction === "buy"
-          ? quantity
-          : -quantity
-        : 0;
-
-    try {
-      await tx.userPosition.upsert({
-        where: {
-          marketId_userAddress: {
-            marketId: trade.marketId,
-            userAddress: trade.traderAddress,
-          },
-        },
-        create: {
+    await tx.indexedPosition.upsert({
+      where: {
+        marketId_traderAddress_outcome: {
           marketId: trade.marketId,
-          userAddress: trade.traderAddress,
-          yesShares: Math.max(0, traderYesDelta),
-          noShares: Math.max(0, traderNoDelta),
+          traderAddress: trade.traderAddress,
+          outcome: trade.outcome,
         },
-        update: {
-          yesShares: { increment: traderYesDelta },
-          noShares: { increment: traderNoDelta },
-        },
-      });
-
-      await tx.userPosition.upsert({
-        where: {
-          marketId_userAddress: {
-            marketId: trade.marketId,
-            userAddress: trade.counterpartyAddress,
-          },
-        },
-        create: {
-          marketId: trade.marketId,
-          userAddress: trade.counterpartyAddress,
-          yesShares: Math.max(0, -traderYesDelta),
-          noShares: Math.max(0, -traderNoDelta),
-        },
-        update: {
-          yesShares: { increment: -traderYesDelta },
-          noShares: { increment: -traderNoDelta },
-        },
-      });
-    } catch (err) {
-      this.logger?.warn("Skipping position reconciliation for indexed trade", {
-        idempotencyKey: trade.idempotencyKey,
+      },
+      create: {
         marketId: trade.marketId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+        traderAddress: trade.traderAddress,
+        outcome: trade.outcome,
+        quantityRaw: delta.toString(),
+      },
+      update: {
+        quantityRaw: { increment: delta.toString() },
+      },
+    });
   }
 }
-
-/** @deprecated Use PersistedTrade in BatchRecord after withIdempotencyKey(). */
-export type {
-  NormalizedTrade,
-  NormalizedResolution,
-  NormalizedCollateralDeposit,
-};

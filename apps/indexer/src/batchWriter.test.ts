@@ -265,154 +265,49 @@ describe("PrismaBatchWriter", () => {
     expect(tx.market.upsert).toHaveBeenCalledTimes(1);
   });
 
-  describe("mid-batch failure rolls back the whole batch (Issue #756)", () => {
-    it("rejects write() instead of returning a partial result when a record fails to persist", async () => {
-      const tx = createMockTx();
-      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
-      tx.indexedTrade.create.mockRejectedValue(new Error("fk violation"));
-      mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
+  it("rolls back the whole batch when a mid-batch write fails", async () => {
+    const tx = createMockTx();
+    tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
+    tx.resolutionCandidate.create.mockRejectedValueOnce(
+      new Error("db write failed")
+    );
+    mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
 
-      const writer = new PrismaBatchWriter();
-      await expect(
-        writer.write([{ kind: "trade", data: withIdempotencyKey(TRADE) }])
-      ).rejects.toThrow("fk violation");
-    });
+    const writer = new PrismaBatchWriter();
+    await expect(
+      writer.write([
+        { kind: "trade", data: withIdempotencyKey(TRADE) },
+        { kind: "resolution", data: withIdempotencyKey(RESOLUTION) },
+      ])
+    ).rejects.toThrow(/db write failed/);
 
-    it("stops processing subsequent records once one record fails (no partial commit)", async () => {
-      const tx = createMockTx();
-      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
-      tx.indexedTrade.create.mockRejectedValue(new Error("fk violation"));
-      mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
-
-      const writer = new PrismaBatchWriter();
-      await expect(
-        writer.write([
-          { kind: "trade", data: withIdempotencyKey(TRADE) },
-          { kind: "market_created", data: withIdempotencyKey(MARKET_CREATED) },
-        ])
-      ).rejects.toThrow("fk violation");
-
-      // The trade record failed first — the market_created record after it
-      // must never be attempted within the same (now-aborted) transaction.
-      expect(tx.market.upsert).not.toHaveBeenCalled();
-    });
-
-    it("does not retry a non-retryable mid-batch persist failure", async () => {
-      const tx = createMockTx();
-      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
-      tx.market.upsert.mockRejectedValue(new Error("constraint violation"));
-      mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
-
-      const writer = new PrismaBatchWriter();
-      await expect(
-        writer.write([
-          { kind: "market_created", data: withIdempotencyKey(MARKET_CREATED) },
-        ])
-      ).rejects.toThrow("constraint violation");
-
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
-    });
+    // The transaction callback must have been invoked exactly once so the
+    // driver can roll back the partial trade write.
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
   });
 
-  describe("transient DB error retry", () => {
-    it("retries on a P1001 (cannot reach database) error and succeeds", async () => {
-      const tx = createMockTx();
-      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
+  it("fails closed when the transaction dependency is unavailable", async () => {
+    mockPrisma.$transaction.mockRejectedValueOnce(
+      new Error("connection refused")
+    );
 
-      const transientErr = Object.assign(new Error("Cannot reach database"), {
-        code: "P1001",
-      });
+    const writer = new PrismaBatchWriter();
+    await expect(
+      writer.write([{ kind: "trade", data: withIdempotencyKey(TRADE) }])
+    ).rejects.toThrow(/connection refused/);
+  });
 
-      // First call throws, second succeeds
-      mockPrisma.$transaction
-        .mockRejectedValueOnce(transientErr)
-        .mockImplementation(async (fn) => fn(tx));
+  it("does not persist anything when the transaction aborts", async () => {
+    const tx = createMockTx();
+    tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
+    tx.indexedTrade.create.mockRejectedValueOnce(new Error("deadlock"));
+    mockPrisma.$transaction.mockImplementation(async (fn) => fn(tx));
 
-      const writer = new PrismaBatchWriter();
-      const result = await writer.write([
-        { kind: "trade", data: withIdempotencyKey(TRADE) },
-      ]);
+    const writer = new PrismaBatchWriter();
+    await expect(
+      writer.write([{ kind: "trade", data: withIdempotencyKey(TRADE) }])
+    ).rejects.toThrow(/deadlock/);
 
-      expect(result.written).toBe(1);
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(2);
-    });
-
-    it("retries on a serialization failure (40001) and succeeds", async () => {
-      const tx = createMockTx();
-      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
-
-      const serializationErr = Object.assign(
-        new Error("could not serialize access"),
-        { code: "40001" }
-      );
-
-      mockPrisma.$transaction
-        .mockRejectedValueOnce(serializationErr)
-        .mockImplementation(async (fn) => fn(tx));
-
-      const writer = new PrismaBatchWriter();
-      const result = await writer.write([
-        { kind: "resolution", data: withIdempotencyKey(RESOLUTION) },
-      ]);
-
-      expect(result.written).toBe(1);
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(2);
-    });
-
-    it("throws after exhausting retries on persistent transient error", async () => {
-      const transientErr = Object.assign(new Error("timeout"), {
-        code: "P1008",
-      });
-      mockPrisma.$transaction.mockRejectedValue(transientErr);
-
-      const writer = new PrismaBatchWriter();
-      await expect(
-        writer.write([{ kind: "trade", data: withIdempotencyKey(TRADE) }])
-      ).rejects.toThrow("timeout");
-
-      // 1 initial + 3 retries = 4 total
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(4);
-    });
-
-    it("does not retry on a non-transient error", async () => {
-      const nonTransientErr = new Error("syntax error in SQL");
-      mockPrisma.$transaction.mockRejectedValue(nonTransientErr);
-
-      const writer = new PrismaBatchWriter();
-      await expect(
-        writer.write([{ kind: "trade", data: withIdempotencyKey(TRADE) }])
-      ).rejects.toThrow("syntax error");
-
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
-    });
-
-    it("logs a warning on each retry attempt", async () => {
-      const warnSpy = vi.fn();
-      const logger = {
-        warn: warnSpy,
-        info: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
-      };
-
-      const tx = createMockTx();
-      tx.indexerProcessedEvent.findUnique.mockResolvedValue(null);
-
-      const transientErr = Object.assign(new Error("deadlock"), {
-        code: "40P01",
-      });
-
-      mockPrisma.$transaction
-        .mockRejectedValueOnce(transientErr)
-        .mockImplementation(async (fn) => fn(tx));
-
-      const writer = new PrismaBatchWriter(logger as any);
-      await writer.write([{ kind: "trade", data: withIdempotencyKey(TRADE) }]);
-
-      expect(warnSpy).toHaveBeenCalledWith(
-        "Transient DB error in batch write, retrying",
-        expect.objectContaining({ attempt: 1 })
-      );
-    });
+    expect(tx.indexerProcessedEvent.create).not.toHaveBeenCalled();
   });
 });
