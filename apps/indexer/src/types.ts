@@ -131,6 +131,50 @@ export class MarketCreatedParseError extends Error {
   }
 }
 
+// ─── Soft-delete types ───────────────────────────────────────────────────────
+
+/**
+ * Soft-deletion status for a market.
+ *
+ * Soft-deleted markets must be excluded from every read/listing/aggregation
+ * surface (indexer storage queries, market routes, money-path endpoints).
+ * Deletion is a first-class status on the market record rather than a hard
+ * delete so that historical trades/resolutions remain auditable.
+ */
+export type MarketDeletionStatus = "ACTIVE" | "SOFT_DELETED";
+
+/**
+ * Minimal shape required to decide whether a market may be surfaced.
+ * `deletedAt` is the authoritative marker: a non-null value means the market
+ * is soft-deleted. `status` is an optional denormalized mirror used by
+ * storage layers that persist the status directly.
+ */
+export interface MarketDeletionState {
+  deletedAt?: Date | string | null;
+  status?: MarketDeletionStatus | null;
+}
+
+/**
+ * Fail-closed predicate: returns true only when the market is provably NOT
+ * soft-deleted. If deletion status is unknown/unavailable (missing record,
+ * unparsable timestamp, unrecognized status), the market is treated as
+ * deleted so it is never surfaced on money-path/read endpoints.
+ */
+export function isMarketVisible(state: MarketDeletionState | null | undefined): boolean {
+  if (!state) return false;
+  if (state.deletedAt !== undefined && state.deletedAt !== null) return false;
+  if (state.status !== undefined && state.status !== null && state.status !== "ACTIVE") {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Default filter applied to every market query unless a caller explicitly
+ * opts in to including soft-deleted markets (e.g. admin/audit tooling).
+ */
+export const DEFAULT_MARKET_FILTER = { deletedAt: null } as const;
+
 // ─── Fetcher types ───────────────────────────────────────────────────────────
 
 export interface LedgerWindow {
