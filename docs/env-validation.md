@@ -265,6 +265,15 @@ Must be one of a fixed set of string values.
 | `NODE_ENV`               | `development` \| `test` \| `production` | `development` |
 | `LOG_LEVEL`              | `debug` \| `info` \| `warn` \| `error`  | `info`        |
 | `ORACLE_LOG_LEVEL`       | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+### Enum variables
+
+Must be one of a fixed set of string values.
+
+| Variable                 | Accepted values                         | Default       |
+| ------------------------ | --------------------------------------- | ------------- |
+| `NODE_ENV`               | `development` \| `test` \| `production` | `development` |
+| `LOG_LEVEL`              | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+| `ORACLE_LOG_LEVEL`       | `debug` \| `info` \| `warn` \| `error`  | `info`        |
 | `FINALIZATION_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error`  | `info`        |
 | `INDEXER_LOG_LEVEL`      | `debug` \| `info` \| `warn` \| `error`  | `info`        |
 
