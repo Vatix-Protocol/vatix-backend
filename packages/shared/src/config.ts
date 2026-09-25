@@ -215,6 +215,87 @@ function loadUrl(name: string, env: Env, allowedProtocols: string[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Soroban RPC URL ↔ network consistency (#1135)
+// ---------------------------------------------------------------------------
+
+/**
+ * Known public Soroban RPC hosts and the network each one serves, keyed by the
+ * identifier accepted in `STELLAR_NETWORK`. Mirrors the endpoints documented in
+ * `.env.example` and the defaults in `stellarTransport.ts`. Hosts are public
+ * infrastructure — safe to echo in boot-time error messages.
+ */
+export const KNOWN_SOROBAN_RPC_NETWORK_HOSTS = {
+  testnet: ["soroban-testnet.stellar.org"],
+  mainnet: ["soroban.stellar.org", "soroban-mainnet.stellar.org"],
+} as const;
+
+/**
+ * Best-effort network affinity of a Soroban RPC hostname: exact matches against
+ * {@link KNOWN_SOROBAN_RPC_NETWORK_HOSTS}, then a `testnet`/`mainnet` token in
+ * a custom hostname (e.g. `rpc.testnet.example.com`). Returns undefined when
+ * the host gives no signal — third-party RPC providers cannot be verified from
+ * the URL alone and are allowed.
+ */
+function rpcHostNetwork(hostname: string): string | undefined {
+  for (const [network, hosts] of Object.entries(
+    KNOWN_SOROBAN_RPC_NETWORK_HOSTS
+  )) {
+    if ((hosts as readonly string[]).includes(hostname)) return network;
+  }
+  const tokens = hostname.split(/[^a-z0-9]+/);
+  if (tokens.includes("testnet")) return "testnet";
+  if (tokens.includes("mainnet")) return "mainnet";
+  return undefined;
+}
+
+/**
+ * Asserts that the configured Soroban RPC URL belongs to the network declared
+ * by `STELLAR_NETWORK` (issue #1135). Fail-closed: submitting transactions or
+ * reading contract state through an RPC endpoint on the wrong chain while the
+ * deployment believes it is on another one corrupts settlement behavior.
+ *
+ * Skip semantics: unknown/custom `STELLAR_NETWORK` values are skipped (no
+ * known-good host set), and hosts without a `testnet`/`mainnet` signal are
+ * allowed because they cannot be verified from the URL alone.
+ *
+ * @param rpcUrl - Resolved STELLAR_RPC_URL
+ * @param network - Declared deployment network (STELLAR_NETWORK)
+ * @throws {ConfigValidationError} when the URL is malformed or network-mismatched
+ */
+export function assertRpcUrlMatchesNetwork(
+  rpcUrl: string,
+  network: string
+): void {
+  const normalized = network.trim().toLowerCase();
+  if (!(normalized in KNOWN_SOROBAN_RPC_NETWORK_HOSTS)) return;
+
+  let hostname: string;
+  try {
+    hostname = new URL(rpcUrl).hostname.toLowerCase();
+  } catch {
+    throw new ConfigValidationError(
+      `STELLAR_RPC_URL is not a valid URL (expected format: https://host), got: ${JSON.stringify(rpcUrl)}`
+    );
+  }
+
+  if (!hostname) {
+    throw new ConfigValidationError("STELLAR_RPC_URL must include a hostname");
+  }
+
+  const hostNetwork = rpcHostNetwork(hostname);
+  if (hostNetwork !== undefined && hostNetwork !== normalized) {
+    const example =
+      normalized === "mainnet"
+        ? "https://soroban.stellar.org"
+        : "https://soroban-testnet.stellar.org";
+    throw new ConfigValidationError(
+      `STELLAR_RPC_URL host "${hostname}" belongs to Stellar ${hostNetwork}, which does not match STELLAR_NETWORK="${normalized}": ` +
+        `expected a ${normalized} Soroban RPC endpoint (e.g. ${example})`
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Base config — consumed by API server, and optionally by other services
 // ---------------------------------------------------------------------------
 
@@ -273,6 +354,12 @@ export interface BaseConfig {
  */
 export function loadBaseConfig(env: Env = processEnv): BaseConfig {
   const nodeEnv = loadNodeEnv(env);
+  const stellarNetwork = optionalString("STELLAR_NETWORK", "testnet", env);
+  const stellarRpcUrl = loadUrl("STELLAR_RPC_URL", env, ["https:", "http:"]);
+
+  // Soroban RPC ↔ network consistency (#1135): refuse to boot when the RPC
+  // endpoint belongs to a different network than the one declared.
+  assertRpcUrlMatchesNetwork(stellarRpcUrl, stellarNetwork);
 
   const corsAllowedOrigins = resolveCorsAllowedOrigins(
     nodeEnv as CorsNodeEnv,
@@ -287,8 +374,8 @@ export function loadBaseConfig(env: Env = processEnv): BaseConfig {
     }),
     databaseUrl: loadUrl("DATABASE_URL", env, ["postgresql:", "postgres:"]),
     redisUrl: loadUrl("REDIS_URL", env, ["redis:", "rediss:"]),
-    stellarRpcUrl: loadUrl("STELLAR_RPC_URL", env, ["https:", "http:"]),
-    stellarNetwork: optionalString("STELLAR_NETWORK", "testnet", env),
+    stellarRpcUrl,
+    stellarNetwork,
     stellarHorizonUrl: optionalString(
       "STELLAR_HORIZON_URL",
       "https://horizon-testnet.stellar.org",
@@ -447,9 +534,18 @@ export function loadIndexerContractId(env: Env): string {
 }
 
 export function loadIndexerConfig(env: Env = processEnv): IndexerConfig {
+  const stellarRpcUrl = loadUrl("STELLAR_RPC_URL", env, ["https:", "http:"]);
+
+  // Soroban RPC ↔ network consistency (#1135): the indexer ingests contract
+  // events from this endpoint, so a wrong-network RPC must fail closed here.
+  assertRpcUrlMatchesNetwork(
+    stellarRpcUrl,
+    optionalString("STELLAR_NETWORK", "testnet", env)
+  );
+
   return {
     nodeEnv: loadNodeEnv(env),
-    stellarRpcUrl: loadUrl("STELLAR_RPC_URL", env, ["https:", "http:"]),
+    stellarRpcUrl,
     contractId: loadIndexerContractId(env),
     ingestionIntervalMs: requireMinNumber(
       "INDEXER_INGESTION_INTERVAL_MS",

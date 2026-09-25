@@ -4,6 +4,7 @@ import {
   loadIndexerConfig,
   loadOracleWorkerConfig,
   loadFinalizationConfig,
+  assertRpcUrlMatchesNetwork,
   ConfigValidationError,
 } from "./config.js";
 
@@ -57,6 +58,95 @@ describe("loadBaseConfig", () => {
   it("uses PORT from env when provided", () => {
     const config = loadBaseConfig({ ...BASE_ENV, PORT: "4000" });
     expect(config.port).toBe(4000);
+  });
+});
+
+describe("assertRpcUrlMatchesNetwork (#1135)", () => {
+  it("accepts the testnet Soroban RPC host for testnet", () => {
+    expect(() =>
+      assertRpcUrlMatchesNetwork(
+        "https://soroban-testnet.stellar.org",
+        "testnet"
+      )
+    ).not.toThrow();
+  });
+
+  it("accepts the documented mainnet Soroban RPC hosts for mainnet", () => {
+    expect(() =>
+      assertRpcUrlMatchesNetwork("https://soroban.stellar.org", "mainnet")
+    ).not.toThrow();
+    expect(() =>
+      assertRpcUrlMatchesNetwork(
+        "https://soroban-mainnet.stellar.org:443",
+        "mainnet"
+      )
+    ).not.toThrow();
+  });
+
+  it("rejects the testnet Soroban RPC host on a mainnet deployment", () => {
+    expect(() =>
+      assertRpcUrlMatchesNetwork(
+        "https://soroban-testnet.stellar.org",
+        "mainnet"
+      )
+    ).toThrow(/belongs to Stellar testnet.*STELLAR_NETWORK="mainnet"/);
+  });
+
+  it("rejects a mainnet-looking RPC host on a testnet deployment", () => {
+    expect(() =>
+      assertRpcUrlMatchesNetwork("https://rpc.mainnet.example.com", "testnet")
+    ).toThrow(/STELLAR_RPC_URL/);
+  });
+
+  it("allows third-party hosts with no network signal", () => {
+    expect(() =>
+      assertRpcUrlMatchesNetwork("https://rpc.example.com", "mainnet")
+    ).not.toThrow();
+  });
+
+  it("rejects a malformed URL fail-closed", () => {
+    expect(() => assertRpcUrlMatchesNetwork("not a url", "testnet")).toThrow(
+      /STELLAR_RPC_URL is not a valid URL/
+    );
+  });
+
+  it("skips unknown/custom networks", () => {
+    expect(() =>
+      assertRpcUrlMatchesNetwork(
+        "https://soroban-testnet.stellar.org",
+        "futurenet"
+      )
+    ).not.toThrow();
+  });
+
+  it("is enforced by loadBaseConfig: mainnet + testnet RPC fails closed", () => {
+    expect(() =>
+      loadBaseConfig({
+        ...BASE_ENV,
+        STELLAR_NETWORK: "mainnet",
+        STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
+      })
+    ).toThrow(/STELLAR_RPC_URL.*does not match STELLAR_NETWORK="mainnet"/);
+  });
+
+  it("is enforced by loadIndexerConfig: mainnet + testnet RPC fails closed", () => {
+    expect(() =>
+      loadIndexerConfig({
+        STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
+        INDEXER_CONTRACT_ID: "CABC123",
+        STELLAR_NETWORK: "mainnet",
+      })
+    ).toThrow(/STELLAR_RPC_URL.*does not match STELLAR_NETWORK="mainnet"/);
+  });
+
+  it("keeps matching endpoints working through loadBaseConfig", () => {
+    const config = loadBaseConfig({
+      ...BASE_ENV,
+      STELLAR_NETWORK: "mainnet",
+      STELLAR_RPC_URL: "https://soroban.stellar.org",
+    });
+    expect(config.stellarRpcUrl).toBe("https://soroban.stellar.org");
+    expect(config.stellarNetwork).toBe("mainnet");
   });
 });
 

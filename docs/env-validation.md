@@ -232,6 +232,29 @@ it must be a well-formed postgres URL just like `DATABASE_URL`.
 DATABASE_URL must use one of [postgresql:, postgres:], got: "mysql:"
 ```
 
+### Network-matched Soroban RPC URLs
+
+`STELLAR_RPC_URL` must belong to the network declared by `STELLAR_NETWORK`
+(#1135). `loadBaseConfig()` and `loadIndexerConfig()` validate the pair at boot
+and **fail closed** — an RPC endpoint on the wrong chain would serve contract
+state and accept transaction submission for the wrong network:
+
+- Known hosts are checked exactly: `soroban-testnet.stellar.org` ↔ testnet,
+  `soroban.stellar.org` / `soroban-mainnet.stellar.org` ↔ mainnet (the
+  endpoints documented in `.env.example` and used by `stellarTransport.ts`).
+- Custom hosts containing a `testnet` or `mainnet` token
+  (e.g. `rpc.testnet.example.com`) are checked too. Third-party providers with
+  no network signal in the hostname are allowed — they cannot be verified from
+  the URL alone.
+- Unknown/custom `STELLAR_NETWORK` values (e.g. `futurenet`) skip the check, as
+  there is no known-good host set.
+
+**Error example:**
+
+```
+STELLAR_RPC_URL host "soroban-testnet.stellar.org" belongs to Stellar testnet, which does not match STELLAR_NETWORK="mainnet": expected a mainnet Soroban RPC endpoint (e.g. https://soroban.stellar.org)
+```
+
 ### Enum variables
 
 Must be one of a fixed set of string values.
