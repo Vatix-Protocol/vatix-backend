@@ -46,13 +46,14 @@ export interface FinalizationJobResult {
 
 /**
  * Valid OS signals that trigger a graceful shutdown.
- * Constrained to the three signals the finalization worker handles.
+ * Re-exported from the shared shutdown module for backward compatibility.
+ * @deprecated Import from "../../../../packages/shared/src/shutdown.js" instead.
  */
-export type ShutdownSignal = "SIGINT" | "SIGTERM" | "SIGHUP";
+export type ShutdownSignal =
+  import("../../../../packages/shared/src/shutdown.js").ShutdownSignal;
 
-/**
- * Async handler invoked when a shutdown signal is received.
- * Receives the signal name, performs cleanup, and exits the process.
+/** Async handler invoked when a shutdown signal is received.
+ * @deprecated Import from "packages/shared/src/shutdown.js" instead.
  */
 export type ShutdownHandler = (signal: ShutdownSignal) => Promise<void>;
 

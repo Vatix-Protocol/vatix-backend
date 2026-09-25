@@ -234,6 +234,16 @@ export function matchOrder(
 
       if (!bookOrder) break;
 
+      // Reject self-trade: skip the order if both sides have the same userAddress (#703)
+      if (bookOrder.userAddress === newOrder.userAddress) {
+        // Remove the self-trade order from the book so it doesn't block matching
+        // with other orders at the same price level.
+        const removeCmd = new RemoveOrderCommand(orderBook, bookOrder.id);
+        removeCmd.execute();
+        executedCommands.push(removeCmd);
+        continue;
+      }
+
       if (!canMatch(newOrder.price, bookOrder.price, newOrder.side)) {
         break;
       }

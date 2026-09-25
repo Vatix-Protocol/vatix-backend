@@ -1,0 +1,16 @@
+{
+  "name": "@vatix/oracle",
+  "version": "1.0.0",
+  "description": "Oracle application for Vatix protocol",
+  "main": "main.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch main.ts",
+    "start": "tsx main.ts",
+    "test": "vitest",
+    "test:run": "vitest run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

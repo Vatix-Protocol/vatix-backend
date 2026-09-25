@@ -10,15 +10,17 @@ import positionsRouter from "./api/routes/positions.js";
 import { NotFoundError, ValidationError } from "./api/middleware/errors.js";
 import { signingService } from "./services/signing.js";
 import "dotenv/config";
-import { getPrismaClient } from "./services/prisma.js";
 import { marketsRoutes } from "./api/routes/markets.js";
 import { ordersRoutes } from "./api/routes/orders.js";
+import { fillsRoutes } from "./api/routes/fills.js";
 import { adminRoutes } from "./api/routes/admin.js";
+import { authRoutes } from "./api/routes/auth.js";
 import { healthRoutes } from "./api/routes/health.js";
 import { readyRoute } from "./api/routes/ready.js";
+import { metricsRoutes } from "./api/routes/metrics.js";
 import { createReadyDeps } from "./api/deps/ready-deps.js";
 import { registerDeprecatedAliases } from "./api/routes/legacy.js";
-import { openApiSpec } from "./api/openapi.js";
+import { getOpenApiSpec } from "./api/openapi.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
 import {
@@ -28,11 +30,18 @@ import {
 import { config } from "./config.js";
 import { parseApiEnv } from "./env.js";
 import { corsPlugin } from "./api/middleware/cors.js";
-import { redis } from "./services/redis.js";
+import { walletRoutes } from "./api/routes/wallet.js";
+import { resolutionsRoutes } from "./api/routes/resolutions.js";
+import { admissionControl } from "./api/middleware/admissionControl.js";
+import { auditAdminRoutes } from "./api/routes/audit-verification.js";
 
-// Default: 64 KB. Override via BODY_LIMIT_BYTES env var.
+// Default: 64 KB. Override via BODY_LIMIT_BYTES env var (validated by parseApiEnv).
 // Oversized requests are rejected with 413 Request Entity Too Large.
-const bodyLimit = Number(process.env.BODY_LIMIT_BYTES) || 65_536;
+// The value is parsed here so buildServer() can be called in tests before
+// parseApiEnv() runs — invalid values fall back to the safe default.
+const rawBodyLimit = Number(process.env.BODY_LIMIT_BYTES);
+const bodyLimit =
+  Number.isInteger(rawBodyLimit) && rawBodyLimit > 0 ? rawBodyLimit : 65_536;
 
 export interface BuildServerOptions {
   logger?: FastifyServerOptions["logger"];
@@ -40,28 +49,14 @@ export interface BuildServerOptions {
   registerTestRoutes?: boolean;
 }
 
-function createDefaultReadyDeps(): Parameters<typeof readyRoute>[0] {
-  return {
-    checkDatabase: async () => {
-      const prisma = getPrismaClient();
-      await prisma.$queryRaw`SELECT 1`;
-    },
-    checkRedis: async () => {
-      const ok = await redis.healthCheck();
-      if (!ok) throw new Error("Redis PING did not return PONG");
-    },
-    getLastIndexedAt: async () => {
-      const prisma = getPrismaClient();
-      const cursor = await prisma.indexerCursor.findFirst({
-        orderBy: { updatedAt: "desc" },
-        select: { updatedAt: true },
-      });
-      return cursor ? cursor.updatedAt.getTime() : null;
-    },
-  };
-}
-
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
+  // Trust proxy hops based on expected deployment topology.
+  // Standard deployment: client → load balancer → API
+  // trustProxy=1 trusts only the immediate upstream proxy (load balancer),
+  // rejecting spoofed X-Forwarded-For headers from untrusted sources.
+  const trustProxyHops =
+    Number(process.env.TRUST_PROXY_HOPS) || (process.env.NODE_ENV === "production" ? 1 : 0);
+
   const server: FastifyInstance = Fastify({
     logger: options.logger ?? true,
     // Name the auto-bound pino field "requestId" so every request.log.*
@@ -71,6 +66,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     // child logger, so the binding is correct from the very first log entry.
     genReqId: makeGenReqId(),
     bodyLimit,
+    // Configure proxy trust to prevent rate-limit bypass via spoofed X-Forwarded-For.
+    // In production, only trust the immediate upstream (load balancer).
+    // In dev/test, do not trust proxy headers (trust only direct socket IP).
+    trustProxy: trustProxyHops,
   });
 
   // Register error handler (must be before routes)
@@ -90,11 +89,25 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   // blocked by authentication so the cluster can determine service health
   server.addHook("onRequest", (request, reply, done) => {
     const isHealthProbe =
-      request.url === "/v1/ready" || request.url === "/v1/health";
+      request.url === "/v1/ready" ||
+      request.url === "/v1/health" ||
+      request.url === "/metrics";
     if (isHealthProbe) {
       done();
     } else {
       rateLimiter(request, reply, done);
+    }
+  });
+
+  // Apply admission control (load shedding) based on downstream lag
+  // Skips health/ready probes and admin operations
+  server.addHook("onRequest", async (request, reply) => {
+    const isHealthProbe =
+      request.url === "/v1/ready" ||
+      request.url === "/v1/health" ||
+      request.url === "/metrics";
+    if (!isHealthProbe) {
+      await admissionControl(request, reply);
     }
   });
 
@@ -105,7 +118,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       // its own routes — the parent scope already adds it, which would produce
       // double-prefixed paths like /v1/v1/markets.
       v1.addHook("onRoute", (routeOptions) => {
-        if (routeOptions.url.startsWith("/v1")) {
+        if (routeOptions.url.startsWith("/v1/v1")) {
           throw new Error(
             `Plugin registered route "${routeOptions.url}" with a /v1 prefix ` +
               `inside the /v1-scoped block — remove the prefix from the plugin.`
@@ -116,18 +129,32 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       await v1.register(marketsRoutes);
       await v1.register(ordersRoutes);
       await v1.register(positionsRouter);
+      await v1.register(fillsRoutes);
       await v1.register(adminRoutes);
+      await v1.register(auditAdminRoutes);
+      await v1.register(authRoutes);
+      await v1.register(resolutionsRoutes);
       await v1.register(healthRoutes);
       await v1.register(readyRoute(options.readyDeps ?? createReadyDeps()));
 
       v1.get("/openapi.json", async (_request, reply) => {
-        return reply.status(200).send(openApiSpec);
+        const nodeEnv = process.env.NODE_ENV || "development";
+        return reply.status(200).send(getOpenApiSpec(nodeEnv));
       });
     },
     { prefix: "/v1" }
   );
 
   registerDeprecatedAliases(server);
+
+  // walletRoutes hardcodes its own /v1 prefix internally, so it must be
+  // registered outside the /v1-scoped block above (the onRoute guard there
+  // rejects routes that already start with /v1 to prevent /v1/v1 double-prefixing).
+  server.register(walletRoutes);
+
+  // Prometheus scrape endpoint, unversioned and unauthenticated by convention
+  // (restrict network access to it at the infra/ingress layer).
+  server.register(metricsRoutes);
 
   // Serve interactive API documentation at /docs using Swagger UI (CDN-hosted).
   // The spec is loaded from /v1/openapi.json at runtime so it stays in sync.
@@ -205,6 +232,31 @@ const start = async () => {
   const registerTestRoutes = config.nodeEnv !== "production";
   const server = buildServer({ registerTestRoutes });
 
+  // Set up global handlers for unhandled rejections and exceptions
+  // These handlers ensure all unhandled errors are logged and the process exits gracefully
+  process.on(
+    "unhandledRejection",
+    (reason: unknown, promise: Promise<unknown>) => {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      const stack = reason instanceof Error ? reason.stack : undefined;
+      server.log.error(
+        { reason: message, stack, promise: String(promise) },
+        "Unhandled promise rejection"
+      );
+      // Exit with error code after logging
+      process.exit(1);
+    }
+  );
+
+  process.on("uncaughtException", (error: Error) => {
+    server.log.error(
+      { error: error.message, stack: error.stack },
+      "Uncaught exception"
+    );
+    // Exit with error code after logging
+    process.exit(1);
+  });
+
   try {
     // Initialize signing service BEFORE starting server
     signingService.initialize();
@@ -212,8 +264,24 @@ const start = async () => {
     // Hydrate in-memory order books from Postgres on cold start (#449).
     // This eliminates the race window where a restart leaves books empty
     // while open orders still exist in the database.
-    const { matchingService } = await import("./matching/matching-service.js");
-    await matchingService.hydrateAllActiveMarkets();
+    const { matchingService, isMatchingEngineEnabled } =
+      await import("./matching/matching-service.js");
+
+    if (isMatchingEngineEnabled()) {
+      // Single-writer enforcement: only the Redis lease holder may match
+      // orders (see src/matching/leader-lease.ts). Hydration only makes
+      // sense once this instance actually holds the lease — a standby
+      // instance has nothing useful to warm since placeOrder() will reject
+      // until it becomes leader. The first acquisition attempt below is
+      // awaited so a pod that wins the lease on boot serves warm books from
+      // its very first request; a pod that loses the race still comes up
+      // and serves health/read traffic while it retries in the background.
+      const { leaderLease } = await import("./matching/leader-lease.js");
+      await leaderLease.start({
+        onAcquired: () => matchingService.hydrateAllActiveMarkets(),
+        onLost: () => matchingService.invalidateAllBooks(),
+      });
+    }
 
     const port = config.port;
     await server.listen({ port, host: "0.0.0.0" });
@@ -280,10 +348,20 @@ const start = async () => {
         // Close server — stops accepting new connections, drains in-flight requests
         await server.close();
 
-        // Gracefully disconnect database and redis
+        // Gracefully disconnect database and redis, and release the
+        // matching leader lease (if held) so the next holder doesn't wait
+        // out the full lease TTL before taking over.
         const { disconnectPrisma } = await import("./services/prisma.js");
+        const { disconnectAnalyticsPrisma } =
+          await import("./services/analytics-prisma.js");
         const { redis } = await import("./services/redis.js");
-        await Promise.allSettled([disconnectPrisma(), redis.disconnect()]);
+        const { leaderLease } = await import("./matching/leader-lease.js");
+        await leaderLease.release();
+        await Promise.allSettled([
+          disconnectPrisma(),
+          disconnectAnalyticsPrisma(),
+          redis.disconnect(),
+        ]);
 
         clearTimeout(timeoutHandle);
 

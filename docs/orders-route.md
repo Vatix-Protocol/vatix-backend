@@ -65,16 +65,28 @@ then checking the market state, price, quantity, side, and outcome.
 
 ### Authentication
 
-Every `POST /v1/orders` request must carry two headers that prove the caller
+Every `POST /v1/orders` request must carry three headers that prove the caller
 controls the Stellar wallet identified by `userAddress`.
 
 | Header        | Type   | Description                                                            |
 | ------------- | ------ | ---------------------------------------------------------------------- |
 | `x-timestamp` | string | Current Unix time in **milliseconds** as a decimal string.             |
+| `x-nonce`     | string | Single-use nonce from `POST /v1/auth/challenge`.                       |
 | `x-signature` | string | Base64-encoded Ed25519 signature of the canonical message (see below). |
 
 The server rejects requests whose `x-timestamp` differs from server time by
-more than **5 minutes** to prevent replay attacks.
+more than **5 minutes**, and consumes `x-nonce` atomically from shared Redis so
+the same signed payload cannot be replayed against another API replica. See
+[adr/002-stellar-auth-challenge.md](adr/002-stellar-auth-challenge.md).
+
+#### Challenge issuance
+
+```http
+POST /v1/auth/challenge
+{ "userAddress": "G..." }
+
+201 { "nonce": "...", "expiresAt": "2026-01-01T00:02:00.000Z", "ttlSeconds": 120 }
+```
 
 #### Canonical message
 
@@ -84,6 +96,7 @@ and sign its raw bytes with the wallet's Ed25519 private key:
 ```json
 {
   "marketId": "<marketId from body>",
+  "nonce": "<x-nonce value>",
   "outcome": "<outcome from body>",
   "price": <price from body>,
   "quantity": <quantity from body>,
@@ -102,6 +115,12 @@ import { buildSignableMessage } from "src/api/middleware/stellarAuth";
 const keypair = Keypair.fromSecret("S...");
 const timestamp = Date.now();
 
+const challenge = await fetch("/v1/auth/challenge", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ userAddress: keypair.publicKey() }),
+}).then((res) => res.json());
+
 const body = {
   marketId: "market-1",
   userAddress: keypair.publicKey(),
@@ -111,7 +130,11 @@ const body = {
   quantity: 100,
 };
 
-const message = buildSignableMessage({ ...body, timestamp });
+const message = buildSignableMessage({
+  ...body,
+  nonce: challenge.nonce,
+  timestamp,
+});
 const signature = keypair.sign(message).toString("base64");
 
 fetch("/v1/orders", {
@@ -119,6 +142,7 @@ fetch("/v1/orders", {
   headers: {
     "Content-Type": "application/json",
     "x-timestamp": String(timestamp),
+    "x-nonce": challenge.nonce,
     "x-signature": signature,
   },
   body: JSON.stringify(body),
@@ -177,7 +201,7 @@ Common errors:
 | Status | Cause                                                                                                                                      |
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `400`  | Missing field, invalid Stellar address, invalid side/outcome, invalid price or quantity, unknown market, closed market, or expired market. |
-| `401`  | Missing or invalid `x-signature`/`x-timestamp` headers, expired timestamp, or signature mismatch.                                          |
+| `401`  | Missing or invalid `x-signature`/`x-timestamp`/`x-nonce` headers, expired timestamp, reused or expired nonce, or signature mismatch.       |
 | `500`  | Database write failed.                                                                                                                     |
 
 ## `GET /v1/trades/user/:address`

@@ -12,11 +12,10 @@ import { Queue, Worker, type Job } from "bullmq";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
 import {
-  DEFAULT_JOB_OPTIONS,
+  ORACLE_SUBMISSION_JOB_OPTIONS,
   redisConnectionFromEnv,
-} from "../shared/queue-config.js";
-
-const QUEUE_NAME = process.env.SUBMISSION_QUEUE_NAME ?? "oracle-submissions";
+  submissionQueueName,
+} from "../../../../packages/shared/src/queue-config.js";
 
 function payloadHash(item: SubmissionQueueItem): string {
   return createHash("sha256")
@@ -35,9 +34,18 @@ export class BullMQSubmissionQueue {
 
   constructor(logger: ILogger) {
     this.logger = logger;
-    this.queue = new Queue<SubmissionQueueItem>(QUEUE_NAME, {
+    this.queue = new Queue<SubmissionQueueItem>(submissionQueueName(), {
       connection: redisConnectionFromEnv(),
-      defaultJobOptions: DEFAULT_JOB_OPTIONS,
+      defaultJobOptions: ORACLE_SUBMISSION_JOB_OPTIONS,
+    });
+
+    // BullMQ (via EventEmitter) forwards Redis connection errors as "error"
+    // events. Without a listener, Node's default EventEmitter behavior is to
+    // throw and crash the process on the very next transient Redis blip.
+    this.queue.on("error", (err: Error) => {
+      this.logger.error("Oracle submission queue connection error", {
+        error: err.message,
+      });
     });
   }
 
@@ -59,7 +67,7 @@ export class BullMQSubmissionQueue {
     }
 
     await this.queue.add(item.request.marketId, item, {
-      ...DEFAULT_JOB_OPTIONS,
+      ...ORACLE_SUBMISSION_JOB_OPTIONS,
       jobId,
     });
 
@@ -87,7 +95,7 @@ export function createOracleSubmissionWorker(
   logger: ILogger
 ): Worker<SubmissionQueueItem> {
   const worker = new Worker<SubmissionQueueItem>(
-    QUEUE_NAME,
+    submissionQueueName(),
     async (job: Job<SubmissionQueueItem>) => {
       await handler(job.data, job.attemptsMade);
     },
@@ -97,14 +105,25 @@ export function createOracleSubmissionWorker(
     }
   );
 
-  worker.on("completed", (job) => {
+  worker.on("completed", (job: Job<SubmissionQueueItem, any, string>) => {
     logger.info("Oracle submission job completed", { jobId: job.id });
   });
 
-  worker.on("failed", (job, err) => {
-    logger.error("Oracle submission job failed", {
-      jobId: job?.id,
-      attempts: job?.attemptsMade,
+  worker.on(
+    "failed",
+    (job: Job<SubmissionQueueItem, any, string> | undefined, err: Error) => {
+      logger.error("Oracle submission job failed", {
+        jobId: job?.id,
+        attempts: job?.attemptsMade,
+        error: err.message,
+      });
+    }
+  );
+
+  // See the matching comment in BullMQSubmissionQueue's constructor — an
+  // unhandled "error" event here would crash the whole worker process.
+  worker.on("error", (err: Error) => {
+    logger.error("Oracle submission worker connection error", {
       error: err.message,
     });
   });

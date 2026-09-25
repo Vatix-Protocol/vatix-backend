@@ -1,6 +1,9 @@
+import { createHash } from "crypto";
 import { redis } from "./redis.js";
 import { getPrismaClient } from "./prisma.js";
 import type { Trade } from "../matching/engine.js";
+import { verifyAuditChainEvents, type AuditChainError } from "./auditChain.js";
+import { auditChainGapTotal } from "./metrics.js";
 
 /**
  * Audit log entry for a trade execution
@@ -28,6 +31,7 @@ export class AuditService {
   private readonly globalStream: string;
   private readonly maxLogEntries = 100000; // ~30 days at 1 trade/min
   private readonly approximateTrimming = true;
+  private readonly hashAlgorithm = "sha256";
 
   constructor() {
     const keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
@@ -36,8 +40,9 @@ export class AuditService {
   }
 
   /**
-   * Log a trade execution to audit stream
-   * Creates two entries: one in market-specific stream, one in global stream
+   * Log a trade execution to audit stream with hash-chaining and async archival.
+   * Creates two entries: one in market-specific stream, one in global stream.
+   * Computes SHA256 hash and triggers async archive to Postgres before trim.
    *
    * @param trade - Trade to log
    * @returns Stream entry ID
@@ -60,14 +65,8 @@ export class AuditService {
         loggedAt: new Date().toISOString(),
       };
 
-      // Use trade timestamp, but let Redis auto-increment sequence if there's a collision
-      // If timestamp-0 exists, Redis will use timestamp-1, timestamp-2, etc.
       const baseStreamId = `${trade.timestamp}`;
-
-      // Log to market-specific stream
       const marketStream = this.getMarketStream(trade.marketId);
-
-      // Try with -0 first, Redis will auto-increment if needed
       let streamId = `${baseStreamId}-0`;
 
       try {
@@ -90,6 +89,18 @@ export class AuditService {
           ...this.flattenObject(logData)
         );
 
+        // Trigger async archive (non-blocking)
+        if (marketEntryId) {
+          this.archiveAuditEventAsync(
+            trade.id,
+            trade.marketId,
+            logData,
+            marketEntryId
+          ).catch((err) => {
+            console.error("Failed to archive audit event:", err);
+          });
+        }
+
         const duration = performance.now() - startTime;
 
         if (duration > 5) {
@@ -100,7 +111,6 @@ export class AuditService {
 
         return marketEntryId;
       } catch (err: any) {
-        // If Stream ID already exists or is too old, let Redis auto-generate
         if (
           err.message?.includes("equal or smaller") ||
           err.message?.includes("ID")
@@ -109,13 +119,12 @@ export class AuditService {
             `Stream ID conflict for ${streamId}, using auto-generated ID`
           );
 
-          // Fall back to auto-generated ID
           const marketEntryId = await redis.xadd(
             marketStream,
             "MAXLEN",
             this.approximateTrimming ? "~" : "",
             this.maxLogEntries,
-            "*", // Auto-generate
+            "*",
             ...this.flattenObject(logData)
           );
 
@@ -127,6 +136,17 @@ export class AuditService {
             "*",
             ...this.flattenObject(logData)
           );
+
+          if (marketEntryId) {
+            this.archiveAuditEventAsync(
+              trade.id,
+              trade.marketId,
+              logData,
+              marketEntryId
+            ).catch((err) => {
+              console.error("Failed to archive audit event:", err);
+            });
+          }
 
           return marketEntryId;
         }
@@ -217,6 +237,75 @@ export class AuditService {
 
     const where = {
       OR: [{ buyerAddress: wallet }, { sellerAddress: wallet }],
+      ...(marketId ? { marketId } : {}),
+      ...(fromMs !== undefined || toMs !== undefined
+        ? {
+            tradedAt: {
+              ...(fromMs !== undefined ? { gte: new Date(fromMs) } : {}),
+              ...(toMs !== undefined ? { lte: new Date(toMs) } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const skip = (page - 1) * limit;
+
+    const [rows, total] = await Promise.all([
+      prisma.trade.findMany({
+        where,
+        orderBy: { tradedAt: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.trade.count({ where }),
+    ]);
+
+    const trades: AuditLogEntry[] = rows.map((row) => ({
+      id: row.id,
+      trade: {
+        id: row.tradeId,
+        marketId: row.marketId,
+        outcome: row.outcome as "YES" | "NO",
+        buyerAddress: row.buyerAddress,
+        sellerAddress: row.sellerAddress,
+        buyOrderId: row.buyOrderId,
+        sellOrderId: row.sellOrderId,
+        price: Number(row.price),
+        quantity: row.quantity,
+        timestamp: row.tradedAt.getTime(),
+      },
+      loggedAt: row.createdAt.toISOString(),
+    }));
+
+    return {
+      trades,
+      total,
+      hasNext: skip + rows.length < total,
+      page,
+      limit,
+    };
+  }
+
+  /**
+   * Get paginated trade history across all wallets from Postgres (durable).
+   * Same shape as getWalletTradeHistory but without a buyer/seller filter.
+   */
+  async getTradeHistory(
+    page: number = 1,
+    limit: number = 20,
+    fromMs?: number,
+    toMs?: number,
+    marketId?: string
+  ): Promise<{
+    trades: AuditLogEntry[];
+    total: number;
+    hasNext: boolean;
+    page: number;
+    limit: number;
+  }> {
+    const prisma = getPrismaClient();
+
+    const where = {
       ...(marketId ? { marketId } : {}),
       ...(fromMs !== undefined || toMs !== undefined
         ? {
@@ -388,6 +477,156 @@ export class AuditService {
       trade,
       loggedAt: data.loggedAt,
     };
+  }
+
+  /**
+   * Compute SHA256 hash of payload + previous hash for chain verification
+   */
+  private computeHash(payload: string, prevHash: string): string {
+    const combined = `${payload}${prevHash}`;
+    return createHash(this.hashAlgorithm).update(combined).digest("hex");
+  }
+
+  /**
+   * Get the previous hash for hash-chaining. Looks up the most recent archived
+   * entry for the market. Returns "0" (root) if no previous entry exists.
+   */
+  private async getPrevHash(marketId: string): Promise<string> {
+    const prisma = getPrismaClient();
+    const lastEvent = await prisma.tradeAuditEvent.findFirst({
+      where: { marketId },
+      orderBy: { archivedAt: "desc" },
+      select: { entryHash: true },
+    });
+    return lastEvent?.entryHash ?? "0";
+  }
+
+  /**
+   * Archive an audit event to Postgres asynchronously.
+   * Computes hash, stores with prevHash, and updates watermark.
+   * Non-blocking; errors are logged but don't affect request path.
+   */
+  private async archiveAuditEventAsync(
+    tradeId: string,
+    marketId: string,
+    logData: Record<string, string>,
+    streamId: string
+  ): Promise<void> {
+    try {
+      const prisma = getPrismaClient();
+      const payload = JSON.stringify(logData);
+      const prevHash = await this.getPrevHash(marketId);
+      const entryHash = this.computeHash(payload, prevHash);
+
+      // Archive the event (upsert to handle potential duplicates from retries)
+      await prisma.tradeAuditEvent.upsert({
+        where: { streamId },
+        create: {
+          tradeId,
+          marketId,
+          payload,
+          prevHash,
+          entryHash,
+          streamId,
+        },
+        update: {
+          archivedAt: new Date(),
+        },
+      });
+
+      // Update watermark
+      await prisma.tradeStreamWatermark.upsert({
+        where: { marketId },
+        create: {
+          marketId,
+          globalStreamId: streamId,
+          marketStreamId: streamId,
+          archiveInitiatedAt: new Date(),
+        },
+        update: {
+          marketStreamId: streamId,
+          lastArchivedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      console.error("Archive async failed:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Verify hash chain integrity for a market, optionally within a time range.
+   *
+   * Detects both payload tampering (a row whose entryHash no longer matches
+   * sha256(payload + prevHash)) AND chain gaps — a row whose prevHash does not
+   * match the preceding row's entryHash, which is what a deleted or expired
+   * archive row looks like (issue #952). The old implementation tracked the
+   * previous hash but never compared it, so an archive that aged out left an
+   * undetectable hole in the chain.
+   *
+   * When a time range is supplied the slice legitimately starts partway down
+   * the chain, so the genesis ("first prevHash must be 0") check is skipped;
+   * a full-market verification still enforces it.
+   */
+  async verifyAuditChain(
+    marketId: string,
+    startTime?: Date,
+    endTime?: Date
+  ): Promise<{
+    valid: boolean;
+    totalEvents: number;
+    mismatchCount: number;
+    gapCount: number;
+    errors: Array<{
+      streamId: string;
+      reason: string;
+      kind: AuditChainError["kind"];
+    }>;
+  }> {
+    const prisma = getPrismaClient();
+
+    const rangeApplied = Boolean(startTime || endTime);
+    const where: any = { marketId };
+    if (rangeApplied) {
+      where.archivedAt = {};
+      if (startTime) where.archivedAt.gte = startTime;
+      if (endTime) where.archivedAt.lte = endTime;
+    }
+
+    const events = await prisma.tradeAuditEvent.findMany({
+      where,
+      orderBy: { archivedAt: "asc" },
+      select: {
+        streamId: true,
+        payload: true,
+        prevHash: true,
+        entryHash: true,
+      },
+    });
+
+    const result = verifyAuditChainEvents(events, {
+      expectGenesis: !rangeApplied,
+    });
+
+    if (result.gapCount > 0) {
+      auditChainGapTotal.inc({ market_id: marketId }, result.gapCount);
+      // In production a gap means archived rows were lost — surface loudly so
+      // the restore drill (docs/replay-forensics.md) is triggered rather than
+      // the caller quietly trusting an incomplete chain.
+      const line = JSON.stringify({
+        ts: new Date().toISOString(),
+        level: process.env.NODE_ENV === "production" ? "error" : "warn",
+        message: "Trade audit hash chain has gaps",
+        component: "audit-chain-verify",
+        marketId,
+        gapCount: result.gapCount,
+        totalEvents: result.totalEvents,
+      });
+      if (process.env.NODE_ENV === "production") console.error(line);
+      else console.warn(line);
+    }
+
+    return result;
   }
 }
 

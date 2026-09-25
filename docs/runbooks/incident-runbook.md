@@ -17,6 +17,9 @@ This runbook provides step-by-step guidance for responding to common backend inc
 - [Incident 3: Database Incident](#incident-3-database-incident)
 - [Incident 4: Redis Failure](#incident-4-redis-failure)
 - [Incident 5: Oracle Resolution Failure](#incident-5-oracle-resolution-failure)
+- [Incident 6: Queue Backlog (Settlement / Oracle Submission)](#incident-6-queue-backlog-settlement--oracle-submission)
+- [Incident 7: Stuck CHALLENGED Resolution Candidates](#incident-7-stuck-challenged-resolution-candidates)
+- [Incident 8: Duplicate Settlement / Finalization Race](#incident-8-duplicate-settlement--finalization-race)
 - [Post-Incident Process](#post-incident-process)
 - [Useful Commands & Queries](#useful-commands--queries)
 - [Contact & Resources](#contact--resources)
@@ -619,26 +622,43 @@ docker logs vatix-backend 2>&1 | grep -i redis
 ### Detection
 
 ```sql
--- Check markets in challenged state
+-- Check resolution candidates in CHALLENGED status
 SELECT
-  market_id,
-  status,
-  resolved_at,
-  challenge_ends_at,
-  NOW() - challenge_ends_at as time_since_challenge_end
-FROM markets
-WHERE status IN ('challenged', 'resolving')
-ORDER BY challenge_ends_at ASC;
+  rc.id,
+  rc.market_id,
+  rc.status,
+  rc.proposed_outcome,
+  rc.confidence_score,
+  rc.created_at,
+  NOW() - rc.created_at as age_since_proposed
+FROM resolution_candidates rc
+WHERE rc.status = 'CHALLENGED'
+ORDER BY rc.created_at ASC;
 
--- Check resolution candidates
+-- Check all resolution candidates for a market
 SELECT
-  market_id,
-  source_type,
-  confidence_score,
-  created_at
-FROM resolution_candidates
-ORDER BY created_at DESC
-LIMIT 20;
+  rc.id,
+  rc.status,
+  rc.proposed_outcome,
+  rc.confidence_score,
+  rc.source,
+  rc.created_at
+FROM resolution_candidates rc
+WHERE rc.market_id = '[MARKET_ID]'
+ORDER BY rc.created_at DESC;
+
+-- Markets awaiting resolution (ACTIVE with existing resolution candidates)
+SELECT DISTINCT
+  m.id,
+  m.status,
+  m.end_time,
+  COUNT(rc.id) as candidate_count,
+  MAX(CASE WHEN rc.status = 'CHALLENGED' THEN 1 ELSE 0 END) as has_challenged
+FROM markets m
+LEFT JOIN resolution_candidates rc ON m.id = rc.market_id
+WHERE m.status = 'ACTIVE'
+GROUP BY m.id
+ORDER BY m.end_time ASC;
 ```
 
 ### Response Steps
@@ -662,14 +682,22 @@ curl http://localhost:3000/v1/oracle/health
 -- WARNING: Only use manual resolution as last resort
 -- Requires admin access and proper authorization
 
--- Update market status
+-- Update market status to RESOLVED with outcome (outcome: true=YES, false=NO)
 UPDATE markets
-SET status = 'resolved',
-    resolved_at = NOW(),
-    outcome = '[YES/NO]'
-WHERE market_id = '[MARKET_ID]';
+SET status = 'RESOLVED',
+    outcome = true,  -- or false for NO
+    resolution_time = NOW(),
+    updated_at = NOW()
+WHERE id = '[MARKET_ID]';
 
--- Log the manual intervention
+-- If a resolution candidate should be accepted, update its status
+UPDATE resolution_candidates
+SET status = 'ACCEPTED',
+    updated_at = NOW()
+WHERE market_id = '[MARKET_ID]'
+  AND status = 'CHALLENGED';
+
+-- Log the manual intervention (if audit_log table exists)
 INSERT INTO audit_log (
   action,
   entity_type,
@@ -689,15 +717,20 @@ INSERT INTO audit_log (
 
 ```sql
 -- Confirm market status
-SELECT market_id, status, resolved_at, outcome
+SELECT id, status, outcome, resolution_time
 FROM markets
+WHERE id = '[MARKET_ID]';
+
+-- Check resolution candidates
+SELECT id, status, proposed_outcome
+FROM resolution_candidates
 WHERE market_id = '[MARKET_ID]';
 
--- Check positions are settled
+-- Check user positions are settled
 SELECT COUNT(*) as unsettled_positions
-FROM positions
+FROM user_positions
 WHERE market_id = '[MARKET_ID]'
-  AND status != 'settled';
+  AND is_settled = false;
 ```
 
 #### Step 4: Prevention
@@ -707,6 +740,419 @@ WHERE market_id = '[MARKET_ID]'
 - [ ] Set up alerts for markets approaching challenge window expiry
 - [ ] Implement automatic retry with exponential backoff
 - [ ] Create manual resolution runbook with proper access controls
+
+---
+
+## Incident 6: Queue Backlog (Settlement / Oracle Submission)
+
+BullMQ backs both the settlement queue (`apps/workers/src/settlement/`) and
+the oracle submission queue (`apps/workers/src/oracle/`). Queue names and
+`REDIS_KEY_PREFIX` handling live in
+[`apps/workers/src/shared/queue-config.ts`](../../apps/workers/src/shared/queue-config.ts).
+For consumer/retry/dead-letter mechanics see
+[Queue Consumer](../queue-consumer.md) and [Dead Letter Log](../dead-letter-log.md).
+
+Default queue names (BullMQ prefixes every key with `bull:`):
+
+| Queue             | Name (env override)                                                       | Example Redis key prefix         |
+| ----------------- | ------------------------------------------------------------------------- | -------------------------------- |
+| Settlement        | `${REDIS_KEY_PREFIX}${SETTLEMENT_QUEUE_NAME}` (`vatix:settlement-trades`) | `bull:vatix:settlement-trades:*` |
+| Oracle submission | `${SUBMISSION_QUEUE_NAME}` (`oracle-submissions`)                         | `bull:oracle-submissions:*`      |
+
+### Symptoms
+
+- Trades matched but not settling on-chain (settlement lag)
+- Oracle reports stuck in `pending`/`submitting` state
+- `waiting`/`delayed` job counts climbing in monitoring
+- Growing `failed` (dead-letter) count in worker logs
+
+### Detection — Redis CLI recipes
+
+Replace `<queue>` with the full queue key prefix from the table above
+(e.g. `vatix:settlement-trades` or `oracle-submissions`).
+
+```bash
+# Jobs waiting to be picked up
+redis-cli -u $REDIS_URL LLEN "bull:<queue>:wait"
+
+# Jobs currently being processed
+redis-cli -u $REDIS_URL LLEN "bull:<queue>:active"
+
+# Jobs awaiting a retry backoff window
+redis-cli -u $REDIS_URL ZCARD "bull:<queue>:delayed"
+
+# Jobs that exhausted all attempts (dead-letter candidates)
+redis-cli -u $REDIS_URL ZCARD "bull:<queue>:failed"
+
+# List the oldest 10 failed job IDs with their failure timestamp (score)
+redis-cli -u $REDIS_URL ZRANGE "bull:<queue>:failed" 0 9 WITHSCORES
+
+# Inspect a specific job's data/error (id from the ZRANGE output above)
+redis-cli -u $REDIS_URL HGETALL "bull:<queue>:<jobId>"
+
+# One-shot summary of all counts for a queue
+for state in wait active delayed failed; do
+  echo -n "$state: "
+  if [ "$state" = "delayed" ] || [ "$state" = "failed" ]; then
+    redis-cli -u $REDIS_URL ZCARD "bull:<queue>:$state"
+  else
+    redis-cli -u $REDIS_URL LLEN "bull:<queue>:$state"
+  fi
+done
+```
+
+Idempotency check for a specific stuck settlement trade
+(see [Queue Consumer § Idempotency](../queue-consumer.md#idempotency)):
+
+```bash
+redis-cli -u $REDIS_URL EXISTS "vatix:settlement:processed:<tradeId>"
+```
+
+### Response Steps
+
+#### Step 1: Confirm backlog scope
+
+Run the detection commands above for both queues. A `wait`/`delayed` count
+that keeps growing over several minutes (not just a momentary spike) means
+consumers aren't keeping up or have stopped.
+
+```bash
+docker ps | grep -E "worker|settlement|oracle"
+docker logs vatix-backend 2>&1 | grep -iE "settlement|oracle-submission" | tail -50
+```
+
+#### Step 2: Identify root cause
+
+- **Worker process down/crashed** — check `docker ps` / process manager for
+  the settlement or oracle submission worker.
+- **Downstream failure** — settlement jobs fail if Postgres or Stellar RPC is
+  unavailable; check Incident 3 and Incident 2 sections.
+- **Poison job** — a single malformed job can repeatedly fail and block
+  `active` if concurrency is low; check its payload via `HGETALL` above.
+
+#### Step 3: Remediation
+
+**A. Restart the affected worker (first attempt)**
+
+```bash
+docker restart vatix-settlement-worker
+# or, if run via pnpm/process manager:
+pm2 restart settlement-worker
+```
+
+**B. Re-run failed jobs once the root cause is fixed**
+
+Use the DLQ CLI (issue #953) — it retries jobs through BullMQ so retry
+counters and locks stay consistent, and never needs raw `redis-cli`.
+`--queue` takes the alias `settlement` or `oracle`.
+
+```bash
+# See what is dead-lettered
+pnpm dlq stats --queue settlement
+pnpm dlq list  --queue settlement --limit 50
+
+# Preview, then retry the whole failed set (production needs --yes)
+pnpm dlq retry-all --queue settlement --limit 50 --dry-run
+pnpm dlq retry-all --queue settlement --limit 50 --yes
+
+# One job at a time
+pnpm dlq retry   --queue oracle --job <jobId>
+pnpm dlq discard --queue oracle --job <jobId> --yes   # permanent — only for confirmed poison
+```
+
+`retry-all` reports per-job failures without aborting the batch and exits
+non-zero if any job could not be retried. For a non-retryable poison job,
+`discard` after you have captured its payload from `pnpm dlq list`.
+
+> The older `pnpm replay:dlq` script drains a _different_ store — the raw
+> `vatix:dead-letter:*` Redis streams written for messages rejected as
+> non-retryable before they ever entered BullMQ. It does not touch the
+> BullMQ `failed` set.
+
+**C. Escalate to manual settlement (last resort)**
+
+If the backlog is blocking trade settlement past the SEV threshold, follow
+the manual resolution pattern in
+[Incident 5, Step 2](#step-2-manual-resolution-if-automated-fails) with the
+relevant trade/order IDs, and log the intervention in `audit_log`.
+
+#### Step 4: Verify recovery
+
+```bash
+redis-cli -u $REDIS_URL LLEN "bull:vatix:settlement-trades:wait"
+redis-cli -u $REDIS_URL ZCARD "bull:vatix:settlement-trades:failed"
+```
+
+Counts should trend back to baseline (near zero `wait`, no growth in
+`failed`) within a few minutes of the fix.
+
+#### Step 5: Pager / escalation guidance
+
+Use the [Severity Decision Matrix](#severity-decision-matrix) alongside
+these queue-specific triggers:
+
+| Condition                                                             | Severity |
+| --------------------------------------------------------------------- | -------- |
+| Settlement `wait` backlog > 5 min of throughput, still growing        | SEV-2    |
+| Oracle submission backlog delaying an active challenge window         | SEV-1    |
+| `failed` count growing but `wait`/`active` stable (isolated bad jobs) | SEV-3    |
+
+Follow the standard [Escalation Procedures](#escalation-procedures) for the
+resulting severity — no separate on-call path for queue incidents.
+
+#### Step 6: Prevention
+
+- [ ] Alert on `wait`/`delayed` count sustained above a threshold for >2 min
+- [ ] Alert on `failed` (dead-letter) count growth — see [Dead Letter Log](../dead-letter-log.md)
+- [ ] Dashboard the counts from the detection commands above (ties to #738)
+- [ ] Ensure worker processes are supervised/auto-restarted on crash
+
+---
+
+## Incident 7: Stuck CHALLENGED Resolution Candidates
+
+CHALLENGED resolution candidates are in dispute and waiting for adjudication by the
+finalization job. If a candidate remains CHALLENGED past its challenge window close
+time without transitioning to either REJECTED or ACCEPTED, it's stuck and must be
+investigated.
+
+### Symptoms
+
+- `resolution_candidates` row with `status = CHALLENGED` and `created_at` older than
+  `ORACLE_CHALLENGE_WINDOW_SECONDS` (default 24h)
+- No corresponding `resolution` row for that market
+- Market status remains in `ACTIVE` or other non-RESOLVED state
+- Finalization job logs show the candidate being skipped or errored
+
+### Detection — Database Queries
+
+```sql
+-- Find CHALLENGED candidates older than the challenge window (default 86400 seconds = 24h)
+SELECT id, market_id, status, created_at, confidence_score
+FROM resolution_candidates
+WHERE status = 'CHALLENGED'
+  AND created_at < NOW() - INTERVAL '24 hours'
+ORDER BY created_at DESC
+LIMIT 10;
+
+-- Check if they have corresponding Resolution rows (should be none for stuck CHALLENGED)
+SELECT rc.id, rc.market_id, rc.status, r.id as resolution_id
+FROM resolution_candidates rc
+LEFT JOIN resolutions r ON r.market_id = rc.market_id
+WHERE rc.status = 'CHALLENGED'
+  AND rc.created_at < NOW() - INTERVAL '24 hours';
+
+-- Check finalization audit logs for these candidates
+SELECT candidate_id, market_id, action, before_status, after_status, actor, created_at
+FROM resolution_audit_logs
+WHERE candidate_id = '<candidateId>'
+ORDER BY created_at DESC;
+```
+
+### Root Causes
+
+1. **Finalization job crashed/stuck** — check worker process status and logs
+2. **Competing resolution with insufficient confidence** — a PROPOSED candidate may
+   exist but with lower or equal confidence, triggering the reject logic unexpectedly
+3. **Database lock contention** — a concurrent write (e.g., another challenge or
+   finalization attempt) may have caused the transaction to abort
+4. **Bug in adjudication logic** — the finalization job's confidence comparison or
+   competing candidate query may have failed silently
+5. **Challenge window drift (issue #950)** — the finalization worker enforces
+   `FINALIZATION_CHALLENGE_WINDOW_SECONDS`, which defaults to (and in production
+   **must** equal) `ORACLE_CHALLENGE_WINDOW_SECONDS` — the window the on-chain
+   resolution contract enforces. If the two disagree the worker finalizes too
+   early or too late relative to the chain. In `NODE_ENV=production` the worker
+   refuses to start on a mismatch; outside production it starts but logs
+   `Finalization challenge window overridden and drifts from the on-chain
+resolution contract window` at `warn`. Grep the worker's startup logs for
+   `onChainChallengeWindowSeconds` and confirm it matches the contract.
+
+### Response Steps
+
+#### Step 1: Confirm the candidate is genuinely stuck
+
+```sql
+-- Verify the candidate exists, is CHALLENGED, and is past the window
+SELECT * FROM resolution_candidates
+WHERE id = '<candidateId>'
+  AND status = 'CHALLENGED';
+
+-- Check the market status
+SELECT id, status, outcome, resolution_time
+FROM markets WHERE id = '<marketId>';
+
+-- Check if any Resolution row exists (should not for CHALLENGED)
+SELECT * FROM resolutions WHERE market_id = '<marketId>';
+```
+
+#### Step 2: Investigate finalization logs
+
+```bash
+docker logs vatix-backend 2>&1 | grep -i "challenged\|finalization" | tail -100
+# or, for a specific candidate:
+docker logs vatix-backend 2>&1 | grep "<candidateId>"
+```
+
+Look for:
+
+- `Challenged candidate rejected` — challenge was adjudicated (should be REJECTED)
+- `Finalization candidate finalized` — should have transitioned to ACCEPTED
+- `CandidateNotEligibleError` — status changed during processing (lost race)
+- `MarketNotEligibleError` — market became ineligible (canceled, deleted)
+- Panics or unhandled exceptions
+
+#### Step 3: Manually adjudicate (temporary measure)
+
+If the stuck candidate cannot be finalized automatically, manually transition it:
+
+```sql
+-- Option A: Accept the challenged candidate (deny the challenge)
+-- Use this if you want the original resolution to stand
+UPDATE resolution_candidates
+SET status = 'ACCEPTED'
+WHERE id = '<candidateId>';
+
+-- Then manually create the Resolution and finalize the market
+BEGIN;
+INSERT INTO resolutions (market_id, outcome, finalized_at, provenance)
+VALUES ('<marketId>', <outcomeBoolean>, NOW(), 'manual-finalization');
+
+UPDATE markets
+SET status = 'RESOLVED', outcome = <outcomeBoolean>, resolution_time = NOW()
+WHERE id = '<marketId>';
+
+UPDATE user_positions
+SET is_settled = true
+WHERE market_id = '<marketId>';
+
+INSERT INTO resolution_audit_logs
+(candidate_id, market_id, action, before_status, after_status, actor)
+VALUES ('<candidateId>', '<marketId>', 'FINALIZE', 'CHALLENGED', 'ACCEPTED', 'manual-incident-response');
+
+COMMIT;
+```
+
+```sql
+-- Option B: Reject the challenged candidate (uphold the challenge)
+-- Use this if you want to invalidate the original resolution
+UPDATE resolution_candidates
+SET status = 'REJECTED'
+WHERE id = '<candidateId>';
+
+INSERT INTO resolution_audit_logs
+(candidate_id, market_id, action, before_status, after_status, actor)
+VALUES ('<candidateId>', '<marketId>', 'ADJUDICATE_CHALLENGE', 'CHALLENGED', 'REJECTED', 'manual-incident-response');
+
+-- Leave the market in ACTIVE state so another resolution can be finalized
+```
+
+#### Step 4: Restart finalization job and re-run
+
+```bash
+docker restart vatix-finalization-job
+# or
+pm2 restart finalization
+```
+
+The job will immediately pick up any remaining CHALLENGED candidates on its next
+scheduled run.
+
+### Severity Assessment
+
+| Condition                                                             | Severity |
+| --------------------------------------------------------------------- | -------- |
+| Single CHALLENGED candidate stuck > challenge window, market resolved | SEV-3    |
+| Multiple CHALLENGED candidates preventing market resolution on active | SEV-2    |
+| Finalization job completely down, multiple stuck CHALLENGED           | SEV-1    |
+
+Follow the standard [Escalation Procedures](#escalation-procedures) for the
+resulting severity.
+
+### Prevention
+
+- [ ] Dashboard: count of CHALLENGED candidates older than their challenge window
+- [ ] Alert: if count > 1 and growing over 10 minutes
+- [ ] Finalization logs: alert on adjudication failures or transaction aborts
+- [ ] E2E test: file a challenge, verify finalization adjudicates it within 2 cycles
+
+---
+
+## Incident 8: Duplicate Settlement / Finalization Race
+
+### Symptoms
+
+- `settle_trade` invoked twice for the same trade id (visible as two Soroban
+  txs with the same trade id in a short window).
+- Two `resolution_candidates` rows for the same market flip status in
+  conflicting order, or a finalization admin action appears to "undo" itself.
+- Oracle submission worker logs show a `resolve_market` broadcast for a
+  market that a restart or a second replica already confirmed.
+
+### Detection
+
+```bash
+# Finalization lock contention / hard failures
+curl -s localhost:9090/metrics | grep vatix_finalization_lock
+
+# Settlement job stalls and duplicate-skip events
+curl -s localhost:9090/metrics | grep -E 'vatix_settlement_job_stalled_total|vatix_settlement_duplicate_skipped_total'
+
+# Settlement errors quarantined vs retried, by code
+curl -s localhost:9090/metrics | grep vatix_settlement_error_quarantined_total
+
+# Oracle submissions stuck ambiguous (crash between broadcast and confirm)
+curl -s localhost:9090/metrics | grep vatix_oracle_submission_ambiguous_total
+```
+
+### Response Steps
+
+#### Step 1: Identify which layer raced
+
+- `vatix_finalization_lock_failures_total` increasing → the Postgres
+  `SELECT ... FOR UPDATE` on `resolution_candidates` is failing (DB
+  unreachable, deadlock, statement timeout). As of this runbook update,
+  `resolutionLock.ts` fails the finalization job fast on this condition in
+  every environment — it no longer silently proceeds without the lock. Check
+  `apps/workers` logs for `ResolutionLockError`.
+- `vatix_settlement_job_stalled_total` increasing → BullMQ is reclaiming
+  jobs whose worker didn't renew its lock in time (slow RPC, GC pause,
+  process kill). Check `lockDuration`/`stalledInterval` in
+  `apps/workers/src/settlement/bullmq-consumer.ts` against actual settlement
+  latency; a stalled job is retried under the settlement worker's own
+  idempotency key, so retries should surface as
+  `vatix_settlement_duplicate_skipped_total`, not a second on-chain call.
+- `vatix_settlement_error_quarantined_total{code="STELLAR_TX_BAD_AUTH"}` (or
+  `INVALID_SIGNATURE`) increasing → a bad signing key is being retried; this
+  is now quarantined (moved to dead-letter) rather than retried forever, so
+  check the dead-letter log for the affected trade ids and rotate/verify the
+  signer key.
+- `vatix_oracle_submission_ambiguous_total` increasing → confirmation is
+  correctly refusing to resubmit while chain state is unclear (see Incident
+  5 for the oracle-specific flow).
+
+#### Step 2: Verify on-chain state before touching the DB
+
+```bash
+# Look up the actual tx(s) for the trade/market in question via Horizon/RPC
+# before assuming the DB row is wrong — the DB is the thing that can lie,
+# the ledger cannot.
+```
+
+#### Step 3: Remediation
+
+- If a genuine double-apply reached the chain: this is a SEV-1 — engage
+  on-call immediately, do not attempt a silent DB-only fix. Follow
+  [Escalation Procedures](#escalation-procedures).
+- If it's lock/stall contention without a double-apply: no action needed
+  beyond confirming the metrics settle back to baseline; the retry/backoff
+  path is designed to absorb this.
+
+### Prevention
+
+- [ ] Alert: `vatix_finalization_lock_failures_total` rate > 0 over 5m
+- [ ] Alert: `vatix_settlement_job_stalled_total` rate > 0 sustained over 10m
+- [ ] Dashboard: `vatix_settlement_error_quarantined_total` by `code`, reviewed weekly for signing/config issues that need a human fix rather than a retry
 
 ---
 
@@ -729,6 +1175,17 @@ WHERE market_id = '[MARKET_ID]'
    - Save relevant logs
    - Export database state snapshots
    - Screenshot monitoring dashboards
+   - For any matching / trade / fill discrepancy, reconstruct the affected
+     book(s) with the replay-market forensics CLI and attach the report:
+
+     ```bash
+     DATABASE_URL=... REDIS_URL=... \
+       pnpm replay:market -- --market <marketId> --outcome YES --as-of <incidentStart>
+     ```
+
+     Exit `1` means the recorded fills diverge from what the matching engine
+     would produce. Full procedure and report interpretation:
+     [docs/replay-forensics.md](../replay-forensics.md#reconstructing-a-books-fills-incident-recipe).
 
 ### Post-Incident Review (Within 1 Week)
 
@@ -920,11 +1377,13 @@ docker exec -it vatix-postgres psql -U postgres -d vatix -c \
 
 ### Documentation Links
 
-- [Testing Guide](./testing.md)
-- [Migration Guide](./migrations.md)
-- [Migration Rollback](./migration-rollback.md)
-- [Rate Limiting](./rate-limiting.md)
-- [Deployment Runbook](./deployment-runbook.md)
+- [Testing Guide](../testing.md)
+- [Migration Guide](../migrations.md)
+- [Migration Rollback](../migration-rollback.md)
+- [Rate Limiting](../rate-limiting.md)
+- [Deployment Runbook](../deployment-runbook.md)
+- [Queue Consumer](../queue-consumer.md)
+- [Dead Letter Log](../dead-letter-log.md)
 
 ---
 

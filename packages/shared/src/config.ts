@@ -44,8 +44,7 @@ export type Env = Record<string, string | undefined>;
 const processEnv: Env =
   (
     (globalThis as Record<string, unknown>)["process"] as
-      | { env: Env }
-      | undefined
+      { env: Env } | undefined
   )?.env ?? {};
 
 // ---------------------------------------------------------------------------
@@ -159,8 +158,7 @@ function loadUrl(name: string, env: Env, allowedProtocols: string[]): string {
   // URL is available in Node.js >= 10 globally; no DOM lib needed at runtime.
   // We cast through unknown to satisfy strict TS without requiring lib: ["DOM"].
   const URLCtor = (globalThis as Record<string, unknown>)["URL"] as
-    | (new (input: string) => { protocol: string; hostname: string })
-    | undefined;
+    (new (input: string) => { protocol: string; hostname: string }) | undefined;
   if (!URLCtor) {
     throw new ConfigValidationError(
       "URL constructor is not available in this environment"
@@ -229,6 +227,12 @@ export interface BaseConfig {
   corsAllowedOrigins: string[];
   /** Rate limiting tiers. */
   rateLimiting: RateLimitConfig;
+  /**
+   * Maximum entries retained per per-market audit stream (approximate trim).
+   * The global stream retains 10× this value.
+   * Configurable via AUDIT_STREAM_MAXLEN. Default: 100 000.
+   */
+  auditStreamMaxlen: number;
 }
 
 /**
@@ -298,6 +302,9 @@ export function loadBaseConfig(env: Env = processEnv): BaseConfig {
         }),
       },
     },
+    auditStreamMaxlen: requirePositiveInt("AUDIT_STREAM_MAXLEN", env, {
+      fallback: 100_000,
+    }),
   };
 }
 
@@ -313,10 +320,30 @@ export interface IndexerConfig {
   ingestionIntervalMs: number;
   /** Max ledgers to scan per ingestion tick. */
   ledgerWindowSize: number;
+  /** Max events to fetch per RPC page. */
+  batchSize: number;
   networkId: string;
   cursorKey: string;
   checkpointFlushEveryBatches: number;
   logLevel: LogLevel;
+  /**
+   * Number of ledgers gap that triggers a fail-closed pause of the ingestion
+   * loop. When the detected gap size (network tip minus last indexed ledger
+   * across a non-contiguous sequence) meets or exceeds this threshold, the
+   * loop emits a critical log and halts until an operator intervenes.
+   * Set to 0 to disable the fail-closed behaviour (gaps are back-filled without
+   * pausing regardless of size).
+   * Configurable via INDEXER_GAP_PAUSE_THRESHOLD. Default: 1000.
+   */
+  gapPauseThreshold: number;
+  /**
+   * Maximum number of ledgers that the gap backfill is allowed to re-fetch in
+   * a single catch-up run. Prevents unbounded back-filling when a very wide
+   * gap is detected. Any gap larger than this is clamped and a warning is
+   * emitted so the operator can widen the limit or investigate.
+   * Configurable via INDEXER_BACKFILL_MAX_LEDGERS. Default: 500.
+   */
+  backfillMaxLedgers: number;
 }
 
 /**
@@ -353,6 +380,11 @@ export function loadIndexerConfig(env: Env = processEnv): IndexerConfig {
     ),
     ledgerWindowSize: requirePositiveInt("INDEXER_LEDGER_WINDOW_SIZE", env, {
       fallback: 100,
+      max: 1000,
+    }),
+    batchSize: requirePositiveInt("INDEXER_BATCH_SIZE", env, {
+      fallback: 100,
+      max: 500,
     }),
     networkId: optionalString("INDEXER_NETWORK_ID", "mainnet", env),
     cursorKey: optionalString("INDEXER_CURSOR_KEY", "ingestion", env),
@@ -362,6 +394,18 @@ export function loadIndexerConfig(env: Env = processEnv): IndexerConfig {
       { fallback: 10 }
     ),
     logLevel: loadLogLevel("INDEXER_LOG_LEVEL", env, "info"),
+    gapPauseThreshold: requireNonNegativeNumber(
+      "INDEXER_GAP_PAUSE_THRESHOLD",
+      env,
+      1000
+    ),
+    backfillMaxLedgers: requirePositiveInt(
+      "INDEXER_BACKFILL_MAX_LEDGERS",
+      env,
+      {
+        fallback: 500,
+      }
+    ),
   };
 }
 
@@ -371,25 +415,82 @@ export function loadIndexerConfig(env: Env = processEnv): IndexerConfig {
 
 export interface FinalizationConfig {
   intervalMs: number;
+  /**
+   * Challenge window (seconds) the finalization worker enforces before a
+   * PROPOSED candidate becomes eligible for on-chain finalization. This MUST
+   * equal {@link FinalizationConfig.onChainChallengeWindowSeconds} — a drift
+   * lets the worker finalize markets earlier or later than the resolution
+   * contract allows. In production the loader fails fast if they disagree.
+   */
   challengeWindowSeconds: number;
+  /**
+   * Canonical challenge window enforced by the on-chain resolution contract,
+   * sourced from ORACLE_CHALLENGE_WINDOW_SECONDS (the single value shared with
+   * the API and oracle scheduler). Used to detect backend/chain drift.
+   */
+  onChainChallengeWindowSeconds: number;
+  /**
+   * True when FINALIZATION_CHALLENGE_WINDOW_SECONDS is set to a value that
+   * differs from the on-chain window. Only reachable outside production
+   * (production rejects the drift in the loader); the worker logs a warning
+   * on startup so the local stub is never silent.
+   */
+  challengeWindowOverridden: boolean;
   logLevel: LogLevel;
 }
 
 /**
  * Loads and validates finalization worker config.
  *
+ * The challenge window defaults to ORACLE_CHALLENGE_WINDOW_SECONDS — the same
+ * value the API and oracle scheduler use and the one that must match the
+ * on-chain resolution contract. FINALIZATION_CHALLENGE_WINDOW_SECONDS remains
+ * as a dev/test-only override; in NODE_ENV=production a value that drifts from
+ * the on-chain window is a fatal ConfigValidationError (issue #950).
+ *
  * @param env - Defaults to process.env. Pass a custom object in tests.
  */
 export function loadFinalizationConfig(
   env: Env = processEnv
 ): FinalizationConfig {
-  return {
-    intervalMs: requireMinNumber("FINALIZATION_INTERVAL_MS", env, 1000, 60_000),
-    challengeWindowSeconds: requireNonNegativeNumber(
+  const nodeEnv = loadNodeEnv(env);
+  const onChainChallengeWindowSeconds = requirePositiveInt(
+    "ORACLE_CHALLENGE_WINDOW_SECONDS",
+    env,
+    { fallback: 86_400 }
+  );
+
+  const rawOverride = env["FINALIZATION_CHALLENGE_WINDOW_SECONDS"];
+  const hasOverride = rawOverride !== undefined && rawOverride !== "";
+  let challengeWindowSeconds = onChainChallengeWindowSeconds;
+
+  if (hasOverride) {
+    challengeWindowSeconds = requireNonNegativeNumber(
       "FINALIZATION_CHALLENGE_WINDOW_SECONDS",
       env,
-      3600
-    ),
+      onChainChallengeWindowSeconds
+    );
+    if (
+      nodeEnv === "production" &&
+      challengeWindowSeconds !== onChainChallengeWindowSeconds
+    ) {
+      throw new ConfigValidationError(
+        `FINALIZATION_CHALLENGE_WINDOW_SECONDS (${challengeWindowSeconds}) must ` +
+          `match the on-chain resolution contract window ` +
+          `ORACLE_CHALLENGE_WINDOW_SECONDS (${onChainChallengeWindowSeconds}) in ` +
+          `production. A drift lets the finalization worker finalize markets ` +
+          `too early or too late relative to the chain. Remove the override or ` +
+          `align the two values.`
+      );
+    }
+  }
+
+  return {
+    intervalMs: requireMinNumber("FINALIZATION_INTERVAL_MS", env, 1000, 60_000),
+    challengeWindowSeconds,
+    onChainChallengeWindowSeconds,
+    challengeWindowOverridden:
+      hasOverride && challengeWindowSeconds !== onChainChallengeWindowSeconds,
     logLevel: loadLogLevel("FINALIZATION_LOG_LEVEL", env, "info"),
   };
 }

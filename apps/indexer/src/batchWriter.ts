@@ -11,10 +11,11 @@ import type {
   DuplicateEventLogger,
 } from "./idempotency.js";
 import { insertAllIfNew, insertIfNew } from "./idempotency.js";
+import { sharesRawToInt } from "./decimalUtils.js";
 import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client/index.js";
-import { sanitizeForJson } from "./safeJson.js";
+import { sleep } from "./retry.js";
 
 export type BatchRecord =
   | { kind: "trade"; data: PersistedTrade }
@@ -43,6 +44,45 @@ const CHAIN_RESOLUTION_SOURCE_PREFIX = "chain:market_resolved";
 const UNKNOWN_OPERATOR_ADDRESS =
   "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
+/**
+ * Prisma/Postgres error codes that are safe to retry — the operation did not
+ * partially commit so repeating it is idempotent given the write-idempotency
+ * guarantees already in place.
+ *
+ * P1001 — Cannot reach database server
+ * P1008 — Operations timed out
+ * P1017 — Server closed the connection
+ * 40001 — Serialization failure (Postgres)
+ * 40P01 — Deadlock detected (Postgres)
+ * P2002 — Unique constraint violation (#946). Every `create()` issued inside
+ *   this transaction targets a row keyed by `idempotencyKey`, so this code
+ *   can only mean a concurrent batch writer (another instance, or an
+ *   overlapping retry of this same event range under Horizon's
+ *   at-least-once delivery) committed the identical idempotent record
+ *   between our dedup read and our insert. Postgres aborts the whole
+ *   transaction on the conflicting statement, so we cannot locally
+ *   downgrade it to a skip — retrying is safe and correct: the next
+ *   attempt's dedup check will see the now-committed row and classify it
+ *   as a duplicate instead of racing it again.
+ */
+const RETRYABLE_PRISMA_CODES = new Set([
+  "P1001",
+  "P1008",
+  "P1017",
+  "40001",
+  "40P01",
+  "P2002",
+]);
+
+const BATCH_WRITE_MAX_RETRIES = 3;
+const BATCH_WRITE_RETRY_DELAY_MS = 200;
+
+function isBatchWriteRetryable(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code: string = (err as any).code ?? (err as any).errorCode ?? "";
+  return RETRYABLE_PRISMA_CODES.has(code);
+}
+
 export class PrismaBatchWriter implements BatchWriter {
   private readonly prisma = getPrismaClient();
 
@@ -62,74 +102,98 @@ export class PrismaBatchWriter implements BatchWriter {
         }
       : undefined;
 
-    await this.prisma.$transaction(async (tx) => {
-      const keyedRecords = records.map((record) => ({
-        ...record,
-        idempotencyKey: record.data.idempotencyKey,
-      }));
-      const recordByKey = new Map(
-        records.map((record) => [record.data.idempotencyKey, record])
-      );
+    // Retry the transaction on transient DB errors (connection reset,
+    // serialisation failures, deadlocks). Each batch is idempotent thanks to
+    // the indexerProcessedEvent deduplication layer so retrying is safe.
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= BATCH_WRITE_MAX_RETRIES; attempt++) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          // Reset per-attempt counters inside the transaction so a retry
+          // starts from a clean slate.
+          written = 0;
+          skipped = 0;
+          errors.length = 0;
 
-      const deduped = await insertAllIfNew(
-        keyedRecords,
-        async (record) => {
-          const existing = await tx.indexerProcessedEvent.findUnique({
-            where: { idempotencyKey: record.idempotencyKey },
-          });
+          const keyedRecords = records.map((record) => ({
+            ...record,
+            idempotencyKey: record.data.idempotencyKey,
+          }));
+          const recordByKey = new Map(
+            records.map((record) => [record.data.idempotencyKey, record])
+          );
 
-          return existing ? null : record;
-        },
-        { logger: duplicateLogger }
-      );
+          const deduped = await insertAllIfNew(
+            keyedRecords,
+            async (record) => {
+              const existing = await tx.indexerProcessedEvent.findUnique({
+                where: { idempotencyKey: record.idempotencyKey },
+              });
 
-      skipped += deduped.duplicateCount;
-
-      for (const dedupedRecord of deduped.inserted) {
-        const record = recordByKey.get(dedupedRecord.idempotencyKey);
-        if (!record) {
-          continue;
-        }
-
-        try {
-          const result = await insertIfNew(
-            record.data,
-            async (persisted) =>
-              this.persistRecord(
-                tx,
-                record,
-                persisted as
-                  | PersistedTrade
-                  | PersistedResolution
-                  | PersistedCollateralDeposit
-                  | PersistedMarketCreated
-              ),
+              return existing ? null : record;
+            },
             { logger: duplicateLogger }
           );
 
-          if (result.status === "inserted") {
-            written += 1;
-          } else {
-            skipped += 1;
-          }
-        } catch (error) {
-          const serializedRecord = sanitizeForJson(record) as Record<
-            string,
-            unknown
-          >;
-          errors.push({
-            record: serializedRecord,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          this.logger?.warn("Failed to persist indexer batch record", {
-            record: serializedRecord,
-            error: sanitizeForJson(error),
-          });
-        }
-      }
-    });
+          skipped += deduped.duplicateCount;
 
-    return { written, skipped, errors };
+          // A record failing to persist must abort and roll back the whole
+          // transaction rather than committing the records that already
+          // succeeded — a batch is applied atomically or not at all, so a
+          // retry never has to reason about a half-applied batch (Issue #756).
+          for (const dedupedRecord of deduped.inserted) {
+            const record = recordByKey.get(dedupedRecord.idempotencyKey);
+            if (!record) {
+              continue;
+            }
+
+            const result = await insertIfNew(
+              record.data,
+              async (persisted) =>
+                this.persistRecord(
+                  tx,
+                  record,
+                  persisted as
+                    | PersistedTrade
+                    | PersistedResolution
+                    | PersistedCollateralDeposit
+                    | PersistedMarketCreated
+                ),
+              { logger: duplicateLogger }
+            );
+
+            if (result.status === "inserted") {
+              written += 1;
+            } else {
+              skipped += 1;
+            }
+          }
+        });
+
+        // Transaction succeeded — exit the retry loop
+        return { written, skipped, errors };
+      } catch (err) {
+        lastError = err;
+        const isLast = attempt === BATCH_WRITE_MAX_RETRIES;
+
+        if (!isLast && isBatchWriteRetryable(err)) {
+          const delay = BATCH_WRITE_RETRY_DELAY_MS * 2 ** attempt;
+          this.logger?.warn("Transient DB error in batch write, retrying", {
+            attempt: attempt + 1,
+            maxRetries: BATCH_WRITE_MAX_RETRIES,
+            delayMs: delay,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          await sleep(delay);
+          continue;
+        }
+
+        throw err;
+      }
+    }
+
+    // Unreachable — satisfies TypeScript
+    throw lastError;
   }
 
   async flush(): Promise<void> {
@@ -201,6 +265,7 @@ export class PrismaBatchWriter implements BatchWriter {
               ? resolution.oracleAddress
               : UNKNOWN_OPERATOR_ADDRESS,
           idempotencyKey: resolution.idempotencyKey,
+          confidenceScore: resolution.confidenceScore ?? null,
         },
       });
     } else if (record.kind === "collateral_deposited") {
@@ -252,8 +317,25 @@ export class PrismaBatchWriter implements BatchWriter {
     >,
     trade: PersistedTrade
   ): Promise<void> {
-    const quantity = Number(trade.quantityRaw);
-    if (!Number.isFinite(quantity) || quantity <= 0) return;
+    // #948: validated bigint -> Number boundary (rejects negative/non-integer/
+    // precision-losing quantities) instead of a bare `Number(raw)`, which
+    // silently truncates past Number.MAX_SAFE_INTEGER.
+    let quantity: number;
+    try {
+      quantity = sharesRawToInt(trade.quantityRaw);
+    } catch (err) {
+      this.logger?.warn(
+        "Skipping position reconciliation: invalid trade quantity",
+        {
+          idempotencyKey: trade.idempotencyKey,
+          marketId: trade.marketId,
+          quantityRaw: trade.quantityRaw.toString(),
+          error: err instanceof Error ? err.message : String(err),
+        }
+      );
+      return;
+    }
+    if (quantity <= 0) return;
 
     const traderYesDelta =
       trade.outcome === "YES"

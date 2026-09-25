@@ -17,6 +17,7 @@ import { withRetry, RetryConfig, isRetryableError } from "./retry-utils.js";
 import type { ILogger } from "../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "./submission-queue.js";
 import { SubmissionQueue } from "./submission-queue.js";
+import { oracleFailClosedTotal } from "../../src/services/metrics.js";
 
 /**
  * Callback invoked when a resolution succeeds and should be enqueued.
@@ -35,6 +36,10 @@ export interface OracleServiceConfig {
   enableFallback?: boolean;
   /** Default timeout for resolution requests */
   defaultTimeoutMs?: number;
+  /** Timeout for the primary provider, in milliseconds */
+  primaryTimeoutMs?: number;
+  /** Timeout for the fallback provider, in milliseconds */
+  fallbackTimeoutMs?: number;
   /** Retry configuration for provider calls */
   retryConfig?: Partial<RetryConfig>;
   /** Structured logger — defaults to a no-op logger if omitted */
@@ -43,6 +48,30 @@ export interface OracleServiceConfig {
   submissionQueue?: SubmissionQueue;
   /** Optional enqueue callback (alternative to submissionQueue) */
   enqueueCallback?: EnqueueCallback;
+  /**
+   * Minimum acceptable confidence (0-1) for a result to be enqueued.
+   * Results below this threshold are rejected and fail-closed rather than
+   * being silently enqueued with weak signal. Defaults to 0.75.
+   */
+  minConfidenceThreshold?: number;
+}
+
+/**
+ * Error thrown when a resolution succeeds but its confidence score is below
+ * the configured `minConfidenceThreshold`. This is a fail-closed condition:
+ * the result is never enqueued for on-chain submission.
+ */
+export class LowConfidenceResultError extends Error {
+  constructor(
+    public readonly marketId: string,
+    public readonly confidence: number,
+    public readonly threshold: number
+  ) {
+    super(
+      `Resolution for market ${marketId} has confidence ${confidence} below required threshold ${threshold}`
+    );
+    this.name = "LowConfidenceResultError";
+  }
 }
 
 /**
@@ -61,6 +90,8 @@ export interface OracleMetrics {
   totalAttempts: number;
   /** Total retry attempts across all primary resolutions */
   retryCount: number;
+  /** Total provider outage events — all providers (primary + fallback) failed */
+  totalOutageCount: number;
 }
 
 /**
@@ -68,18 +99,23 @@ export interface OracleMetrics {
  * Uses primary adapter by default, switches to fallback on primary failure.
  * Optionally enqueues successful resolutions for on-chain submission.
  *
- * ## Failover policy
+ * ## Failover policy (explicit timeouts, fail-closed)
  *
- * 1. The primary adapter is called first, with up to `retryConfig.maxRetries`
- *    retries using exponential back-off (see retry-utils.ts).
+ * 1. The primary adapter is called first with timeout `primaryTimeoutMs`
+ *    (defaults to 30 seconds). Retries are applied per `retryConfig.maxRetries`
+ *    with exponential back-off (see retry-utils.ts).
  * 2. If the primary fails with a **retryable** (transient) error after all
- *    retries, and `enableFallback` is true, the fallback adapter is tried once.
+ *    retries, and `enableFallback` is true, the fallback adapter is tried with
+ *    timeout `fallbackTimeoutMs` (defaults to 30 seconds).
  *    Retryable errors: network failures, 5xx responses, timeouts.
  *    Non-retryable errors (4xx client errors, invalid responses) skip
  *    the fallback and are re-thrown immediately.
- * 3. If the fallback adapter also fails, an error is thrown that aggregates
- *    both failure messages.
- * 4. Both adapters enqueue a successful resolution via `submissionQueue` or
+ * 3. If both primary and fallback fail or timeout, the oracle fails closed:
+ *    no resolution is returned or enqueued. An `oracleFailClosedTotal` metric
+ *    is incremented and an error is thrown.
+ * 4. Production mode enforces fail-closed behavior (no silent fallback to
+ *    stale or default values).
+ * 5. Successful resolutions are enqueued via `submissionQueue` or
  *    `enqueueCallback` when configured.
  */
 export class OracleService {
@@ -97,11 +133,13 @@ export class OracleService {
     fallbackFailureCount: 0,
     totalAttempts: 0,
     retryCount: 0,
+    totalOutageCount: 0,
   };
 
   constructor(config: OracleServiceConfig) {
     this.primaryAdapter = config.primaryAdapter;
     this.fallbackAdapter = config.fallbackAdapter;
+    const isProduction = process.env.NODE_ENV === "production";
     const noOpLogger: ILogger = {
       debug: () => {},
       info: () => {},
@@ -113,11 +151,17 @@ export class OracleService {
     this.submissionQueue = config.submissionQueue;
     this.enqueueCallback = config.enqueueCallback;
     this.config = {
-      enableFallback: true,
+      enableFallback: !isProduction,
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
+      primaryTimeoutMs: DEFAULT_TIMEOUT_MS,
+      fallbackTimeoutMs: DEFAULT_TIMEOUT_MS,
       retryConfig: { maxRetries: 0 },
+      minConfidenceThreshold: 0.75,
       ...config,
     };
+    if (isProduction) {
+      this.config.enableFallback = false;
+    }
   }
 
   /**
@@ -130,20 +174,28 @@ export class OracleService {
    */
   async resolve(request: ResolutionRequest): Promise<ProviderResult> {
     this.metrics.totalAttempts++;
+    const requestId = request.marketId;
 
     try {
       // Attempt primary provider
       this.logger.info("Resolving market via primary provider", {
         marketId: request.marketId,
+        requestId,
       });
 
+      const primaryRequest = {
+        ...request,
+        timeoutMs: this.config.primaryTimeoutMs ?? this.config.defaultTimeoutMs,
+      };
+
       const result = await withRetry(
-        () => this.primaryAdapter.resolve(request),
+        () => this.primaryAdapter.resolve(primaryRequest),
         this.config.retryConfig,
         (error, attempt, delay) => {
           this.metrics.retryCount++;
           this.logger.warn("Primary provider retry", {
             marketId: request.marketId,
+            requestId,
             attempt,
             delayMs: Math.round(delay),
             error: error.message,
@@ -154,8 +206,11 @@ export class OracleService {
       this.metrics.primarySuccessCount++;
       this.logger.info("Primary provider resolved market", {
         marketId: request.marketId,
+        requestId,
         source: result.source,
       });
+
+      this.assertConfidence(request, result);
 
       // Enqueue for on-chain submission if configured
       await this.enqueueResult(request, result);
@@ -165,6 +220,7 @@ export class OracleService {
       this.metrics.primaryFailureCount++;
       this.logger.error("Primary provider failed", {
         marketId: request.marketId,
+        requestId,
         error:
           primaryError instanceof Error
             ? primaryError.message
@@ -199,15 +255,25 @@ export class OracleService {
   ): Promise<ProviderResult> {
     this.logger.warn("Falling back to secondary provider", {
       marketId: request.marketId,
+      requestId: request.marketId,
     });
 
     try {
-      const result = await this.fallbackAdapter.resolve(request);
+      const fallbackRequest = {
+        ...request,
+        timeoutMs:
+          this.config.fallbackTimeoutMs ?? this.config.defaultTimeoutMs,
+      };
+
+      const result = await this.fallbackAdapter.resolve(fallbackRequest);
       this.metrics.fallbackUsageCount++;
       this.logger.info("Fallback provider resolved market", {
         marketId: request.marketId,
+        requestId: request.marketId,
         source: result.source,
       });
+
+      this.assertConfidence(request, result);
 
       // Enqueue for on-chain submission if configured
       await this.enqueueResult(request, result);
@@ -215,8 +281,14 @@ export class OracleService {
       return result;
     } catch (fallbackError) {
       this.metrics.fallbackFailureCount++;
-      this.logger.error("Fallback provider failed", {
+      this.metrics.totalOutageCount++;
+      oracleFailClosedTotal.inc();
+      this.logger.error("All providers unreachable — total provider outage", {
+        event: "oracle.total_outage",
         marketId: request.marketId,
+        requestId: request.marketId,
+        primaryFailureCount: this.metrics.primaryFailureCount,
+        fallbackFailureCount: this.metrics.fallbackFailureCount,
         error:
           fallbackError instanceof Error
             ? fallbackError.message
@@ -266,6 +338,7 @@ export class OracleService {
       fallbackFailureCount: 0,
       totalAttempts: 0,
       retryCount: 0,
+      totalOutageCount: 0,
     };
   }
 
@@ -281,6 +354,45 @@ export class OracleService {
    */
   getFallbackAdapter(): ProviderAdapter {
     return this.fallbackAdapter;
+  }
+
+  /**
+   * Fail closed when a resolution's confidence falls below the configured
+   * `minConfidenceThreshold`. Partial-success, low-confidence results must
+   * never reach the submission queue — silently enqueuing a weak signal is
+   * how bad resolutions end up on-chain.
+   *
+   * @throws {LowConfidenceResultError} If confidence is below threshold.
+   */
+  private assertConfidence(
+    request: ResolutionRequest,
+    result: ProviderResult
+  ): void {
+    const threshold = this.config.minConfidenceThreshold ?? 0.75;
+
+    if (result.confidence >= threshold) {
+      return;
+    }
+
+    this.metrics.totalOutageCount++;
+    oracleFailClosedTotal.inc();
+    this.logger.error(
+      "Refusing to enqueue low-confidence resolution — failing closed",
+      {
+        event: "oracle.low_confidence_fail_closed",
+        marketId: request.marketId,
+        requestId: request.marketId,
+        confidence: result.confidence,
+        threshold,
+        source: result.source,
+      }
+    );
+
+    throw new LowConfidenceResultError(
+      request.marketId,
+      result.confidence,
+      threshold
+    );
   }
 
   /**
@@ -313,6 +425,7 @@ export class OracleService {
     } catch (error) {
       this.logger.error("Failed to enqueue resolution for submission", {
         marketId: request.marketId,
+        requestId: request.marketId,
         error: error instanceof Error ? error.message : String(error),
       });
     }

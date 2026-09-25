@@ -137,8 +137,7 @@ export function withIdempotencyKey(
 // ─── Duplicate insertion guard ───────────────────────────────────────────────
 
 export type InsertResult<T> =
-  | { status: "inserted"; record: T }
-  | { status: "duplicate"; key: string };
+  { status: "inserted"; record: T } | { status: "duplicate"; key: string };
 
 export interface DuplicateEventLogger {
   info(message: string, meta?: Record<string, unknown>): void;

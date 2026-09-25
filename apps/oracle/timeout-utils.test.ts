@@ -4,7 +4,7 @@
  * Covers timeout validation, signal creation, and withTimeout behavior.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   validateTimeout,
   createTimeoutSignal,
@@ -12,6 +12,8 @@ import {
   DEFAULT_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
+  PRIMARY_PROVIDER_TIMEOUT_POLICY_MS,
+  FALLBACK_PROVIDER_TIMEOUT_POLICY_MS,
   formatDuration,
 } from "./timeout-utils.js";
 
@@ -149,5 +151,43 @@ describe("formatDuration", () => {
 
   it("should format exact seconds", () => {
     expect(formatDuration(2000)).toBe("2.00s");
+  });
+});
+
+describe("documented timeout policy (#992)", () => {
+  it("exposes named policy constants matching docs/architecture.md", () => {
+    expect(PRIMARY_PROVIDER_TIMEOUT_POLICY_MS).toBe(30_000);
+    expect(FALLBACK_PROVIDER_TIMEOUT_POLICY_MS).toBe(30_000);
+  });
+});
+
+describe("validateTimeout production fail-fast (#992)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("clamps out-of-range values outside production", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    expect(validateTimeout(MIN_TIMEOUT_MS - 1)).toBe(MIN_TIMEOUT_MS);
+    expect(validateTimeout(MAX_TIMEOUT_MS + 1)).toBe(MAX_TIMEOUT_MS);
+  });
+
+  it("throws instead of silently clamping below the minimum in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() => validateTimeout(MIN_TIMEOUT_MS - 1)).toThrow(
+      /refusing to silently clamp/i
+    );
+  });
+
+  it("throws instead of silently clamping above the maximum in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() => validateTimeout(MAX_TIMEOUT_MS + 1)).toThrow(
+      /refusing to silently clamp/i
+    );
+  });
+
+  it("still accepts an in-range value in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(validateTimeout(DEFAULT_TIMEOUT_MS)).toBe(DEFAULT_TIMEOUT_MS);
   });
 });

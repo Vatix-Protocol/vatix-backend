@@ -8,23 +8,24 @@ a consistent JSON envelope.
 ## Error Envelope
 
 Every error response uses the `ErrorEnvelope` shape defined in
-`src/types/errors.ts`:
+`packages/shared/src/errors.ts` (re-exported as `ErrorResponse` from
+`src/types/errors.ts` for API consumers):
 
-| Field        | Type     | Description                                                 |
-| ------------ | -------- | ----------------------------------------------------------- |
-| `code`       | `string` | Stable snake_case identifier (safe to switch on in clients) |
-| `message`    | `string` | Human-readable description                                  |
-| `error`      | `string` | Duplicate of `message` for legacy clients                   |
-| `statusCode` | `number` | HTTP status (mirrors the response status line)              |
-| `requestId`  | `string` | Correlates the response with server logs                    |
-| `metadata`   | `object` | Optional — present for `ValidationError` field details      |
-| `stack`      | `string` | Optional — included only outside production for 5xx errors  |
+| Field        | Type     | Description                                                |
+| ------------ | -------- | ---------------------------------------------------------- |
+| `code`       | `string` | Stable identifier (safe to switch on in clients)           |
+| `message`    | `string` | Human-readable description                                 |
+| `error`      | `string` | Duplicate of `message` for legacy clients                  |
+| `statusCode` | `number` | HTTP status (mirrors the response status line)             |
+| `requestId`  | `string` | Correlates the response with server logs                   |
+| `fields`     | `object` | Optional — present for `ValidationError` field details     |
+| `stack`      | `string` | Optional — included only outside production for 5xx errors |
 
 Example (development, 404):
 
 ```json
 {
-  "code": "not_found",
+  "code": "NOT_FOUND",
   "message": "Market not found",
   "error": "Market not found",
   "statusCode": 404,

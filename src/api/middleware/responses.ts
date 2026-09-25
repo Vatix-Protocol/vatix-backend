@@ -7,6 +7,8 @@ export interface AuthErrorResponse {
   statusCode: number;
 }
 
+export type ApiErrorResponse = AuthErrorResponse;
+
 /**
  * Standard success response envelope for all API endpoints.
  *
@@ -58,3 +60,28 @@ export function forbidden(reply: FastifyReply, message = "Forbidden"): void {
   };
   reply.status(403).send(body);
 }
+
+export function matchingUnavailable(
+  reply: FastifyReply,
+  message = "This instance does not currently hold the matching leader lease"
+): void {
+  const body: ApiErrorResponse = {
+    error: message,
+    code: "MATCHING_UNAVAILABLE",
+    statusCode: 503,
+  };
+  reply.status(503).send(body);
+}
+
+export function serviceUnavailable(
+  reply: FastifyReply,
+  message = "Service temporarily unavailable"
+): void {
+  const body: ApiErrorResponse = {
+    error: message,
+    code: "SERVICE_UNAVAILABLE",
+    statusCode: 503,
+  };
+  reply.status(503).send(body);
+}
+

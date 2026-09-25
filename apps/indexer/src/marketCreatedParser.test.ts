@@ -1,10 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { nativeToScVal } from "@stellar/stellar-sdk";
 import {
   parseMarketCreatedChainEvent,
   parseMarketCreatedEvents,
 } from "./marketCreatedParser.js";
 import { MarketCreatedParseError } from "./types.js";
 import type { RawChainEvent } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
 
 // ─── Real XDR fixtures, matching contracts/market/src/events.rs ────────────
 //
@@ -80,7 +82,9 @@ describe("parseMarketCreatedChainEvent", () => {
   it("throws MarketCreatedParseError when topic is not market_created_event", () => {
     expect(() =>
       parseMarketCreatedChainEvent(
-        makeEvent({ topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[42]] })
+        makeEvent({
+          topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[42]],
+        })
       )
     ).toThrow(MarketCreatedParseError);
   });
@@ -113,13 +117,57 @@ describe("parseMarketCreatedChainEvent", () => {
       expect((err as MarketCreatedParseError).eventId).toBe("bad-evt");
     }
   });
+
+  // ── #986: reject rather than truncate an over-length question ───────────
+  // Truncating a question that exceeds the contract's cap would desync the
+  // indexed `markets.question` column from what actually landed on chain.
+  function makeValueXdrWithQuestion(question: string): string {
+    return nativeToScVal(
+      { question, end_time: 1234567890n },
+      { type: "instance" }
+    ).toXDR("base64");
+  }
+
+  it("accepts a question exactly at the 499-char contract cap", () => {
+    const question = "Q".repeat(499);
+    const m = parseMarketCreatedChainEvent(
+      makeEvent({ valueXdr: makeValueXdrWithQuestion(question) })
+    );
+    expect(m.question).toBe(question);
+    expect(m.question).toHaveLength(499);
+  });
+
+  it("throws MarketCreatedParseError when question exceeds the 499-char contract cap", () => {
+    const question = "Q".repeat(500);
+    expect(() =>
+      parseMarketCreatedChainEvent(
+        makeEvent({ valueXdr: makeValueXdrWithQuestion(question) })
+      )
+    ).toThrow(MarketCreatedParseError);
+  });
+
+  it("does not truncate an over-length question in the thrown error", () => {
+    const question = "Q".repeat(600);
+    try {
+      parseMarketCreatedChainEvent(
+        makeEvent({ valueXdr: makeValueXdrWithQuestion(question) })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as MarketCreatedParseError).message).toContain("600");
+      expect((err as MarketCreatedParseError).message).toContain("499");
+    }
+  });
 });
 
 describe("parseMarketCreatedEvents (batch)", () => {
   it("parses multiple valid events", () => {
     const events = [
       makeEvent({ id: "e1" }),
-      makeEvent({ id: "e2", topicsXdr: [XDR.topic.marketCreatedEvent, XDR.marketId[7]] }),
+      makeEvent({
+        id: "e2",
+        topicsXdr: [XDR.topic.marketCreatedEvent, XDR.marketId[7]],
+      }),
     ];
     const { markets, errors } = parseMarketCreatedEvents(events);
     expect(markets).toHaveLength(2);
@@ -128,7 +176,10 @@ describe("parseMarketCreatedEvents (batch)", () => {
 
   it("silently skips non-market-created events", () => {
     const events = [
-      makeEvent({ id: "e1", topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[42]] }),
+      makeEvent({
+        id: "e1",
+        topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[42]],
+      }),
       makeEvent({ id: "e2" }),
     ];
     const { markets, errors } = parseMarketCreatedEvents(events);
@@ -140,7 +191,10 @@ describe("parseMarketCreatedEvents (batch)", () => {
     const events = [
       makeEvent({ id: "e1" }),
       makeEvent({ id: "e2", valueXdr: "bad-xdr" }),
-      makeEvent({ id: "e3", topicsXdr: [XDR.topic.marketCreatedEvent, XDR.marketId[7]] }),
+      makeEvent({
+        id: "e3",
+        topicsXdr: [XDR.topic.marketCreatedEvent, XDR.marketId[7]],
+      }),
     ];
     const { markets, errors } = parseMarketCreatedEvents(events);
     expect(markets).toHaveLength(2);
@@ -153,5 +207,34 @@ describe("parseMarketCreatedEvents (batch)", () => {
     const { markets, errors } = parseMarketCreatedEvents([]);
     expect(markets).toHaveLength(0);
     expect(errors).toHaveLength(0);
+  });
+
+  it("emits unknown_topic metric when encountering an unknown topic", () => {
+    const telemetry: Telemetry = {
+      record: vi.fn(),
+      startSpan: vi.fn(() => ({ end: vi.fn() })),
+    };
+    const events = [
+      makeEvent({
+        id: "e1",
+        topicsXdr: ["AAAADwAAABN1bmtub3duX2V2ZW50X3RvcGljIQ=="], // unknown topic
+      }),
+      makeEvent({ id: "e2" }),
+    ];
+    const { markets, errors } = parseMarketCreatedEvents(events, {
+      telemetry,
+    });
+    expect(markets).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+    expect(telemetry.record).toHaveBeenCalledWith(
+      "indexer.parser.unknown_topics",
+      1,
+      expect.objectContaining({
+        parser: "market_created",
+        eventId: "e1",
+        contractId: "CMARKET",
+        ledger: "555",
+      })
+    );
   });
 });

@@ -11,7 +11,9 @@ import type { FastifyInstance } from "fastify";
 import { Keypair } from "@stellar/stellar-sdk";
 import { ordersRoutes } from "../../src/api/routes/orders.js";
 import { buildSignableMessage } from "../../src/api/middleware/stellarAuth.js";
+import { issueChallenge } from "../../src/api/middleware/nonceStore.js";
 import { buildTestApp, resetRateLimits } from "./helpers/build-test-app.js";
+import { seedMarket, placeOrder } from "./helpers/market-order.js";
 import { testUtils, getTestPrismaClient } from "../setup.js";
 import {
   acquireDatabaseLock,
@@ -27,7 +29,7 @@ const userAddress = userKeypair.publicKey();
 const makerAddress = makerKeypair.publicKey();
 
 /** Returns the two auth headers required by POST /v1/orders. */
-function authHeaders(
+async function authHeaders(
   keypair: Keypair,
   body: {
     marketId: string;
@@ -37,12 +39,17 @@ function authHeaders(
     price: number;
     quantity: number;
   }
-): Record<string, string> {
+): Promise<Record<string, string>> {
   const timestamp = Date.now();
+  const { nonce } = await issueChallenge(keypair.publicKey());
   const sig = keypair
-    .sign(buildSignableMessage({ ...body, timestamp }))
+    .sign(buildSignableMessage({ ...body, nonce, timestamp }))
     .toString("base64");
-  return { "x-signature": sig, "x-timestamp": String(timestamp) };
+  return {
+    "x-signature": sig,
+    "x-timestamp": String(timestamp),
+    "x-nonce": nonce,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -72,21 +79,14 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
   });
 
   it("returns 201 with order.id and status: OPEN for a valid payload on an ACTIVE market", async () => {
-    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+    const market = await seedMarket();
 
-    const payload = {
+    const res = await placeOrder(app, userKeypair, {
       marketId: market.id,
-      userAddress,
       side: "BUY",
       outcome: "YES",
       price: 0.5,
       quantity: 10,
-    };
-    const res = await app.inject({
-      method: "POST",
-      url: "/v1/orders",
-      headers: authHeaders(userKeypair, payload),
-      payload,
     });
 
     expect(res.statusCode).toBe(201);
@@ -116,7 +116,7 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, payload),
+      headers: await authHeaders(userKeypair, payload),
       payload,
     });
 
@@ -149,7 +149,7 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, payload),
+      headers: await authHeaders(userKeypair, payload),
       payload,
     });
 
@@ -172,7 +172,7 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, payload),
+      headers: await authHeaders(userKeypair, payload),
       payload,
     });
     expect(res.statusCode).toBe(400);
@@ -192,7 +192,7 @@ describe("POST /v1/orders — creation, validation, DB persistence", () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, payload),
+      headers: await authHeaders(userKeypair, payload),
       payload,
     });
     expect(res.statusCode).toBe(400);
@@ -334,7 +334,7 @@ describe("GET /v1/orders/user/:address — listing and status filter", () => {
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, createPayload),
+      headers: await authHeaders(userKeypair, createPayload),
       payload: createPayload,
     });
 
@@ -438,7 +438,7 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, filledPayload),
+      headers: await authHeaders(userKeypair, filledPayload),
       payload: filledPayload,
     });
 
@@ -488,7 +488,7 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, partialPayload),
+      headers: await authHeaders(userKeypair, partialPayload),
       payload: partialPayload,
     });
 
@@ -526,7 +526,7 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, openPayload),
+      headers: await authHeaders(userKeypair, openPayload),
       payload: openPayload,
     });
 
@@ -570,7 +570,7 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, posPayload),
+      headers: await authHeaders(userKeypair, posPayload),
       payload: posPayload,
     });
 
@@ -615,7 +615,7 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, selfTradePayload),
+      headers: await authHeaders(userKeypair, selfTradePayload),
       payload: selfTradePayload,
     });
 
@@ -647,7 +647,7 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, settlementPayload),
+      headers: await authHeaders(userKeypair, settlementPayload),
       payload: settlementPayload,
     });
 
@@ -682,13 +682,13 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(userKeypair, concPayload1),
+        headers: await authHeaders(userKeypair, concPayload1),
         payload: concPayload1,
       }),
       app.inject({
         method: "POST",
         url: "/v1/orders",
-        headers: authHeaders(makerKeypair, concPayload2),
+        headers: await authHeaders(makerKeypair, concPayload2),
         payload: concPayload2,
       }),
     ]);
@@ -729,7 +729,7 @@ describe("Integration Tests: POST /v1/orders with Matching", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(userKeypair, rebuildPayload),
+      headers: await authHeaders(userKeypair, rebuildPayload),
       payload: rebuildPayload,
     });
 

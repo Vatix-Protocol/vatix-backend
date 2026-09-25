@@ -78,7 +78,7 @@ describe("Request Input Validation", () => {
       expect(response.statusCode).toBe(400);
       const body = JSON.parse(response.body);
       expect(body).toHaveProperty("code");
-      expect(body).toHaveProperty("message");
+      expect(body).toHaveProperty("error");
       expect(body).toHaveProperty("statusCode", 400);
     });
 

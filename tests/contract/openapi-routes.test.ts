@@ -7,7 +7,15 @@
  *
  * CI gate: runs on every PR touching src/api/routes/** or src/api/openapi.ts.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  vi,
+} from "vitest";
 import type { FastifyInstance } from "fastify";
 import { openApiSpec } from "../../src/api/openapi.js";
 import { testUtils } from "../setup.js";
@@ -17,8 +25,6 @@ vi.hoisted(() => {
     process.env.DATABASE_URL ||
     "postgresql://postgres:postgres@localhost:5433/vatix";
 });
-
-const { buildServer } = await import("../../src/index.js");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,14 +67,7 @@ describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", ()
     process.env.DATABASE_URL ??=
       "postgresql://postgres:postgres@localhost:5432/vatix_test";
 
-    ({ buildServer } = await import("../../src/index.js"));
-    ({ openApiSpec } = await import("../../src/api/openapi.js"));
-
-    const market = await testUtils.createTestMarket({
-      question: "OpenAPI contract market",
-      status: "ACTIVE",
-    });
-    marketId = market.id;
+    const { buildServer } = await import("../../src/index.js");
 
     app = buildServer({ logger: false, registerTestRoutes: false });
     await app.ready();
@@ -76,6 +75,21 @@ describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", ()
 
   afterAll(async () => {
     await app.close();
+  });
+
+  // Market/position are recreated per-test — the global beforeEach
+  // (tests/setup.ts) truncates all tables before every test, including
+  // fixtures registered here.
+  beforeEach(async () => {
+    const market = await testUtils.createTestMarket({
+      question: "OpenAPI contract market",
+      status: "ACTIVE",
+    });
+    marketId = market.id;
+    // GET /wallets/{wallet}/positions/{marketId} 404s when no position
+    // exists for the pair — seed one so the contract check (any non-404
+    // status is acceptable) exercises the happy path.
+    await testUtils.createTestPosition(marketId, wallet);
   });
 
   it("openApiSpec.paths is non-empty", () => {
@@ -92,6 +106,13 @@ describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", ()
 
     for (const [openApiPath, pathItem] of paths) {
       const method = firstMethod(pathItem);
+      const operation = pathItem[method] as Record<string, unknown> | undefined;
+
+      // Long-lived SSE/streaming endpoints never complete a response, so a
+      // one-shot inject() would hang forever — they're covered by their own
+      // dedicated streaming test instead.
+      if (operation?.["x-streaming"]) continue;
+
       const url = resolvePathParams(openApiPath, marketId, wallet);
 
       const res = await app.inject({ method: method.toUpperCase(), url });

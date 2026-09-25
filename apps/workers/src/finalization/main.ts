@@ -6,7 +6,7 @@ import {
   getPrismaClient,
   disconnectPrisma,
 } from "../../../../src/services/prisma.js";
-import type { ShutdownHandler, ShutdownSignal } from "./types.js";
+import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
 
 async function bootstrap(): Promise<void> {
   const config = loadFinalizationConfig();
@@ -17,14 +17,30 @@ async function bootstrap(): Promise<void> {
   });
 
   logger.info("Finalization worker started", {
+    component: "finalization-worker",
     intervalMs: config.intervalMs,
     challengeWindowSeconds: config.challengeWindowSeconds,
+    onChainChallengeWindowSeconds: config.onChainChallengeWindowSeconds,
   });
 
-  let isPollInProgress = false;
+  // Production rejects a drifting override in loadFinalizationConfig; this
+  // branch only fires for dev/test local stubs, which must never be silent.
+  if (config.challengeWindowOverridden) {
+    logger.warn(
+      "Finalization challenge window overridden and drifts from the on-chain resolution contract window",
+      {
+        component: "finalization-worker",
+        challengeWindowSeconds: config.challengeWindowSeconds,
+        onChainChallengeWindowSeconds: config.onChainChallengeWindowSeconds,
+        nodeEnv: process.env.NODE_ENV ?? "development",
+      }
+    );
+  }
+
+  let activePollPromise: Promise<void> | null = null;
 
   const poll = async (): Promise<void> => {
-    if (isPollInProgress) {
+    if (activePollPromise) {
       logger.warn(
         "Skipping finalization poll because a previous poll is active",
         {
@@ -35,97 +51,67 @@ async function bootstrap(): Promise<void> {
       return;
     }
 
-    isPollInProgress = true;
+    const pollPromise = (async () => {
+      try {
+        const result = await job.run();
+        logger.info("Finalization worker poll complete", {
+          component: "finalization-worker",
+          totalCandidates: result.totalCandidates,
+          finalizedCount: result.finalizedCount,
+          erroredCount: result.erroredCount,
+          skippedCount: result.skippedCount,
+        });
+      } catch (error) {
+        logger.error("Finalization worker poll failed", {
+          component: "finalization-worker",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
 
-    try {
-      const result = await job.run();
-      logger.info("Finalization worker poll complete", {
-        component: "finalization-worker",
-        totalCandidates: result.totalCandidates,
-        finalizedCount: result.finalizedCount,
-        erroredCount: result.erroredCount,
-        skippedCount: result.skippedCount,
-      });
-    } catch (error) {
-      logger.error("Finalization worker poll failed", {
-        component: "finalization-worker",
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      isPollInProgress = false;
-    }
+    activePollPromise = pollPromise;
+    await pollPromise;
+    activePollPromise = null;
   };
 
   await poll();
   const timer = setInterval(() => void poll(), config.intervalMs);
 
-  const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-  const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
-
-  let isShuttingDown = false;
-  const shutdown: ShutdownHandler = async (signal: ShutdownSignal) => {
-    if (
-      typeof signal !== "string" ||
-      signal.trim() === "" ||
-      !VALID_SHUTDOWN_SIGNALS.includes(
-        signal as (typeof VALID_SHUTDOWN_SIGNALS)[number]
-      )
-    ) {
-      logger.warn("Graceful shutdown called with invalid signal", {
-        signal,
-        statusCode: 400,
-        component: "finalization-worker",
-        validSignals: [...VALID_SHUTDOWN_SIGNALS],
-      });
-      return;
-    }
-
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-
-    logger.info("Finalization worker shutdown initiated", {
-      signal,
-      component: "finalization-worker",
-      status: "initiated",
-    });
-
-    // Stop accepting new jobs
-    clearInterval(timer);
-
-    // Set hard timeout to force exit if shutdown hangs
-    const timeoutHandle = setTimeout(() => {
-      logger.error("Shutdown timeout exceeded, forcing exit", {
-        signal,
-        component: "finalization-worker",
-        timeoutMs: SHUTDOWN_TIMEOUT_MS,
-      });
-      process.exit(1);
-    }, SHUTDOWN_TIMEOUT_MS);
-
-    try {
-      // Clean up resources
-      await disconnectPrisma();
-      clearTimeout(timeoutHandle);
-
-      logger.info("Finalization worker shutdown complete", {
-        signal,
-        component: "finalization-worker",
-        status: "complete",
-        exitCode: 0,
-      });
-      process.exit(0);
-    } catch (error) {
-      clearTimeout(timeoutHandle);
-      logger.error("Finalization worker shutdown failed", {
-        signal,
-        component: "finalization-worker",
-        status: "failed",
-        exitCode: 1,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      process.exit(1);
-    }
-  };
+  const shutdown = createShutdown(logger, {
+    timeoutMs: 30_000,
+    component: "finalization-worker",
+    teardown: [
+      // Stop the scheduler first so no new polls are started.
+      async () => {
+        clearInterval(timer);
+      },
+      // Drain any in-flight poll before closing the DB connection.
+      // This ensures an active finalization transaction is never silently
+      // abandoned mid-flight on SIGTERM (acceptance: #777).
+      async () => {
+        if (activePollPromise) {
+          logger.info(
+            "Waiting for active finalization poll to complete before shutdown",
+            { component: "finalization-worker" }
+          );
+          // Best-effort drain — the outer createShutdown timeout will force-
+          // exit if this takes longer than the configured 30 s window.
+          await activePollPromise.catch((err: unknown) => {
+            logger.warn(
+              "In-flight finalization poll failed during graceful shutdown",
+              {
+                component: "finalization-worker",
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+          });
+        }
+      },
+      async () => {
+        await disconnectPrisma();
+      },
+    ],
+  });
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

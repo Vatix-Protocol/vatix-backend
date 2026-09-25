@@ -17,11 +17,27 @@ export interface CorsConfig {
   credentials: boolean;
   preflight: boolean;
   strictPreflight: boolean;
+  maxAge?: number;
 }
 
 function getAllowedOrigins(): string[] {
   const nodeEnv = (process.env.NODE_ENV ?? "development") as NodeEnv;
-  return resolveCorsAllowedOrigins(nodeEnv, process.env.CORS_ALLOWED_ORIGINS);
+  // resolveCorsAllowedOrigins throws in production if any origin is not https://
+  const origins = resolveCorsAllowedOrigins(nodeEnv, process.env.CORS_ALLOWED_ORIGINS);
+
+  // Fail-fast in production: credentials=true with an empty allowlist would
+  // mean no browser can ever make a credentialed cross-origin request — which
+  // is almost certainly a misconfiguration rather than intentional lockdown.
+  // Operators must explicitly set CORS_ALLOWED_ORIGINS in production.
+  if (nodeEnv === "production" && origins.length === 0) {
+    throw new Error(
+      "CORS misconfiguration: CORS_ALLOWED_ORIGINS must be set in production " +
+        "when credentials are enabled. Set it to your frontend origin(s), e.g.: " +
+        "CORS_ALLOWED_ORIGINS=https://app.vatix.io"
+    );
+  }
+
+  return origins;
 }
 
 export const corsPlugin = fp(async (fastify: FastifyInstance) => {
@@ -50,7 +66,11 @@ export const corsPlugin = fp(async (fastify: FastifyInstance) => {
     credentials: true,
     preflight: true,
     strictPreflight: false,
+    maxAge: process.env.CORS_MAX_AGE
+      ? parseInt(process.env.CORS_MAX_AGE, 10)
+      : 86400,
   };
 
   await fastify.register(cors, corsConfig);
 });
+

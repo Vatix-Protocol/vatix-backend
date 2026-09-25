@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { nativeToScVal } from "@stellar/stellar-sdk";
 import {
   parseResolutionEvent,
@@ -6,6 +6,7 @@ import {
 } from "./resolutionParser.js";
 import { ResolutionParseError } from "./types.js";
 import type { RawChainEvent } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
 
 // ─── Real XDR fixtures ───────────────────────────────────────────────────────
 //
@@ -217,6 +218,32 @@ describe("parseResolutionEvent", () => {
       expect((err as ResolutionParseError).eventId).toBe("bad-evt");
     }
   });
+
+  it("maps confidence field when present in real on-chain shape", () => {
+    const valueXdr = nativeToScVal({
+      outcome: true,
+      resolved_at: 1700000000n,
+      confidence: 95,
+    }).toXDR("base64");
+    const r = parseResolutionEvent(makeEvent({ valueXdr }));
+    expect(r.confidenceScore).toBe(95);
+  });
+
+  it("sets confidenceScore to null when confidence is absent (real on-chain shape)", () => {
+    const r = parseResolutionEvent(makeEvent());
+    expect(r.confidenceScore).toBeNull();
+  });
+
+  it("sets confidenceScore to null for tuple payload", () => {
+    const tupleXdr = nativeToScVal([42, true, 1_700_000_000n]).toXDR("base64");
+    const r = parseResolutionEvent(
+      makeEvent({
+        valueXdr: tupleXdr,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      })
+    );
+    expect(r.confidenceScore).toBeNull();
+  });
 });
 
 // ─── parseResolutionEvents (batch) ──────────────────────────────────────────
@@ -269,5 +296,114 @@ describe("parseResolutionEvents", () => {
     const { resolutions, errors } = parseResolutionEvents([]);
     expect(resolutions).toHaveLength(0);
     expect(errors).toHaveLength(0);
+  });
+
+  it("emits unknown_topic metric when encountering an unknown topic", () => {
+    const telemetry: Telemetry = {
+      record: vi.fn(),
+      startSpan: vi.fn(() => ({ end: vi.fn() })),
+    };
+    const events = [
+      makeEvent({
+        id: "e1",
+        topicsXdr: ["AAAADwAAABN1bmtub3duX2V2ZW50X3RvcGljIQ=="], // unknown topic
+      }),
+      makeEvent({ id: "e2" }),
+    ];
+    const { resolutions, errors } = parseResolutionEvents(events, {
+      telemetry,
+    });
+    expect(resolutions).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+    expect(telemetry.record).toHaveBeenCalledWith(
+      "indexer.parser.unknown_topics",
+      1,
+      expect.objectContaining({
+        parser: "resolution",
+        eventId: "e1",
+        contractId: "CRESOLV",
+        ledger: "1000",
+      })
+    );
+  });
+});
+
+describe("production fail-fast on legacy resolution shapes", () => {
+  // Gap this covers: legacy dev-stub payload shapes (ScvVec tuple, legacy
+  // ScvMap without topics[1]=market_id) were previously accepted silently
+  // in every environment, including production, which meant a contract
+  // regression or topic drift produced ResolutionCandidate rows with a
+  // blank oracleAddress instead of failing loudly. These tests fail
+  // against the pre-fix parser (which has no `nodeEnv` gate at all).
+
+  it("rejects a legacy ScvVec tuple payload in production", () => {
+    const tupleXdr = nativeToScVal([7, false, 99n]).toXDR("base64");
+    expect(() =>
+      parseResolutionEvent(
+        makeEvent({
+          valueXdr: tupleXdr,
+          topicsXdr: [XDR.topic.marketResolvedEvent],
+        }),
+        { nodeEnv: "production" }
+      )
+    ).toThrow(ResolutionParseError);
+  });
+
+  it("rejects a legacy ScvMap payload in production", () => {
+    expect(() =>
+      parseResolutionEvent(
+        makeEvent({
+          valueXdr: XDR.value.resolvedYes,
+          topicsXdr: [XDR.topic.marketResolvedEvent],
+        }),
+        { nodeEnv: "production" }
+      )
+    ).toThrow(ResolutionParseError);
+  });
+
+  it("still parses the canonical on-chain shape in production", () => {
+    const r = parseResolutionEvent(makeEvent({ valueXdr: XDR.value.realYes }), {
+      nodeEnv: "production",
+    });
+    expect(r.outcome).toBe("YES");
+  });
+
+  it("still allows legacy shapes outside production (local stubs)", () => {
+    const r = parseResolutionEvent(
+      makeEvent({
+        valueXdr: XDR.value.resolvedYes,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      }),
+      { nodeEnv: "development" }
+    );
+    expect(r.outcome).toBe("YES");
+  });
+
+  it("emits a legacy_shape_rejected metric with correlation ids when rejecting in production", () => {
+    const telemetry: Telemetry = {
+      record: vi.fn(),
+      startSpan: vi.fn(() => ({ end: vi.fn() })),
+    };
+    const events = [
+      makeEvent({
+        id: "evt-legacy-1",
+        valueXdr: XDR.value.resolvedYes,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      }),
+    ];
+    const { resolutions, errors } = parseResolutionEvents(events, {
+      telemetry,
+      nodeEnv: "production",
+    });
+    expect(resolutions).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect(telemetry.record).toHaveBeenCalledWith(
+      "indexer.parser.legacy_shape_rejected",
+      1,
+      expect.objectContaining({
+        parser: "resolution",
+        eventId: "evt-legacy-1",
+      })
+    );
   });
 });

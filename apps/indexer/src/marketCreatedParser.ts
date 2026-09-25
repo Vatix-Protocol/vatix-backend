@@ -2,6 +2,7 @@ import { xdr, scValToNative } from "@stellar/stellar-sdk";
 import type { RawChainEvent } from "./types.js";
 import { MarketCreatedParseError } from "./types.js";
 import type { NormalizedMarketCreated } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
 
 /**
  * Soroban's #[contractevent] macro derives the topic symbol by snake_casing
@@ -10,6 +11,17 @@ import type { NormalizedMarketCreated } from "./types.js";
  * "market_created_event", not "market_created".
  */
 const MARKET_CREATED_TOPIC = "market_created_event";
+
+/**
+ * Hard cap on `question` length, matching the on-chain contract's
+ * `MAX_QUESTION_LEN` (contracts/market/src/lib.rs) which rejects
+ * MarketCreated submissions with a longer question string. The indexer must
+ * reject — not silently truncate — any payload that exceeds this, otherwise
+ * the off-chain `markets.question` column would desync from what the chain
+ * actually stored/validated, corrupting UI display and any downstream
+ * consumer that assumes indexer state mirrors chain state 1:1.
+ */
+const MAX_QUESTION_LENGTH = 499;
 
 function decodeScVal(xdrBase64: string): unknown {
   return scValToNative(xdr.ScVal.fromXDR(xdrBase64, "base64"));
@@ -69,10 +81,7 @@ export function parseMarketCreatedChainEvent(
   }
 
   if (event.topicsXdr.length < 2) {
-    throw new MarketCreatedParseError(
-      "Missing market_id topic",
-      event.id
-    );
+    throw new MarketCreatedParseError("Missing market_id topic", event.id);
   }
 
   let marketIdRaw: unknown;
@@ -106,23 +115,16 @@ export function parseMarketCreatedChainEvent(
   }
 
   const map = decoded as Record<string, unknown>;
+  const question = String(map.question ?? "");
 
-  const rawEvent = {
-    id:
-      typeof map.market_id === "string"
-        ? map.market_id
-        : String(map.market_id ?? ""),
-    question: typeof map.question === "string" ? map.question : undefined,
-    endTime: normalizeEndTime(map.end_time),
-    oracleAddress:
-      typeof map.oracle_address === "string" ? map.oracle_address : undefined,
-    status: typeof map.status === "string" ? map.status : undefined,
-  };
-
-  const result = parseMarketCreatedEvent(rawEvent);
-  if (!result.success || !result.data) {
+  // Fail loudly rather than truncate (#986-style silent desync): a
+  // question longer than the contract allows means either the contract's
+  // cap changed without this constant being updated, or the event was
+  // mis-decoded — either way, storing a truncated question would silently
+  // diverge from on-chain state instead of surfacing the mismatch.
+  if (question.length > MAX_QUESTION_LENGTH) {
     throw new MarketCreatedParseError(
-      result.error ?? "Unknown parse error",
+      `question exceeds max length of ${MAX_QUESTION_LENGTH} chars (got ${question.length}): contract cap may have changed`,
       event.id
     );
   }
@@ -133,7 +135,7 @@ export function parseMarketCreatedChainEvent(
     ledgerClosedAt: event.ledgerClosedAt,
     contractId: event.contractId,
     marketId: String(marketIdRaw),
-    question: map.question,
+    question,
     endTime: toIsoEndTime(map.end_time, event.id),
     oracleAddress: "",
     status: "ACTIVE",
@@ -144,15 +146,27 @@ export function parseMarketCreatedChainEvent(
  * Parse a batch of raw events, skipping non-market-created events silently.
  * Errors are collected per-event so one bad payload never drops the batch.
  */
-export function parseMarketCreatedEvents(events: RawChainEvent[]): {
+export function parseMarketCreatedEvents(
+  events: RawChainEvent[],
+  options?: { telemetry?: Telemetry }
+): {
   markets: NormalizedMarketCreated[];
   errors: MarketCreatedParseError[];
 } {
   const markets: NormalizedMarketCreated[] = [];
   const errors: MarketCreatedParseError[] = [];
+  const telemetry = options?.telemetry;
 
   for (const event of events) {
-    if (!isMarketCreatedEvent(event.topicsXdr)) continue;
+    if (!isMarketCreatedEvent(event.topicsXdr)) {
+      telemetry?.record("indexer.parser.unknown_topics", 1, {
+        parser: "market_created",
+        eventId: event.id,
+        contractId: event.contractId,
+        ledger: String(event.ledger),
+      });
+      continue;
+    }
     try {
       markets.push(parseMarketCreatedChainEvent(event));
     } catch (err) {

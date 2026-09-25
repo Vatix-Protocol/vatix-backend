@@ -354,4 +354,107 @@ describe("RedisSubmissionQueue", () => {
       );
     });
   });
+
+  describe("stream length cap (maxStreamLength)", () => {
+    function makeItem(marketId = "mkt-cap"): SubmissionQueueItem {
+      return {
+        id: `item-${marketId}`,
+        request: { marketId, oracleAddress: "GORACLE" },
+        result: {
+          outcome: true,
+          source: "Test",
+          signature: "sig",
+          publicKey: "pub",
+          confidence: 1,
+          confidenceMetadata: { score: 1, method: "test" },
+          sourceMetadata: { provider: "Test" },
+          timestamp: "2024-01-01T00:00:00Z",
+        },
+        status: "pending" as const,
+        enqueuedAt: "2024-01-01T00:00:00Z",
+        attempts: 0,
+      };
+    }
+
+    it("passes MAXLEN ~ args to xadd when maxStreamLength is set", async () => {
+      const cappedClient = createMockRedisClient();
+      cappedClient.exists.mockResolvedValue(0);
+      cappedClient.set.mockResolvedValue("OK");
+      cappedClient.xadd.mockResolvedValue("1-0");
+
+      const cappedQueue = new RedisSubmissionQueue({
+        redisClient: cappedClient,
+        visibilityTimeoutMs: 5000,
+        logger: mockLogger,
+        keyPrefix: "test:",
+        maxStreamLength: 500,
+      });
+
+      await cappedQueue.enqueue(makeItem("mkt-1"));
+
+      expect(cappedClient.xadd).toHaveBeenCalledWith(
+        "test:oracle:submissions",
+        "MAXLEN",
+        "~",
+        "500",
+        "*",
+        "payload",
+        expect.any(String),
+        "marketId",
+        "mkt-1",
+        "payloadHash",
+        expect.any(String)
+      );
+    });
+
+    it("does not pass MAXLEN when maxStreamLength is 0 (default)", async () => {
+      mockClient.exists.mockResolvedValue(0);
+      mockClient.set.mockResolvedValue("OK");
+      mockClient.xadd.mockResolvedValue("1-0");
+
+      await queue.enqueue(makeItem("mkt-2"));
+
+      const xaddArgs: string[] = mockClient.xadd.mock.calls[0];
+      expect(xaddArgs).not.toContain("MAXLEN");
+    });
+
+    it("does not pass MAXLEN when maxStreamLength is omitted", async () => {
+      const noCapClient = createMockRedisClient();
+      noCapClient.exists.mockResolvedValue(0);
+      noCapClient.set.mockResolvedValue("OK");
+      noCapClient.xadd.mockResolvedValue("2-0");
+
+      const noCapQueue = new RedisSubmissionQueue({
+        redisClient: noCapClient,
+        visibilityTimeoutMs: 5000,
+        logger: mockLogger,
+        keyPrefix: "test:",
+        // maxStreamLength omitted
+      });
+
+      await noCapQueue.enqueue(makeItem("mkt-3"));
+
+      const xaddArgs: string[] = noCapClient.xadd.mock.calls[0];
+      expect(xaddArgs).not.toContain("MAXLEN");
+    });
+  });
+
+  describe("getStreamLength", () => {
+    it("returns the stream length reported by xlen", async () => {
+      mockClient.xlen = vi.fn().mockResolvedValue(42);
+
+      const len = await queue.getStreamLength();
+
+      expect(len).toBe(42);
+      expect(mockClient.xlen).toHaveBeenCalledWith("test:oracle:submissions");
+    });
+
+    it("returns 0 when xlen returns a non-number", async () => {
+      mockClient.xlen = vi.fn().mockResolvedValue(null);
+
+      const len = await queue.getStreamLength();
+
+      expect(len).toBe(0);
+    });
+  });
 });

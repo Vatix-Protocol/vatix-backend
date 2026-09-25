@@ -29,6 +29,8 @@ function isSensitiveKey(key: string): boolean {
     "seed",
     "x-auth-token",
     "x-user-token",
+    "x-signature",
+    "x-admin-token",
   ]);
   return SENSITIVE.has(lower);
 }
@@ -47,6 +49,8 @@ function isSensitiveHeader(name: string): boolean {
     lower === "set-cookie" ||
     lower === "x-api-key" ||
     lower === "x-auth-token" ||
+    lower === "x-signature" ||
+    lower === "x-admin-token" ||
     isSensitiveKey(lower)
   );
 }

@@ -56,6 +56,8 @@ export interface NormalizedResolution {
   outcome: ResolutionOutcome;
   /** Stellar address of the oracle that submitted the resolution. */
   oracleAddress: string;
+  /** Confidence score in [0, 1] reported by the source. Null when absent. */
+  confidenceScore: number | null;
 }
 
 export class ResolutionParseError extends Error {
@@ -200,9 +202,15 @@ export interface FetchEventsResult {
 }
 
 export interface EventFetcherConfig {
-  rpcUrl: string;
+  rpcUrl: string | string[];
   contractId: string;
   maxRetries?: number;
   retryDelayMs?: number;
   pageLimit?: number;
+  /**
+   * Per-page RPC fetch timeout in milliseconds. A getEvents call that takes
+   * longer than this is aborted with a TimeoutError (treated as transient).
+   * Set to 0 to disable. Defaults to 15 000 ms.
+   */
+  fetchTimeoutMs?: number;
 }

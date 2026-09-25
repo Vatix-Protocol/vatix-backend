@@ -8,6 +8,10 @@
  */
 
 import type { MarketStatus } from "../../src/types/index.js";
+import {
+  isInitialStatus,
+  isMarketStatus,
+} from "../../packages/shared/src/marketLifecycle.js";
 
 /**
  * Raw market creation event as received from the blockchain/oracle.
@@ -96,9 +100,14 @@ export function parseMarketCreatedEvent(
       };
     }
 
-    // Validate oracle address format (Stellar: G + 55 alphanumeric chars)
-    const oracleAddress = rawEvent.oracleAddress.trim();
-    if (!/^G[A-Z0-9]{55}$/i.test(oracleAddress)) {
+    // Normalize oracle address: strip whitespace + control chars, uppercase.
+    // Uses the canonical Stellar StrKey base32 charset [A-Z2-7] — the same
+    // rule enforced by STELLAR_PUBLIC_KEY_REGEX in src/matching/validation.ts.
+    const oracleAddress = rawEvent.oracleAddress
+      .trim()
+      .toUpperCase()
+      .replace(/[\x00-\x1F\x7F]/g, "");
+    if (!/^G[A-Z2-7]{55}$/.test(oracleAddress)) {
       return {
         success: false,
         error: `Invalid oracle address format: ${oracleAddress}`,
@@ -131,14 +140,13 @@ export function parseMarketCreatedEvent(
       };
     }
 
-    // Normalize status
-    const validStatuses: MarketStatus[] = ["ACTIVE", "RESOLVED", "CANCELLED"];
+    // Normalize status. A created market may only enter an initial lifecycle
+    // state, so anything else in the event falls back to the default.
     const rawStatus = rawEvent.status?.toUpperCase() ?? "ACTIVE";
-    const status: MarketStatus = validStatuses.includes(
-      rawStatus as MarketStatus
-    )
-      ? (rawStatus as MarketStatus)
-      : "ACTIVE";
+    const status: MarketStatus =
+      isMarketStatus(rawStatus) && isInitialStatus(rawStatus)
+        ? (rawStatus as MarketStatus)
+        : "ACTIVE";
 
     // Preserve original payload for debugging (excluding sensitive fields)
     const { ...rawPayload } = rawEvent;

@@ -517,9 +517,12 @@ All services in the Vatix backend now implement coordinated graceful shutdown:
 
 ### ✅ Finalization Worker (`apps/workers/src/finalization/main.ts`)
 
-- Stops job timer on SIGTERM/SIGINT
+- Stops job timer on SIGTERM/SIGINT to prevent new polls from starting
+- **Drains any in-flight finalization poll before closing the DB connection** (Issue #777)
+  - The teardown sequence is: stop timer → await `activePollPromise` → `disconnectPrisma`
+  - If the in-flight poll fails during shutdown, the error is logged as a warning and teardown continues — no silent ack of incomplete work
 - Disconnects database connections
-- 30-second hard timeout
+- 30-second hard timeout (via `createShutdown`) forces exit if teardown hangs
 - Structured logging with component identifier
 
 ### ✅ Oracle Worker (`apps/workers/src/oracle/main.ts`)

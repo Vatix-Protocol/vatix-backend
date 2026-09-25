@@ -3,7 +3,7 @@
  * Keep in sync with src/index.ts registrations and docs/api-versioning.md.
  */
 export interface CanonicalRoute {
-  method: "GET" | "POST" | "PATCH";
+  method: "GET" | "POST" | "PATCH" | "DELETE";
   path: string;
   legacyAlias?: string;
   notes?: string;
@@ -25,9 +25,20 @@ export const CANONICAL_V1_ROUTES: CanonicalRoute[] = [
   },
   { method: "POST", path: "/v1/orders", legacyAlias: "/orders" },
   {
+    method: "DELETE",
+    path: "/v1/orders/:id",
+    legacyAlias: "/orders/:id",
+    notes: "Cancel an open order",
+  },
+  {
     method: "GET",
     path: "/v1/orders/user/:address",
     legacyAlias: "/orders/user/:address",
+  },
+  {
+    method: "GET",
+    path: "/v1/trades",
+    notes: "Postgres-paginated trade listing; optional Redis cache layer",
   },
   {
     method: "GET",
@@ -47,6 +58,11 @@ export const CANONICAL_V1_ROUTES: CanonicalRoute[] = [
   },
   {
     method: "GET",
+    path: "/v1/wallets/:wallet/fills/stream",
+    notes: "Server-Sent Events stream of order fill notifications",
+  },
+  {
+    method: "GET",
     path: "/v1/admin/markets",
     legacyAlias: "/admin/markets",
     notes: "Requires API key and admin auth",
@@ -56,6 +72,36 @@ export const CANONICAL_V1_ROUTES: CanonicalRoute[] = [
     path: "/v1/admin/markets/:id/status",
     legacyAlias: "/admin/markets/:id/status",
     notes: "Requires API key and admin auth",
+  },
+  {
+    method: "GET",
+    path: "/v1/admin/analytics/summary",
+    notes: "Aggregate reporting stats; requires API key and admin auth",
+  },
+  {
+    method: "POST",
+    path: "/v1/admin/audit/verify-chain",
+    notes: "Verify audit trail hash chain integrity; requires API key and admin auth",
+  },
+  {
+    method: "GET",
+    path: "/v1/admin/audit/watermark/:marketId",
+    notes: "Get archival watermark for a market; requires API key and admin auth",
+  },
+  {
+    method: "GET",
+    path: "/v1/admin/audit/events/:marketId",
+    notes: "Get archived audit events for a market; requires API key and admin auth",
+  },
+  {
+    method: "POST",
+    path: "/v1/auth/challenge",
+    notes: "Issues a single-use signing nonce for Stellar wallet auth",
+  },
+  {
+    method: "POST",
+    path: "/v1/resolutions/:id/challenge",
+    notes: "File a challenge/dispute against a proposed resolution (requires auth)",
   },
   {
     method: "GET",

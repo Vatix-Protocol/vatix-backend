@@ -87,79 +87,23 @@ describe("Prisma Client Service", () => {
   });
 
   describe("Graceful Shutdown", () => {
-    it("should handle SIGINT signal gracefully", async () => {
-      const client = getPrismaClient();
-      await client.$queryRaw`SELECT 1 as result`;
+    // Regression guard (closes #747-#750): this module must NOT register its
+    // own SIGINT/SIGTERM/beforeExit handlers. Every entrypoint that imports
+    // it (API server, indexer, oracle, workers) owns a single shutdown
+    // sequence that drains in-flight work before calling disconnectPrisma().
+    // A second, faster module-level handler here previously raced that
+    // sequence and could call process.exit(0) before the real shutdown
+    // finished draining.
+    it("should not register its own SIGINT/SIGTERM/beforeExit listeners", () => {
+      const sigintCountBefore = process.listenerCount("SIGINT");
+      const sigtermCountBefore = process.listenerCount("SIGTERM");
+      const beforeExitCountBefore = process.listenerCount("beforeExit");
 
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
-        throw new Error("process.exit called");
-      });
+      getPrismaClient();
 
-      const consoleLogSpy = vi
-        .spyOn(console, "log")
-        .mockImplementation(() => {});
-
-      // get SIGINT listener
-      const listeners = process.listeners("SIGINT");
-      const sigintHandler = listeners[listeners.length - 1];
-
-      // trigger SIGINT handler
-      try {
-        await (sigintHandler as () => Promise<void>)();
-      } catch (error) {}
-
-      expect(consoleLogSpy).toHaveBeenCalledWith(
-        expect.stringContaining("SIGINT")
-      );
-      expect(consoleLogSpy).toHaveBeenCalledWith(
-        expect.stringContaining("Closing database connection")
-      );
-      expect(exitSpy).toHaveBeenCalledWith(0);
-    });
-
-    it("should handle SIGTERM signal gracefully", async () => {
-      const client = getPrismaClient();
-      await client.$queryRaw`SELECT 1 as result`;
-
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
-        throw new Error("process.exit called");
-      });
-
-      const consoleLogSpy = vi
-        .spyOn(console, "log")
-        .mockImplementation(() => {});
-
-      // get SIGTERM listener
-      const listeners = process.listeners("SIGTERM");
-      const sigtermHandler = listeners[listeners.length - 1];
-
-      // trigger SIGTERM handler
-      try {
-        await (sigtermHandler as () => Promise<void>)();
-      } catch (error) {}
-
-      expect(consoleLogSpy).toHaveBeenCalledWith(
-        expect.stringContaining("SIGTERM")
-      );
-      expect(consoleLogSpy).toHaveBeenCalledWith(
-        expect.stringContaining("Closing database connection")
-      );
-      expect(exitSpy).toHaveBeenCalledWith(0);
-    });
-
-    it("should handle beforeExit event gracefully", async () => {
-      // create client instance
-      const client = getPrismaClient();
-      await client.$queryRaw`SELECT 1 as result`;
-
-      // get beforeExit listener
-      const listeners = process.listeners("beforeExit");
-      const beforeExitHandler = listeners[listeners.length - 1];
-
-      // trigger beforeExit handler, should not throw
-      await expect(
-        (beforeExitHandler as () => Promise<void>)()
-      ).resolves.toBeUndefined();
+      expect(process.listenerCount("SIGINT")).toBe(sigintCountBefore);
+      expect(process.listenerCount("SIGTERM")).toBe(sigtermCountBefore);
+      expect(process.listenerCount("beforeExit")).toBe(beforeExitCountBefore);
     });
 
     it("should log environment configuration in development", async () => {

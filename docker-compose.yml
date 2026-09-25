@@ -112,6 +112,21 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # No HTTP surface, so liveness is checked against PID 1's cmdline
+    # (the container's tsx entrypoint) instead of a port. Without this,
+    # a crash-looped or hung finalization worker in the "workers"/"full"
+    # profile reports no unhealthy state to `docker compose ps` and
+    # resolution finalization can silently stop advancing.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "grep -q finalization/main.ts /proc/1/cmdline || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   oracle-worker:
     build:
@@ -124,12 +139,25 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/vatix
       REDIS_URL: redis://redis:6379
+      STELLAR_RPC_URL: ${STELLAR_RPC_URL}
+      SOROBAN_NETWORK_PASSPHRASE: ${SOROBAN_NETWORK_PASSPHRASE}
+      ORACLE_SECRET_KEY: ${ORACLE_SECRET_KEY}
+      INDEXER_CONTRACT_ID: ${INDEXER_CONTRACT_ID}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # See finalization-worker above: same PID-1 liveness pattern. Without
+    # it, a hung oracle-worker silently stops consuming the oracle
+    # submission queue and resolutions never reach chain.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q oracle/main.ts /proc/1/cmdline || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   settlement-worker:
     build:
@@ -148,6 +176,19 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    # See finalization-worker above: same PID-1 liveness pattern. Without
+    # it, a hung settlement-worker silently stops consuming the
+    # settlement queue and matched trades never settle on-chain.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "grep -q settlement/consumer.ts /proc/1/cmdline || exit 1",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # One-off migration runner — not part of any long-running profile.
   # Usage: docker compose --profile tools run --rm migrate
@@ -164,6 +205,29 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  # One-off local load test for order placement (~100 rps by default). LOCAL
+  # ONLY — see scripts/load-test-orders.ts for the safety guard and details.
+  # Usage:
+  #   docker compose --profile api up -d --build   # start the API first
+  #   docker compose --profile tools run --rm load-test
+  load-test:
+    build:
+      context: .
+      target: build
+    container_name: vatix-load-test
+    profiles: ["tools", "load-test"]
+    environment:
+      LOAD_TEST_BASE_URL: http://api:3000
+    command:
+      [
+        "node_modules/.bin/tsx",
+        "scripts/load-test-orders.ts",
+        "--url",
+        "http://api:3000",
+      ]
+    depends_on:
+      - api
 
 volumes:
   postgres_data:

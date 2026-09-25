@@ -25,7 +25,16 @@ export interface DepthLevel {
 }
 
 // High-performance order book implementation using sorted price levels
-// Maintains bid/ask orders sorted by price-time priority
+// Maintains bid/ask orders sorted by price-time priority.
+//
+// Price-Time Priority Tie-Break:
+//   - Primary sort: price. Bids are sorted descending (highest first); asks
+//     are sorted ascending (lowest first).
+//   - Secondary sort (tie-break at the same price level): FIFO — the order
+//     that arrived first (earliest timestamp) is matched first. This is
+//     guaranteed because `addOrder` appends to the end of the price level's
+//     order array, and `getBestBid`/`getBestAsk` return the first element.
+//   - The `iterateOrders` generator also yields in price-time priority order.
 export class OrderBook {
   private marketId: string;
   private outcome: number;
@@ -256,6 +265,45 @@ export class OrderBook {
     }
 
     return bestAsk.price - bestBid.price;
+  }
+
+  /**
+   * Returns a plain JSON-serializable snapshot of the order book for debugging (#704).
+   *
+   * The snapshot includes all bids and asks grouped by price level, along with
+   * book metadata (market ID, outcome, order count, and timestamp). Price levels
+   * with zero orders are omitted.
+   */
+  snapshot(): {
+    marketId: string;
+    outcome: number;
+    bids: DepthLevel[];
+    asks: DepthLevel[];
+    orderCount: number;
+    timestamp: number;
+  } {
+    return {
+      marketId: this.marketId,
+      outcome: this.outcome,
+      bids: this.bidPrices.map((price) => {
+        const level = this.bidLevels.get(price)!;
+        return {
+          price: level.price,
+          quantity: level.totalQuantity,
+          orderCount: level.orders.length,
+        };
+      }),
+      asks: this.askPrices.map((price) => {
+        const level = this.askLevels.get(price)!;
+        return {
+          price: level.price,
+          quantity: level.totalQuantity,
+          orderCount: level.orders.length,
+        };
+      }),
+      orderCount: this.orderMap.size,
+      timestamp: Date.now(),
+    };
   }
 
   // Clear all orders from the book

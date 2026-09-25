@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
 
     services:
@@ -47,7 +47,30 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: ".nvmrc"
+
+      - name: Verify Node 22 engine enforcement
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(tr -d '[:space:]' < .nvmrc)"
+          actual="$(node -p 'process.versions.node')"
+          echo "Expected Node (from .nvmrc): ${expected}"
+          echo "Actual Node: ${actual}"
+          case "${actual}" in
+            22.*) ;;
+            *)
+              echo "::error::CI must run on Node 22 (engines: >=22 <23); got ${actual}"
+              exit 1
+              ;;
+          esac
+          case "${expected}" in
+            22.*) ;;
+            *)
+              echo "::error::.nvmrc must pin Node 22 to match engines; got ${expected}"
+              exit 1
+              ;;
+          esac
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -70,109 +93,12 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install
+
+      - name: Enforce engine parity (Node/pnpm)
+        run: pnpm engines:check
 
       - name: Generate Prisma Client
         run: pnpm prisma:generate
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
-
-      - name: Create shadow database
-        run: psql postgresql://postgres:postgres@localhost:5432/postgres -c "CREATE DATABASE vatix_shadow;"
-
-      - name: Validate migrations
-        run: pnpm prisma:validate
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
-          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix_shadow
-
-      - name: Run migrations
-        run: pnpm prisma:deploy
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
-
-      - name: Run unit tests
-        run: pnpm test:run
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
-          REDIS_URL: redis://localhost:6379
-          NODE_ENV: test
-
-      - name: Run integration tests
-        run: pnpm test:integration
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
-          REDIS_URL: redis://localhost:6379
-          NODE_ENV: test
-
-      - name: Run tests with coverage
-        run: pnpm test:coverage --reporter=verbose --outputFile=test-results/results.json
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
-          REDIS_URL: redis://localhost:6379
-          NODE_ENV: test
-
-      - name: Upload test results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: test-results
-          path: test-results/
-          retention-days: 7
-
-      - name: Upload coverage reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-report
-          path: coverage/
-          retention-days: 7
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
-        if: always()
-        with:
-          files: ./coverage/coverage-final.json
-          flags: unittests
-          name: codecov-umbrella
-          fail_ci_if_error: false
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Get pnpm store directory
-        id: pnpm-cache
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Generate Prisma Client
-        run: pnpm exec prisma generate
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
 
@@ -188,45 +114,46 @@ jobs:
       - name: Check TypeScript (packages)
         run: pnpm tsc --noEmit -p packages/tsconfig.json
 
-  build:
-    name: Build
-    runs-on: ubuntu-latest
+      - name: Create shadow database
+        run: psql postgresql://postgres:postgres@localhost:5432/postgres -c "CREATE DATABASE vatix_shadow;"
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-
-      - name: Get pnpm store directory
-        id: pnpm-cache
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Generate Prisma Client
-        run: pnpm prisma:generate
+      - name: Validate migrations
+        run: pnpm prisma:validate
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix_shadow
+
+      - name: Run migrations
+        run: pnpm prisma:deploy
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+
+      - name: Run unit tests (with coverage)
+        run: pnpm exec vitest run --exclude 'tests/integration/**' --exclude '**/*.integration.test.ts' --coverage
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+          REDIS_URL: redis://localhost:6379
+          NODE_ENV: test
+          ADMIN_TOKEN: test-admin-token
+          MATCHING_LEASE_ENFORCED: "false"
+
+      - name: Run integration tests (lease disabled)
+        run: pnpm test:integration
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+          REDIS_URL: redis://localhost:6379
+          NODE_ENV: test
+          ADMIN_TOKEN: test-admin-token
+          MATCHING_LEASE_ENFORCED: "false"
+
+      - name: Run integration tests (lease enforced)
+        run: pnpm test:integration
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+          REDIS_URL: redis://localhost:6379
+          NODE_ENV: test
+          ADMIN_TOKEN: test-admin-token
+          MATCHING_LEASE_ENFORCED: "true"
 
       - name: Build
         run: pnpm build

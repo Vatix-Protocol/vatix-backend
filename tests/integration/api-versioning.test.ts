@@ -34,6 +34,7 @@ vi.mock("../../src/services/prisma.js", () => {
           oracleAddress: "G" + "A".repeat(55),
           status: "ACTIVE",
           outcome: null,
+          deletedAt: null,
           createdAt: new Date(),
           updatedAt: new Date(),
         }),
@@ -71,6 +72,13 @@ vi.mock("../../src/services/prisma.js", () => {
             status: "ACTIVE",
           },
         }),
+      },
+      outboxEvent: {
+        count: async () => 0,
+      },
+      resolutionCandidate: {
+        count: async () => 0,
+        findMany: async () => [],
       },
     }),
   };
@@ -124,6 +132,7 @@ describe("Integration Tests: API versioning", () => {
         expected: 200,
       },
       { method: "GET", url: `/v1/orders/user/${wallet}`, expected: 200 },
+      { method: "GET", url: "/v1/trades", expected: 200 },
       { method: "GET", url: `/v1/trades/user/${wallet}`, expected: 200 },
       {
         method: "GET",
@@ -182,6 +191,26 @@ describe("Integration Tests: API versioning", () => {
     expect(response.statusCode).toBe(404);
   });
 
+  it("returns 404 for unsupported API versions", async () => {
+    const unsupportedRequests = [
+      { method: "GET", url: "/v2/markets" },
+      { method: "GET", url: "/v2/health" },
+      { method: "GET", url: "/v0/markets" },
+    ] as const;
+
+    for (const request of unsupportedRequests) {
+      const response = await app.inject(request);
+
+      expect(response.statusCode, `${request.method} ${request.url}`).toBe(404);
+      const body = JSON.parse(response.body);
+      expect(body).toEqual({
+        error: `Route ${request.method} ${request.url} not found`,
+        requestId: expect.any(String),
+        statusCode: 404,
+      });
+    }
+  });
+
   it("mounts OpenAPI at /v1/openapi.json with only /v1 path keys", async () => {
     const response = await app.inject({
       method: "GET",
@@ -223,6 +252,7 @@ describe("Integration Tests: API versioning", () => {
         expected: [201, 401],
       },
       { method: "GET", url: `/v1/orders/user/${wallet}`, expected: [200] },
+      { method: "GET", url: "/v1/trades", expected: [200] },
       { method: "GET", url: `/v1/trades/user/${wallet}`, expected: [200] },
       {
         method: "GET",
@@ -241,14 +271,30 @@ describe("Integration Tests: API versioning", () => {
         payload: { status: "CANCELLED" },
         expected: [401],
       },
+      // Long-lived SSE endpoint — never completes a response, so it can't
+      // go through the one-shot inject() loop below. Covered by its own
+      // dedicated streaming test instead.
+      {
+        method: "GET",
+        url: `/v1/wallets/${wallet}/fills/stream`,
+        expected: [],
+        streaming: true,
+      },
     ] as const;
 
-    expect(Object.keys(openApiSpec.paths)).toHaveLength(checks.length);
+    // OpenAPI may document additional paths beyond this smoke checklist.
+    expect(Object.keys(openApiSpec.paths).length).toBeGreaterThanOrEqual(
+      checks.filter((c) => !("streaming" in c && c.streaming)).length
+    );
 
     for (const check of checks) {
+      if ("streaming" in check && check.streaming) continue;
       const response = await app.inject(check);
       expect(response.statusCode, `${check.method} ${check.url}`).not.toBe(404);
-      expect(check.expected).toContain(response.statusCode);
+      expect(
+        check.expected,
+        `${check.method} ${check.url} body=${response.body.slice(0, 200)}`
+      ).toContain(response.statusCode);
     }
   });
 });

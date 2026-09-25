@@ -78,14 +78,16 @@ reached production; it can be revisited if operational requirements change.
 ## Consequences
 
 1. Add `bullmq` to root `package.json` dependencies.
-2. Replace `apps/workers/src/settlement/consumer.ts` raw-stream bootstrap with a BullMQ `Worker`.
-3. Replace `apps/workers/src/oracle/redis-submission-queue.ts` with a BullMQ `Queue` producer and
-   `Worker` consumer pair.
-4. Unified retry config: `attempts`, `backoff` strategy, and `removeOnFail` (DLQ retention) defined
+2. Replace `src/services/settlement-queue.ts` Redis Streams XADD producer with BullMQ `Queue`.
+3. Replace `apps/workers/src/settlement/consumer.ts` raw-stream bootstrap with a BullMQ `Worker`.
+4. Replace `apps/workers/src/oracle/redis-submission-queue.ts` with a BullMQ `Queue` producer and
+   `Worker` consumer pair (already implemented as `BullMQSubmissionQueue`).
+5. Unified retry config: `attempts`, `backoff` strategy, and `removeOnFail` (DLQ retention) defined
    once per queue in a shared config object.
-5. `queue-consumer.ts` generic `processJob` function is preserved — BullMQ workers call it so
+6. `queue-consumer.ts` generic `processJob` function is preserved — BullMQ workers call it so
    existing unit tests continue to pass without modification.
-6. The `SETTLEMENT_QUEUE_NAME` and `SUBMISSION_QUEUE_NAME` env vars continue to control queue names.
+7. The `SETTLEMENT_QUEUE_NAME` and `SUBMISSION_QUEUE_NAME` env vars continue to control queue names.
+8. Correlation IDs are logged on enqueue and consumed job processing for observability.
 
 ---
 

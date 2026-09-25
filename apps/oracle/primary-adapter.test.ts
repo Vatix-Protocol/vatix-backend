@@ -230,9 +230,9 @@ describe("PrimaryAdapter", () => {
   });
 
   it("does not retry on non-transient errors (4xx)", async () => {
-    const fetchFn = vi.fn().mockResolvedValue(
-      new Response("not found", { status: 404 })
-    );
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(new Response("not found", { status: 404 }));
 
     const adapter = new PrimaryAdapter({
       baseUrl: "https://primary.example.com",
@@ -277,9 +277,7 @@ describe("PrimaryAdapter", () => {
   });
 
   it("healthCheck returns false when fetch throws", async () => {
-    const fetchFn = vi
-      .fn()
-      .mockRejectedValue(new Error("Connection refused"));
+    const fetchFn = vi.fn().mockRejectedValue(new Error("Connection refused"));
     const adapter = new PrimaryAdapter({
       baseUrl: "https://primary.example.com",
       fetchFn,
