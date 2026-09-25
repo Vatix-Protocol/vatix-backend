@@ -2,6 +2,13 @@ import { describe, it, expect } from "vitest";
 import {
   InternalIndexerMetricsService,
   type IndexerMetricsLog,
+  indexerMetricsRegistry,
+  latestIndexedLedgerSequenceGauge,
+  latestNetworkLedgerSequenceGauge,
+  indexerLagGauge,
+  gapDetectedTotalCounter,
+  backfillLedgersTotalCounter,
+  parseErrorTotalCounter,
 } from "./metrics.js";
 
 describe("InternalIndexerMetricsService", () => {
@@ -159,5 +166,66 @@ describe("InternalIndexerMetricsService", () => {
     const log = service.toLogFields();
     expect(log.gapDetectedTotal).toBe(5);
     expect(log.backfillLedgersTotal).toBe(300);
+  });
+});
+
+// ── Prometheus metric sync tests ─────────────────────────────────────────────
+//
+// These tests verify that each InternalIndexerMetricsService mutator also
+// updates the corresponding prom-client metric.
+
+describe("InternalIndexerMetricsService (Prometheus sync)", () => {
+  it("setLatestIndexedLedgerSequence updates the Prometheus gauge", () => {
+    const service = new InternalIndexerMetricsService();
+    service.setLatestIndexedLedgerSequence(42);
+    const gaugeValue = latestIndexedLedgerSequenceGauge.get();
+    expect(gaugeValue.values[0].value).toBe(42);
+  });
+
+  it("setLatestNetworkLedgerSequence updates the Prometheus gauge", () => {
+    const service = new InternalIndexerMetricsService();
+    service.setLatestNetworkLedgerSequence(99);
+    const gaugeValue = latestNetworkLedgerSequenceGauge.get();
+    expect(gaugeValue.values[0].value).toBe(99);
+  });
+
+  it("syncLag updates the Prometheus lag gauge", () => {
+    const service = new InternalIndexerMetricsService();
+    service.setLatestIndexedLedgerSequence(100);
+    service.setLatestNetworkLedgerSequence(200);
+    // The lag gauge is auto-synced by the setters above
+    const gaugeValue = indexerLagGauge.get();
+    expect(gaugeValue.values[0].value).toBe(100);
+  });
+
+  it("incrementGapDetected updates the Prometheus counter", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementGapDetected();
+    service.incrementGapDetected(2);
+    const counterValue = gapDetectedTotalCounter.get();
+    expect(counterValue.values[0].value).toBe(3);
+  });
+
+  it("incrementBackfillLedgers updates the Prometheus counter", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementBackfillLedgers(50);
+    service.incrementBackfillLedgers(25);
+    const counterValue = backfillLedgersTotalCounter.get();
+    expect(counterValue.values[0].value).toBe(75);
+  });
+
+  it("incrementParseError updates the Prometheus counter", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementParseError();
+    service.incrementParseError(3);
+    service.incrementParseError();
+    const counterValue = parseErrorTotalCounter.get();
+    expect(counterValue.values[0].value).toBe(5);
+  });
+
+  it("indexerMetricsRegistry is a valid prom-client Registry", () => {
+    expect(indexerMetricsRegistry).toBeDefined();
+    expect(typeof indexerMetricsRegistry.contentType).toBe("string");
+    expect(indexerMetricsRegistry.contentType).toContain("text/plain");
   });
 });

@@ -17,5 +17,9 @@ The indexer emits two distinct kinds of telemetry via `Telemetry` in
   Use spans to answer "which stage is slow?" for a given batch; use metrics
   to answer "how many/how often?" across batches over time.
 
+## PII & Secret Redaction (No PII Invariant)
+
+To ensure zero PII or sensitive data leaks into telemetry sinks, `consoleTelemetry` automatically redacts sensitive fields in metric and span tags (such as `traderAddress`, `counterpartyAddress`, `account`, `oracleAddress`, `eventId`, tokens, keys, and credentials) with `[REDACTED]`. Case-insensitive matching is enforced across all tag keys.
+
 The default `consoleTelemetry` implementation logs both to stdout; swap in
-another `Telemetry` implementation to forward to an APM/tracing backend.
+another `Telemetry` implementation to forward to an APM/tracing backend while maintaining strict PII-free guarantees.

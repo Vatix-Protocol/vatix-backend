@@ -75,6 +75,19 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
   }
 
   async saveCursor(cursor: string): Promise<void> {
+    const current = await this.prisma.indexerCursor.findUnique({
+      where: {
+        networkId_cursorKey: {
+          networkId: this.networkId,
+          cursorKey: this.cursorKey,
+        },
+      },
+      select: { cursorValue: true },
+    });
+    const currentCursor = current?.cursorValue ?? null;
+    if (currentCursor !== null && cursor < currentCursor) {
+      throw new CursorConflictError(currentCursor, cursor);
+    }
     await this.prisma.indexerCursor.upsert({
       where: {
         networkId_cursorKey: {
@@ -161,9 +174,9 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
               cursorKey: this.cursorKey,
             },
           },
-          select: { cursor: true },
+          select: { cursorValue: true },
         });
-        const currentCursor = current?.cursor ?? null;
+        const currentCursor = current?.cursorValue ?? null;
         if (currentCursor !== expectedPreviousCursor) {
           throw new CursorConflictError(expectedPreviousCursor, currentCursor);
         }

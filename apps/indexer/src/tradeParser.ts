@@ -23,6 +23,27 @@ import type { Telemetry } from "./telemetry.js";
 const TRADE_EVENT_TOPIC = "trade_executed_event";
 
 /**
+ * Stable error codes for Trade parsing. These are part of the parser's
+ * public contract: downstream consumers (indexer pipeline, ops dashboards,
+ * alerting) key off these codes, so they must not change without a
+ * coordinated migration.
+ */
+export const TradeErrorCode = {
+  WRONG_TOPIC: "TRADE_WRONG_TOPIC",
+  BAD_VALUE_XDR: "TRADE_BAD_VALUE_XDR",
+  VALUE_NOT_MAP: "TRADE_VALUE_NOT_MAP",
+  MISSING_FIELD: "TRADE_MISSING_FIELD",
+  INVALID_OUTCOME: "TRADE_INVALID_OUTCOME",
+  INVALID_DIRECTION: "TRADE_INVALID_DIRECTION",
+  PRECISION_LOSS: "TRADE_PRECISION_LOSS",
+  BAD_BIGINT: "TRADE_BAD_BIGINT",
+  EMPTY_ORDER_ID: "TRADE_EMPTY_ORDER_ID",
+  NON_UUID_ORDER_ID: "TRADE_NON_UUID_ORDER_ID",
+} as const;
+
+export type TradeErrorCode = (typeof TradeErrorCode)[keyof typeof TradeErrorCode];
+
+/**
  * Decode a base64-encoded XDR ScVal into its native JS representation.
  * Returns a plain object/map for ScvMap values.
  */
@@ -41,7 +62,12 @@ function field<T>(
   eventId: string
 ): T {
   if (!(key in map)) {
-    throw new TradeParseError(`Missing field "${key}"`, eventId);
+    throw new TradeParseError(
+      `Missing field "${key}"`,
+      eventId,
+      undefined,
+      TradeErrorCode.MISSING_FIELD
+    );
   }
   return map[key] as T;
 }
@@ -56,7 +82,9 @@ function toBigInt(value: unknown, fieldName: string, eventId: string): bigint {
     if (!Number.isInteger(value)) {
       throw new TradeParseError(
         `Field "${fieldName}" is a non-integer number — precision loss risk`,
-        eventId
+        eventId,
+        undefined,
+        TradeErrorCode.PRECISION_LOSS
       );
     }
     return BigInt(value);
@@ -67,19 +95,28 @@ function toBigInt(value: unknown, fieldName: string, eventId: string): bigint {
     } catch {
       throw new TradeParseError(
         `Field "${fieldName}" cannot be parsed as bigint: ${value}`,
-        eventId
+        eventId,
+        undefined,
+        TradeErrorCode.BAD_BIGINT
       );
     }
   }
   throw new TradeParseError(
     `Field "${fieldName}" has unexpected type ${typeof value}`,
-    eventId
+    eventId,
+    undefined,
+    TradeErrorCode.BAD_BIGINT
   );
 }
 
 function toTradeOutcome(value: unknown, eventId: string): TradeOutcome {
   if (value === "YES" || value === "NO") return value;
-  throw new TradeParseError(`Invalid outcome value: ${String(value)}`, eventId);
+  throw new TradeParseError(
+    `Invalid outcome value: ${String(value)}`,
+    eventId,
+    undefined,
+    TradeErrorCode.INVALID_OUTCOME
+  );
 }
 
 function toDirection(value: unknown, eventId: string): TradeDirection {
@@ -87,7 +124,9 @@ function toDirection(value: unknown, eventId: string): TradeDirection {
   if (v === "buy" || v === "sell") return v;
   throw new TradeParseError(
     `Invalid direction value: ${String(value)}`,
-    eventId
+    eventId,
+    undefined,
+    TradeErrorCode.INVALID_DIRECTION
   );
 }
 
@@ -118,13 +157,20 @@ function toOrderId(
 ): string {
   const raw = String(field(map, key, eventId)).trim();
   if (raw === "") {
-    throw new TradeParseError(`Field "${key}" must not be empty`, eventId);
+    throw new TradeParseError(
+      `Field "${key}" must not be empty`,
+      eventId,
+      undefined,
+      TradeErrorCode.EMPTY_ORDER_ID
+    );
   }
   if (isProductionEnv(nodeEnv) && !UUID_RE.test(raw)) {
     throw new TradeParseError(
       `Field "${key}" ("${raw}") is not a valid CLOB Order id (UUID) — ` +
         "cannot join this fill to an Order in production",
-      eventId
+      eventId,
+      undefined,
+      TradeErrorCode.NON_UUID_ORDER_ID
     );
   }
   return raw;
@@ -174,7 +220,9 @@ export function parseTradeEvent(
   if (!isTradeEvent(event.topicsXdr)) {
     throw new TradeParseError(
       `Event topic is not "${TRADE_EVENT_TOPIC}"`,
-      event.id
+      event.id,
+      undefined,
+      TradeErrorCode.WRONG_TOPIC
     );
   }
 
@@ -185,7 +233,8 @@ export function parseTradeEvent(
     throw new TradeParseError(
       "Failed to decode event value XDR",
       event.id,
-      err
+      err,
+      TradeErrorCode.BAD_VALUE_XDR
     );
   }
 
@@ -194,7 +243,12 @@ export function parseTradeEvent(
     decoded === null ||
     Array.isArray(decoded)
   ) {
-    throw new TradeParseError("Event value is not an ScvMap", event.id);
+    throw new TradeParseError(
+      "Event value is not an ScvMap",
+      event.id,
+      undefined,
+      TradeErrorCode.VALUE_NOT_MAP
+    );
   }
 
   const map = decoded as Record<string, unknown>;

@@ -31,6 +31,7 @@ function makeTradeEvent(id: string): RawChainEvent {
     contractId: "CTEST",
     type: "contract",
     pagingToken: `token-${id}`,
+    eventIndex: 0,
     valueXdr,
     topicsXdr: [TRADE_TOPIC],
   };
@@ -50,6 +51,7 @@ function makeResolutionEvent(id: string): RawChainEvent {
     contractId: "CTEST",
     type: "contract",
     pagingToken: `token-${id}`,
+    eventIndex: 0,
     valueXdr,
     topicsXdr: [RESOLUTION_TOPIC],
   };
@@ -73,6 +75,7 @@ function makeForkResolutionEvent(
     contractId: "CTEST",
     type: "contract",
     pagingToken: `token-${id}`,
+    eventIndex: 0,
     valueXdr,
     topicsXdr: [RESOLUTION_TOPIC],
   };

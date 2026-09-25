@@ -161,6 +161,23 @@ may still point to an earlier ledger. On restart the indexer re-fetches that win
 events are skipped via `indexer_processed_events` idempotency keys (`skipped` count increments,
 no duplicate DB rows).
 
+### Cursor durability guarantees
+
+`PrismaCursorStorageClient` provides three durability guarantees:
+
+1. **Monotonic advancement.** `saveCursor` rejects any value that would regress the stored
+   cursor, throwing `CursorConflictError`. This prevents replayed or out-of-order requests
+   from rewinding the indexer.
+
+2. **Atomic batch + cursor write.** `saveCursorWithBatch` wraps both the event batch write
+   and the cursor advance in a single Prisma `$transaction`. If either side fails, the entire
+   transaction rolls back so the cursor never advances without the data being persisted.
+
+3. **Concurrent writer detection.** When `saveCursorWithBatch` is called with an
+   `expectedPreviousCursor`, it verifies that the current DB value matches before advancing.
+   If a concurrent writer has already advanced the cursor, a `CursorConflictError` is thrown
+   and the batch is rolled back.
+
 ```sql
 -- Reset to a specific ledger
 UPDATE indexer_cursors

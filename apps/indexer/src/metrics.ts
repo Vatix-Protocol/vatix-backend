@@ -1,3 +1,73 @@
+import client from "prom-client";
+
+// ---------------------------------------------------------------------------
+// Prometheus registry for indexer metrics
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared Prometheus Registry for the indexer's scrape endpoint.
+ *
+ * Separate from the main API process registry (src/services/metrics.ts).
+ * Default Node.js process/runtime metrics are collected automatically via
+ * collectDefaultMetrics, prefixed `vatix_`.
+ */
+export const indexerMetricsRegistry = new client.Registry();
+
+client.collectDefaultMetrics({
+  register: indexerMetricsRegistry,
+  prefix: "vatix_",
+});
+
+// ---------------------------------------------------------------------------
+// Prometheus metric definitions
+// ---------------------------------------------------------------------------
+
+/** Latest ledger sequence that has been successfully indexed. */
+export const latestIndexedLedgerSequenceGauge = new client.Gauge({
+  name: "vatix_indexer_latest_indexed_ledger_sequence",
+  help: "Latest ledger sequence that has been successfully indexed",
+  registers: [indexerMetricsRegistry],
+});
+
+/** Latest ledger sequence reported by the Stellar network. */
+export const latestNetworkLedgerSequenceGauge = new client.Gauge({
+  name: "vatix_indexer_latest_network_ledger_sequence",
+  help: "Latest ledger sequence reported by the Stellar network",
+  registers: [indexerMetricsRegistry],
+});
+
+/** Difference between the latest network ledger and the indexed ledger. */
+export const indexerLagGauge = new client.Gauge({
+  name: "vatix_indexer_lag",
+  help: "Difference between the latest network ledger and the indexed ledger",
+  registers: [indexerMetricsRegistry],
+});
+
+/** Total number of ledger gaps detected since process start. */
+export const gapDetectedTotalCounter = new client.Counter({
+  name: "vatix_indexer_gap_detected_total",
+  help: "Total number of ledger gaps detected since process start",
+  registers: [indexerMetricsRegistry],
+});
+
+/** Total number of ledgers back-filled during gap catch-up since process start. */
+export const backfillLedgersTotalCounter = new client.Counter({
+  name: "vatix_indexer_backfill_ledgers_total",
+  help: "Total number of ledgers back-filled during gap catch-up since process start",
+  registers: [indexerMetricsRegistry],
+});
+
+/** Total number of event parse errors (all parsers) since process start. */
+export const parseErrorTotalCounter = new client.Counter({
+  name: "vatix_indexer_parse_error_total",
+  help: "Total number of event parse errors (all parsers) since process start",
+  registers: [indexerMetricsRegistry],
+});
+
+// ---------------------------------------------------------------------------
+// In-memory metrics service (also updates Prometheus metrics)
+// ---------------------------------------------------------------------------
+
 export interface IndexerMetricsSnapshot {
   latestIndexedLedgerSequence: number | null;
   latestNetworkLedgerSequence: number | null;
@@ -34,6 +104,9 @@ export class InternalIndexerMetricsService {
 
   setLatestIndexedLedgerSequence(sequence: number): void {
     this.latestIndexedLedgerSequence = sequence;
+    latestIndexedLedgerSequenceGauge.set(sequence);
+    // Update the derived lag metric whenever either input changes
+    this.syncLag();
   }
 
   getLatestIndexedLedgerSequence(): number | null {
@@ -42,6 +115,9 @@ export class InternalIndexerMetricsService {
 
   setLatestNetworkLedgerSequence(sequence: number): void {
     this.latestNetworkLedgerSequence = sequence;
+    latestNetworkLedgerSequenceGauge.set(sequence);
+    // Update the derived lag metric whenever either input changes
+    this.syncLag();
   }
 
   getLatestNetworkLedgerSequence(): number | null {
@@ -63,11 +139,25 @@ export class InternalIndexerMetricsService {
   }
 
   /**
+   * Sync the Prometheus lag gauge with the current in-memory state.
+   * Called automatically by setLatestIndexedLedgerSequence and
+   * setLatestNetworkLedgerSequence; exposed publicly so callers can
+   * re-sync after batch updates if needed.
+   */
+  syncLag(): void {
+    const lag = this.getLag();
+    if (lag !== null) {
+      indexerLagGauge.set(lag);
+    }
+  }
+
+  /**
    * Increment the gap-detected counter by `count` (defaults to 1).
    * Called once per detected discontinuity.
    */
   incrementGapDetected(count = 1): void {
     this.gapDetectedTotal += count;
+    gapDetectedTotalCounter.inc(count);
   }
 
   getGapDetectedTotal(): number {
@@ -80,6 +170,7 @@ export class InternalIndexerMetricsService {
    */
   incrementBackfillLedgers(count: number): void {
     this.backfillLedgersTotal += count;
+    backfillLedgersTotalCounter.inc(count);
   }
 
   getBackfillLedgersTotal(): number {
@@ -89,6 +180,7 @@ export class InternalIndexerMetricsService {
   /** Increment the parse-error counter by `count` (defaults to 1). */
   incrementParseError(count = 1): void {
     this.parseErrorTotal += count;
+    parseErrorTotalCounter.inc(count);
   }
 
   getParseErrorTotal(): number {

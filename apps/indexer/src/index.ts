@@ -18,9 +18,13 @@ export type {
   LedgerWindow,
   NormalizedTrade,
   NormalizedResolution,
+  NormalizedCollateralDeposit,
+  NormalizedMarketCreated,
+  MarketStatus,
   RawChainEvent,
   ResolutionOutcome,
   TradeDirection,
+  TradeErrorCode,
   TradeOutcome,
 } from "./types.js";
 export type {
@@ -30,7 +34,12 @@ export type {
   PersistedTrade,
   PersistedResolution,
 } from "./idempotency.js";
-export { TradeParseError, ResolutionParseError } from "./types.js";
+export {
+  TradeParseError,
+  ResolutionParseError,
+  CollateralDepositedParseError,
+  MarketCreatedParseError,
+} from "./types.js";
 export type {
   BatchRecord,
   BatchWriteError,
@@ -38,3 +47,14 @@ export type {
   BatchWriter,
 } from "./batchWriter.js";
 export { PrismaBatchWriter } from "./batchWriter.js";
+export { PrismaCursorStorageClient } from "./storage.js";
+export type { CursorStorageClient, CursorTransactionClient } from "./storage.js";
+export { CursorConflictError, CursorStorageConfigError } from "./storage.js";
+export {
+  CollateralDepositedErrorCode,
+  type CollateralDepositedErrorCode as CollateralDepositedErrorCodeType,
+} from "./collateralDepositedParser.js";
+export {
+  ResolutionErrorCode,
+  type ResolutionErrorCode as ResolutionErrorCodeType,
+} from "./resolutionParser.js";

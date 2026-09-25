@@ -3,6 +3,7 @@ import { nativeToScVal } from "@stellar/stellar-sdk";
 import {
   parseResolutionEvent,
   parseResolutionEvents,
+  ResolutionErrorCode,
 } from "./resolutionParser.js";
 import { ResolutionParseError } from "./types.js";
 import type { RawChainEvent } from "./types.js";
@@ -55,6 +56,7 @@ function makeEvent(overrides: Partial<RawChainEvent> = {}): RawChainEvent {
     contractId: "CRESOLUTION",
     type: "contract",
     pagingToken: "token-res-1",
+    eventIndex: 0,
     valueXdr: XDR.value.realYes,
     topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[42]],
     ...overrides,
@@ -84,11 +86,17 @@ describe("parseResolutionEvent", () => {
   });
 
   it("throws ResolutionParseError when the market_id topic is missing", () => {
-    expect(() =>
+    try {
       parseResolutionEvent(
         makeEvent({ topicsXdr: [XDR.topic.marketResolvedEvent] })
-      )
-    ).toThrow(ResolutionParseError);
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.MISSING_MARKET_ID
+      );
+    }
   });
 
   it("parses legacy on-chain tuple payload (market_id, outcome, resolved_at)", () => {
@@ -156,17 +164,23 @@ describe("parseResolutionEvent", () => {
   });
 
   it("throws ResolutionParseError for unknown outcome value (legacy ScvMap)", () => {
-    expect(() =>
+    try {
       parseResolutionEvent(
         makeEvent({
           valueXdr: XDR.value.unknownOutcome,
           topicsXdr: [XDR.topic.marketResolvedEvent],
         })
-      )
-    ).toThrow(ResolutionParseError);
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.INVALID_OUTCOME
+      );
+    }
   });
 
-  it("unknown outcome error message names the bad value", () => {
+  it("unknown outcome error message names the bad value (legacy ScvMap)", () => {
     try {
       parseResolutionEvent(
         makeEvent({
@@ -178,36 +192,63 @@ describe("parseResolutionEvent", () => {
     } catch (err) {
       expect(err).toBeInstanceOf(ResolutionParseError);
       expect((err as ResolutionParseError).message).toContain("MAYBE");
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.INVALID_OUTCOME
+      );
     }
   });
 
-  it("throws ResolutionParseError when topic is not market_resolved_event", () => {
-    expect(() =>
-      parseResolutionEvent(makeEvent({ topicsXdr: [XDR.topic.tradeExecuted] }))
-    ).toThrow(ResolutionParseError);
+  it("throws ResolutionParseError with WRONG_TOPIC code for non-resolution topic", () => {
+    try {
+      parseResolutionEvent(makeEvent({ topicsXdr: [XDR.topic.tradeExecuted] }));
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.WRONG_TOPIC
+      );
+    }
   });
 
-  it("throws ResolutionParseError when topicsXdr is empty", () => {
-    expect(() => parseResolutionEvent(makeEvent({ topicsXdr: [] }))).toThrow(
-      ResolutionParseError
-    );
+  it("throws ResolutionParseError with MISSING_FIELD code for empty topicsXdr", () => {
+    try {
+      parseResolutionEvent(makeEvent({ topicsXdr: [] }));
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.WRONG_TOPIC
+      );
+    }
   });
 
-  it("throws ResolutionParseError on malformed value XDR", () => {
-    expect(() =>
-      parseResolutionEvent(makeEvent({ valueXdr: "not!!valid!!xdr" }))
-    ).toThrow(ResolutionParseError);
+  it("throws ResolutionParseError with BAD_VALUE_XDR code on malformed value XDR", () => {
+    try {
+      parseResolutionEvent(makeEvent({ valueXdr: "not!!valid!!xdr" }));
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.BAD_VALUE_XDR
+      );
+    }
   });
 
-  it("throws ResolutionParseError when oracle field is missing (legacy ScvMap)", () => {
-    expect(() =>
+  it("throws ResolutionParseError with MISSING_ORACLE code when oracle is missing (legacy ScvMap)", () => {
+    try {
       parseResolutionEvent(
         makeEvent({
           valueXdr: XDR.value.missingOracle,
           topicsXdr: [XDR.topic.marketResolvedEvent],
         })
-      )
-    ).toThrow(ResolutionParseError);
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.MISSING_ORACLE
+      );
+    }
   });
 
   it("error carries the eventId", () => {
@@ -290,6 +331,7 @@ describe("parseResolutionEvents", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(ResolutionParseError);
     expect(errors[0].eventId).toBe("e2");
+    expect(errors[0].errorCode).toBe(ResolutionErrorCode.MISSING_MARKET_ID);
   });
 
   it("returns empty arrays for empty input", () => {
@@ -336,29 +378,41 @@ describe("production fail-fast on legacy resolution shapes", () => {
   // blank oracleAddress instead of failing loudly. These tests fail
   // against the pre-fix parser (which has no `nodeEnv` gate at all).
 
-  it("rejects a legacy ScvVec tuple payload in production", () => {
+  it("rejects a legacy ScvVec tuple payload in production with LEGACY_SHAPE_REJECTED code", () => {
     const tupleXdr = nativeToScVal([7, false, 99n]).toXDR("base64");
-    expect(() =>
+    try {
       parseResolutionEvent(
         makeEvent({
           valueXdr: tupleXdr,
           topicsXdr: [XDR.topic.marketResolvedEvent],
         }),
         { nodeEnv: "production" }
-      )
-    ).toThrow(ResolutionParseError);
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.LEGACY_SHAPE_REJECTED
+      );
+    }
   });
 
-  it("rejects a legacy ScvMap payload in production", () => {
-    expect(() =>
+  it("rejects a legacy ScvMap payload in production with LEGACY_SHAPE_REJECTED code", () => {
+    try {
       parseResolutionEvent(
         makeEvent({
           valueXdr: XDR.value.resolvedYes,
           topicsXdr: [XDR.topic.marketResolvedEvent],
         }),
         { nodeEnv: "production" }
-      )
-    ).toThrow(ResolutionParseError);
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.LEGACY_SHAPE_REJECTED
+      );
+    }
   });
 
   it("still parses the canonical on-chain shape in production", () => {
@@ -397,6 +451,8 @@ describe("production fail-fast on legacy resolution shapes", () => {
     });
     expect(resolutions).toHaveLength(0);
     expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(ResolutionParseError);
+    expect(errors[0].errorCode).toBe(ResolutionErrorCode.LEGACY_SHAPE_REJECTED);
     expect(telemetry.record).toHaveBeenCalledWith(
       "indexer.parser.legacy_shape_rejected",
       1,
