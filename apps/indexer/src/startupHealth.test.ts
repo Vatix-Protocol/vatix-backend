@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
-import { checkStartupHealth, checkLiveDependencies } from "./startupHealth.js";
+import {
+  checkStartupHealth,
+  checkLiveDependencies,
+  checkLiveness,
+  checkReadiness,
+} from "./startupHealth.js";
 import type { DependencyProbe } from "./startupHealth.js";
 
 const validInput = {
@@ -211,5 +216,121 @@ describe("checkLiveDependencies (#947)", () => {
     ]);
     expect(db.check).toHaveBeenCalledTimes(1);
     expect(horizon.check).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("checkLiveness (#1081)", () => {
+  it("always returns 200 with a correlation id", () => {
+    const result = checkLiveness("corr-123");
+    expect(result.status).toBe(200);
+    expect(result.body.status).toBe("ok");
+    expect(result.body.correlationId).toBe("corr-123");
+    expect(result.body.errors).toEqual([]);
+  });
+
+  it("never includes dependency errors in the liveness response", () => {
+    const result = checkLiveness("corr-456");
+    expect(result.body.errors).toEqual([]);
+  });
+});
+
+describe("checkReadiness (#1081)", () => {
+  const noopSleep = async () => {};
+
+  const okProbe = (name: string): DependencyProbe => ({
+    name,
+    check: vi.fn().mockResolvedValue(undefined),
+  });
+
+  const failingProbe = (name: string, message = "connection refused") => ({
+    name,
+    check: vi.fn().mockRejectedValue(new Error(message)),
+  });
+
+  it("returns 200 when every probe succeeds", async () => {
+    const result = await checkReadiness(
+      [okProbe("db"), okProbe("redis")],
+      { correlationId: "corr-789", sleep: noopSleep },
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.body.status).toBe("ok");
+    expect(result.body.correlationId).toBe("corr-789");
+    expect(result.body.errors).toEqual([]);
+  });
+
+  it("returns 503 with DEPENDENCY_UNAVAILABLE when a probe fails", async () => {
+    const result = await checkReadiness(
+      [failingProbe("db", "ECONNREFUSED")],
+      { correlationId: "corr-abc", sleep: noopSleep },
+    );
+
+    expect(result.status).toBe(503);
+    expect(result.body.status).toBe("unavailable");
+    expect(result.body.correlationId).toBe("corr-abc");
+    expect(result.body.errors).toEqual([
+      { dependency: "db", code: "DEPENDENCY_UNAVAILABLE" },
+    ]);
+  });
+
+  it("never leaks connection strings or internal addresses in errors", async () => {
+    const result = await checkReadiness(
+      [
+        failingProbe(
+          "db",
+          "connect ECONNREFUSED postgres://user:secret@10.0.0.5:5432/vatix",
+        ),
+      ],
+      { correlationId: "corr-secret", sleep: noopSleep },
+    );
+
+    const serialized = JSON.stringify(result.body);
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("postgres://");
+    expect(serialized).not.toContain("10.0.0.5");
+  });
+
+  it("returns 503 with PROBE_TIMEOUT when a probe exceeds the timeout", async () => {
+    const result = await checkReadiness(
+      [
+        {
+          name: "slow-db",
+          check: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+          },
+        },
+      ],
+      { correlationId: "corr-timeout", timeoutMs: 10, sleep: noopSleep },
+    );
+
+    expect(result.status).toBe(503);
+    expect(result.body.errors).toEqual([
+      { dependency: "slow-db", code: "PROBE_TIMEOUT" },
+    ]);
+  });
+
+  it("aggregates errors across multiple failing probes", async () => {
+    const result = await checkReadiness(
+      [
+        failingProbe("db", "db down"),
+        failingProbe("redis", "redis down"),
+      ],
+      { correlationId: "corr-multi", sleep: noopSleep },
+    );
+
+    expect(result.status).toBe(503);
+    expect(result.body.errors).toEqual([
+      { dependency: "db", code: "DEPENDENCY_UNAVAILABLE" },
+      { dependency: "redis", code: "DEPENDENCY_UNAVAILABLE" },
+    ]);
+  });
+
+  it("passes the correlation id through to the response for log/trace stitching", async () => {
+    const result = await checkReadiness(
+      [okProbe("db")],
+      { correlationId: "corr-trace", sleep: noopSleep },
+    );
+
+    expect(result.body.correlationId).toBe("corr-trace");
   });
 });
