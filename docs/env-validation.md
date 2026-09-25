@@ -249,10 +249,29 @@ state and accept transaction submission for the wrong network:
 - Unknown/custom `STELLAR_NETWORK` values (e.g. `futurenet`) skip the check, as
   there is no known-good host set.
 
+### Network-matched endpoint URLs
+
+`STELLAR_HORIZON_URL` must belong to the network declared by `STELLAR_NETWORK`
+(#1134). `loadBaseConfig()` validates the pair at boot and **fails closed**:
+
+- When `STELLAR_HORIZON_URL` is unset, the default is chosen from
+  `STELLAR_NETWORK`: `https://horizon.stellar.org` for `mainnet`,
+  `https://horizon-testnet.stellar.org` otherwise. A mainnet deployment can no
+  longer silently fall back to the testnet Horizon host.
+- When set, the host is checked against the known public Horizon hosts
+  (`horizon.stellar.org` ↔ mainnet, `horizon-testnet.stellar.org` ↔ testnet)
+  and against `testnet`/`mainnet` tokens in self-hosted hostnames
+  (e.g. `horizon.testnet.internal.example.com`). A mismatch throws
+  `ConfigValidationError` before anything boots.
+- Self-hosted hosts without a network token are allowed — their target network
+  cannot be verified from the URL alone. Unknown/custom `STELLAR_NETWORK`
+  values (e.g. `futurenet`) skip the check, as there is no known-good host set.
+
 **Error example:**
 
 ```
 STELLAR_RPC_URL host "soroban-testnet.stellar.org" belongs to Stellar testnet, which does not match STELLAR_NETWORK="mainnet": expected a mainnet Soroban RPC endpoint (e.g. https://soroban.stellar.org)
+STELLAR_HORIZON_URL host "horizon-testnet.stellar.org" belongs to Stellar testnet, which does not match STELLAR_NETWORK="mainnet": expected a mainnet Horizon endpoint (e.g. https://horizon.stellar.org)
 ```
 
 ### Enum variables
@@ -264,6 +283,30 @@ Must be one of a fixed set of string values.
 | `NODE_ENV`               | `development` \| `test` \| `production` | `development` |
 | `LOG_LEVEL`              | `debug` \| `info` \| `warn` \| `error`  | `info`        |
 | `ORACLE_LOG_LEVEL`       | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+### Enum variables
+
+Must be one of a fixed set of string values.
+
+| Variable                 | Accepted values                         | Default       |
+| ------------------------ | --------------------------------------- | ------------- |
+| `NODE_ENV`               | `development` \| `test` \| `production` | `development` |
+| `LOG_LEVEL`              | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+| `ORACLE_LOG_LEVEL`       | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+| `FINALIZATION_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+| `INDEXER_LOG_LEVEL`      | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+
+**Error example:**
+
+```
+NODE_ENV must be one of development | test | production, got: "staging"
+```
+
+### Integer variables
+
+Must be a positive integer, optionally within a bounded range.
+
+| Variable                                 | Min  | Max     | Default                           |
+| ------------------------------------
 | `FINALIZATION_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error`  | `info`        |
 | `INDEXER_LOG_LEVEL`      | `debug` \| `info` \| `warn` \| `error`  | `info`        |
 
