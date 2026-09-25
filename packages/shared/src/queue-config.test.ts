@@ -104,6 +104,7 @@ describe("queue-config", () => {
       expect(config).toEqual({
         host: "redis.example.com",
         port: 6380,
+        username: "user",
         password: "pass",
       });
     });
@@ -115,6 +116,7 @@ describe("queue-config", () => {
         host: "redis.example.com",
         port: 6380,
         password: "mypassword",
+        tls: { rejectUnauthorized: true },
       });
     });
   });

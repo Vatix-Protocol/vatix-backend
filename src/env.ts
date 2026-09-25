@@ -196,6 +196,44 @@ export const apiEnvSchema = z.object({
       )
       .default(65_536)
   ),
+  /**
+   * Bearer token Prometheus scrapers must present on GET /metrics (#1130).
+   * Optional, but when set it is enforced for every scrape. Never logged.
+   * Configure together with `METRICS_SCRAPE_ALLOWED_IPS` for defense in depth.
+   */
+  METRICS_SCRAPE_TOKEN: z.preprocess(
+    emptyToUndefined,
+    z.string().min(1).optional()
+  ),
+  /**
+   * Comma-separated list of scraper source addresses allowed to read
+   * GET /metrics (#1130): exact IPs and/or IPv4 CIDR ranges (e.g.
+   * `10.0.0.0/8,192.168.1.10`). Optional; when set, only these addresses are
+   * served. Not a substitute for a bearer token on a shared network.
+   */
+  METRICS_SCRAPE_ALLOWED_IPS: z.preprocess(
+    emptyToUndefined,
+    z.string().optional()
+  ),
+  /**
+   * Opt-out for the deny-by-default metrics authz (#1130). Unset means "true"
+   * when NODE_ENV=production and "false" otherwise: production refuses to boot
+   * without a token or IP allowlist, while dev/test keep the historical open
+   * endpoint. Set to "false" in production only for a deliberate, temporary
+   * rollback (documented in the PR/runbook).
+   */
+  METRICS_REQUIRE_AUTH: z.preprocess(
+    emptyToUndefined,
+    z
+      .enum(["true", "false"], {
+        errorMap: () => ({
+          message:
+            'METRICS_REQUIRE_AUTH must be "true" or "false", got: invalid value',
+        }),
+      })
+      .transform((value) => value === "true")
+      .optional()
+  ),
 });
 
 export type ParsedApiEnv = z.infer<typeof apiEnvSchema>;
@@ -247,6 +285,39 @@ export function parseApiEnv(env: ApiEnvInput = process.env): ParsedApiEnv {
       "ADMIN_TOKEN must not be set when NODE_ENV=production: it is a " +
         "deprecated fail-open auth path. Use the AdminIdentity model for " +
         "rotatable admin credentials."
+    );
+  }
+
+  // Metrics scrape authz (#1130): GET /metrics is excluded from the global
+  // rate limiter and admission control, so it must fail closed on its own.
+  // Production boots only with a bearer token and/or source-address allowlist;
+  // dev/test stay open unless authz is configured. An explicit
+  // METRICS_REQUIRE_AUTH=false is the documented rollback for a deployment
+  // that legitimately relies on network-level isolation.
+  const metricsRequireAuth =
+    parsed.METRICS_REQUIRE_AUTH ?? parsed.NODE_ENV === "production";
+  if (
+    metricsRequireAuth &&
+    !parsed.METRICS_SCRAPE_TOKEN &&
+    !parsed.METRICS_SCRAPE_ALLOWED_IPS
+  ) {
+    throw new Error(
+      "GET /metrics must be restricted when METRICS_REQUIRE_AUTH is in effect: " +
+        "set METRICS_SCRAPE_TOKEN (bearer token) or METRICS_SCRAPE_ALLOWED_IPS, " +
+        "or explicitly opt out with METRICS_REQUIRE_AUTH=false. " +
+        "Unauthenticated metrics expose internal topology and latency."
+    );
+  }
+  if (
+    parsed.NODE_ENV === "production" &&
+    parsed.METRICS_REQUIRE_AUTH === false &&
+    !parsed.METRICS_SCRAPE_TOKEN &&
+    !parsed.METRICS_SCRAPE_ALLOWED_IPS
+  ) {
+    console.warn(
+      "[env] WARNING: GET /metrics is unauthenticated in production " +
+        "(METRICS_REQUIRE_AUTH=false with no token/allowlist). " +
+        "Restrict it at the ingress layer or configure METRICS_SCRAPE_TOKEN."
     );
   }
 

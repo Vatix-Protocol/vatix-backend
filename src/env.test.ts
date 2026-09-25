@@ -216,14 +216,26 @@ describe("parseApiEnv — ADMIN_TOKEN single source of truth (#984)", () => {
   });
 
   it("allows production boot when ADMIN_TOKEN is unset", () => {
-    const env = parseApiEnv({ ...VALID_ENV, NODE_ENV: "production" });
+    // METRICS_REQUIRE_AUTH is opted out here because this suite covers
+    // ADMIN_TOKEN semantics; production metrics authz has its own coverage in
+    // src/env-metrics-auth.test.ts (#1130).
+    const env = parseApiEnv({
+      ...VALID_ENV,
+      NODE_ENV: "production",
+      METRICS_REQUIRE_AUTH: "false",
+    });
     expect(env.ADMIN_TOKEN).toBeUndefined();
     expect(env.NODE_ENV).toBe("production");
   });
 
   it("allows production boot when ADMIN_TOKEN is an empty string", () => {
     expect(() =>
-      parseApiEnv({ ...VALID_ENV, NODE_ENV: "production", ADMIN_TOKEN: "" })
+      parseApiEnv({
+        ...VALID_ENV,
+        NODE_ENV: "production",
+        ADMIN_TOKEN: "",
+        METRICS_REQUIRE_AUTH: "false",
+      })
     ).not.toThrow();
   });
 });

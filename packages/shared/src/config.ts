@@ -20,14 +20,45 @@ export type NodeEnv = "development" | "test" | "production";
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 /**
+ * Stable, machine-readable config error codes. Shared by every service's
+ * fail-closed boot gate (see docs/env-validation.md) so operators and tests
+ * can match on the code instead of parsing free-form message text.
+ */
+export const CONFIG_ERROR_CODES = {
+  /** A required variable is absent or empty. */
+  ENV_MISSING: "ENV_MISSING",
+  /** A variable is present but malformed. */
+  ENV_INVALID: "ENV_INVALID",
+} as const;
+
+export type ConfigErrorCode =
+  (typeof CONFIG_ERROR_CODES)[keyof typeof CONFIG_ERROR_CODES];
+
+/**
  * Thrown when an environment variable fails validation.
  * statusCode 400 signals that the caller supplied an invalid value.
  */
 export class ConfigValidationError extends Error {
   readonly statusCode = 400;
-  constructor(message: string) {
+  /**
+   * Stable error code (see {@link CONFIG_ERROR_CODES}) when the throwing
+   * call site supplies one; undefined for legacy throws that predate codes.
+   */
+  readonly code?: ConfigErrorCode;
+  /**
+   * Name of the offending environment variable — never its value — for
+   * safe logging and log-based alerting.
+   */
+  readonly variable?: string;
+
+  constructor(
+    message: string,
+    options: { code?: ConfigErrorCode; variable?: string } = {}
+  ) {
     super(message);
     this.name = "ConfigValidationError";
+    this.code = options.code;
+    this.variable = options.variable;
   }
 }
 
@@ -347,23 +378,71 @@ export interface IndexerConfig {
 }
 
 /**
+ * A Stellar contract ID strkey: the literal `C` followed by 55 base32
+ * characters (`A`–`Z`, `2`–`7`). Anything else cannot be a deployed Soroban
+ * contract address.
+ */
+const CONTRACT_ID_STRKEY_PATTERN = /^C[A-Z2-7]{55}$/;
+
+/**
  * Resolves the Soroban contract ID the indexer should ingest.
  * `INDEXER_CONTRACT_ID` takes precedence over the legacy `MARKET_CONTRACT_ID`
  * alias. Exported so other services (e.g. the oracle worker) resolve the
  * contract ID the same way instead of re-implementing this precedence.
  *
+ * Fail-closed rules:
+ *   - Missing/blank in every environment → `ENV_MISSING` (the indexer cannot
+ *     ingest anything without a target contract, so booting would silently
+ *     produce an empty index).
+ *   - Both aliases set to *different* values → warning, because a half-rotated
+ *     deployment is address drift waiting to happen. Precedence is preserved
+ *     and the resolved value is still the non-deprecated one.
+ *   - `NODE_ENV=production` and a malformed strkey → `ENV_INVALID`. A truncated
+ *     or chain-mismatched ID silently ingests the wrong contract (or none) on
+ *     the money path, so production refuses to boot rather than run blind.
+ *
  * @param env - Defaults to process.env. Pass a custom object in tests.
+ * @throws ConfigValidationError always carrying a stable `code` and `variable`.
  */
 export function loadIndexerContractId(env: Env): string {
-  const contractId =
-    env["INDEXER_CONTRACT_ID"]?.trim() ||
-    env["MARKET_CONTRACT_ID"]?.trim() ||
-    "";
-  if (contractId === "") {
-    throw new ConfigValidationError(
-      "Missing required environment variable: INDEXER_CONTRACT_ID (or MARKET_CONTRACT_ID)"
+  const primary = env["INDEXER_CONTRACT_ID"]?.trim() ?? "";
+  const legacyAlias = env["MARKET_CONTRACT_ID"]?.trim() ?? "";
+
+  if (primary !== "" && legacyAlias !== "" && primary !== legacyAlias) {
+    // Never log the values themselves is not required here (contract IDs are
+    // public addresses), but keeping the message value-free keeps log
+    // aggregation and alert rules stable.
+    console.warn(
+      "[env] WARNING: INDEXER_CONTRACT_ID and MARKET_CONTRACT_ID are both set " +
+        "and disagree; using INDEXER_CONTRACT_ID. A disagreement usually means " +
+        "a half-rotated deployment — verify the target contract before ingesting."
     );
   }
+
+  const contractId = primary || legacyAlias;
+  if (contractId === "") {
+    throw new ConfigValidationError(
+      "Missing required environment variable: INDEXER_CONTRACT_ID (or MARKET_CONTRACT_ID)",
+      {
+        code: CONFIG_ERROR_CODES.ENV_MISSING,
+        variable: "INDEXER_CONTRACT_ID",
+      }
+    );
+  }
+
+  if (
+    env["NODE_ENV"] === "production" &&
+    !CONTRACT_ID_STRKEY_PATTERN.test(contractId)
+  ) {
+    throw new ConfigValidationError(
+      "INDEXER_CONTRACT_ID must be a Stellar contract strkey (C + 55 base32 chars), got: invalid value",
+      {
+        code: CONFIG_ERROR_CODES.ENV_INVALID,
+        variable: "INDEXER_CONTRACT_ID",
+      }
+    );
+  }
+
   return contractId;
 }
 

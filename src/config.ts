@@ -2,6 +2,7 @@
  * API server config — validated at module load via Zod (see src/env.ts).
  */
 import { parseApiEnv } from "./env.js";
+import { loadMetricsScrapePolicy } from "./api/middleware/metricsAuth.js";
 
 const env = parseApiEnv();
 
@@ -95,3 +96,11 @@ export const config = {
     pollIntervalMs: env.ORACLE_POLL_INTERVAL_MS,
   },
 } as const;
+
+/**
+ * Authorization policy for GET /metrics (#1130), derived from the same
+ * Zod-parsed env as everything else (no second env parser). The route reads
+ * this object; tests exercise `loadMetricsScrapePolicy`/`authorizeMetricsScrape`
+ * directly.
+ */
+export const metricsScrapePolicy = loadMetricsScrapePolicy(env);
