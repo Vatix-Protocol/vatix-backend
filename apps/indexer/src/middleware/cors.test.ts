@@ -168,3 +168,85 @@ describe("indexer CORS — production deny-by-default (#775)", () => {
     expect(allowed).not.toContain("*");
   });
 });
+
+// ── Auth negatives: untrusted origins cannot bypass CORS ──────────
+describe("indexer CORS — auth negatives", () => {
+  afterEach(() => {
+    delete process.env.CORS_ALLOWED_ORIGINS;
+    delete process.env.NODE_ENV;
+  });
+
+  it("rejects a disallowed origin against the /markets route", async () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.CORS_ALLOWED_ORIGINS;
+
+    const app = fastify({ logger: false });
+    await app.register(indexerCorsPlugin);
+    app.get("/markets", async () => ({ ok: true }));
+    await app.ready();
+
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/markets",
+      headers: {
+        origin: "https://evil.example.com",
+        "access-control-request-method": "GET",
+      },
+    });
+
+    const acao = response.headers["access-control-allow-origin"];
+    expect(acao).not.toBe("https://evil.example.com");
+
+    await app.close();
+  });
+
+  it("rejects an http:// origin in production (https:// required)", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.CORS_ALLOWED_ORIGINS = "https://app.vatix.io";
+
+    const app = fastify({ logger: false });
+    await app.register(indexerCorsPlugin);
+    app.get("/markets", async () => ({ ok: true }));
+    await app.ready();
+
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/markets",
+      headers: {
+        origin: "http://evil.example.com",
+        "access-control-request-method": "GET",
+      },
+    });
+
+    const acao = response.headers["access-control-allow-origin"];
+    expect(acao).not.toBe("http://evil.example.com");
+
+    await app.close();
+  });
+
+  it("allows a configured https:// origin in production", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.CORS_ALLOWED_ORIGINS = "https://app.vatix.io";
+
+    const app = fastify({ logger: false });
+    await app.register(indexerCorsPlugin);
+    app.get("/markets", async () => ({ ok: true }));
+    await app.ready();
+
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/markets",
+      headers: {
+        origin: "https://app.vatix.io",
+        "access-control-request-method": "GET",
+      },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["access-control-allow-origin"]).toBe(
+      "https://app.vatix.io"
+    );
+
+    await app.close();
+  });
+});

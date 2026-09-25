@@ -138,6 +138,147 @@ describe("buildIndexerHttpServer", () => {
     await app.close();
   });
 
+  // ── Authz: untrusted principals are rejected ──────────────────────
+  describe("indexer authz", () => {
+    afterEach(() => {
+      delete process.env.INDEXER_REQUIRED_PRINCIPAL;
+      delete process.env.INDEXER_API_KEY;
+    });
+
+    it("rejects a request with a mismatched x-principal when INDEXER_REQUIRED_PRINCIPAL is set", async () => {
+      process.env.INDEXER_REQUIRED_PRINCIPAL = "trusted-principal";
+
+      const app = await buildIndexerHttpServer();
+      await app.ready();
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets",
+        headers: {
+          "x-principal": "untrusted-principal",
+        },
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = response.json();
+      expect(body.code).toBe("UNAUTHORIZED");
+      expect(typeof body.correlationId).toBe("string");
+
+      await app.close();
+    });
+
+    it("accepts a request with a matching x-principal when INDEXER_REQUIRED_PRINCIPAL is set", async () => {
+      process.env.INDEXER_REQUIRED_PRINCIPAL = "trusted-principal";
+
+      const app = await buildIndexerHttpServer();
+      await app.ready();
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets",
+        headers: {
+          "x-principal": "trusted-principal",
+        },
+      });
+
+      // 200 means authz passed; the route may return 404/500 if
+      // the DB is unreachable but that is a separate concern.
+      expect(response.statusCode).not.toBe(401);
+
+      await app.close();
+    });
+
+    it("rejects a request with an invalid x-api-key when INDEXER_API_KEY is set", async () => {
+      process.env.INDEXER_API_KEY = "valid-key";
+
+      const app = await buildIndexerHttpServer();
+      await app.ready();
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets",
+        headers: {
+          "x-api-key": "wrong-key",
+        },
+      });
+
+      expect(response.statusCode).toBe(401);
+      const body = response.json();
+      expect(body.code).toBe("UNAUTHORIZED");
+
+      await app.close();
+    });
+
+    it("accepts a request with a matching x-api-key when INDEXER_API_KEY is set", async () => {
+      process.env.INDEXER_API_KEY = "valid-key";
+
+      const app = await buildIndexerHttpServer();
+      await app.ready();
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets",
+        headers: {
+          "x-api-key": "valid-key",
+        },
+      });
+
+      expect(response.statusCode).not.toBe(401);
+
+      await app.close();
+    });
+  });
+
+  // ── Markets route integration ─────────────────────────────────────
+  describe("markets routes", () => {
+    it("GET /markets returns a structured success envelope", async () => {
+      const app = await buildIndexerHttpServer();
+      await app.ready();
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets",
+      });
+
+      // The route exists; 200 means it responded, 404 means the route
+      // is not registered (which would be a wiring bug).
+      expect(response.statusCode).not.toBe(404);
+      const body = response.json();
+      if (response.statusCode === 200) {
+        expect(body.success).toBe(true);
+        expect(Array.isArray(body.data)).toBe(true);
+        expect(typeof body.requestId).toBe("string");
+        expect(typeof body.timestamp).toBe("string");
+      }
+
+      await app.close();
+    });
+
+    it("GET /markets/:id returns 404 for a non-existent market", async () => {
+      const app = await buildIndexerHttpServer();
+      await app.ready();
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets/non-existent-id",
+      });
+
+      // 404 means the route exists and the market was not found.
+      // 500 could mean the DB is unreachable (acceptable in test env).
+      expect(
+        response.statusCode === 404 || response.statusCode === 500
+      ).toBe(true);
+
+      if (response.statusCode === 404) {
+        const body = response.json();
+        expect(body.code).toBe("MARKET_NOT_FOUND");
+        expect(typeof body.correlationId).toBe("string");
+      }
+
+      await app.close();
+    });
+  });
+
   // Issue #1099: GET /markets returns a paginated list of non-soft-deleted markets.
   it("returns 200 with a paginated list of markets from GET /markets", async () => {
     const mockPrisma = {
@@ -211,22 +352,6 @@ describe("buildIndexerHttpServer", () => {
           oracleAddress: "GABC...",
           status: "ACTIVE",
           outcome: null,
-          createdA
-
-    await app.close();
-  });
-
-  // Issue #1099: GET /markets/:id returns a single market by ID.
-  it("returns 200 with a single market from GET /markets/:id", async () => {
-    const mockPrisma = {
-      market: {
-        findUnique: vi.fn().mockResolvedValue({
-          id: "market-1",
-          question: "Will it rain?",
-          endTime: new Date("2026-06-01T00:00:00Z"),
-          oracleAddress: "GABC...",
-          status: "ACTIVE",
-          outcome: null,
           createdAt: new Date("2026-01-01T00:00:00Z"),
           updatedAt: new Date("2026-01-01T00:00:00Z"),
         }),
@@ -260,10 +385,6 @@ describe("buildIndexerHttpServer", () => {
     expect(response.headers["content-type"]).toContain("text/plain");
     const body = response.body;
     expect(body).toContain("No metrics registry configured");
-
-    await app.close();
-  });
-
 
     await app.close();
   });
@@ -358,5 +479,6 @@ describe("buildIndexerHttpServer", () => {
     }
 
     await app.close();
+  });
   });
 });

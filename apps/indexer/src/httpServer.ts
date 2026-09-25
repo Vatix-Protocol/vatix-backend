@@ -19,6 +19,12 @@ export type ProbeErrorCode =
 export type RateLimitErrorCode = "RATE_LIMITED";
 
 /**
+ * Stable error codes for indexer authz failures. Kept as a closed union
+ * so clients and dashboards can branch on exact strings.
+ */
+export type MarketErrorCode = "UNAUTHORIZED" | "MARKET_NOT_FOUND" | "MARKET_QUERY_FAILED";
+
+/**
  * A single critical dependency check. `check` must resolve when the
  * dependency is reachable and reject (or throw) otherwise. It must never
  * return connection strings, credentials, or internal addresses — only a
@@ -246,6 +252,51 @@ export async function buildIndexerHttpServer(options?: {
     // Exempt ops-internal endpoints from rate limiting
     if (RATE_LIMIT_EXEMPT_PATHS.has(routePath)) {
       return;
+    }
+
+    // Authz: reject untrusted clients so they cannot bypass CORS policy.
+    // When INDEXER_REQUIRED_PRINCIPAL is configured the x-principal header
+    // must match; when INDEXER_API_KEY is configured the x-api-key header
+    // must match.  If neither is configured the hook still passes (a
+    // startup warning is emitted by main.ts) but the surface is gated
+    // behind INDEXER_HTTP_ENABLED so it is not accidentally exposed.
+    const requiredPrincipal = process.env.INDEXER_REQUIRED_PRINCIPAL;
+    const apiKey = process.env.INDEXER_API_KEY;
+
+    if (requiredPrincipal) {
+      const principal =
+        (request.headers["x-principal"] as string | undefined) ?? undefined;
+      if (principal !== requiredPrincipal) {
+        if (logger) {
+          logger.warn(
+            { correlationId, routePath },
+            "indexer authz rejected: principal mismatch",
+          );
+        }
+        return reply.code(401).send({
+          error: "Unauthorized",
+          code: "UNAUTHORIZED" satisfies MarketErrorCode,
+          correlationId,
+        });
+      }
+    }
+
+    if (apiKey) {
+      const providedKey =
+        (request.headers["x-api-key"] as string | undefined) ?? undefined;
+      if (providedKey !== apiKey) {
+        if (logger) {
+          logger.warn(
+            { correlationId, routePath },
+            "indexer authz rejected: invalid API key",
+          );
+        }
+        return reply.code(401).send({
+          error: "Unauthorized",
+          code: "UNAUTHORIZED" satisfies MarketErrorCode,
+          correlationId,
+        });
+      }
     }
 
     const policy = rateLimitPolicies[routePath];

@@ -148,7 +148,48 @@ If localhost is not working in development:
 2. If `CORS_ALLOWED_ORIGINS` is set, it overrides defaults — ensure localhost origins are included
 3. Verify the frontend is using the correct protocol and port (e.g., `http://localhost:3000`, not `https://localhost:3000`)
 
+## Indexer HTTP Surface
+
+The indexer exposes a read-only HTTP surface for market data queries.
+It is gated behind the `INDEXER_HTTP_ENABLED` feature flag and is
+disabled by default.
+
+### CORS policy
+
+The indexer uses the same `resolveCorsAllowedOrigins` policy as the
+public API (see `apps/indexer/src/middleware/cors.ts`).  In production
+the indexer CORS surface is deny-by-default — an empty allowlist blocks
+all cross-origin browser requests unless `CORS_ALLOWED_ORIGINS` is
+explicitly configured with `https://` origins.
+
+### Authz
+
+The indexer HTTP surface supports two optional authz gates:
+
+| Env var | Header | Effect |
+| ------- | ------ | ------ |
+| `INDEXER_REQUIRED_PRINCIPAL` | `x-principal` | Must match the configured value |
+| `INDEXER_API_KEY` | `x-api-key` | Must match the configured value |
+
+If neither is configured the surface still starts (when enabled) but
+logs a warning — this is a security gap for production deployments.
+
+### Endpoints
+
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| GET | `/markets` | List up to 100 active markets |
+| GET | `/markets/:id` | Fetch a single active market by ID |
+
+### Rate limiting
+
+| Path | Limit | Window |
+| ---- | ----- | ------ |
+| `/markets` | 60 req/min | 60 s |
+| `/markets/:id` | 120 req/min | 60 s |
+
 ## See Also
 
 - [Rate Limiting](./rate-limiting.md) — Request throttling per IP and endpoint tier
 - [Architecture](./architecture.md) — Service boundaries and request flow
+- [Indexer README](../apps/indexer/README.md) — HTTP surface, CORS, and authz details
