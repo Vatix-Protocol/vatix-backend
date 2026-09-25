@@ -1,0 +1,465 @@
+import { describe, it, expect, vi } from "vitest";
+import { nativeToScVal } from "@stellar/stellar-sdk";
+import {
+  parseResolutionEvent,
+  parseResolutionEvents,
+  ResolutionErrorCode,
+} from "./resolutionParser.js";
+import { ResolutionParseError } from "./types.js";
+import type { RawChainEvent } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
+
+// ─── Real XDR fixtures ───────────────────────────────────────────────────────
+//
+// Soroban's #[contractevent] macro snake-cases the event struct name
+// including its "Event" suffix, so MarketResolvedEvent publishes under
+// "market_resolved_event" (contracts/market/src/events.rs), with
+// topics: [market_resolved_event, market_id: u32] and
+// value (ScvMap): { outcome: bool, resolved_at: u64 }.
+
+const XDR = {
+  topic: {
+    marketResolvedEvent: "AAAADwAAABVtYXJrZXRfcmVzb2x2ZWRfZXZlbnQAAAA=",
+    tradeExecuted: "AAAADwAAAA50cmFkZV9leGVjdXRlZAAA",
+  },
+  marketId: {
+    42: "AAAAAwAAACo=",
+    7: "AAAAAwAAAAc=",
+  },
+  value: {
+    // outcome=true, resolved_at=1700000000 (real on-chain shape)
+    realYes:
+      "AAAAEQAAAAEAAAACAAAADwAAAAdvdXRjb21lAAAAAAAAAAABAAAADwAAAAtyZXNvbHZlZF9hdAAAAAAFAAAAAGVT8QA=",
+    // outcome=false, resolved_at=1690000000
+    realNo:
+      "AAAAEQAAAAEAAAACAAAADwAAAAdvdXRjb21lAAAAAAAAAAAAAAAADwAAAAtyZXNvbHZlZF9hdAAAAAAFAAAAAGS7WoA=",
+    // legacy ScvMap: market_id=market-xyz, outcome=YES, oracle=GORACLE123
+    resolvedYes:
+      "AAAAEQAAAAEAAAADAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC14eXoAAAAAAA8AAAAHb3V0Y29tZQAAAAAPAAAAA1lFUwAAAAAPAAAABm9yYWNsZQAAAAAADwAAAApHT1JBQ0xFMTIzAAA=",
+    // legacy ScvMap: outcome=NO
+    resolvedNo:
+      "AAAAEQAAAAEAAAADAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC14eXoAAAAAAA8AAAAHb3V0Y29tZQAAAAAPAAAAAk5PAAAAAAAPAAAABm9yYWNsZQAAAAAADwAAAApHT1JBQ0xFMTIzAAA=",
+    // legacy ScvMap: outcome=MAYBE (unknown)
+    unknownOutcome:
+      "AAAAEQAAAAEAAAADAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC14eXoAAAAAAA8AAAAHb3V0Y29tZQAAAAAPAAAABU1BWUJFAAAAAAAADwAAAAZvcmFjbGUAAAAAAA8AAAAKR09SQUNMRTEyMwAA",
+    // legacy ScvMap: oracle field omitted
+    missingOracle:
+      "AAAAEQAAAAEAAAACAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC14eXoAAAAAAA8AAAAHb3V0Y29tZQAAAAAPAAAAA1lFUwA=",
+  },
+};
+
+function makeEvent(overrides: Partial<RawChainEvent> = {}): RawChainEvent {
+  return {
+    id: "evt-res-1",
+    ledger: 100,
+    ledgerClosedAt: "2024-09-01T00:00:00Z",
+    contractId: "CRESOLUTION",
+    type: "contract",
+    pagingToken: "token-res-1",
+    eventIndex: 0,
+    valueXdr: XDR.value.realYes,
+    topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[42]],
+    ...overrides,
+  };
+}
+
+// ─── parseResolutionEvent ────────────────────────────────────────────────────
+
+describe("parseResolutionEvent", () => {
+  it("parses the real on-chain shape: market_id from topic, outcome+resolved_at from value", () => {
+    const r = parseResolutionEvent(makeEvent());
+
+    expect(r.marketId).toBe("42");
+    expect(r.outcome).toBe("YES");
+    expect(r.oracleAddress).toBe("");
+  });
+
+  it("parses the real on-chain shape with NO outcome and a different market_id", () => {
+    const r = parseResolutionEvent(
+      makeEvent({
+        topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[7]],
+        valueXdr: XDR.value.realNo,
+      })
+    );
+    expect(r.marketId).toBe("7");
+    expect(r.outcome).toBe("NO");
+  });
+
+  it("throws ResolutionParseError when the market_id topic is missing", () => {
+    try {
+      parseResolutionEvent(
+        makeEvent({ topicsXdr: [XDR.topic.marketResolvedEvent] })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.MISSING_MARKET_ID
+      );
+    }
+  });
+
+  it("parses legacy on-chain tuple payload (market_id, outcome, resolved_at)", () => {
+    const tupleXdr = nativeToScVal([42, true, 1_700_000_000n]).toXDR("base64");
+    const r = parseResolutionEvent(
+      makeEvent({
+        valueXdr: tupleXdr,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+        id: "evt-tuple",
+      })
+    );
+
+    expect(r.marketId).toBe("42");
+    expect(r.outcome).toBe("YES");
+    expect(r.oracleAddress).toBe("");
+  });
+
+  it("parses legacy tuple NO outcome as boolean false", () => {
+    const tupleXdr = nativeToScVal([7, false, 99n]).toXDR("base64");
+    const r = parseResolutionEvent(
+      makeEvent({
+        valueXdr: tupleXdr,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      })
+    );
+    expect(r.outcome).toBe("NO");
+  });
+
+  it("parses a legacy ScvMap YES resolution correctly", () => {
+    const r = parseResolutionEvent(
+      makeEvent({
+        valueXdr: XDR.value.resolvedYes,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      })
+    );
+
+    expect(r.eventId).toBe("evt-res-1");
+    expect(r.marketId).toBe("market-xyz");
+    expect(r.outcome).toBe("YES");
+    expect(r.oracleAddress).toBe("GORACLE123");
+  });
+
+  it("parses a legacy ScvMap NO resolution correctly", () => {
+    const r = parseResolutionEvent(
+      makeEvent({
+        valueXdr: XDR.value.resolvedNo,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      })
+    );
+    expect(r.outcome).toBe("NO");
+    expect(r.marketId).toBe("market-xyz");
+  });
+
+  it("includes the source ledger sequence in the record", () => {
+    const r = parseResolutionEvent(makeEvent({ ledger: 42_000 }));
+    expect(r.ledger).toBe(42_000);
+  });
+
+  it("includes ledgerClosedAt and contractId in the record", () => {
+    const r = parseResolutionEvent(
+      makeEvent({ ledgerClosedAt: "2025-03-15T08:30:00Z", contractId: "CXYZ" })
+    );
+    expect(r.ledgerClosedAt).toBe("2025-03-15T08:30:00Z");
+    expect(r.contractId).toBe("CXYZ");
+  });
+
+  it("throws ResolutionParseError for unknown outcome value (legacy ScvMap)", () => {
+    try {
+      parseResolutionEvent(
+        makeEvent({
+          valueXdr: XDR.value.unknownOutcome,
+          topicsXdr: [XDR.topic.marketResolvedEvent],
+        })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.INVALID_OUTCOME
+      );
+    }
+  });
+
+  it("unknown outcome error message names the bad value (legacy ScvMap)", () => {
+    try {
+      parseResolutionEvent(
+        makeEvent({
+          valueXdr: XDR.value.unknownOutcome,
+          topicsXdr: [XDR.topic.marketResolvedEvent],
+        })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).message).toContain("MAYBE");
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.INVALID_OUTCOME
+      );
+    }
+  });
+
+  it("throws ResolutionParseError with WRONG_TOPIC code for non-resolution topic", () => {
+    try {
+      parseResolutionEvent(makeEvent({ topicsXdr: [XDR.topic.tradeExecuted] }));
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.WRONG_TOPIC
+      );
+    }
+  });
+
+  it("throws ResolutionParseError with MISSING_FIELD code for empty topicsXdr", () => {
+    try {
+      parseResolutionEvent(makeEvent({ topicsXdr: [] }));
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.WRONG_TOPIC
+      );
+    }
+  });
+
+  it("throws ResolutionParseError with BAD_VALUE_XDR code on malformed value XDR", () => {
+    try {
+      parseResolutionEvent(makeEvent({ valueXdr: "not!!valid!!xdr" }));
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.BAD_VALUE_XDR
+      );
+    }
+  });
+
+  it("throws ResolutionParseError with MISSING_ORACLE code when oracle is missing (legacy ScvMap)", () => {
+    try {
+      parseResolutionEvent(
+        makeEvent({
+          valueXdr: XDR.value.missingOracle,
+          topicsXdr: [XDR.topic.marketResolvedEvent],
+        })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.MISSING_ORACLE
+      );
+    }
+  });
+
+  it("error carries the eventId", () => {
+    try {
+      parseResolutionEvent(makeEvent({ id: "bad-evt", topicsXdr: [] }));
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as ResolutionParseError).eventId).toBe("bad-evt");
+    }
+  });
+
+  it("maps confidence field when present in real on-chain shape", () => {
+    const valueXdr = nativeToScVal({
+      outcome: true,
+      resolved_at: 1700000000n,
+      confidence: 95,
+    }).toXDR("base64");
+    const r = parseResolutionEvent(makeEvent({ valueXdr }));
+    expect(r.confidenceScore).toBe(95);
+  });
+
+  it("sets confidenceScore to null when confidence is absent (real on-chain shape)", () => {
+    const r = parseResolutionEvent(makeEvent());
+    expect(r.confidenceScore).toBeNull();
+  });
+
+  it("sets confidenceScore to null for tuple payload", () => {
+    const tupleXdr = nativeToScVal([42, true, 1_700_000_000n]).toXDR("base64");
+    const r = parseResolutionEvent(
+      makeEvent({
+        valueXdr: tupleXdr,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      })
+    );
+    expect(r.confidenceScore).toBeNull();
+  });
+});
+
+// ─── parseResolutionEvents (batch) ──────────────────────────────────────────
+
+describe("parseResolutionEvents", () => {
+  it("parses multiple valid resolution events", () => {
+    const events = [
+      makeEvent({ id: "e1", valueXdr: XDR.value.realYes }),
+      makeEvent({
+        id: "e2",
+        topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[7]],
+        valueXdr: XDR.value.realNo,
+      }),
+    ];
+    const { resolutions, errors } = parseResolutionEvents(events);
+    expect(resolutions).toHaveLength(2);
+    expect(errors).toHaveLength(0);
+    expect(resolutions[0].outcome).toBe("YES");
+    expect(resolutions[1].outcome).toBe("NO");
+  });
+
+  it("silently skips non-resolution events", () => {
+    const events = [
+      makeEvent({ id: "e1", topicsXdr: [XDR.topic.tradeExecuted] }),
+      makeEvent({ id: "e2" }),
+    ];
+    const { resolutions, errors } = parseResolutionEvents(events);
+    expect(resolutions).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+  });
+
+  it("collects errors without dropping other resolutions", () => {
+    const events = [
+      makeEvent({ id: "e1", valueXdr: XDR.value.realYes }),
+      makeEvent({ id: "e2", topicsXdr: [XDR.topic.marketResolvedEvent] }),
+      makeEvent({
+        id: "e3",
+        topicsXdr: [XDR.topic.marketResolvedEvent, XDR.marketId[7]],
+        valueXdr: XDR.value.realNo,
+      }),
+    ];
+    const { resolutions, errors } = parseResolutionEvents(events);
+    expect(resolutions).toHaveLength(2);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(ResolutionParseError);
+    expect(errors[0].eventId).toBe("e2");
+    expect(errors[0].errorCode).toBe(ResolutionErrorCode.MISSING_MARKET_ID);
+  });
+
+  it("returns empty arrays for empty input", () => {
+    const { resolutions, errors } = parseResolutionEvents([]);
+    expect(resolutions).toHaveLength(0);
+    expect(errors).toHaveLength(0);
+  });
+
+  it("emits unknown_topic metric when encountering an unknown topic", () => {
+    const telemetry: Telemetry = {
+      record: vi.fn(),
+      startSpan: vi.fn(() => ({ end: vi.fn() })),
+    };
+    const events = [
+      makeEvent({
+        id: "e1",
+        topicsXdr: ["AAAADwAAABN1bmtub3duX2V2ZW50X3RvcGljIQ=="], // unknown topic
+      }),
+      makeEvent({ id: "e2" }),
+    ];
+    const { resolutions, errors } = parseResolutionEvents(events, {
+      telemetry,
+    });
+    expect(resolutions).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+    expect(telemetry.record).toHaveBeenCalledWith(
+      "indexer.parser.unknown_topics",
+      1,
+      expect.objectContaining({
+        parser: "resolution",
+        eventId: "e1",
+        contractId: "CRESOLV",
+        ledger: "1000",
+      })
+    );
+  });
+});
+
+describe("production fail-fast on legacy resolution shapes", () => {
+  // Gap this covers: legacy dev-stub payload shapes (ScvVec tuple, legacy
+  // ScvMap without topics[1]=market_id) were previously accepted silently
+  // in every environment, including production, which meant a contract
+  // regression or topic drift produced ResolutionCandidate rows with a
+  // blank oracleAddress instead of failing loudly. These tests fail
+  // against the pre-fix parser (which has no `nodeEnv` gate at all).
+
+  it("rejects a legacy ScvVec tuple payload in production with LEGACY_SHAPE_REJECTED code", () => {
+    const tupleXdr = nativeToScVal([7, false, 99n]).toXDR("base64");
+    try {
+      parseResolutionEvent(
+        makeEvent({
+          valueXdr: tupleXdr,
+          topicsXdr: [XDR.topic.marketResolvedEvent],
+        }),
+        { nodeEnv: "production" }
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.LEGACY_SHAPE_REJECTED
+      );
+    }
+  });
+
+  it("rejects a legacy ScvMap payload in production with LEGACY_SHAPE_REJECTED code", () => {
+    try {
+      parseResolutionEvent(
+        makeEvent({
+          valueXdr: XDR.value.resolvedYes,
+          topicsXdr: [XDR.topic.marketResolvedEvent],
+        }),
+        { nodeEnv: "production" }
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResolutionParseError);
+      expect((err as ResolutionParseError).errorCode).toBe(
+        ResolutionErrorCode.LEGACY_SHAPE_REJECTED
+      );
+    }
+  });
+
+  it("still parses the canonical on-chain shape in production", () => {
+    const r = parseResolutionEvent(makeEvent({ valueXdr: XDR.value.realYes }), {
+      nodeEnv: "production",
+    });
+    expect(r.outcome).toBe("YES");
+  });
+
+  it("still allows legacy shapes outside production (local stubs)", () => {
+    const r = parseResolutionEvent(
+      makeEvent({
+        valueXdr: XDR.value.resolvedYes,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      }),
+      { nodeEnv: "development" }
+    );
+    expect(r.outcome).toBe("YES");
+  });
+
+  it("emits a legacy_shape_rejected metric with correlation ids when rejecting in production", () => {
+    const telemetry: Telemetry = {
+      record: vi.fn(),
+      startSpan: vi.fn(() => ({ end: vi.fn() })),
+    };
+    const events = [
+      makeEvent({
+        id: "evt-legacy-1",
+        valueXdr: XDR.value.resolvedYes,
+        topicsXdr: [XDR.topic.marketResolvedEvent],
+      }),
+    ];
+    const { resolutions, errors } = parseResolutionEvents(events, {
+      telemetry,
+      nodeEnv: "production",
+    });
+    expect(resolutions).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(ResolutionParseError);
+    expect(errors[0].errorCode).toBe(ResolutionErrorCode.LEGACY_SHAPE_REJECTED);
+    expect(telemetry.record).toHaveBeenCalledWith(
+      "indexer.parser.legacy_shape_rejected",
+      1,
+      expect.objectContaining({
+        parser: "resolution",
+        eventId: "evt-legacy-1",
+      })
+    );
+  });
+});

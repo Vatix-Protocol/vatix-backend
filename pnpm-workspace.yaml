@@ -1,0 +1,13 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+allowBuilds:
+  "@prisma/engines": true
+  esbuild: true
+  prisma: true
+
+onlyBuiltDependencies:
+  - "@prisma/engines"
+  - esbuild
+  - prisma

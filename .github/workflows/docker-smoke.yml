@@ -1,0 +1,63 @@
+name: Docker image non-root smoke test
+
+on:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - ".github/workflows/docker-smoke.yml"
+      - "src/**"
+      - "apps/**"
+      - "packages/**"
+      - "prisma/schema.prisma"
+  workflow_dispatch:
+
+jobs:
+  docker-image-smoke:
+    name: Docker image non-root smoke test
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        target:
+          - api
+          - indexer
+          - oracle
+          - finalization-worker
+          - oracle-worker
+          - settlement-worker
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build ${{ matrix.target }} image
+        run: docker build --target ${{ matrix.target }} -t vatix-backend-${{ matrix.target }}:ci .
+
+      - name: Verify ${{ matrix.target }} image runs as non-root
+        run: |
+          uid=$(docker run --rm vatix-backend-${{ matrix.target }}:ci id -u)
+          echo "${{ matrix.target }} container uid: $uid"
+          test "$uid" -ne 0
+
+      - name: Start postgres/redis via compose (api only)
+        if: matrix.target == 'api'
+        run: docker compose up -d postgres redis
+
+      - name: Wait for postgres/redis healthchecks (api only)
+        if: matrix.target == 'api'
+        run: |
+          for i in $(seq 1 30); do
+            pg_status=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q postgres))
+            redis_status=$(docker inspect --format='{{.State.Health.Status}}' $(docker compose ps -q redis))
+            echo "postgres=$pg_status redis=$redis_status"
+            if [ "$pg_status" = "healthy" ] && [ "$redis_status" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Timed out waiting for healthchecks"
+          exit 1
+
+      - name: Tear down compose stack
+        if: always() && matrix.target == 'api'
+        run: docker compose down -v

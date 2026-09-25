@@ -1,0 +1,67 @@
+#325 [topup] [shared] Add input validation to logger
+Repo Avatar
+Vatix-Protocol/vatix-backend
+Context
+Small onboarding task for shared.
+
+Task
+Add input validation to logger
+
+Acceptance criteria
+ 400 on invalid input
+ Test covers case
+Notes
+Keep the PR focused on this task only
+Ask questions in the issue thread if scope is unclear
+
+...............................................................................................................................
+#322 [topup] [indexer] Add Vitest test for retry logic
+Repo Avatar
+Vatix-Protocol/vatix-backend
+Context
+Small onboarding task for indexer.
+
+Task
+Add Vitest test for retry logic
+
+Acceptance criteria
+ Test file colocated or under tests/
+ pnpm test:run passes
+Notes
+Keep the PR focused on this task only
+Ask questions in the issue thread if scope is unclear
+
+.................................................................................................................................
+#323 [topup] [oracle] Add TypeScript type for submission queue
+Repo Avatar
+Vatix-Protocol/vatix-backend
+Context
+Small onboarding task for oracle.
+
+Task
+Add TypeScript type for submission queue
+
+Acceptance criteria
+ No any in new code
+ Exported where needed
+Notes
+Keep the PR focused on this task only
+Ask questions in the issue thread if scope is unclear
+......................................................................................................................................
+
+#324 [topup] [workers] Improve log message in graceful shutdown
+Repo Avatar
+Vatix-Protocol/vatix-backend
+Context
+Small onboarding task for workers.
+
+Task
+Improve log message in graceful shutdown
+
+Acceptance criteria
+ Structured fields
+ Appropriate log level
+Notes
+Keep the PR focused on this task only
+Ask questions in the issue thread if scope is unclear
+

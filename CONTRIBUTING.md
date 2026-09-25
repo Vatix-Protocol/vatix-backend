@@ -17,12 +17,15 @@ Thank you for your interest in contributing to Vatix! This guide will help you g
 
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
+
 ```bash
    git clone https://github.com/YOUR_USERNAME/vatix-backend.git
    cd vatix-backend
 ```
+
 3. **Set up the project** following the [README](README.md)
 4. **Create a branch** for your work:
+
 ```bash
    git checkout -b feature/your-feature-name
 ```
@@ -36,6 +39,7 @@ Browse [open issues](https://github.com/vatix-protocol/vatix-backend/issues) and
 - **Dependencies**: Check if the issue depends on others being completed first
 
 **Before starting work:**
+
 1. Comment on the issue saying you'd like to work on it
 2. Wait for a maintainer to assign it to you
 3. Ask questions if anything is unclear
@@ -43,6 +47,7 @@ Browse [open issues](https://github.com/vatix-protocol/vatix-backend/issues) and
 ## Development Workflow
 
 ### 1. Set Up Your Environment
+
 ```bash
 # Install dependencies
 pnpm install
@@ -70,6 +75,7 @@ pnpm dev
 ### 3. Write Tests
 
 **Every feature must include tests.** Add test files next to your implementation:
+
 ```
 src/
 ├── services/
@@ -78,6 +84,7 @@ src/
 ```
 
 Run tests frequently:
+
 ```bash
 pnpm test
 ```
@@ -85,6 +92,7 @@ pnpm test
 ### 4. Commit Your Changes
 
 Use clear, descriptive commit messages:
+
 ```bash
 # Good commits
 git commit -m "feat: add order validation logic"
@@ -97,6 +105,7 @@ git commit -m "fixes"
 ```
 
 **Commit message format:**
+
 - `feat:` - New feature
 - `fix:` - Bug fix
 - `test:` - Adding tests
@@ -111,6 +120,7 @@ git commit -m "fixes"
 - **Use strict typing** - Avoid `any`
 - **Define interfaces** for function parameters and return values
 - **Export types** from `src/types/index.ts` for reuse
+
 ```typescript
 // Good
 interface CreateOrderParams {
@@ -132,12 +142,13 @@ async function createOrder(marketId: any, side: any, price: any): Promise<any> {
 ### Code Style
 
 - **Use meaningful variable names**
+
 ```typescript
-  // Good
-  const activeMarkets = await getActiveMarkets();
-  
-  // Bad
-  const x = await getActiveMarkets();
+// Good
+const activeMarkets = await getActiveMarkets();
+
+// Bad
+const x = await getActiveMarkets();
 ```
 
 - **Keep functions small** - One function should do one thing
@@ -150,6 +161,7 @@ async function createOrder(marketId: any, side: any, price: any): Promise<any> {
 - Related functions in the same file
 - Test files next to implementation files
 - Group related functionality in directories
+
 ```
 src/matching/
 ├── engine.ts          # Main matching engine
@@ -169,20 +181,21 @@ src/matching/
 4. **Integration** - Multiple components working together
 
 ### Test Structure
-```typescript
-import { describe, it, expect, beforeEach } from 'vitest';
 
-describe('Order Validation', () => {
+```typescript
+import { describe, it, expect, beforeEach } from "vitest";
+
+describe("Order Validation", () => {
   beforeEach(() => {
     // Setup before each test
   });
 
-  it('should accept valid orders', () => {
+  it("should accept valid orders", () => {
     const order = { price: 0.5, quantity: 100 };
     expect(validateOrder(order)).toBe(true);
   });
 
-  it('should reject orders with invalid price', () => {
+  it("should reject orders with invalid price", () => {
     const order = { price: 1.5, quantity: 100 };
     expect(() => validateOrder(order)).toThrow();
   });
@@ -190,6 +203,7 @@ describe('Order Validation', () => {
 ```
 
 ### Running Tests
+
 ```bash
 # Run all tests
 pnpm test
@@ -218,19 +232,24 @@ pnpm test:coverage
 - [ ] Prisma Client regenerated if schema changed (`pnpm prisma:generate`)
 
 ### PR Description Template
+
 ```markdown
 ## Description
+
 Brief description of what this PR does
 
 ## Related Issue
+
 Closes #123
 
 ## Changes Made
+
 - Added order validation logic
 - Created validation tests
 - Updated error handling
 
 ## Testing
+
 - [ ] Unit tests added
 - [ ] Integration tests added
 - [ ] Manual testing completed
@@ -250,6 +269,7 @@ Closes #123
 ### Adding/Modifying Models
 
 1. **Edit** `prisma/schema.prisma`:
+
 ```prisma
    model Market {
      id          String   @id @default(uuid())
@@ -261,16 +281,19 @@ Closes #123
 ```
 
 2. **Create migration**:
+
 ```bash
    pnpm prisma:migrate dev --name add_market_table
 ```
 
 3. **Generate Prisma Client**:
+
 ```bash
    pnpm prisma:generate
 ```
 
 4. **Test the changes**:
+
 ```bash
    pnpm test
 ```
@@ -291,6 +314,7 @@ Closes #123
 ### Stuck?
 
 Don't spend hours stuck! Ask for help early:
+
 1. Describe what you're trying to do
 2. Share what you've tried
 3. Include error messages
@@ -306,6 +330,7 @@ Don't spend hours stuck! Ask for help early:
 ## Recognition
 
 Contributors are recognized in:
+
 - GitHub contributor list
 - Project README (for significant contributions)
 - Release notes

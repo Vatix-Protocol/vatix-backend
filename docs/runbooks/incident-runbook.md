@@ -1,0 +1,1415 @@
+# Incident Response Runbook
+
+This runbook provides step-by-step guidance for responding to common backend incidents in the Vatix Protocol.
+
+**Last Updated:** 2026-04-28  
+**Maintainer:** Backend Engineering Team  
+**Review Cadence:** Monthly or after each major incident
+
+---
+
+## Table of Contents
+
+- [Severity Classification](#severity-classification)
+- [Escalation Procedures](#escalation-procedures)
+- [Incident 1: Indexer Lag or Stall](#incident-1-indexer-lag-or-stall)
+- [Incident 2: RPC/Horizon Outage](#incident-2-rpchorizon-outage)
+- [Incident 3: Database Incident](#incident-3-database-incident)
+- [Incident 4: Redis Failure](#incident-4-redis-failure)
+- [Incident 5: Oracle Resolution Failure](#incident-5-oracle-resolution-failure)
+- [Incident 6: Queue Backlog (Settlement / Oracle Submission)](#incident-6-queue-backlog-settlement--oracle-submission)
+- [Incident 7: Stuck CHALLENGED Resolution Candidates](#incident-7-stuck-challenged-resolution-candidates)
+- [Incident 8: Duplicate Settlement / Finalization Race](#incident-8-duplicate-settlement--finalization-race)
+- [Post-Incident Process](#post-incident-process)
+- [Useful Commands & Queries](#useful-commands--queries)
+- [Contact & Resources](#contact--resources)
+
+---
+
+## Severity Classification
+
+| Severity             | Impact                                                       | Response Time        | Examples                                                                      |
+| -------------------- | ------------------------------------------------------------ | -------------------- | ----------------------------------------------------------------------------- |
+| **SEV-1 (Critical)** | Complete service outage, data loss risk, or financial impact | Immediate (< 15 min) | DB down, indexer stopped > 10 min, oracle failure on active market resolution |
+| **SEV-2 (High)**     | Major feature degradation, partial outage                    | < 30 min             | Indexer lag > 5 min, RPC intermittent failures, high API latency              |
+| **SEV-3 (Medium)**   | Minor feature impairment, non-critical degradation           | < 2 hours            | Elevated error rates, slow queries, rate limiting issues                      |
+| **SEV-4 (Low)**      | Cosmetic issues, minor bugs, monitoring gaps                 | < 1 business day     | Log formatting, non-critical alert misfires                                   |
+
+### Severity Decision Matrix
+
+Ask these questions to classify:
+
+1. **Is user data at risk?** → SEV-1
+2. **Are markets unable to resolve?** → SEV-1
+3. **Is the API completely down?** → SEV-1
+4. **Are >50% of requests failing?** → SEV-2
+5. **Is the indexer behind by >5 minutes?** → SEV-2
+6. **Are specific endpoints degraded?** → SEV-3
+
+---
+
+## Escalation Procedures
+
+### Immediate Response (All Severities)
+
+1. **Acknowledge** the incident in your monitoring/alerting channel
+2. **Assess** severity using the classification matrix above
+3. **Declare** the incident with severity level
+4. **Assemble** response team based on severity
+
+### Escalation Matrix
+
+| Severity | On-Call Engineer  | Engineering Lead  | CTO/VP Engineering      | Communication                    |
+| -------- | ----------------- | ----------------- | ----------------------- | -------------------------------- |
+| SEV-1    | Immediate         | < 15 min          | < 30 min                | Status page update within 30 min |
+| SEV-2    | < 30 min          | < 1 hour          | If unresolved > 2 hours | Internal team update             |
+| SEV-3    | < 2 hours         | Next business day | If unresolved > 1 day   | Team standup mention             |
+| SEV-4    | Next business day | As needed         | Not required            | Backlog item                     |
+
+### Communication Templates
+
+**Initial Incident Declaration:**
+
+```
+🚨 INCIDENT DECLARED - [SEV-X]
+Service: Vatix Backend
+Impact: [Brief description]
+Started: [Time UTC]
+Investigating: [Engineer name]
+Next Update: [Time]
+```
+
+**Resolution Announcement:**
+
+```
+✅ INCIDENT RESOLVED - [SEV-X]
+Service: Vatix Backend
+Resolved: [Time UTC]
+Duration: [X hours Y minutes]
+Root Cause: [Brief summary]
+Status: All systems operational
+Post-Incident Review: [Scheduled/Not needed]
+```
+
+---
+
+## Incident 1: Indexer Lag or Stall
+
+### Symptoms
+
+- Indexer ingestion loop not progressing
+- `event_ingested` count not increasing
+- Cursor checkpoint not updating
+- Markets not appearing in database after on-chain creation
+- Trade events missing from order history
+
+### Detection
+
+```sql
+-- Check latest ingested event timestamp
+SELECT MAX(source_at) as latest_event FROM events;
+
+-- Check indexer cursor state
+SELECT * FROM indexer_cursors WHERE cursor_key = 'ingestion';
+
+-- Count events ingested in last hour
+SELECT COUNT(*) FROM events
+WHERE source_at > NOW() - INTERVAL '1 hour';
+```
+
+### Response Steps
+
+#### Step 1: Assess Current State
+
+```bash
+# Check indexer logs
+docker logs vatix-indexer --tail 100 --follow
+
+# Check if indexer process is running
+docker ps | grep indexer
+
+# Check cursor progression
+docker exec -it vatix-postgres psql -U postgres -d vatix -c \
+  "SELECT * FROM indexer_cursors WHERE cursor_key = 'ingestion';"
+```
+
+#### Step 2: Identify Root Cause
+
+**A. RPC/Horizon Connectivity Issues**
+
+```bash
+# Test Horizon connectivity
+curl -s https://horizon-testnet.stellar.org | jq .network
+
+# Check indexer config
+echo $INDEXER_INGESTION_INTERVAL_MS
+echo $STELLAR_HORIZON_URL
+```
+
+**B. Database Connection Issues**
+
+```bash
+# Test DB connectivity
+docker exec -it vatix-postgres pg_isready -U postgres
+
+# Check connection pool status in logs
+docker logs vatix-indexer 2>&1 | grep -i "connection\|pool\|error"
+```
+
+**C. Cursor Corruption or Invalid State**
+
+```sql
+-- Check cursor value
+SELECT network_id, cursor_key, cursor_value, updated_at
+FROM indexer_cursors
+WHERE cursor_key = 'ingestion';
+
+-- Compare with current Horizon ledger
+-- Visit: https://horizon-testnet.stellar.org/ledgers?order=desc&limit=1
+```
+
+#### Step 3: Remediation
+
+**A. Restart Indexer (First Attempt)**
+
+```bash
+# Graceful restart
+docker restart vatix-indexer
+
+# Monitor recovery
+docker logs vatix-indexer --tail 50 --follow
+```
+
+**B. Reset Cursor (If Corrupted)**
+
+```sql
+-- WARNING: Only if cursor is stuck on invalid ledger
+-- Get current ledger from Horizon first
+UPDATE indexer_cursors
+SET cursor_value = '[CURRENT_LEDGER - 100]',
+    updated_at = NOW()
+WHERE network_id = 'testnet' AND cursor_key = 'ingestion';
+```
+
+**C. Manual Event Backfill (If Gap Detected)**
+
+```bash
+# Run indexer in catch-up mode (if supported)
+# Or manually trigger ingestion cycle
+```
+
+#### Step 4: Verification
+
+```sql
+-- Confirm events are flowing
+SELECT COUNT(*) as events_last_5min
+FROM events
+WHERE source_at > NOW() - INTERVAL '5 minutes';
+
+-- Verify cursor is advancing
+SELECT network_id, cursor_key, cursor_value, updated_at
+FROM indexer_cursors
+WHERE cursor_key = 'ingestion';
+
+-- Check for recent market creations
+SELECT * FROM markets ORDER BY created_at DESC LIMIT 5;
+```
+
+#### Step 4b: Cursor Verification (Post-Deploy)
+
+After any deploy or restart, verify the cursor row is correctly persisted:
+
+```sql
+-- Confirm cursor_value is non-null and recently updated
+SELECT network_id, cursor_key, cursor_value, updated_at
+FROM indexer_cursors
+WHERE network_id = 'testnet' AND cursor_key = 'ingestion';
+-- Expected: cursor_value is a ledger sequence string (e.g. '1234567'), updated_at is recent
+
+-- If cursor_value is NULL or row is absent, the indexer will re-index from ledger 0.
+-- Insert a known-good starting ledger to avoid full re-scan:
+INSERT INTO indexer_cursors (network_id, cursor_key, cursor_value)
+VALUES ('testnet', 'ingestion', '[LAST_KNOWN_GOOD_LEDGER]')
+ON CONFLICT (network_id, cursor_key) DO UPDATE SET cursor_value = EXCLUDED.cursor_value;
+```
+
+#### Step 5: Prevention
+
+- [ ] Set up alerting on indexer lag > 2 minutes
+- [ ] Monitor cursor checkpoint age
+- [ ] Add Horizon health check to indexer loop
+- [ ] Implement automatic cursor rollback on RPC errors
+
+---
+
+## Incident 2: RPC/Horizon Outage
+
+### Symptoms
+
+- Indexer fails to fetch ledger data
+- Timeouts in event fetching
+- `503` or `504` errors from Horizon
+- Stale market data
+- Oracle unable to verify on-chain state
+
+### Detection
+
+```bash
+# Test Horizon endpoint
+curl -v https://horizon-testnet.stellar.org/ledgers?order=desc&limit=1
+
+# Check response time
+curl -w "@curl-format.txt" -o /dev/null -s https://horizon-testnet.stellar.org/
+
+# Monitor indexer error logs
+docker logs vatix-indexer 2>&1 | grep -i "timeout\|error\|503\|504"
+```
+
+### Response Steps
+
+#### Step 1: Confirm Outage Scope
+
+```bash
+# Test multiple Horizon endpoints
+curl -s https://horizon-testnet.stellar.org/ | jq .network
+curl -s https://horizon-testnet.stellar.org/accounts?limit=1 | jq -r '._links.self.href'
+
+# Check Stellar network status
+# Visit: https://status.stellar.org/
+# Check: https://stellarstatus.io/
+```
+
+#### Step 2: Assess Impact
+
+- **Indexer:** Will stall until RPC recovers (safe, will resume)
+- **API:** Can continue serving cached data
+- **Oracle:** May be unable to resolve markets if dependent on live data
+- **Trading:** Order matching continues (off-chain), but on-chain settlement delayed
+
+#### Step 3: Mitigation
+
+**A. Switch to Fallback RPC (If Available)**
+
+```bash
+# Update environment variable
+export STELLAR_HORIZON_URL=https://horizon-fallback.stellar.org
+
+# Restart indexer
+docker restart vatix-indexer
+```
+
+**B. Enable Graceful Degradation**
+
+```bash
+# If supported, enable cached mode
+export INDEXER_USE_CACHE=true
+
+# Alert users of degraded service
+# Update status page
+```
+
+**C. Pause Non-Critical Operations**
+
+```bash
+# Pause indexer if RPC completely down
+# to prevent error log flooding
+docker stop vatix-indexer
+
+# Resume when RPC recovers
+docker start vatix-indexer
+```
+
+#### Step 4: Monitor Recovery
+
+```bash
+# Continuously test RPC
+watch -n 5 'curl -s https://horizon-testnet.stellar.org/ledgers?order=desc&limit=1 | jq .[0].sequence'
+
+# Monitor indexer recovery
+docker logs vatix-indexer --tail 20 --follow
+```
+
+#### Step 5: Post-Recovery
+
+```sql
+-- Verify indexer caught up
+SELECT
+  MAX(source_at) as latest_event,
+  NOW() - MAX(source_at) as lag
+FROM events;
+
+-- Check for data gaps
+SELECT
+  ledger_sequence,
+  LAG(ledger_sequence) OVER (ORDER BY ledger_sequence) as prev_ledger,
+  ledger_sequence - LAG(ledger_sequence) OVER (ORDER BY ledger_sequence) as gap
+FROM events
+ORDER BY ledger_sequence DESC
+LIMIT 100;
+```
+
+#### Step 6: Prevention
+
+- [ ] Configure multiple RPC endpoints with failover
+- [ ] Implement circuit breaker pattern for RPC calls
+- [ ] Add RPC health monitoring and alerting
+- [ ] Set up Horizon status page webhook alerts
+
+---
+
+## Incident 3: Database Incident
+
+### Symptoms
+
+- Connection pool exhaustion
+- Query timeouts (> 30s)
+- Deadlocks detected
+- High CPU/memory on PostgreSQL
+- Prisma errors in application logs
+- Failed migrations
+
+### Detection
+
+```bash
+# Check PostgreSQL status
+docker exec -it vatix-postgres pg_isready -U postgres
+
+# Check container resource usage
+docker stats vatix-postgres --no-stream
+
+# Check PostgreSQL logs
+docker logs vatix-postgres --tail 100
+```
+
+### Response Steps
+
+#### Step 1: Assess Database Health
+
+```sql
+-- Check active connections
+SELECT count(*) as active_connections,
+       state
+FROM pg_stat_activity
+GROUP BY state;
+
+-- Check for long-running queries
+SELECT
+  pid,
+  now() - pg_stat_activity.query_start AS duration,
+  query,
+  state
+FROM pg_stat_activity
+WHERE (now() - pg_stat_activity.query_start) > interval '30 seconds'
+ORDER BY duration DESC;
+
+-- Check table sizes
+SELECT
+  schemaname,
+  tablename,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
+FROM pg_tables
+WHERE schemaname = 'public'
+ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
+
+-- Check locks
+SELECT
+  blocked_locks.pid AS blocked_pid,
+  blocking_locks.pid AS blocking_pid,
+  blocked_activity.query AS blocked_query,
+  blocking_activity.query AS blocking_query
+FROM pg_catalog.pg_locks blocked_locks
+JOIN pg_catalog.pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid
+JOIN pg_catalog.pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype
+JOIN pg_catalog.pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid
+WHERE NOT blocked_locks.granted;
+```
+
+#### Step 2: Immediate Remediation
+
+**A. Connection Pool Exhaustion**
+
+```sql
+-- Check pool status
+SELECT count(*) FROM pg_stat_activity;
+
+-- Kill idle connections if necessary
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE state = 'idle'
+  AND now() - query_start > interval '5 minutes'
+  AND pid != pg_backend_pid();
+
+-- Check application connection pool settings
+# In .env: Ensure POOL_SIZE is appropriate
+# Default Prisma pool: 5-10 connections
+```
+
+**B. Kill Blocking Queries**
+
+```sql
+-- Identify the blocking query (from Step 1)
+-- Terminate if safe
+SELECT pg_terminate_backend([BLOCKING_PID]);
+
+-- WARNING: Only terminate if you understand the impact
+-- Never terminate: migration processes, oracle resolution transactions
+```
+
+**C. Database Restart (Last Resort)**
+
+```bash
+# Graceful shutdown
+docker stop vatix-postgres
+
+# Wait for clean shutdown
+docker logs vatix-postgres --tail 20
+
+# Start database
+docker start vatix-postgres
+
+# Verify recovery
+docker exec -it vatix-postgres pg_isready -U postgres
+
+# Restart dependent services
+docker restart vatix-backend
+docker restart vatix-indexer
+```
+
+#### Step 3: Disk Space Issues
+
+```bash
+# Check disk usage
+docker exec -it vatix-postgres df -h
+
+# Check database size
+docker exec -it vatix-postgres psql -U postgres -d vatix -c \
+  "SELECT pg_size_pretty(pg_database_size('vatix'));"
+
+# Clean up old data (if appropriate)
+# WARNING: Only delete if you have backups and understand retention requirements
+DELETE FROM events WHERE source_at < NOW() - INTERVAL '90 days';
+VACUUM ANALYZE events;
+```
+
+#### Step 4: Corruption or Data Loss
+
+```bash
+# Check database integrity
+docker exec -it vatix-postgres psql -U postgres -d vatix -c \
+  "SELECT * FROM pg_stat_user_tables WHERE n_dead_tup > 0;"
+
+# Restore from backup (if available)
+# See: docs/migration-rollback.md
+pg_restore -U postgres -d vatix backup_file.dump
+```
+
+#### Step 5: Verification
+
+```sql
+-- Test basic operations
+SELECT COUNT(*) FROM markets;
+SELECT COUNT(*) FROM events;
+SELECT COUNT(*) FROM indexer_cursors;
+
+-- Check query performance
+EXPLAIN ANALYZE SELECT * FROM markets WHERE status = 'active' LIMIT 10;
+
+-- Verify application connectivity
+# Check backend logs for Prisma errors
+docker logs vatix-backend --tail 50
+```
+
+#### Step 6: Prevention
+
+- [ ] Set up connection pool monitoring and alerting
+- [ ] Implement query performance monitoring
+- [ ] Configure automated backups (daily minimum)
+- [ ] Set up disk space alerts (>80% usage)
+- [ ] Add dead tuple monitoring and auto-vacuum tuning
+- [ ] Implement read replicas for heavy read workloads
+
+---
+
+## Incident 4: Redis Failure
+
+### Symptoms
+
+- Rate limiting not working
+- Session/cache errors
+- Redis connection timeouts
+- `ECONNREFUSED` errors in logs
+
+### Detection
+
+```bash
+# Check Redis status
+docker exec -it vatix-redis redis-cli ping
+
+# Check Redis logs
+docker logs vatix-redis --tail 50
+
+# Check memory usage
+docker exec -it vatix-redis redis-cli INFO memory
+```
+
+### Response Steps
+
+#### Step 1: Assess Redis Health
+
+```bash
+# Test connectivity
+docker exec -it vatix-redis redis-cli ping
+# Expected: PONG
+
+# Check memory
+docker exec -it vatix-redis redis-cli INFO memory | grep used_memory_human
+
+# Check connected clients
+docker exec -it vatix-redis redis-cli INFO clients
+```
+
+#### Step 2: Restart Redis
+
+```bash
+# Graceful restart
+docker restart vatix-redis
+
+# Verify recovery
+docker exec -it vatix-redis redis-cli ping
+
+# Monitor logs
+docker logs vatix-redis --tail 20 --follow
+```
+
+#### Step 3: Clear Cache (If Corrupted)
+
+```bash
+# WARNING: This will clear all cached data including rate limits
+docker exec -it vatix-redis redis-cli FLUSHALL
+
+# Restart backend to reinitialize connections
+docker restart vatix-backend
+```
+
+#### Step 4: Verify Recovery
+
+```bash
+# Test rate limiting
+curl http://localhost:3000/v1/markets
+
+# Check backend logs for Redis errors
+docker logs vatix-backend 2>&1 | grep -i redis
+```
+
+#### Step 5: Prevention
+
+- [ ] Monitor Redis memory usage (alert at >75%)
+- [ ] Implement Redis persistence (RDB/AOF)
+- [ ] Add connection retry logic in application
+- [ ] Consider Redis Cluster for production
+
+---
+
+## Incident 5: Oracle Resolution Failure
+
+### Symptoms
+
+- Market resolution stuck in `challenged` state
+- Oracle signing failures
+- Resolution candidates not being processed
+- Challenge window expiration without resolution
+
+### Detection
+
+```sql
+-- Check resolution candidates in CHALLENGED status
+SELECT
+  rc.id,
+  rc.market_id,
+  rc.status,
+  rc.proposed_outcome,
+  rc.confidence_score,
+  rc.created_at,
+  NOW() - rc.created_at as age_since_proposed
+FROM resolution_candidates rc
+WHERE rc.status = 'CHALLENGED'
+ORDER BY rc.created_at ASC;
+
+-- Check all resolution candidates for a market
+SELECT
+  rc.id,
+  rc.status,
+  rc.proposed_outcome,
+  rc.confidence_score,
+  rc.source,
+  rc.created_at
+FROM resolution_candidates rc
+WHERE rc.market_id = '[MARKET_ID]'
+ORDER BY rc.created_at DESC;
+
+-- Markets awaiting resolution (ACTIVE with existing resolution candidates)
+SELECT DISTINCT
+  m.id,
+  m.status,
+  m.end_time,
+  COUNT(rc.id) as candidate_count,
+  MAX(CASE WHEN rc.status = 'CHALLENGED' THEN 1 ELSE 0 END) as has_challenged
+FROM markets m
+LEFT JOIN resolution_candidates rc ON m.id = rc.market_id
+WHERE m.status = 'ACTIVE'
+GROUP BY m.id
+ORDER BY m.end_time ASC;
+```
+
+### Response Steps
+
+#### Step 1: Assess Oracle State
+
+```bash
+# Check oracle service logs
+docker logs vatix-backend 2>&1 | grep -i oracle
+
+# Verify oracle signing key is configured
+echo $ORACLE_SECRET_KEY
+
+# Test oracle endpoint (if available)
+curl http://localhost:3000/v1/oracle/health
+```
+
+#### Step 2: Manual Resolution (If Automated Fails)
+
+```sql
+-- WARNING: Only use manual resolution as last resort
+-- Requires admin access and proper authorization
+
+-- Update market status to RESOLVED with outcome (outcome: true=YES, false=NO)
+UPDATE markets
+SET status = 'RESOLVED',
+    outcome = true,  -- or false for NO
+    resolution_time = NOW(),
+    updated_at = NOW()
+WHERE id = '[MARKET_ID]';
+
+-- If a resolution candidate should be accepted, update its status
+UPDATE resolution_candidates
+SET status = 'ACCEPTED',
+    updated_at = NOW()
+WHERE market_id = '[MARKET_ID]'
+  AND status = 'CHALLENGED';
+
+-- Log the manual intervention (if audit_log table exists)
+INSERT INTO audit_log (
+  action,
+  entity_type,
+  entity_id,
+  performed_by,
+  notes
+) VALUES (
+  'MANUAL_RESOLUTION',
+  'market',
+  '[MARKET_ID]',
+  '[ADMIN_ID]',
+  'Manual resolution due to oracle failure. Incident: [INCIDENT-ID]'
+);
+```
+
+#### Step 3: Verify Resolution
+
+```sql
+-- Confirm market status
+SELECT id, status, outcome, resolution_time
+FROM markets
+WHERE id = '[MARKET_ID]';
+
+-- Check resolution candidates
+SELECT id, status, proposed_outcome
+FROM resolution_candidates
+WHERE market_id = '[MARKET_ID]';
+
+-- Check user positions are settled
+SELECT COUNT(*) as unsettled_positions
+FROM user_positions
+WHERE market_id = '[MARKET_ID]'
+  AND is_settled = false;
+```
+
+#### Step 4: Prevention
+
+- [ ] Implement oracle health monitoring
+- [ ] Add fallback oracle providers
+- [ ] Set up alerts for markets approaching challenge window expiry
+- [ ] Implement automatic retry with exponential backoff
+- [ ] Create manual resolution runbook with proper access controls
+
+---
+
+## Incident 6: Queue Backlog (Settlement / Oracle Submission)
+
+BullMQ backs both the settlement queue (`apps/workers/src/settlement/`) and
+the oracle submission queue (`apps/workers/src/oracle/`). Queue names and
+`REDIS_KEY_PREFIX` handling live in
+[`apps/workers/src/shared/queue-config.ts`](../../apps/workers/src/shared/queue-config.ts).
+For consumer/retry/dead-letter mechanics see
+[Queue Consumer](../queue-consumer.md) and [Dead Letter Log](../dead-letter-log.md).
+
+Default queue names (BullMQ prefixes every key with `bull:`):
+
+| Queue             | Name (env override)                                                       | Example Redis key prefix         |
+| ----------------- | ------------------------------------------------------------------------- | -------------------------------- |
+| Settlement        | `${REDIS_KEY_PREFIX}${SETTLEMENT_QUEUE_NAME}` (`vatix:settlement-trades`) | `bull:vatix:settlement-trades:*` |
+| Oracle submission | `${SUBMISSION_QUEUE_NAME}` (`oracle-submissions`)                         | `bull:oracle-submissions:*`      |
+
+### Symptoms
+
+- Trades matched but not settling on-chain (settlement lag)
+- Oracle reports stuck in `pending`/`submitting` state
+- `waiting`/`delayed` job counts climbing in monitoring
+- Growing `failed` (dead-letter) count in worker logs
+
+### Detection — Redis CLI recipes
+
+Replace `<queue>` with the full queue key prefix from the table above
+(e.g. `vatix:settlement-trades` or `oracle-submissions`).
+
+```bash
+# Jobs waiting to be picked up
+redis-cli -u $REDIS_URL LLEN "bull:<queue>:wait"
+
+# Jobs currently being processed
+redis-cli -u $REDIS_URL LLEN "bull:<queue>:active"
+
+# Jobs awaiting a retry backoff window
+redis-cli -u $REDIS_URL ZCARD "bull:<queue>:delayed"
+
+# Jobs that exhausted all attempts (dead-letter candidates)
+redis-cli -u $REDIS_URL ZCARD "bull:<queue>:failed"
+
+# List the oldest 10 failed job IDs with their failure timestamp (score)
+redis-cli -u $REDIS_URL ZRANGE "bull:<queue>:failed" 0 9 WITHSCORES
+
+# Inspect a specific job's data/error (id from the ZRANGE output above)
+redis-cli -u $REDIS_URL HGETALL "bull:<queue>:<jobId>"
+
+# One-shot summary of all counts for a queue
+for state in wait active delayed failed; do
+  echo -n "$state: "
+  if [ "$state" = "delayed" ] || [ "$state" = "failed" ]; then
+    redis-cli -u $REDIS_URL ZCARD "bull:<queue>:$state"
+  else
+    redis-cli -u $REDIS_URL LLEN "bull:<queue>:$state"
+  fi
+done
+```
+
+Idempotency check for a specific stuck settlement trade
+(see [Queue Consumer § Idempotency](../queue-consumer.md#idempotency)):
+
+```bash
+redis-cli -u $REDIS_URL EXISTS "vatix:settlement:processed:<tradeId>"
+```
+
+### Response Steps
+
+#### Step 1: Confirm backlog scope
+
+Run the detection commands above for both queues. A `wait`/`delayed` count
+that keeps growing over several minutes (not just a momentary spike) means
+consumers aren't keeping up or have stopped.
+
+```bash
+docker ps | grep -E "worker|settlement|oracle"
+docker logs vatix-backend 2>&1 | grep -iE "settlement|oracle-submission" | tail -50
+```
+
+#### Step 2: Identify root cause
+
+- **Worker process down/crashed** — check `docker ps` / process manager for
+  the settlement or oracle submission worker.
+- **Downstream failure** — settlement jobs fail if Postgres or Stellar RPC is
+  unavailable; check Incident 3 and Incident 2 sections.
+- **Poison job** — a single malformed job can repeatedly fail and block
+  `active` if concurrency is low; check its payload via `HGETALL` above.
+
+#### Step 3: Remediation
+
+**A. Restart the affected worker (first attempt)**
+
+```bash
+docker restart vatix-settlement-worker
+# or, if run via pnpm/process manager:
+pm2 restart settlement-worker
+```
+
+**B. Re-run failed jobs once the root cause is fixed**
+
+Use the DLQ CLI (issue #953) — it retries jobs through BullMQ so retry
+counters and locks stay consistent, and never needs raw `redis-cli`.
+`--queue` takes the alias `settlement` or `oracle`.
+
+```bash
+# See what is dead-lettered
+pnpm dlq stats --queue settlement
+pnpm dlq list  --queue settlement --limit 50
+
+# Preview, then retry the whole failed set (production needs --yes)
+pnpm dlq retry-all --queue settlement --limit 50 --dry-run
+pnpm dlq retry-all --queue settlement --limit 50 --yes
+
+# One job at a time
+pnpm dlq retry   --queue oracle --job <jobId>
+pnpm dlq discard --queue oracle --job <jobId> --yes   # permanent — only for confirmed poison
+```
+
+`retry-all` reports per-job failures without aborting the batch and exits
+non-zero if any job could not be retried. For a non-retryable poison job,
+`discard` after you have captured its payload from `pnpm dlq list`.
+
+> The older `pnpm replay:dlq` script drains a _different_ store — the raw
+> `vatix:dead-letter:*` Redis streams written for messages rejected as
+> non-retryable before they ever entered BullMQ. It does not touch the
+> BullMQ `failed` set.
+
+**C. Escalate to manual settlement (last resort)**
+
+If the backlog is blocking trade settlement past the SEV threshold, follow
+the manual resolution pattern in
+[Incident 5, Step 2](#step-2-manual-resolution-if-automated-fails) with the
+relevant trade/order IDs, and log the intervention in `audit_log`.
+
+#### Step 4: Verify recovery
+
+```bash
+redis-cli -u $REDIS_URL LLEN "bull:vatix:settlement-trades:wait"
+redis-cli -u $REDIS_URL ZCARD "bull:vatix:settlement-trades:failed"
+```
+
+Counts should trend back to baseline (near zero `wait`, no growth in
+`failed`) within a few minutes of the fix.
+
+#### Step 5: Pager / escalation guidance
+
+Use the [Severity Decision Matrix](#severity-decision-matrix) alongside
+these queue-specific triggers:
+
+| Condition                                                             | Severity |
+| --------------------------------------------------------------------- | -------- |
+| Settlement `wait` backlog > 5 min of throughput, still growing        | SEV-2    |
+| Oracle submission backlog delaying an active challenge window         | SEV-1    |
+| `failed` count growing but `wait`/`active` stable (isolated bad jobs) | SEV-3    |
+
+Follow the standard [Escalation Procedures](#escalation-procedures) for the
+resulting severity — no separate on-call path for queue incidents.
+
+#### Step 6: Prevention
+
+- [ ] Alert on `wait`/`delayed` count sustained above a threshold for >2 min
+- [ ] Alert on `failed` (dead-letter) count growth — see [Dead Letter Log](../dead-letter-log.md)
+- [ ] Dashboard the counts from the detection commands above (ties to #738)
+- [ ] Ensure worker processes are supervised/auto-restarted on crash
+
+---
+
+## Incident 7: Stuck CHALLENGED Resolution Candidates
+
+CHALLENGED resolution candidates are in dispute and waiting for adjudication by the
+finalization job. If a candidate remains CHALLENGED past its challenge window close
+time without transitioning to either REJECTED or ACCEPTED, it's stuck and must be
+investigated.
+
+### Symptoms
+
+- `resolution_candidates` row with `status = CHALLENGED` and `created_at` older than
+  `ORACLE_CHALLENGE_WINDOW_SECONDS` (default 24h)
+- No corresponding `resolution` row for that market
+- Market status remains in `ACTIVE` or other non-RESOLVED state
+- Finalization job logs show the candidate being skipped or errored
+
+### Detection — Database Queries
+
+```sql
+-- Find CHALLENGED candidates older than the challenge window (default 86400 seconds = 24h)
+SELECT id, market_id, status, created_at, confidence_score
+FROM resolution_candidates
+WHERE status = 'CHALLENGED'
+  AND created_at < NOW() - INTERVAL '24 hours'
+ORDER BY created_at DESC
+LIMIT 10;
+
+-- Check if they have corresponding Resolution rows (should be none for stuck CHALLENGED)
+SELECT rc.id, rc.market_id, rc.status, r.id as resolution_id
+FROM resolution_candidates rc
+LEFT JOIN resolutions r ON r.market_id = rc.market_id
+WHERE rc.status = 'CHALLENGED'
+  AND rc.created_at < NOW() - INTERVAL '24 hours';
+
+-- Check finalization audit logs for these candidates
+SELECT candidate_id, market_id, action, before_status, after_status, actor, created_at
+FROM resolution_audit_logs
+WHERE candidate_id = '<candidateId>'
+ORDER BY created_at DESC;
+```
+
+### Root Causes
+
+1. **Finalization job crashed/stuck** — check worker process status and logs
+2. **Competing resolution with insufficient confidence** — a PROPOSED candidate may
+   exist but with lower or equal confidence, triggering the reject logic unexpectedly
+3. **Database lock contention** — a concurrent write (e.g., another challenge or
+   finalization attempt) may have caused the transaction to abort
+4. **Bug in adjudication logic** — the finalization job's confidence comparison or
+   competing candidate query may have failed silently
+5. **Challenge window drift (issue #950)** — the finalization worker enforces
+   `FINALIZATION_CHALLENGE_WINDOW_SECONDS`, which defaults to (and in production
+   **must** equal) `ORACLE_CHALLENGE_WINDOW_SECONDS` — the window the on-chain
+   resolution contract enforces. If the two disagree the worker finalizes too
+   early or too late relative to the chain. In `NODE_ENV=production` the worker
+   refuses to start on a mismatch; outside production it starts but logs
+   `Finalization challenge window overridden and drifts from the on-chain
+resolution contract window` at `warn`. Grep the worker's startup logs for
+   `onChainChallengeWindowSeconds` and confirm it matches the contract.
+
+### Response Steps
+
+#### Step 1: Confirm the candidate is genuinely stuck
+
+```sql
+-- Verify the candidate exists, is CHALLENGED, and is past the window
+SELECT * FROM resolution_candidates
+WHERE id = '<candidateId>'
+  AND status = 'CHALLENGED';
+
+-- Check the market status
+SELECT id, status, outcome, resolution_time
+FROM markets WHERE id = '<marketId>';
+
+-- Check if any Resolution row exists (should not for CHALLENGED)
+SELECT * FROM resolutions WHERE market_id = '<marketId>';
+```
+
+#### Step 2: Investigate finalization logs
+
+```bash
+docker logs vatix-backend 2>&1 | grep -i "challenged\|finalization" | tail -100
+# or, for a specific candidate:
+docker logs vatix-backend 2>&1 | grep "<candidateId>"
+```
+
+Look for:
+
+- `Challenged candidate rejected` — challenge was adjudicated (should be REJECTED)
+- `Finalization candidate finalized` — should have transitioned to ACCEPTED
+- `CandidateNotEligibleError` — status changed during processing (lost race)
+- `MarketNotEligibleError` — market became ineligible (canceled, deleted)
+- Panics or unhandled exceptions
+
+#### Step 3: Manually adjudicate (temporary measure)
+
+If the stuck candidate cannot be finalized automatically, manually transition it:
+
+```sql
+-- Option A: Accept the challenged candidate (deny the challenge)
+-- Use this if you want the original resolution to stand
+UPDATE resolution_candidates
+SET status = 'ACCEPTED'
+WHERE id = '<candidateId>';
+
+-- Then manually create the Resolution and finalize the market
+BEGIN;
+INSERT INTO resolutions (market_id, outcome, finalized_at, provenance)
+VALUES ('<marketId>', <outcomeBoolean>, NOW(), 'manual-finalization');
+
+UPDATE markets
+SET status = 'RESOLVED', outcome = <outcomeBoolean>, resolution_time = NOW()
+WHERE id = '<marketId>';
+
+UPDATE user_positions
+SET is_settled = true
+WHERE market_id = '<marketId>';
+
+INSERT INTO resolution_audit_logs
+(candidate_id, market_id, action, before_status, after_status, actor)
+VALUES ('<candidateId>', '<marketId>', 'FINALIZE', 'CHALLENGED', 'ACCEPTED', 'manual-incident-response');
+
+COMMIT;
+```
+
+```sql
+-- Option B: Reject the challenged candidate (uphold the challenge)
+-- Use this if you want to invalidate the original resolution
+UPDATE resolution_candidates
+SET status = 'REJECTED'
+WHERE id = '<candidateId>';
+
+INSERT INTO resolution_audit_logs
+(candidate_id, market_id, action, before_status, after_status, actor)
+VALUES ('<candidateId>', '<marketId>', 'ADJUDICATE_CHALLENGE', 'CHALLENGED', 'REJECTED', 'manual-incident-response');
+
+-- Leave the market in ACTIVE state so another resolution can be finalized
+```
+
+#### Step 4: Restart finalization job and re-run
+
+```bash
+docker restart vatix-finalization-job
+# or
+pm2 restart finalization
+```
+
+The job will immediately pick up any remaining CHALLENGED candidates on its next
+scheduled run.
+
+### Severity Assessment
+
+| Condition                                                             | Severity |
+| --------------------------------------------------------------------- | -------- |
+| Single CHALLENGED candidate stuck > challenge window, market resolved | SEV-3    |
+| Multiple CHALLENGED candidates preventing market resolution on active | SEV-2    |
+| Finalization job completely down, multiple stuck CHALLENGED           | SEV-1    |
+
+Follow the standard [Escalation Procedures](#escalation-procedures) for the
+resulting severity.
+
+### Prevention
+
+- [ ] Dashboard: count of CHALLENGED candidates older than their challenge window
+- [ ] Alert: if count > 1 and growing over 10 minutes
+- [ ] Finalization logs: alert on adjudication failures or transaction aborts
+- [ ] E2E test: file a challenge, verify finalization adjudicates it within 2 cycles
+
+---
+
+## Incident 8: Duplicate Settlement / Finalization Race
+
+### Symptoms
+
+- `settle_trade` invoked twice for the same trade id (visible as two Soroban
+  txs with the same trade id in a short window).
+- Two `resolution_candidates` rows for the same market flip status in
+  conflicting order, or a finalization admin action appears to "undo" itself.
+- Oracle submission worker logs show a `resolve_market` broadcast for a
+  market that a restart or a second replica already confirmed.
+
+### Detection
+
+```bash
+# Finalization lock contention / hard failures
+curl -s localhost:9090/metrics | grep vatix_finalization_lock
+
+# Settlement job stalls and duplicate-skip events
+curl -s localhost:9090/metrics | grep -E 'vatix_settlement_job_stalled_total|vatix_settlement_duplicate_skipped_total'
+
+# Settlement errors quarantined vs retried, by code
+curl -s localhost:9090/metrics | grep vatix_settlement_error_quarantined_total
+
+# Oracle submissions stuck ambiguous (crash between broadcast and confirm)
+curl -s localhost:9090/metrics | grep vatix_oracle_submission_ambiguous_total
+```
+
+### Response Steps
+
+#### Step 1: Identify which layer raced
+
+- `vatix_finalization_lock_failures_total` increasing → the Postgres
+  `SELECT ... FOR UPDATE` on `resolution_candidates` is failing (DB
+  unreachable, deadlock, statement timeout). As of this runbook update,
+  `resolutionLock.ts` fails the finalization job fast on this condition in
+  every environment — it no longer silently proceeds without the lock. Check
+  `apps/workers` logs for `ResolutionLockError`.
+- `vatix_settlement_job_stalled_total` increasing → BullMQ is reclaiming
+  jobs whose worker didn't renew its lock in time (slow RPC, GC pause,
+  process kill). Check `lockDuration`/`stalledInterval` in
+  `apps/workers/src/settlement/bullmq-consumer.ts` against actual settlement
+  latency; a stalled job is retried under the settlement worker's own
+  idempotency key, so retries should surface as
+  `vatix_settlement_duplicate_skipped_total`, not a second on-chain call.
+- `vatix_settlement_error_quarantined_total{code="STELLAR_TX_BAD_AUTH"}` (or
+  `INVALID_SIGNATURE`) increasing → a bad signing key is being retried; this
+  is now quarantined (moved to dead-letter) rather than retried forever, so
+  check the dead-letter log for the affected trade ids and rotate/verify the
+  signer key.
+- `vatix_oracle_submission_ambiguous_total` increasing → confirmation is
+  correctly refusing to resubmit while chain state is unclear (see Incident
+  5 for the oracle-specific flow).
+
+#### Step 2: Verify on-chain state before touching the DB
+
+```bash
+# Look up the actual tx(s) for the trade/market in question via Horizon/RPC
+# before assuming the DB row is wrong — the DB is the thing that can lie,
+# the ledger cannot.
+```
+
+#### Step 3: Remediation
+
+- If a genuine double-apply reached the chain: this is a SEV-1 — engage
+  on-call immediately, do not attempt a silent DB-only fix. Follow
+  [Escalation Procedures](#escalation-procedures).
+- If it's lock/stall contention without a double-apply: no action needed
+  beyond confirming the metrics settle back to baseline; the retry/backoff
+  path is designed to absorb this.
+
+### Prevention
+
+- [ ] Alert: `vatix_finalization_lock_failures_total` rate > 0 over 5m
+- [ ] Alert: `vatix_settlement_job_stalled_total` rate > 0 sustained over 10m
+- [ ] Dashboard: `vatix_settlement_error_quarantined_total` by `code`, reviewed weekly for signing/config issues that need a human fix rather than a retry
+
+---
+
+## Post-Incident Process
+
+### Immediate (Within 24 Hours)
+
+1. **Document Timeline**
+   - When was the incident detected?
+   - What was the root cause?
+   - What actions were taken?
+   - When was it resolved?
+
+2. **Communicate Resolution**
+   - Update status page
+   - Notify affected users (if applicable)
+   - Internal team debrief
+
+3. **Preserve Evidence**
+   - Save relevant logs
+   - Export database state snapshots
+   - Screenshot monitoring dashboards
+   - For any matching / trade / fill discrepancy, reconstruct the affected
+     book(s) with the replay-market forensics CLI and attach the report:
+
+     ```bash
+     DATABASE_URL=... REDIS_URL=... \
+       pnpm replay:market -- --market <marketId> --outcome YES --as-of <incidentStart>
+     ```
+
+     Exit `1` means the recorded fills diverge from what the matching engine
+     would produce. Full procedure and report interpretation:
+     [docs/replay-forensics.md](../replay-forensics.md#reconstructing-a-books-fills-incident-recipe).
+
+### Post-Incident Review (Within 1 Week)
+
+**For SEV-1 and SEV-2 incidents:**
+
+1. **Schedule Review Meeting**
+   - Include: On-call engineer, engineering lead, affected teams
+   - Duration: 30-60 minutes
+
+2. **Review Template**
+
+   ```markdown
+   # Post-Incident Review: [Incident Name]
+
+   ## Summary
+
+   - **Date:** [Date]
+   - **Severity:** [SEV-X]
+   - **Duration:** [X hours Y minutes]
+   - **Impact:** [Description]
+
+   ## Timeline
+
+   - [Time] - Incident started
+   - [Time] - Incident detected
+   - [Time] - Response initiated
+   - [Time] - Root cause identified
+   - [Time] - Fix implemented
+   - [Time] - Incident resolved
+
+   ## Root Cause
+
+   [Detailed explanation]
+
+   ## What Went Well
+
+   - [List]
+
+   ## What Could Be Improved
+
+   - [List]
+
+   ## Action Items
+
+   - [ ] [Action 1] - Owner: [Name] - Due: [Date]
+   - [ ] [Action 2] - Owner: [Name] - Due: [Date]
+
+   ## Lessons Learned
+
+   [Key takeaways]
+   ```
+
+3. **Implement Improvements**
+   - Update runbooks based on learnings
+   - Add missing monitoring/alerts
+   - Fix identified bugs or gaps
+   - Improve automation
+
+### Metrics to Track
+
+- **MTTD:** Mean Time to Detect
+- **MTTR:** Mean Time to Resolve
+- **Incident Frequency:** By type and severity
+- **Runbook Effectiveness:** How often runbooks helped vs. needed deviation
+
+---
+
+## Useful Commands & Queries
+
+### Canonical API URLs
+
+Use these URLs as the operational source of truth:
+
+| Purpose             | Method | Path                            |
+| ------------------- | ------ | ------------------------------- |
+| Health              | GET    | `/v1/health`                    |
+| Readiness           | GET    | `/v1/ready`                     |
+| Markets             | GET    | `/v1/markets`                   |
+| Market details      | GET    | `/v1/markets/:id`               |
+| Market orderbook    | GET    | `/v1/markets/:id/orderbook`     |
+| Create order        | POST   | `/v1/orders`                    |
+| User orders         | GET    | `/v1/orders/user/:address`      |
+| User trades         | GET    | `/v1/trades/user/:address`      |
+| Wallet positions    | GET    | `/v1/wallets/:wallet/positions` |
+| Admin markets       | GET    | `/v1/admin/markets`             |
+| Admin market status | PATCH  | `/v1/admin/markets/:id/status`  |
+| OpenAPI spec        | GET    | `/v1/openapi.json`              |
+
+### Quick Health Checks
+
+```bash
+# All services running
+docker ps
+
+# Backend health endpoint
+curl http://localhost:3000/v1/health
+
+# Database connectivity
+docker exec -it vatix-postgres pg_isready -U postgres
+
+# Redis connectivity
+docker exec -it vatix-redis redis-cli ping
+
+# Indexer status
+docker logs vatix-indexer --tail 10
+```
+
+### Common Database Queries
+
+```sql
+-- Latest events
+SELECT * FROM events ORDER BY source_at DESC LIMIT 10;
+
+-- Active markets
+SELECT COUNT(*) FROM markets WHERE status = 'active';
+
+-- Indexer cursor
+SELECT * FROM indexer_cursors;
+
+-- Recent errors in audit log
+SELECT * FROM audit_log
+WHERE action LIKE '%ERROR%'
+ORDER BY created_at DESC
+LIMIT 20;
+
+-- Database size
+SELECT pg_size_pretty(pg_database_size('vatix'));
+```
+
+### Log Analysis
+
+```bash
+# Search for errors in last hour
+docker logs vatix-backend --since 1h 2>&1 | grep -i error
+
+# Count error frequency
+docker logs vatix-backend --since 1h 2>&1 | grep -c error
+
+# Follow specific error pattern
+docker logs vatix-backend -f 2>&1 | grep -i "timeout\|connection"
+
+# Export logs for analysis
+docker logs vatix-backend --since 2h > backend-logs-$(date +%Y%m%d-%H%M).txt
+```
+
+### Performance Diagnostics
+
+```bash
+# Check API response times
+curl -w "DNS: %{time_namelookup}s\nConnect: %{time_connect}s\nTTFB: %{time_starttransfer}s\nTotal: %{time_total}s\n" \
+  -o /dev/null -s http://localhost:3000/v1/markets
+
+# Monitor resource usage
+docker stats --no-stream
+
+# Check database query performance
+docker exec -it vatix-postgres psql -U postgres -d vatix -c \
+  "SELECT * FROM pg_stat_statements ORDER BY total_time DESC LIMIT 10;"
+```
+
+---
+
+## Contact & Resources
+
+### Internal Contacts
+
+| Role             | Name       | Contact         | Availability             |
+| ---------------- | ---------- | --------------- | ------------------------ |
+| On-Call Engineer | [Rotation] | Slack: #on-call | 24/7                     |
+| Backend Lead     | [Name]     | Slack/Email     | Business hours + on-call |
+| DevOps/SRE       | [Name]     | Slack/Email     | Business hours + on-call |
+| CTO              | [Name]     | Slack/Phone     | SEV-1 only               |
+
+### External Resources
+
+- **Stellar Network Status:** https://status.stellar.org/
+- **Stellar Community Status:** https://stellarstatus.io/
+- **PostgreSQL Documentation:** https://www.postgresql.org/docs/
+- **Redis Documentation:** https://redis.io/docs/
+- **Prisma Documentation:** https://www.prisma.io/docs/
+
+### Monitoring & Alerting
+
+- **Application Metrics:** [Grafana/Prometheus URL]
+- **Log Aggregation:** [ELK/Datadog URL]
+- **Error Tracking:** [Sentry URL]
+- **Status Page:** [Status page URL]
+- **Alert Manager:** [PagerDuty/OpsGenie URL]
+
+### Documentation Links
+
+- [Testing Guide](../testing.md)
+- [Migration Guide](../migrations.md)
+- [Migration Rollback](../migration-rollback.md)
+- [Rate Limiting](../rate-limiting.md)
+- [Deployment Runbook](../deployment-runbook.md)
+- [Queue Consumer](../queue-consumer.md)
+- [Dead Letter Log](../dead-letter-log.md)
+
+---
+
+## Runbook Maintenance
+
+### Review Schedule
+
+- **Monthly:** Review and update all incidents sections
+- **After Each Incident:** Add new patterns, update steps based on learnings
+- **Quarterly:** Full runbook audit and cleanup
+
+### Update Process
+
+1. Identify outdated or missing information
+2. Update relevant sections
+3. Test commands and queries in staging environment
+4. Submit PR with changes
+5. Get review from at least one team member
+6. Merge and announce updates in team channel
+
+### Version History
+
+| Date       | Version | Changes                  | Author       |
+| ---------- | ------- | ------------------------ | ------------ |
+| 2026-04-28 | 1.0     | Initial runbook creation | Backend Team |
+
+---
+
+**Remember:** This runbook is a living document. Keep it updated, test the procedures regularly, and don't hesitate to improve it based on real incident experience.

@@ -1,0 +1,1007 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  SettlementWorker,
+  type SettlementWorkerConfig,
+  type SettlementRedisClient,
+  type SettlementStellarConfig,
+  type SettlementPrismaClient,
+  type SettlementTradeRow,
+} from "./settlement-worker.js";
+import type { QueueJob } from "../consumers/queue-consumer.js";
+import type { ILogger } from "../../../../packages/shared/src/logger.js";
+
+// ---------------------------------------------------------------------------
+// Stellar SDK mock — variables hoisted via vi.hoisted so they are accessible
+// inside the vi.mock() factory (which Vitest also hoists to the top).
+// ---------------------------------------------------------------------------
+const {
+  mockContractCall,
+  mockContractCtor,
+  mockKeypairPublicKey,
+  mockKeypairFromSecret,
+  mockTxSign,
+  mockTxBuilderBuild,
+  mockTxBuilderSetTimeout,
+  mockTxBuilderAddOp,
+  mockTransactionBuilderCtor,
+  mockGetAccount,
+  mockPrepareTransaction,
+  mockSendTransaction,
+  mockGetTransaction,
+  mockRpcServerCtor,
+} = vi.hoisted(() => {
+  // Leaf mock functions — referenced by class instances below.
+  const mockContractCall = vi.fn().mockReturnValue("mock-operation");
+  const mockKeypairPublicKey = vi
+    .fn()
+    .mockReturnValue(
+      "GSIGNER1111111111111111111111111111111111111111111111111"
+    );
+  const mockKeypairFromSecret = vi.fn().mockReturnValue({
+    publicKey: mockKeypairPublicKey,
+  });
+  const mockTxSign = vi.fn();
+  const mockTxBuilderBuild = vi.fn();
+  const mockTxBuilderSetTimeout = vi.fn();
+  const mockTxBuilderAddOp = vi.fn();
+  const mockGetAccount = vi.fn().mockResolvedValue({ id: "mock-account" });
+  const mockPrepareTransaction = vi
+    .fn()
+    .mockImplementation((tx: unknown) => Promise.resolve(tx));
+  const mockSendTransaction = vi.fn().mockResolvedValue({
+    status: "PENDING",
+    hash: "abc123txhash",
+  });
+  const mockGetTransaction = vi.fn().mockResolvedValue({
+    status: "SUCCESS",
+    ledger: 1000,
+  });
+
+  // Vitest 4.x: use `class` keyword inside mockImplementation for constructors.
+  const mockContractCtor = vi.fn().mockImplementation(
+    class {
+      call = mockContractCall;
+    }
+  );
+
+  const mockTransactionBuilderCtor = vi.fn().mockImplementation(
+    class {
+      addOperation = mockTxBuilderAddOp.mockReturnThis();
+      setTimeout = mockTxBuilderSetTimeout.mockReturnThis();
+      build = mockTxBuilderBuild.mockReturnValue({ sign: mockTxSign });
+    }
+  );
+
+  const mockRpcServerCtor = vi.fn().mockImplementation(
+    class {
+      getAccount = mockGetAccount;
+      prepareTransaction = mockPrepareTransaction;
+      sendTransaction = mockSendTransaction;
+      getTransaction = mockGetTransaction;
+    }
+  );
+
+  return {
+    mockContractCall,
+    mockContractCtor,
+    mockKeypairPublicKey,
+    mockKeypairFromSecret,
+    mockTxSign,
+    mockTxBuilderBuild,
+    mockTxBuilderSetTimeout,
+    mockTxBuilderAddOp,
+    mockTransactionBuilderCtor,
+    mockGetAccount,
+    mockPrepareTransaction,
+    mockSendTransaction,
+    mockGetTransaction,
+    mockRpcServerCtor,
+  };
+});
+
+vi.mock("@stellar/stellar-sdk", () => ({
+  Contract: mockContractCtor,
+  Keypair: { fromSecret: mockKeypairFromSecret },
+  TransactionBuilder: mockTransactionBuilderCtor,
+  nativeToScVal: vi.fn().mockReturnValue("mock-scval"),
+  rpc: {
+    Server: mockRpcServerCtor,
+    Api: {
+      GetTransactionStatus: { SUCCESS: "SUCCESS", FAILED: "FAILED" },
+    },
+  },
+  xdr: {},
+}));
+
+function makeLogger(): ILogger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn(),
+  };
+}
+
+function makeRedisClient(
+  overrides?: Partial<SettlementRedisClient>
+): SettlementRedisClient {
+  return {
+    exists: vi.fn().mockResolvedValue(false),
+    set: vi.fn().mockResolvedValue(undefined),
+    setnx: vi.fn().mockResolvedValue(true),
+    del: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+/**
+ * Builds a mock SettlementPrismaClient backed by an in-memory map of trade
+ * rows keyed by tradeId. `$transaction` runs the callback against the same
+ * mock (no real isolation), which is sufficient to exercise the read-then-
+ * write logic in applySettlement/recordPermanentFailure.
+ */
+function makeMockPrisma(
+  seedTrades: Record<string, Partial<SettlementTradeRow>> = {}
+): {
+  prisma: SettlementPrismaClient;
+  trades: Map<string, SettlementTradeRow>;
+} {
+  const trades = new Map<string, SettlementTradeRow>();
+  for (const [tradeId, overrides] of Object.entries(seedTrades)) {
+    trades.set(tradeId, {
+      tradeId,
+      settlementStatus: "PENDING",
+      settlementFailureCount: 0,
+      quarantinedAt: null,
+      ...overrides,
+    });
+  }
+
+  const trade = {
+    findUnique: vi.fn(async ({ where }: { where: { tradeId: string } }) => {
+      return trades.get(where.tradeId) ?? null;
+    }),
+    update: vi.fn(
+      async ({
+        where,
+        data,
+      }: {
+        where: { tradeId: string };
+        data: Record<string, unknown>;
+      }) => {
+        const existing = trades.get(where.tradeId);
+        if (!existing) throw new Error("trade not found");
+        const updated = { ...existing, ...data } as SettlementTradeRow;
+        trades.set(where.tradeId, updated);
+        return updated;
+      }
+    ),
+    count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+      return [...trades.values()].filter((t) =>
+        Object.entries(where).every(([key, value]) => (t as any)[key] === value)
+      ).length;
+    }),
+  };
+
+  const prisma: SettlementPrismaClient = {
+    trade,
+    $transaction: vi.fn(async (fn) => fn(prisma)),
+  };
+
+  return { prisma, trades };
+}
+
+function makeConfig(
+  overrides?: Partial<SettlementWorkerConfig>
+): SettlementWorkerConfig {
+  return {
+    maxAttempts: 3,
+    processingTimeoutMs: 5_000,
+    idempotencyTtlSeconds: 86_400,
+    ...overrides,
+  };
+}
+
+function makeJob(overrides?: Partial<QueueJob>): QueueJob {
+  return {
+    id: "stream-id-1-0",
+    payload: {
+      tradeId: "trade-abc-123",
+      marketId: "market-001",
+      outcome: "YES",
+      buyOrderId: "buy-order-1",
+      sellOrderId: "sell-order-1",
+      buyerAddress: "GBUYERADDRESS",
+      sellerAddress: "GSELLERADDRESS",
+      price: "0.65",
+      quantity: "100",
+      timestamp: "1700000000000",
+    },
+    attempts: 1,
+    ...overrides,
+  };
+}
+
+describe("SettlementWorker", () => {
+  let logger: ILogger;
+  let redisClient: SettlementRedisClient;
+  let worker: SettlementWorker;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    logger = makeLogger();
+    redisClient = makeRedisClient();
+    worker = new SettlementWorker(redisClient, logger, makeConfig());
+  });
+
+  describe("process — success path", () => {
+    it("logs job receipt and completion for a new trade", async () => {
+      const job = makeJob();
+
+      await worker.process(job);
+
+      expect(logger.info).toHaveBeenCalledWith(
+        "Job received from queue",
+        expect.objectContaining({
+          jobId: job.id,
+          queue: "settlement",
+          attempt: 1,
+        })
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        "Processing settlement job",
+        expect.objectContaining({ tradeId: "trade-abc-123" })
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        "Settlement job completed",
+        expect.objectContaining({ tradeId: "trade-abc-123" })
+      );
+      expect(logger.info).toHaveBeenCalledWith(
+        "Job processed successfully",
+        expect.objectContaining({ jobId: job.id })
+      );
+    });
+
+    it("claims the idempotency lock via setnx on success", async () => {
+      const job = makeJob();
+
+      await worker.process(job);
+
+      expect(redisClient.setnx).toHaveBeenCalledWith(
+        "settlement:processed:trade-abc-123",
+        "1",
+        86_400
+      );
+    });
+  });
+
+  describe("process — idempotency", () => {
+    it("skips processing when trade was already processed", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockResolvedValue(false),
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig());
+
+      const job = makeJob();
+
+      await worker.process(job);
+
+      expect(logger.info).toHaveBeenCalledWith(
+        "Settlement job skipped (already processed)",
+        expect.objectContaining({ tradeId: "trade-abc-123", jobId: job.id })
+      );
+      expect(redisClient.set).not.toHaveBeenCalled();
+    });
+
+    it("checks the correct idempotency key via setnx", async () => {
+      const job = makeJob({
+        payload: { ...makeJob().payload, tradeId: "trade-xyz-999" },
+      });
+
+      await worker.process(job);
+
+      expect(redisClient.setnx).toHaveBeenCalledWith(
+        "settlement:processed:trade-xyz-999",
+        "1",
+        86_400
+      );
+    });
+  });
+
+  describe("process — failure path", () => {
+    it("re-throws the error when handler fails below max attempts", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockRejectedValue(new Error("Redis down")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ maxAttempts: 3 })
+      );
+
+      const job = makeJob({ attempts: 1 });
+
+      await expect(worker.process(job)).rejects.toThrow("Redis down");
+    });
+
+    it("logs warn (not error) when attempts remain", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockRejectedValue(new Error("transient")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ maxAttempts: 3 })
+      );
+
+      const job = makeJob({ attempts: 1 });
+
+      await expect(worker.process(job)).rejects.toThrow();
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        "Job processing failed, will retry",
+        expect.objectContaining({ jobId: job.id, attempt: 1 })
+      );
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it("dead-letters and logs error after max attempts", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockRejectedValue(new Error("permanent failure")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ maxAttempts: 3 })
+      );
+
+      const job = makeJob({ attempts: 3 });
+
+      await expect(worker.process(job)).rejects.toThrow("permanent failure");
+
+      expect(logger.error).toHaveBeenCalledWith(
+        "Job processing failed, max attempts exceeded",
+        expect.objectContaining({ jobId: job.id, attempt: 3, maxAttempts: 3 })
+      );
+      expect(logger.error).toHaveBeenCalledWith(
+        "Job dead-lettered",
+        expect.objectContaining({
+          messageId: job.id,
+          queue: "settlement",
+          reason: "permanent failure",
+        })
+      );
+    });
+
+    it("does not dead-letter when attempts are below max", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockRejectedValue(new Error("ECONNRESET: transient")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ maxAttempts: 3 })
+      );
+
+      const job = makeJob({ attempts: 2 });
+
+      await expect(worker.process(job)).rejects.toThrow();
+
+      const deadLetterCalls = (
+        logger.error as ReturnType<typeof vi.fn>
+      ).mock.calls.filter((call) => call[0] === "Job dead-lettered");
+      expect(deadLetterCalls).toHaveLength(0);
+    });
+
+    it("releases the idempotency lock so a retryable failure can be redelivered", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockRejectedValue(new Error("ECONNRESET: transient")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ maxAttempts: 3 })
+      );
+
+      const job = makeJob({ attempts: 1 });
+
+      await expect(worker.process(job)).rejects.toThrow();
+
+      expect(redisClient.del).toHaveBeenCalledWith(
+        "settlement:processed:trade-abc-123"
+      );
+    });
+
+    it("fails fast (does not retry) and dead-letters immediately on a permanent error", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi
+          .fn()
+          .mockRejectedValue(new Error("400 Bad Request: bad auth signature")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ maxAttempts: 3 })
+      );
+
+      const job = makeJob({ attempts: 1 });
+
+      await expect(worker.process(job)).rejects.toThrow();
+
+      expect(logger.error).toHaveBeenCalledWith(
+        "Job dead-lettered",
+        expect.objectContaining({
+          messageId: job.id,
+          queue: "settlement",
+        })
+      );
+    });
+  });
+
+  describe("process — transactional settlement apply (#870)", () => {
+    it("marks the trade SETTLED in a single Prisma transaction on success", async () => {
+      const { prisma, trades } = makeMockPrisma({
+        "trade-abc-123": { settlementStatus: "PENDING" },
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig(), prisma);
+
+      const job = makeJob();
+      await worker.process(job);
+
+      expect(prisma.$transaction).toHaveBeenCalled();
+      const updated = trades.get("trade-abc-123")!;
+      expect(updated.settlementStatus).toBe("SETTLED");
+    });
+
+    it("rolls back and leaves the trade unsettled when the mid-transaction write fails", async () => {
+      const { prisma, trades } = makeMockPrisma({
+        "trade-abc-123": { settlementStatus: "PENDING" },
+      });
+      (prisma.trade.update as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error("connection lost mid-write")
+      );
+
+      worker = new SettlementWorker(redisClient, logger, makeConfig(), prisma);
+
+      const job = makeJob();
+      await expect(worker.process(job)).rejects.toThrow(
+        "connection lost mid-write"
+      );
+
+      // No observable half-applied settlement: status is unchanged from PENDING.
+      const unchanged = trades.get("trade-abc-123")!;
+      expect(unchanged.settlementStatus).toBe("PENDING");
+    });
+
+    it("is idempotent when the trade is already SETTLED", async () => {
+      const { prisma, trades } = makeMockPrisma({
+        "trade-abc-123": { settlementStatus: "SETTLED" },
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig(), prisma);
+
+      const job = makeJob();
+      await expect(worker.process(job)).resolves.not.toThrow();
+
+      expect(prisma.trade.update).not.toHaveBeenCalled();
+      expect(trades.get("trade-abc-123")!.settlementStatus).toBe("SETTLED");
+    });
+  });
+
+  describe("process — poison-pill quarantine (#870)", () => {
+    it("quarantines a trade after the configured number of permanent failures", async () => {
+      const { prisma, trades } = makeMockPrisma({
+        "trade-abc-123": {
+          settlementStatus: "PENDING",
+          settlementFailureCount: 1,
+        },
+      });
+      redisClient = makeRedisClient({
+        setnx: vi
+          .fn()
+          .mockRejectedValue(new Error("400 Bad Request: bad auth signature")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ quarantineThreshold: 2 }),
+        prisma
+      );
+
+      const job = makeJob();
+      await expect(worker.process(job)).rejects.toThrow();
+
+      const trade = trades.get("trade-abc-123")!;
+      expect(trade.settlementFailureCount).toBe(2);
+      expect(trade.settlementStatus).toBe("QUARANTINED");
+      expect(trade.quarantinedAt).not.toBeNull();
+    });
+
+    it("does not quarantine on a transient failure, only counts permanent ones", async () => {
+      const { prisma, trades } = makeMockPrisma({
+        "trade-abc-123": { settlementStatus: "PENDING" },
+      });
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockRejectedValue(new Error("ECONNRESET: transient")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ quarantineThreshold: 1 }),
+        prisma
+      );
+
+      const job = makeJob();
+      await expect(worker.process(job)).rejects.toThrow();
+
+      const trade = trades.get("trade-abc-123")!;
+      expect(trade.settlementFailureCount).toBe(0);
+      expect(trade.settlementStatus).toBe("PENDING");
+    });
+
+    it("skips a quarantined trade without touching Redis or Stellar", async () => {
+      const { prisma } = makeMockPrisma({
+        "trade-abc-123": {
+          settlementStatus: "QUARANTINED",
+          quarantinedAt: new Date("2026-01-01T00:00:00Z"),
+        },
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig(), prisma);
+
+      const job = makeJob();
+      await expect(worker.process(job)).resolves.not.toThrow();
+
+      expect(redisClient.setnx).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        "Settlement job skipped (trade quarantined)",
+        expect.objectContaining({ tradeId: "trade-abc-123" })
+      );
+    });
+
+    it("reports quarantine depth via getQuarantineDepth()", async () => {
+      const { prisma } = makeMockPrisma({
+        "trade-1": { settlementStatus: "QUARANTINED" },
+        "trade-2": { settlementStatus: "QUARANTINED" },
+        "trade-3": { settlementStatus: "SETTLED" },
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig(), prisma);
+
+      await expect(worker.getQuarantineDepth()).resolves.toBe(2);
+    });
+
+    it("tracks retry classification counts across failures", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockRejectedValue(new Error("ECONNRESET: transient")),
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig());
+
+      await expect(worker.process(makeJob())).rejects.toThrow();
+
+      expect(worker.getRetryClassificationCounts().transient).toBe(1);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stellar SDK invocation tests
+// ---------------------------------------------------------------------------
+describe("SettlementWorker — Stellar SDK invoke (executeOnChain)", () => {
+  const stellarConfig: SettlementStellarConfig = {
+    rpcUrl: "https://soroban-testnet.stellar.org",
+    contractId: "CCONTRACT11111111111111111111111111111111111111111111111111",
+    networkPassphrase: "Test SDF Network ; September 2015",
+    signerSecret: "SSECRET111111111111111111111111111111111111111111111111111",
+  };
+
+  let logger: ILogger;
+  let redisClient: SettlementRedisClient;
+  let stellarWorker: SettlementWorker;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    // Reset mocks to their default resolved values
+    mockGetAccount.mockResolvedValue({ id: "mock-account" });
+    mockPrepareTransaction.mockImplementation((tx) => Promise.resolve(tx));
+    mockSendTransaction.mockResolvedValue({
+      status: "PENDING",
+      hash: "abc123txhash",
+    });
+    mockGetTransaction.mockResolvedValue({ status: "SUCCESS", ledger: 1000 });
+
+    logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      child: vi.fn(),
+    };
+    redisClient = {
+      exists: vi.fn().mockResolvedValue(false),
+      set: vi.fn().mockResolvedValue(undefined),
+      setnx: vi.fn().mockResolvedValue(true),
+    };
+    stellarWorker = new SettlementWorker(redisClient, logger, {
+      maxAttempts: 3,
+      processingTimeoutMs: 5_000,
+      idempotencyTtlSeconds: 86_400,
+      stellar: stellarConfig,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("invokes Contract.call('settle_trade') with correct arguments", async () => {
+    const job: QueueJob = {
+      id: "job-stellar-1",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-on-chain-001",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER111111111111111111111111111111111111111111111111",
+        sellerAddress: "GSELLER11111111111111111111111111111111111111111111111",
+        price: "0.65",
+        quantity: "100",
+        timestamp: "1700000000000",
+      },
+    };
+
+    const processPromise = stellarWorker.process(job);
+    await vi.runAllTimersAsync();
+    await processPromise;
+
+    expect(mockContractCall).toHaveBeenCalledWith(
+      "settle_trade",
+      expect.anything(), // tradeId ScVal
+      expect.anything(), // marketId ScVal
+      expect.anything(), // outcome ScVal
+      expect.anything(), // buyerAddress ScVal
+      expect.anything(), // sellerAddress ScVal
+      expect.anything(), // price ScVal
+      expect.anything() // quantity ScVal
+    );
+  });
+
+  it("builds, signs, and submits the transaction", async () => {
+    const job: QueueJob = {
+      id: "job-stellar-2",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-on-chain-002",
+        marketId: "market-002",
+        outcome: "NO",
+        buyOrderId: "buy-2",
+        sellOrderId: "sell-2",
+        buyerAddress: "GBUYER111111111111111111111111111111111111111111111111",
+        sellerAddress: "GSELLER11111111111111111111111111111111111111111111111",
+        price: "0.30",
+        quantity: "50",
+        timestamp: "1700000001000",
+      },
+    };
+
+    const processPromise = stellarWorker.process(job);
+    await vi.runAllTimersAsync();
+    await processPromise;
+
+    expect(mockGetAccount).toHaveBeenCalled();
+    expect(mockPrepareTransaction).toHaveBeenCalled();
+    expect(mockTxSign).toHaveBeenCalled();
+    expect(mockSendTransaction).toHaveBeenCalled();
+  });
+
+  it("logs settlement confirmed after successful on-chain confirmation", async () => {
+    const job: QueueJob = {
+      id: "job-stellar-3",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-on-chain-003",
+        marketId: "market-003",
+        outcome: "YES",
+        buyOrderId: "buy-3",
+        sellOrderId: "sell-3",
+        buyerAddress: "GBUYER111111111111111111111111111111111111111111111111",
+        sellerAddress: "GSELLER11111111111111111111111111111111111111111111111",
+        price: "0.50",
+        quantity: "200",
+        timestamp: "1700000002000",
+      },
+    };
+
+    const processPromise = stellarWorker.process(job);
+    await vi.runAllTimersAsync();
+    await processPromise;
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "settle_trade confirmed on-chain",
+      expect.objectContaining({
+        tradeId: "trade-on-chain-003",
+        hash: "abc123txhash",
+      })
+    );
+  });
+
+  it("throws when sendTransaction returns ERROR status", async () => {
+    mockSendTransaction.mockResolvedValue({
+      status: "ERROR",
+      hash: "errored-hash",
+    });
+
+    const job: QueueJob = {
+      id: "job-stellar-err",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-err-001",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-e",
+        sellOrderId: "sell-e",
+        buyerAddress: "GBUYER111111111111111111111111111111111111111111111111",
+        sellerAddress: "GSELLER11111111111111111111111111111111111111111111111",
+        price: "0.50",
+        quantity: "10",
+        timestamp: "1700000003000",
+      },
+    };
+
+    await expect(stellarWorker.process(job)).rejects.toThrow(
+      "settle_trade submission failed"
+    );
+  });
+
+  it("throws when transaction is confirmed as FAILED on-chain", async () => {
+    mockGetTransaction.mockResolvedValue({ status: "FAILED" });
+
+    const job: QueueJob = {
+      id: "job-stellar-fail",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-fail-001",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-f",
+        sellOrderId: "sell-f",
+        buyerAddress: "GBUYER111111111111111111111111111111111111111111111111",
+        sellerAddress: "GSELLER11111111111111111111111111111111111111111111111",
+        price: "0.50",
+        quantity: "10",
+        timestamp: "1700000004000",
+      },
+    };
+
+    // Attach rejection handler BEFORE advancing timers to avoid unhandled rejection.
+    const processPromise = stellarWorker.process(job);
+    const expectation = expect(processPromise).rejects.toThrow(
+      "settle_trade transaction failed on-chain"
+    );
+    await vi.runAllTimersAsync();
+    await expectation;
+  });
+
+  describe("Stellar RPC retry/backoff", () => {
+    const retryJob: QueueJob = {
+      id: "job-stellar-retry",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-retry-001",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-r",
+        sellOrderId: "sell-r",
+        buyerAddress: "GBUYER111111111111111111111111111111111111111111111111",
+        sellerAddress: "GSELLER11111111111111111111111111111111111111111111111",
+        price: "0.50",
+        quantity: "10",
+        timestamp: "1700000005000",
+      },
+    };
+
+    it("retries a transient getAccount failure in place and still succeeds", async () => {
+      mockGetAccount
+        .mockRejectedValueOnce(new Error("ECONNRESET: connection reset"))
+        .mockResolvedValueOnce({ id: "mock-account" });
+
+      const processPromise = stellarWorker.process(retryJob);
+      await vi.runAllTimersAsync();
+      await processPromise;
+
+      expect(mockGetAccount).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "Retrying Stellar RPC call for settle_trade",
+        expect.objectContaining({
+          tradeId: "trade-retry-001",
+          attempt: 1,
+        })
+      );
+      expect(mockSendTransaction).toHaveBeenCalled();
+    });
+
+    it("retries a transient sendTransaction failure in place and still succeeds", async () => {
+      mockSendTransaction
+        .mockRejectedValueOnce(new Error("ETIMEDOUT: RPC timed out"))
+        .mockResolvedValueOnce({ status: "PENDING", hash: "abc123txhash" });
+
+      const processPromise = stellarWorker.process(retryJob);
+      await vi.runAllTimersAsync();
+      await processPromise;
+
+      expect(mockSendTransaction).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not retry a non-retryable (4xx-classified) failure", async () => {
+      mockGetAccount.mockRejectedValue(
+        new Error("400 Bad Request: invalid account")
+      );
+
+      const processPromise = stellarWorker.process(retryJob);
+      const expectation =
+        expect(processPromise).rejects.toThrow("400 Bad Request");
+      await vi.runAllTimersAsync();
+      await expectation;
+
+      expect(mockGetAccount).toHaveBeenCalledTimes(1);
+    });
+
+    it("gives up and rejects after exhausting retries on a persistent transient failure", async () => {
+      mockGetAccount.mockRejectedValue(
+        new Error("ECONNRESET: connection reset")
+      );
+
+      const processPromise = stellarWorker.process(retryJob);
+      const expectation = expect(processPromise).rejects.toThrow("ECONNRESET");
+      await vi.runAllTimersAsync();
+      await expectation;
+
+      // maxRetries: 3 => 1 initial attempt + 3 retries = 4 calls total.
+      expect(mockGetAccount).toHaveBeenCalledTimes(4);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Payload validation tests (reliability pass 039)
+// ---------------------------------------------------------------------------
+describe("SettlementWorker — payload validation", () => {
+  let logger: ILogger;
+  let redisClient: SettlementRedisClient;
+  let worker: SettlementWorker;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      child: vi.fn(),
+    };
+    redisClient = {
+      exists: vi.fn().mockResolvedValue(false),
+      set: vi.fn().mockResolvedValue(undefined),
+      setnx: vi.fn().mockResolvedValue(true),
+    };
+    worker = new SettlementWorker(redisClient, logger, {
+      maxAttempts: 3,
+      processingTimeoutMs: 5_000,
+      idempotencyTtlSeconds: 86_400,
+    });
+  });
+
+  it("rejects with invalid payload error when tradeId is missing", async () => {
+    const job: QueueJob = {
+      id: "job-val-1",
+      attempts: 1,
+      payload: {
+        // tradeId intentionally omitted
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "0.65",
+        quantity: "100",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).rejects.toThrow("invalid payload");
+    expect(redisClient.setnx).not.toHaveBeenCalled();
+  });
+
+  it("rejects with invalid payload error when outcome is not YES or NO", async () => {
+    const job: QueueJob = {
+      id: "job-val-2",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-val-2",
+        marketId: "market-001",
+        outcome: "MAYBE",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "0.65",
+        quantity: "100",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).rejects.toThrow("invalid payload");
+    expect(redisClient.setnx).not.toHaveBeenCalled();
+  });
+
+  it("rejects with invalid payload error when price is not a positive number", async () => {
+    const job: QueueJob = {
+      id: "job-val-3",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-val-3",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "-0.5",
+        quantity: "100",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).rejects.toThrow("invalid payload");
+  });
+
+  it("rejects with invalid payload error when quantity is zero", async () => {
+    const job: QueueJob = {
+      id: "job-val-4",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-val-4",
+        marketId: "market-001",
+        outcome: "NO",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "0.50",
+        quantity: "0",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).rejects.toThrow("invalid payload");
+  });
+
+  it("proceeds normally when all payload fields are valid", async () => {
+    const job: QueueJob = {
+      id: "job-val-ok",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-val-ok",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "0.65",
+        quantity: "100",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).resolves.not.toThrow();
+    expect(redisClient.setnx).toHaveBeenCalledWith(
+      "settlement:processed:trade-val-ok",
+      "1",
+      86_400
+    );
+  });
+});

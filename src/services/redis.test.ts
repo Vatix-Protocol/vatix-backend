@@ -1,0 +1,619 @@
+import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
+import { redis, RedisService, OrderBookData } from "./redis";
+
+describe("RedisService", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    await redis.disconnect();
+    vi.restoreAllMocks();
+  });
+
+  describe("singleton instance", () => {
+    it("should export a singleton redis instance", () => {
+      expect(redis).toBeDefined();
+      expect(redis).toBeInstanceOf(RedisService);
+    });
+  });
+
+  describe("healthCheck", () => {
+    it("should return true for working Redis connection", async () => {
+      const isHealthy = await redis.healthCheck();
+      expect(isHealthy).toBe(true);
+    });
+  });
+
+  describe("basic operations", () => {
+    const testKey = "test:basic:key";
+    const testValue = "test-value";
+
+    afterEach(async () => {
+      await redis.del(testKey);
+    });
+
+    it("should set and get a value", async () => {
+      await redis.set(testKey, testValue);
+      const result = await redis.get(testKey);
+      expect(result).toBe(testValue);
+    });
+
+    it("should return null for non-existent key", async () => {
+      const result = await redis.get("non:existent:key");
+      expect(result).toBeNull();
+    });
+
+    it("should delete a key", async () => {
+      await redis.set(testKey, testValue);
+      await redis.del(testKey);
+      const result = await redis.get(testKey);
+      expect(result).toBeNull();
+    });
+
+    it("should check if key exists", async () => {
+      const existsBefore = await redis.exists(testKey);
+      expect(existsBefore).toBe(false);
+
+      await redis.set(testKey, testValue);
+      const existsAfter = await redis.exists(testKey);
+      expect(existsAfter).toBe(true);
+    });
+  });
+
+  describe("TTL expiration", () => {
+    const testKey = "test:ttl:key";
+
+    afterEach(async () => {
+      await redis.del(testKey);
+    });
+
+    it("should expire key after TTL", async () => {
+      await redis.set(testKey, "expires-soon", 1); // 1 second TTL
+
+      const existsImmediately = await redis.exists(testKey);
+      expect(existsImmediately).toBe(true);
+
+      // Wait for expiration
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+
+      const existsAfter = await redis.exists(testKey);
+      expect(existsAfter).toBe(false);
+    });
+  });
+
+  describe("order book operations", () => {
+    const marketId = "market-123";
+    const outcome = "yes";
+    const orderBookData: OrderBookData = {
+      bids: [
+        { price: 0.45, quantity: 100 },
+        { price: 0.44, quantity: 200 },
+      ],
+      asks: [
+        { price: 0.46, quantity: 150 },
+        { price: 0.47, quantity: 250 },
+      ],
+      timestamp: Date.now(),
+    };
+
+    afterEach(async () => {
+      await redis.clearOrderBook(marketId);
+    });
+
+    it("should store and retrieve order book", async () => {
+      await redis.setOrderBook(marketId, outcome, orderBookData);
+      const result = await redis.getOrderBook(marketId, outcome);
+
+      expect(result).toBeDefined();
+      expect(result?.bids).toEqual(orderBookData.bids);
+      expect(result?.asks).toEqual(orderBookData.asks);
+    });
+
+    it("should return null for non-existent order book", async () => {
+      const result = await redis.getOrderBook("non-existent", "no");
+      expect(result).toBeNull();
+    });
+
+    it("should clear all order books for a market", async () => {
+      await redis.setOrderBook(marketId, "yes", orderBookData);
+      await redis.setOrderBook(marketId, "no", orderBookData);
+
+      const yesBefore = await redis.getOrderBook(marketId, "yes");
+      const noBefore = await redis.getOrderBook(marketId, "no");
+      expect(yesBefore).not.toBeNull();
+      expect(noBefore).not.toBeNull();
+
+      await redis.clearOrderBook(marketId);
+
+      const yesAfter = await redis.getOrderBook(marketId, "yes");
+      const noAfter = await redis.getOrderBook(marketId, "no");
+      expect(yesAfter).toBeNull();
+      expect(noAfter).toBeNull();
+    });
+
+    it("should serialize and deserialize order book data correctly", async () => {
+      await redis.setOrderBook(marketId, outcome, orderBookData);
+      const result = await redis.getOrderBook(marketId, outcome);
+
+      expect(typeof result?.timestamp).toBe("number");
+      expect(Array.isArray(result?.bids)).toBe(true);
+      expect(Array.isArray(result?.asks)).toBe(true);
+      expect(result?.bids[0].price).toBe(0.45);
+      expect(result?.bids[0].quantity).toBe(100);
+    });
+  });
+
+  describe("connection handling", () => {
+    it("should handle disconnect gracefully", async () => {
+      // First ensure connected
+      await redis.healthCheck();
+
+      // Disconnect
+      await redis.disconnect();
+
+      // Reconnects on next operation
+      const isHealthy = await redis.healthCheck();
+      expect(isHealthy).toBe(true);
+    });
+
+    it("should reconnect for del/exists after a disconnect (regression: stale connectionPromise)", async () => {
+      const testKey = "test:reconnect:del-exists";
+      await redis.set(testKey, "value");
+      await redis.disconnect();
+
+      // Both del and exists must re-establish the connection rather than
+      // throwing on a null client or awaiting a stale, already-resolved
+      // connectionPromise left over from the previous connection.
+      const existed = await redis.exists(testKey);
+      expect(existed).toBe(true);
+
+      await redis.del(testKey);
+      const stillExists = await redis.exists(testKey);
+      expect(stillExists).toBe(false);
+    });
+
+    it("should not reuse a stale connectionPromise after disconnect", async () => {
+      await redis.healthCheck();
+      await redis.disconnect();
+
+      // Fire two operations concurrently right after disconnect — neither
+      // should throw on a null client, and both should observe a live
+      // connection rather than racing a stale promise.
+      const [existed, healthy] = await Promise.all([
+        redis.exists("test:concurrent-after-disconnect"),
+        redis.healthCheck(),
+      ]);
+      expect(existed).toBe(false);
+      expect(healthy).toBe(true);
+    });
+  });
+
+  // =========================================================================
+  // Cold-start resilience — every method must connect on its own, not only
+  // get/set/healthCheck (closes #747-#750)
+  // =========================================================================
+  describe("first-call resilience on a cold connection", () => {
+    // Each test uses a brand-new instance so no prior call in this file has
+    // already warmed up `this.client`.
+    it("del() succeeds as the very first operation on a new instance", async () => {
+      const svc = new RedisService();
+      await expect(svc.del("cold-start:del")).resolves.not.toThrow();
+      await svc.disconnect();
+    });
+
+    it("exists() succeeds as the very first operation on a new instance", async () => {
+      const svc = new RedisService();
+      await expect(svc.exists("cold-start:exists")).resolves.toBe(false);
+      await svc.disconnect();
+    });
+
+    it("clearOrderBook() succeeds as the very first operation on a new instance", async () => {
+      const svc = new RedisService();
+      await expect(
+        svc.clearOrderBook("cold-start-market")
+      ).resolves.not.toThrow();
+      await svc.disconnect();
+    });
+
+    it("xadd()/xrange() succeed as the very first operations on a new instance", async () => {
+      const svc = new RedisService();
+      const stream = svc.prefixed("cold-start:stream");
+      await expect(
+        svc.xadd(stream, "*", "field", "value")
+      ).resolves.not.toThrow();
+      const entries = await svc.xrange(stream, "-", "+");
+      expect(entries.length).toBeGreaterThan(0);
+      await svc.del(stream);
+      await svc.disconnect();
+    });
+
+    it("xinfo() succeeds as the very first operation on a new instance", async () => {
+      const svc = new RedisService();
+      const stream = svc.prefixed("cold-start:xinfo-stream");
+      await svc.xadd(stream, "*", "field", "value");
+
+      const freshSvc = new RedisService();
+      await expect(freshSvc.xinfo("STREAM", stream)).resolves.toBeDefined();
+
+      await svc.del(stream);
+      await svc.disconnect();
+      await freshSvc.disconnect();
+    });
+
+    it("multiple methods called concurrently on a cold instance all resolve", async () => {
+      const svc = new RedisService();
+      // Fire several client-touching calls before any of them has had a
+      // chance to establish the connection — they must all share the same
+      // in-flight connection attempt rather than racing on a null client.
+      const results = await Promise.allSettled([
+        svc.exists("cold-start:concurrent-a"),
+        svc.del("cold-start:concurrent-b"),
+        svc.healthCheck(),
+      ]);
+
+      for (const result of results) {
+        expect(result.status).toBe("fulfilled");
+      }
+      await svc.disconnect();
+    });
+  });
+
+  describe("error handling", () => {
+    it("should return false when REDIS_URL is not set", async () => {
+      const originalUrl = process.env.REDIS_URL;
+      delete process.env.REDIS_URL;
+
+      const newService = new RedisService();
+
+      // healthCheck catches errors and returns false
+      const result = await newService.healthCheck();
+      expect(result).toBe(false);
+
+      process.env.REDIS_URL = originalUrl;
+    });
+  });
+
+  describe("retry configuration", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("uses default retry config when env vars are not set", async () => {
+      // Connect with defaults — health check should still work
+      const svc = new RedisService();
+      const healthy = await svc.healthCheck();
+      expect(healthy).toBe(true);
+      await svc.disconnect();
+    });
+
+    it("respects REDIS_MAX_RETRIES env override", async () => {
+      vi.stubEnv("REDIS_MAX_RETRIES", "5");
+      // A new instance created after the stub will pick up the new value
+      const svc = new RedisService();
+      const healthy = await svc.healthCheck();
+      expect(healthy).toBe(true);
+      await svc.disconnect();
+    });
+
+    it("respects REDIS_RETRY_BASE_DELAY env override", async () => {
+      vi.stubEnv("REDIS_RETRY_BASE_DELAY", "200");
+      const svc = new RedisService();
+      const healthy = await svc.healthCheck();
+      expect(healthy).toBe(true);
+      await svc.disconnect();
+    });
+
+    it("respects REDIS_CONNECT_TIMEOUT env override", async () => {
+      vi.stubEnv("REDIS_CONNECT_TIMEOUT", "10000");
+      const svc = new RedisService();
+      const healthy = await svc.healthCheck();
+      expect(healthy).toBe(true);
+      await svc.disconnect();
+    });
+  });
+
+  // =========================================================================
+  // setnx — atomic SET NX with optional TTL (reliability pass 037)
+  // =========================================================================
+  describe("setnx", () => {
+    const key = "test:setnx:key";
+
+    afterEach(async () => {
+      await redis.del(key);
+    });
+
+    it("sets the key and returns true when the key does not exist", async () => {
+      const set = await redis.setnx(key, "val");
+      expect(set).toBe(true);
+      const stored = await redis.get(key);
+      expect(stored).toBe("val");
+    });
+
+    it("returns false when the key already exists and leaves the original value unchanged", async () => {
+      await redis.set(key, "original");
+      const set = await redis.setnx(key, "new-value");
+      expect(set).toBe(false);
+      const stored = await redis.get(key);
+      expect(stored).toBe("original");
+    });
+
+    it("applies TTL when ttlSeconds is provided", async () => {
+      const set = await redis.setnx(key, "expiring", 1);
+      expect(set).toBe(true);
+
+      const existsImmediately = await redis.exists(key);
+      expect(existsImmediately).toBe(true);
+
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+
+      const existsAfterTtl = await redis.exists(key);
+      expect(existsAfterTtl).toBe(false);
+    });
+
+    it("does not apply TTL when ttlSeconds is omitted", async () => {
+      const svc = new RedisService();
+      const testKey = "test:setnx:no-ttl";
+      await svc.setnx(testKey, "persistent");
+
+      // Key should still be present after a short wait
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const exists = await svc.exists(testKey);
+      expect(exists).toBe(true);
+
+      await svc.del(testKey);
+      await svc.disconnect();
+    });
+
+    it("succeeds as the very first operation on a cold instance (getClient resilience)", async () => {
+      const svc = new RedisService();
+      const testKey = "test:setnx:cold-start";
+      const set = await svc.setnx(testKey, "cold");
+      expect(set).toBe(true);
+      await svc.del(testKey);
+      await svc.disconnect();
+    });
+  });
+
+  // =========================================================================
+  // Redis key prefix enforcement (closes #619)
+  // =========================================================================
+  describe("key prefix enforcement", () => {
+    afterEach(async () => {
+      vi.unstubAllEnvs();
+    });
+
+    it("defaults to 'vatix:' when REDIS_KEY_PREFIX is not set", () => {
+      // The singleton was constructed with the default env — keyPrefix is "vatix:"
+      // (or whatever the test env sets; fall back to "vatix:" when unset).
+      const svc = new RedisService();
+      expect(svc.keyPrefix).toBe(process.env.REDIS_KEY_PREFIX ?? "vatix:");
+    });
+
+    it("respects REDIS_KEY_PREFIX env override at construction time", () => {
+      vi.stubEnv("REDIS_KEY_PREFIX", "staging:");
+      const svc = new RedisService();
+      expect(svc.keyPrefix).toBe("staging:");
+    });
+
+    it("allows empty prefix (no namespace)", () => {
+      vi.stubEnv("REDIS_KEY_PREFIX", "");
+      const svc = new RedisService();
+      expect(svc.keyPrefix).toBe("");
+    });
+
+    it("prefixed() prepends the key prefix to any key", () => {
+      vi.stubEnv("REDIS_KEY_PREFIX", "prod:");
+      const svc = new RedisService();
+      expect(svc.prefixed("settlement-trades")).toBe("prod:settlement-trades");
+      expect(svc.prefixed("audit:market:abc")).toBe("prod:audit:market:abc");
+    });
+
+    it("prefixed() returns bare key when prefix is empty", () => {
+      vi.stubEnv("REDIS_KEY_PREFIX", "");
+      const svc = new RedisService();
+      expect(svc.prefixed("some-key")).toBe("some-key");
+    });
+
+    it("order book keys include the configured prefix", async () => {
+      vi.stubEnv("REDIS_KEY_PREFIX", "test-prefix:");
+      const svc = new RedisService();
+
+      const data: OrderBookData = {
+        bids: [{ price: 0.5, quantity: 10 }],
+        asks: [{ price: 0.51, quantity: 10 }],
+        timestamp: Date.now(),
+      };
+
+      await svc.setOrderBook("mkt-prefix-test", "yes", data);
+
+      // The key stored in Redis must include the prefix
+      const rawKey = `test-prefix:orderbook:mkt-prefix-test:yes`;
+      const raw = await svc.get(rawKey);
+      expect(raw).not.toBeNull();
+
+      // Cleanup
+      await svc.clearOrderBook("mkt-prefix-test");
+      await svc.disconnect();
+    });
+
+    it("clearOrderBook only removes keys matching the configured prefix pattern", async () => {
+      vi.stubEnv("REDIS_KEY_PREFIX", "ns1:");
+      const svc1 = new RedisService();
+
+      vi.stubEnv("REDIS_KEY_PREFIX", "ns2:");
+      const svc2 = new RedisService();
+
+      const data: OrderBookData = {
+        bids: [{ price: 0.5, quantity: 10 }],
+        asks: [],
+        timestamp: Date.now(),
+      };
+
+      await svc1.setOrderBook("shared-mkt", "yes", data);
+      await svc2.setOrderBook("shared-mkt", "yes", data);
+
+      // Clear only ns1 — ns2 key should survive
+      await svc1.clearOrderBook("shared-mkt");
+      vi.unstubAllEnvs();
+
+      const ns2StillPresent = await svc2.getOrderBook("shared-mkt", "yes");
+      expect(ns2StillPresent).not.toBeNull();
+
+      // Cleanup
+      await svc2.clearOrderBook("shared-mkt");
+      await svc1.disconnect();
+      await svc2.disconnect();
+    });
+  });
+
+  // =========================================================================
+  // acquireOrRenewLease / releaseLeaseIfHeld — matching leader lease CAS
+  // primitives (single-writer enforcement)
+  // =========================================================================
+  describe("acquireOrRenewLease / releaseLeaseIfHeld", () => {
+    const lockKey = "test:lease:lock";
+    const fencingKey = "test:lease:fencing";
+
+    afterEach(async () => {
+      await redis.del(lockKey);
+      await redis.del(fencingKey);
+    });
+
+    it("grants a fresh lease with a new fencing token when the lock is free", async () => {
+      const token = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        0
+      );
+      expect(token).toBeGreaterThan(0);
+    });
+
+    it("refuses a second holder while the first still holds the lease", async () => {
+      const tokenA = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        0
+      );
+      const tokenB = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-b",
+        5000,
+        0
+      );
+      expect(tokenA).toBeGreaterThan(0);
+      expect(tokenB).toBe(-1);
+    });
+
+    it("renews the same token for the current holder without minting a new one", async () => {
+      const token = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        0
+      );
+      const renewed = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        token
+      );
+      expect(renewed).toBe(token);
+    });
+
+    it("fences a stale token: refuses to renew once a different holder owns the lease", async () => {
+      const tokenA = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        1,
+        0
+      );
+      // Let holder-a's 1ms lease expire so holder-b can legitimately take over.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const tokenB = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-b",
+        5000,
+        0
+      );
+      expect(tokenB).toBeGreaterThan(tokenA);
+
+      // holder-a retrying with its old (stale) token must be fenced off,
+      // even though it doesn't know yet that it lost the lease.
+      const staleRenewal = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        tokenA
+      );
+      expect(staleRenewal).toBe(-1);
+    });
+
+    it("releaseLeaseIfHeld deletes the lease only when still held by (holder, token)", async () => {
+      const token = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        0
+      );
+
+      const releasedWrongToken = await redis.releaseLeaseIfHeld(
+        lockKey,
+        "holder-a",
+        token + 1
+      );
+      expect(releasedWrongToken).toBe(false);
+      expect(await redis.exists(lockKey)).toBe(true);
+
+      const released = await redis.releaseLeaseIfHeld(
+        lockKey,
+        "holder-a",
+        token
+      );
+      expect(released).toBe(true);
+      expect(await redis.exists(lockKey)).toBe(false);
+    });
+
+    it("releaseLeaseIfHeld never deletes a lease a different holder has since acquired", async () => {
+      const tokenA = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        1,
+        0
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const tokenB = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-b",
+        5000,
+        0
+      );
+
+      // holder-a's belated release attempt (using its stale token) must not
+      // remove holder-b's now-active lease.
+      const released = await redis.releaseLeaseIfHeld(
+        lockKey,
+        "holder-a",
+        tokenA
+      );
+      expect(released).toBe(false);
+      expect(await redis.exists(lockKey)).toBe(true);
+
+      await redis.releaseLeaseIfHeld(lockKey, "holder-b", tokenB);
+    });
+  });
+});

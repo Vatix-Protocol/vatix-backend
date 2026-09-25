@@ -1,265 +1,69 @@
-# Vatix Backend
+# Vatix Protocol
 
-Backend services for the Vatix prediction market protocol on Stellar.
+Monorepo for the Vatix Protocol. Package focus: `vatix-backend`.
 
-## Overview
+## Health vs. readiness probes
 
-This repository contains the core backend infrastructure for Vatix, including:
+The backend exposes two distinct probe endpoints. They are intentionally
+separate so orchestrators (Kubernetes, ECS, Docker Compose) can distinguish a
+live-but-not-ready process from a dead one.
 
-- **REST API**: Market data, user positions, and trade history
-- **CLOB Engine**: Central Limit Order Book for order matching
-- **Event Indexer**: Blockchain event monitoring and database indexing
-- **Oracle Service**: Real-world outcome resolution
-- **WebSocket Server**: Real-time market updates
+| Endpoint  | Semantics | Success | Failure |
+|-----------|-----------|---------|---------|
+| `/health` | **Liveness.** Returns `200` while the process is alive and the event loop is responsive. It does **not** check dependencies. | `200` | `500` only if the process itself is wedged |
+| `/ready`  | **Readiness.** Returns `200` only when every critical dependency (DB, Redis, RPC) is reachable. Fails **closed** with `503` when any dependency is unavailable. | `200` | `503` |
 
-## Tech Stack
+### Readiness response contract
 
-- **Runtime**: Node.js 18+ with TypeScript
-- **API Framework**: Fastify
-- **Database**: PostgreSQL with Prisma ORM
-- **Cache**: Redis (ioredis)
-- **Blockchain**: Stellar SDK
-- **Testing**: Vitest
+`/ready` returns a typed JSON body with a stable error code and a correlation
+id so operators can trace a failing probe without leaking secrets:
 
-## Project Status
-
-🚧 **Early Stage** - Core infrastructure in progress. We're actively looking for contributors!
-
-## Getting Started
-
-### Prerequisites
-- Node.js 18+ (20+ recommended)
-- pnpm 8+ (`npm install -g pnpm`)
-- Docker & Docker Compose
-
-### Installation
-
-1. **Clone the repository**
-```bash
-git clone https://github.com/vatix-protocol/vatix-backend.git
-cd vatix-backend
-```
-
-2. **Install dependencies**
-```bash
-pnpm install
-```
-
-3. **Set up environment variables**
-```bash
-cp .env.example .env
-# The defaults should work for local development
-```
-
-4. **Start local services (PostgreSQL + Redis)**
-```bash
-docker compose up -d
-```
-
-5. **Set up the database**
-```bash
-# Generate Prisma Client
-pnpm prisma:generate
-
-# Run migrations 
-pnpm prisma:migrate
-```
-
-6. **Run development server**
-```bash
-pnpm dev
-```
-
-The API will be available at `http://localhost:3000`
-
-### Verify Setup
-
-Visit `http://localhost:3000/health` - you should see:
 ```json
-{"status":"ok","service":"vatix-backend"}
+{
+  "status": "unavailable",
+  "code": "DEPENDENCY_UNAVAILABLE",
+  "correlationId": "<uuid>",
+  "checks": {
+    "db": "ok",
+    "redis": "unavailable",
+    "rpc": "ok"
+  }
+}
 ```
 
-## Project Structure
-```
-src/
-├── api/              # Fastify REST endpoints and routes
-│   ├── routes/       # API route handlers
-│   └── middleware/   # Request/response middleware
-├── matching/         # CLOB engine - order matching logic
-├── indexer/          # Stellar blockchain event listener
-├── oracle/           # Market resolution service
-├── services/         # Shared utilities (database, cache, signing)
-└── types/            # TypeScript type definitions
+Stable error codes:
 
-prisma/
-├── schema.prisma     # Database schema definition
-├── migrations/       # Database migrations
-└── seed.ts          # Sample data for testing
+- `OK` — all critical dependencies reachable.
+- `DEPENDENCY_UNAVAILABLE` — at least one critical dependency is down.
+- `DEPENDENCY_TIMEOUT` — a dependency check exceeded its deadline.
 
-tests/               # Test files
-```
+### Security & observability
 
-## Development
+- Probe responses and logs **never** include connection strings, credentials,
+  hostnames, or internal addresses — only the dependency name and a coarse
+  status (`ok` / `unavailable` / `timeout`).
+- Readiness is **deny-by-default**: an unknown or unconfigured dependency is
+  treated as unavailable, so a misconfigured deploy fails closed rather than
+  serving traffic.
+- Probe outcomes are emitted as structured logs/metrics keyed by dependency
+  name and status, with the correlation id for cross-referencing.
 
-### Available Scripts
-```bash
-# Development
-pnpm dev              # Start dev server with hot reload
-pnpm build            # Build for production
-pnpm start            # Run production build
+### Orchestrator wiring
 
-# Database
-pnpm prisma:generate  # Generate Prisma Client
-pnpm prisma:migrate   # Run database migrations
-pnpm prisma:studio    # Open Prisma Studio (database GUI)
-pnpm prisma:seed      # Seed database with sample data
+- **Liveness probe:** `GET /health`
+- **Readiness probe:** `GET /ready`
 
-# Testing
-pnpm test             # Run tests
-pnpm test:ui          # Run tests with UI
-pnpm test:coverage    # Run tests with coverage report
+Do not point a liveness probe at `/ready` (a dependency outage would restart a
+healthy process) and do not point a readiness probe at `/health` (traffic would
+be routed to a process that cannot serve it).
 
-# Docker
-docker compose up -d       # Start PostgreSQL + Redis
-docker compose down        # Stop and remove containers
-docker compose logs -f     # View container logs
-```
+## Docker Compose
 
-### Making Changes
+See [`docs/docker-compose.md`](docs/docker-compose.md) for local orchestration
+and probe configuration.
 
-1. **Database changes**: Edit `prisma/schema.prisma` and run migrations
-2. **API changes**: Add/modify routes in `src/api/routes/`
-3. **Business logic**: Add services in `src/services/` or matching logic in `src/matching/`
-4. **Always add tests**: Every feature should have corresponding tests
+## Security
 
-## Architecture Overview
+See [`SECURITY.md`](SECURITY.md) for the deny-by-default policy, rate-limit
+governance, and probe safety invariants.
 
-### Data Flow
-```
-User Request
-    ↓
-Fastify API (validation, auth)
-    ↓
-Business Logic (matching engine, services)
-    ↓
-Prisma Client ←→ PostgreSQL
-    ↓
-Response
-```
-
-### Key Components
-
-**CLOB Engine** (`src/matching/`)
-- Order book data structure
-- Price-time priority matching
-- Partial fill logic
-- Position-based accounting
-
-**API Layer** (`src/api/`)
-- RESTful endpoints
-- WebSocket connections
-- Authentication/authorization
-- Request validation
-
-**Services** (`src/services/`)
-- Database queries (Prisma)
-- Redis caching
-- Stellar blockchain interaction
-- Oracle data fetching
-- Cryptographic signing
-
-**Indexer** (`src/indexer/`)
-- Listen for Stellar contract events
-- Index on-chain data
-- Update database state
-
-## Database Schema
-
-The database uses Prisma ORM with PostgreSQL. Key tables:
-
-- **markets**: Prediction market metadata
-- **orders**: User orders in the CLOB
-- **user_positions**: User positions with position-based accounting
-
-See `prisma/schema.prisma` for the complete schema definition.
-
-## Testing
-
-We use Vitest for testing. Tests should cover:
-
-- Unit tests for business logic
-- Integration tests for API endpoints
-- Database tests for Prisma models
-- E2E tests for critical flows
-
-Run tests before submitting PRs:
-```bash
-pnpm test
-```
-
-## Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- How to pick an issue
-- Code style guidelines
-- PR submission process
-- Testing requirements
-
-## API Documentation
-
-API documentation will be available at `/docs` once implemented. For now, see the route files in `src/api/routes/` for endpoint definitions.
-
-## Environment Variables
-
-Key environment variables (see `.env.example`):
-```env
-# Server
-PORT=3000
-NODE_ENV=development
-
-# Database
-DATABASE_URL=postgresql://postgres:postgres@localhost:5433/vatix
-
-# Redis
-REDIS_URL=redis://localhost:6379
-
-# Stellar
-STELLAR_NETWORK=testnet
-STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
-
-# Oracle
-ORACLE_SECRET_KEY=your_secret_key_here
-```
-
-## Troubleshooting
-
-**"Port 5433 already in use"**
-- Another PostgreSQL instance is running
-- Change the port in `docker-compose.yml` and update `DATABASE_URL`
-
-**"Cannot connect to database"**
-- Ensure Docker containers are running: `docker compose ps`
-- Check DATABASE_URL matches your Docker setup
-
-**"Prisma Client not generated"**
-- Run `pnpm prisma:generate`
-- Ensure `prisma/schema.prisma` exists
-
-**"Module not found"**
-- Delete `node_modules` and `pnpm-lock.yaml`
-- Run `pnpm install` again
-
-## Resources
-
-- [Vatix Protocol Specification](https://github.com/vatix-protocol/vatix-docs)
-- [Stellar Documentation](https://developers.stellar.org)
-- [Prisma Documentation](https://www.prisma.io/docs)
-- [Fastify Documentation](https://www.fastify.io/docs)
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details
-
----
-
-Part of the [Vatix Protocol](https://github.com/vatix-protocol)

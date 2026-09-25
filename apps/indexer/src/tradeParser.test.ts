@@ -1,0 +1,343 @@
+import { describe, it, expect, vi } from "vitest";
+import { nativeToScVal } from "@stellar/stellar-sdk";
+import { parseTradeEvent, parseTradeEvents } from "./tradeParser.js";
+import { TradeParseError } from "./types.js";
+import type { RawChainEvent } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
+
+// ─── Real XDR fixtures generated from @stellar/stellar-sdk ──────────────────
+
+const XDR = {
+  topic: {
+    tradeExecuted: "AAAADwAAABR0cmFkZV9leGVjdXRlZF9ldmVudA==",
+    marketCreated: "AAAADwAAAA5tYXJrZXRfY3JlYXRlZAAA",
+  },
+  value: {
+    // direction=buy, outcome=YES, price=5_000_000, quantity=100
+    validBuy:
+      "AAAAEQAAAAEAAAAJAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC1hYmMAAAAAAA8AAAAGdHJhZGVyAAAAAAAPAAAACEdBQkMxMjM0AAAADwAAAAxjb3VudGVycGFydHkAAAAPAAAACEdYWVo1Njc4AAAADwAAAAlkaXJlY3Rpb24AAAAAAAAPAAAAA2J1eQAAAAAPAAAAB291dGNvbWUAAAAADwAAAANZRVMAAAAADwAAAAVwcmljZQAAAAAAAAoAAAAAAAAAAAAAAAAATEtAAAAADwAAAAhxdWFudGl0eQAAAAoAAAAAAAAAAAAAAAAAAABkAAAADwAAAAxidXlfb3JkZXJfaWQAAAAPAAAABWJ1eS0xAAAAAAAADwAAAA1zZWxsX29yZGVyX2lkAAAAAAAADwAAAAZzZWxsLTEAAA==",
+    // direction=sell, outcome=YES
+    validSell:
+      "AAAAEQAAAAEAAAAJAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC1hYmMAAAAAAA8AAAAGdHJhZGVyAAAAAAAPAAAACEdBQkMxMjM0AAAADwAAAAxjb3VudGVycGFydHkAAAAPAAAACEdYWVo1Njc4AAAADwAAAAlkaXJlY3Rpb24AAAAAAAAPAAAABHNlbGwAAAAPAAAAB291dGNvbWUAAAAADwAAAANZRVMAAAAADwAAAAVwcmljZQAAAAAAAAoAAAAAAAAAAAAAAAAATEtAAAAADwAAAAhxdWFudGl0eQAAAAoAAAAAAAAAAAAAAAAAAABkAAAADwAAAAxidXlfb3JkZXJfaWQAAAAPAAAABWJ1eS0xAAAAAAAADwAAAA1zZWxsX29yZGVyX2lkAAAAAAAADwAAAAZzZWxsLTEAAA==",
+    // direction=sell, outcome=NO
+    sellNoOutcome:
+      "AAAAEQAAAAEAAAAJAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC1hYmMAAAAAAA8AAAAGdHJhZGVyAAAAAAAPAAAACEdBQkMxMjM0AAAADwAAAAxjb3VudGVycGFydHkAAAAPAAAACEdYWVo1Njc4AAAADwAAAAlkaXJlY3Rpb24AAAAAAAAPAAAABHNlbGwAAAAPAAAAB291dGNvbWUAAAAADwAAAAJOTwAAAAAADwAAAAVwcmljZQAAAAAAAAoAAAAAAAAAAAAAAAAATEtAAAAADwAAAAhxdWFudGl0eQAAAAoAAAAAAAAAAAAAAAAAAABkAAAADwAAAAxidXlfb3JkZXJfaWQAAAAPAAAABWJ1eS0xAAAAAAAADwAAAA1zZWxsX29yZGVyX2lkAAAAAAAADwAAAAZzZWxsLTEAAA==",
+    // price=9_999_999_999_999_999, quantity=1_000_000_000_000 (large i128)
+    largeI128:
+      "AAAAEQAAAAEAAAAJAAAADwAAAAltYXJrZXRfaWQAAAAAAAAPAAAACm1hcmtldC1hYmMAAAAAAA8AAAAGdHJhZGVyAAAAAAAPAAAACEdBQkMxMjM0AAAADwAAAAxjb3VudGVycGFydHkAAAAPAAAACEdYWVo1Njc4AAAADwAAAAlkaXJlY3Rpb24AAAAAAAAPAAAAA2J1eQAAAAAPAAAAB291dGNvbWUAAAAADwAAAANZRVMAAAAADwAAAAVwcmljZQAAAAAAAAoAAAAAAAAAAAAjhvJvwP//AAAADwAAAAhxdWFudGl0eQAAAAoAAAAAAAAAAAAAAOjUpRAAAAAADwAAAAxidXlfb3JkZXJfaWQAAAAPAAAABWJ1eS0xAAAAAAAADwAAAA1zZWxsX29yZGVyX2lkAAAAAAAADwAAAAZzZWxsLTEAAA==",
+  },
+};
+
+function makeEvent(overrides: Partial<RawChainEvent> = {}): RawChainEvent {
+  return {
+    id: "evt-1",
+    ledger: 42,
+    ledgerClosedAt: "2024-06-01T12:00:00Z",
+    contractId: "CTEST",
+    type: "contract",
+    pagingToken: "token-1",
+    eventIndex: 0,
+    valueXdr: XDR.value.validBuy,
+    topicsXdr: [XDR.topic.tradeExecuted],
+    ...overrides,
+  };
+}
+
+// ─── parseTradeEvent ─────────────────────────────────────────────────────────
+
+describe("parseTradeEvent", () => {
+  it("parses a buy event correctly", () => {
+    const trade = parseTradeEvent(makeEvent());
+
+    expect(trade.eventId).toBe("evt-1");
+    expect(trade.ledger).toBe(42);
+    expect(trade.marketId).toBe("market-abc");
+    expect(trade.traderAddress).toBe("GABC1234");
+    expect(trade.counterpartyAddress).toBe("GXYZ5678");
+    expect(trade.direction).toBe("buy");
+    expect(trade.outcome).toBe("YES");
+    expect(trade.priceRaw).toBe(5_000_000n);
+    expect(trade.quantityRaw).toBe(100n);
+    expect(trade.buyOrderId).toBe("buy-1");
+    expect(trade.sellOrderId).toBe("sell-1");
+  });
+
+  it("parses a sell event correctly", () => {
+    const trade = parseTradeEvent(makeEvent({ valueXdr: XDR.value.validSell }));
+    expect(trade.direction).toBe("sell");
+    expect(trade.outcome).toBe("YES");
+  });
+
+  it("parses sell direction with NO outcome", () => {
+    const trade = parseTradeEvent(
+      makeEvent({ valueXdr: XDR.value.sellNoOutcome })
+    );
+    expect(trade.direction).toBe("sell");
+    expect(trade.outcome).toBe("NO");
+  });
+
+  it("preserves large i128 values without precision loss", () => {
+    const trade = parseTradeEvent(makeEvent({ valueXdr: XDR.value.largeI128 }));
+    expect(trade.priceRaw).toBe(9_999_999_999_999_999n);
+    expect(trade.quantityRaw).toBe(1_000_000_000_000n);
+    // Confirm float conversion loses precision — bigint is the safe representation
+    expect(Number(trade.priceRaw)).toBe(10_000_000_000_000_000); // rounded by float
+  });
+
+  it("carries ledger metadata through", () => {
+    const trade = parseTradeEvent(
+      makeEvent({
+        ledger: 999,
+        ledgerClosedAt: "2025-01-01T00:00:00Z",
+        contractId: "CXYZ",
+      })
+    );
+    expect(trade.ledger).toBe(999);
+    expect(trade.ledgerClosedAt).toBe("2025-01-01T00:00:00Z");
+    expect(trade.contractId).toBe("CXYZ");
+  });
+
+  it("throws TradeParseError when topic is not trade_executed", () => {
+    expect(() =>
+      parseTradeEvent(makeEvent({ topicsXdr: [XDR.topic.marketCreated] }))
+    ).toThrow(TradeParseError);
+  });
+
+  it("throws TradeParseError when topicsXdr is empty", () => {
+    expect(() => parseTradeEvent(makeEvent({ topicsXdr: [] }))).toThrow(
+      TradeParseError
+    );
+  });
+
+  it("throws TradeParseError on malformed value XDR", () => {
+    expect(() =>
+      parseTradeEvent(makeEvent({ valueXdr: "not-valid-xdr!!!!" }))
+    ).toThrow(TradeParseError);
+  });
+
+  it("throws TradeParseError when a required field is missing", async () => {
+    // Build a map XDR that is missing the 'quantity' field
+    const { nativeToScVal, xdr } = await import("@stellar/stellar-sdk");
+    const entries = [
+      ["market_id", "market-abc"],
+      ["trader", "GABC1234"],
+      ["counterparty", "GXYZ5678"],
+      ["direction", "buy"],
+      ["outcome", "YES"],
+      ["price", 5_000_000n],
+      // quantity intentionally omitted
+      ["buy_order_id", "buy-1"],
+      ["sell_order_id", "sell-1"],
+    ].map(
+      ([k, v]) =>
+        new xdr.ScMapEntry({
+          key: nativeToScVal(k, { type: "symbol" }),
+          val:
+            typeof v === "bigint"
+              ? nativeToScVal(v, { type: "i128" })
+              : nativeToScVal(v, { type: "symbol" }),
+        })
+    );
+    const missingQtyXdr = xdr.ScVal.scvMap(entries).toXDR("base64");
+
+    expect(() =>
+      parseTradeEvent(makeEvent({ valueXdr: missingQtyXdr }))
+    ).toThrow(TradeParseError);
+  });
+});
+
+// ─── Malformed payload fixture tests ────────────────────────────────────────
+
+describe("parseTradeEvent — malformed payloads", () => {
+  it("throws TradeParseError on completely empty string valueXdr", () => {
+    expect(() => parseTradeEvent(makeEvent({ valueXdr: "" }))).toThrow(
+      TradeParseError
+    );
+  });
+
+  it("throws TradeParseError on null-byte / binary garbage valueXdr", () => {
+    expect(() =>
+      parseTradeEvent(makeEvent({ valueXdr: "\x00\x01\x02\x03" }))
+    ).toThrow(TradeParseError);
+  });
+
+  it("throws TradeParseError on valid base64 that is not XDR", () => {
+    // "hello world" base64-encoded — valid base64 but not a valid ScVal
+    expect(() =>
+      parseTradeEvent(makeEvent({ valueXdr: "aGVsbG8gd29ybGQ=" }))
+    ).toThrow(TradeParseError);
+  });
+
+  it("throws TradeParseError when topicsXdr contains only whitespace", () => {
+    expect(() => parseTradeEvent(makeEvent({ topicsXdr: ["   "] }))).toThrow(
+      TradeParseError
+    );
+  });
+
+  it("throws TradeParseError when topicsXdr has wrong discriminator symbol", () => {
+    // ScvSymbol 'wrong_event' — valid XDR but wrong topic
+    expect(() =>
+      parseTradeEvent(
+        makeEvent({ topicsXdr: ["AAAADwAAAAt3cm9uZ19ldmVudA=="] })
+      )
+    ).toThrow(TradeParseError);
+  });
+
+  it("does not throw on malformed event in parseTradeEvents batch", () => {
+    const events = [
+      makeEvent({ id: "good", valueXdr: XDR.value.validBuy }),
+      makeEvent({ id: "bad-empty", valueXdr: "" }),
+      makeEvent({ id: "bad-garbage", valueXdr: "not!!base64@@" }),
+      makeEvent({ id: "bad-b64", valueXdr: "aGVsbG8gd29ybGQ=" }),
+    ];
+    expect(() => parseTradeEvents(events)).not.toThrow();
+    const { trades, errors } = parseTradeEvents(events);
+    expect(trades).toHaveLength(1);
+    expect(trades[0].eventId).toBe("good");
+    expect(errors).toHaveLength(3);
+    expect(errors.every((e) => e instanceof TradeParseError)).toBe(true);
+  });
+
+  it("collects eventId on every malformed-payload error", () => {
+    const events = [
+      makeEvent({ id: "evt-bad-1", valueXdr: "" }),
+      makeEvent({ id: "evt-bad-2", valueXdr: "aGVsbG8gd29ybGQ=" }),
+    ];
+    const { errors } = parseTradeEvents(events);
+    expect(errors.map((e) => e.eventId)).toEqual(["evt-bad-1", "evt-bad-2"]);
+  });
+});
+
+describe("parseTradeEvents", () => {
+  it("parses multiple valid events", () => {
+    const events = [
+      makeEvent({ id: "e1", valueXdr: XDR.value.validBuy }),
+      makeEvent({ id: "e2", valueXdr: XDR.value.validSell }),
+    ];
+    const { trades, errors } = parseTradeEvents(events);
+    expect(trades).toHaveLength(2);
+    expect(errors).toHaveLength(0);
+  });
+
+  it("silently skips non-trade events", () => {
+    const events = [
+      makeEvent({ id: "e1", topicsXdr: [XDR.topic.marketCreated] }),
+      makeEvent({ id: "e2", valueXdr: XDR.value.validBuy }),
+    ];
+    const { trades, errors } = parseTradeEvents(events);
+    expect(trades).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+  });
+
+  it("collects errors without dropping other trades", () => {
+    const events = [
+      makeEvent({ id: "e1", valueXdr: XDR.value.validBuy }),
+      makeEvent({ id: "e2", valueXdr: "bad-xdr" }),
+      makeEvent({ id: "e3", valueXdr: XDR.value.validSell }),
+    ];
+    const { trades, errors } = parseTradeEvents(events);
+    expect(trades).toHaveLength(2);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(TradeParseError);
+    expect(errors[0].eventId).toBe("e2");
+  });
+
+  it("returns empty arrays for empty input", () => {
+    const { trades, errors } = parseTradeEvents([]);
+    expect(trades).toHaveLength(0);
+    expect(errors).toHaveLength(0);
+  });
+
+  it("emits unknown_topic metric when encountering an unknown topic", () => {
+    const telemetry: Telemetry = {
+      record: vi.fn(),
+      startSpan: vi.fn(() => ({ end: vi.fn() })),
+    };
+    const events = [
+      makeEvent({
+        id: "e1",
+        topicsXdr: ["AAAADwAAABN1bmtub3duX2V2ZW50X3RvcGljIQ=="], // unknown topic
+      }),
+      makeEvent({ id: "e2", valueXdr: XDR.value.validBuy }),
+    ];
+    const { trades, errors } = parseTradeEvents(events, {
+      telemetry,
+    });
+    expect(trades).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+    expect(telemetry.record).toHaveBeenCalledWith(
+      "indexer.parser.unknown_topics",
+      1,
+      expect.objectContaining({
+        parser: "trade",
+        eventId: "e1",
+        contractId: "CTEST",
+        ledger: "42",
+      })
+    );
+  });
+});
+
+describe("CLOB order id join validation", () => {
+  // Gap this covers: buy_order_id/sell_order_id were passed through with a
+  // bare String(...) cast, so a fill whose order id could never join back
+  // to a real Order row (empty string, or not shaped like Order.id's uuid())
+  // was still persisted as a "joined" trade instead of failing loudly.
+  // These fail against the pre-fix parser, which has no order-id validation.
+
+  it("still accepts non-UUID order ids outside production (dev fixtures)", () => {
+    const trade = parseTradeEvent(makeEvent(), { nodeEnv: "development" });
+    expect(trade.buyOrderId).toBe("buy-1");
+    expect(trade.sellOrderId).toBe("sell-1");
+  });
+
+  it("rejects non-UUID order ids in production", () => {
+    expect(() =>
+      parseTradeEvent(makeEvent(), { nodeEnv: "production" })
+    ).toThrow(TradeParseError);
+  });
+
+  it("accepts a UUID-shaped order id in production", () => {
+    const valueXdr = nativeToScVal(
+      {
+        market_id: "market-abc",
+        trader: "GABC1234",
+        counterparty: "GXYZ5678",
+        direction: "buy",
+        outcome: "YES",
+        price: 5_000_000n,
+        quantity: 100n,
+        buy_order_id: "11111111-1111-4111-8111-111111111111",
+        sell_order_id: "22222222-2222-4222-8222-222222222222",
+      },
+      { type: "instance" }
+    ).toXDR("base64");
+
+    const trade = parseTradeEvent(makeEvent({ valueXdr }), {
+      nodeEnv: "production",
+    });
+    expect(trade.buyOrderId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(trade.sellOrderId).toBe("22222222-2222-4222-8222-222222222222");
+  });
+
+  it("rejects an empty order id in every environment", () => {
+    const valueXdr = nativeToScVal(
+      {
+        market_id: "market-abc",
+        trader: "GABC1234",
+        counterparty: "GXYZ5678",
+        direction: "buy",
+        outcome: "YES",
+        price: 5_000_000n,
+        quantity: 100n,
+        buy_order_id: "",
+        sell_order_id: "sell-1",
+      },
+      { type: "instance" }
+    ).toXDR("base64");
+
+    expect(() =>
+      parseTradeEvent(makeEvent({ valueXdr }), { nodeEnv: "development" })
+    ).toThrow(TradeParseError);
+  });
+});

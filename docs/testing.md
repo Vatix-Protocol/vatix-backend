@@ -1,0 +1,497 @@
+# Testing Guide
+
+This document provides comprehensive instructions for running and writing tests in the vatix-backend project.
+
+## Overview
+
+The vatix-backend uses **Vitest** as the testing framework, which provides fast unit testing with excellent TypeScript support and built-in coverage reporting.
+
+## Test Structure
+
+```
+tests/
+├── setup.ts                 # Global test setup and utilities
+├── helpers/
+│   └── test-database.ts     # Database testing utilities
+├── integration/
+│   ├── helpers/
+│   │   └── build-test-app.ts  # Shared Fastify harness (sets API_KEY/ADMIN_TOKEN, clearRateLimitStores)
+│   ├── health.test.ts         # Real GET /v1/health against live test DB + degraded path
+│   ├── markets.test.ts        # Markets endpoint integration tests
+│   ├── orders.test.ts         # Order creation, validation, persistence, listing, matching
+│   ├── admin.test.ts          # Auth guard matrix + admin market mutations
+│   └── positions.test.ts      # Positions endpoint integration tests
+└── sample.test.ts             # Sample test demonstrating setup
+```
+
+## Integration Test Matrix
+
+| Test file           | Route prefix                                                  | What it tests                                                                                                    |
+| ------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `health.test.ts`    | `GET /v1/health`                                              | Real DB ok path; degraded path (mocked Prisma failure)                                                           |
+| `markets.test.ts`   | `GET /v1/markets`                                             | Pagination, status filter, response envelope                                                                     |
+| `orders.test.ts`    | `POST /v1/orders`, `GET /v1/orders/user/:address`             | Creation (201), DB persistence, decimal serialization, all 400 validation paths, status filter, CLOB matching    |
+| `admin.test.ts`     | `GET /v1/admin/markets`, `PATCH /v1/admin/markets/:id/status` | Five auth guard combinations (401/403), list includes CANCELLED, status mutation, invalid enum (400), unknown ID |
+| `positions.test.ts` | `GET /v1/wallets/:wallet/positions`                           | Position listing and PnL                                                                                         |
+
+### Auth guards
+
+`requireApiKey` checks the `x-api-key` header against `API_KEY` env var.  
+`requireAdmin` checks `Authorization: Bearer <token>` against `ADMIN_TOKEN` env var.  
+Admin routes require both. Tests cover: no headers → 401, API key only → 401, Bearer only → 401, wrong key → 401, wrong token → 403.
+
+### Shared test harness
+
+`tests/integration/helpers/build-test-app.ts` exports `buildTestApp({ plugins })` — builds a minimal Fastify instance with the real error handler, registers each plugin under `/v1`, sets `API_KEY`/`ADMIN_TOKEN` defaults.
+
+See [error-handler.md](./error-handler.md) for the error envelope shape, custom error classes, and `NODE_ENV` behaviour.  
+Call `resetRateLimits()` from the same module in `beforeEach` to prevent rate-limit state bleeding between tests.
+
+### Required environment variables for integration tests
+
+```
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/vatix
+REDIS_URL=redis://localhost:6379
+NODE_ENV=test
+API_KEY=test-api-key          # set automatically by buildTestApp if absent
+ADMIN_TOKEN=test-admin-token  # set automatically by buildTestApp if absent
+```
+
+## Test Types
+
+### Unit Tests
+
+- Test individual functions and components in isolation
+- Use mocks for external dependencies
+- Fast execution, suitable for TDD
+
+### Integration Tests
+
+- Test API endpoints with real database
+- Use test database with deterministic fixtures
+- Slower but more comprehensive testing
+
+## Running Tests
+
+### Basic Commands
+
+```bash
+# Run all tests
+npm test
+# or
+pnpm test
+
+# Run tests in watch mode
+npm run dev
+# or
+pnpm dev
+
+# Run tests once (no watch)
+npm run test:run
+# or
+pnpm test:run
+
+# Run tests with coverage
+npm run test:coverage
+# or
+pnpm test:coverage
+
+# Run tests with UI
+npm run test:ui
+# or
+pnpm test:ui
+```
+
+### Running Specific Tests
+
+```bash
+# Run specific test file
+npm test markets.test.ts
+
+# Run tests matching pattern
+npm test -- --grep "markets"
+
+# Run tests in specific directory
+npm test tests/integration/
+```
+
+## Test Configuration
+
+The test configuration is in `vitest.config.ts`:
+
+- **Environment**: Node.js
+- **Pool**: Forks (for proper process isolation)
+- **Coverage**: V8 provider with 80% thresholds
+- **Setup**: Global setup file for test utilities
+- **Timeouts**: 30s test timeout, 10s hook timeout
+
+## Database Testing
+
+### Test Database Setup
+
+Tests use a dedicated test database with automatic cleanup:
+
+```typescript
+import { testUtils } from "../setup.js";
+
+// Create test data
+const market = await testUtils.createTestMarket();
+const position = await testUtils.createTestPosition(market.id, wallet);
+```
+
+### Database Utilities
+
+- `testUtils.createTestMarket()` - Create test market
+- `testUtils.createTestPosition()` - Create test position
+- `testUtils.createTestOrder()` - Create test order
+- `testUtils.generateStellarAddress()` - Generate valid address
+- `testUtils.assertDecimalEqual()` - Fixed-precision assertions
+
+### Test Isolation
+
+- Database is cleaned before each test
+- Advisory locks serialize database tests
+- Each test gets fresh data
+
+## Writing Tests
+
+### Test Structure
+
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { testUtils } from "../setup.js";
+
+describe("Feature Name", () => {
+  beforeEach(async () => {
+    // Setup before each test
+  });
+
+  afterEach(async () => {
+    // Cleanup after each test
+  });
+
+  it("should do something", async () => {
+    // Arrange
+    const testData = await testUtils.createTestMarket();
+
+    // Act
+    const result = await someFunction(testData.id);
+
+    // Assert
+    expect(result).toBeDefined();
+    expect(result.status).toBe("ACTIVE");
+  });
+});
+```
+
+### Best Practices
+
+1. **Use descriptive test names** - "should return 400 for invalid input"
+2. **Follow AAA pattern** - Arrange, Act, Assert
+3. **Test one thing per test** - Single assertion per test when possible
+4. **Use helpers for setup** - Leverage `testUtils` for common operations
+5. **Mock external services** - Use mocks for third-party APIs
+6. **Test edge cases** - Empty data, invalid inputs, error conditions
+
+### Integration Tests
+
+For API endpoint testing:
+
+```typescript
+import Fastify from "fastify";
+import { describe, it, expect } from "vitest";
+
+describe("API Endpoint", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    await app.register(routes);
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it("should return correct response", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/endpoint",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body).toHaveProperty("data");
+  });
+});
+```
+
+## Coverage
+
+### Coverage Configuration
+
+Coverage is configured with 80% thresholds for:
+
+- Branches
+- Functions
+- Lines
+- Statements
+
+### Viewing Coverage Reports
+
+```bash
+# Generate coverage report
+npm run test:coverage
+
+# View HTML report (opens in browser)
+open coverage/index.html
+```
+
+### Coverage Exclusions
+
+The following are excluded from coverage:
+
+- Test files (`**/*.test.ts`, `**/*.spec.ts`)
+- Test directories (`tests/`)
+- Scripts (`scripts/`)
+- Coverage reports (`coverage/`)
+
+## Test Data Management
+
+### Deterministic Fixtures
+
+Tests use deterministic fixtures for stable outcomes:
+
+```typescript
+// Generate consistent test data
+const testWallet = testUtils.generateStellarAddress("GTEST");
+const testMarket = await testUtils.createTestMarket({
+  question: "Predictable test question",
+  endTime: new Date("2026-12-31T23:59:59Z"),
+});
+```
+
+### Data Cleanup
+
+Database is automatically cleaned between tests:
+
+```typescript
+// Automatic cleanup in beforeEach
+beforeEach(async () => {
+  await cleanDatabase();
+});
+```
+
+## Mock Testing
+
+### Mocking Dependencies
+
+```typescript
+import { vi } from "vitest";
+
+// Mock entire module
+vi.mock("../../services/prisma.js", () => ({
+  getPrismaClient: () => mockPrismaClient,
+}));
+
+// Mock specific function
+const mockFunction = vi.fn();
+vi.mock("../../module", () => ({
+  functionName: mockFunction,
+}));
+```
+
+### Mock Assertions
+
+```typescript
+// Verify mock was called
+expect(mockFunction).toHaveBeenCalled();
+expect(mockFunction).toHaveBeenCalledWith(expectedArgs);
+
+// Clear mocks between tests
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+```
+
+## Performance Testing
+
+### Test Performance
+
+Vitest provides built-in performance tracking:
+
+```typescript
+import { bench } from "vitest";
+
+bench("function performance", () => {
+  // Function to benchmark
+  expensiveFunction();
+});
+```
+
+## Continuous Integration
+
+### CI Test Configuration
+
+Tests run in CI with:
+
+```yaml
+# From .github/workflows/ci.yml
+- name: Run tests
+  run: pnpm test
+  env:
+    DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+    REDIS_URL: redis://localhost:6379
+    NODE_ENV: test
+
+- name: Run tests with coverage
+  run: pnpm test:coverage
+  env:
+    DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
+    REDIS_URL: redis://localhost:6379
+    NODE_ENV: test
+```
+
+### Coverage Upload
+
+Coverage reports are automatically uploaded to Codecov.
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Database connection errors**
+   - Check `DATABASE_URL` environment variable
+   - Ensure PostgreSQL is running
+   - Verify test database exists
+
+2. **Test timeouts**
+   - Increase timeout in `vitest.config.ts`
+   - Check for infinite loops or hanging promises
+
+3. **Mock issues**
+   - Clear mocks in `beforeEach`
+   - Verify mock configuration
+   - Check module path resolution
+
+4. **Coverage issues**
+   - Check exclusion patterns
+   - Verify thresholds are realistic
+   - Ensure all code paths are tested
+
+### Debugging Tests
+
+```bash
+# Run tests with debugger
+node --inspect-brk node_modules/.bin/vitest
+
+# Run specific test with logging
+DEBUG=* npm test -- specific-test.test.ts
+```
+
+## Coverage Floors
+
+The project enforces minimum code coverage thresholds (configured in `vitest.config.ts`):
+
+- **Lines:** 80%
+- **Functions:** 80%
+- **Branches:** 80%
+- **Statements:** 80%
+
+### Checking Coverage Locally
+
+```bash
+# Generate coverage report
+pnpm test:coverage
+
+# Coverage reports available in ./coverage/
+# Open ./coverage/index.html in a browser for detailed report
+```
+
+### CI Coverage Floor
+
+The CI workflow runs `pnpm exec vitest run --coverage` and enforces the thresholds.
+If coverage drops below the floor, the CI job fails. To adjust the floor:
+
+1. Update `vitest.config.ts` thresholds in the `coverage.thresholds` section
+2. Ensure the change is intentional (increasing thresholds is preferred)
+3. Submit a PR explaining the rationale
+
+## Matching Lease Enforcement
+
+The matching engine uses a Redis-backed leader lease to enforce single-writer behavior: only one API process may match orders at a time. This prevents double-fills and book inconsistency under horizontal scaling.
+
+### Running Tests with Lease Enforcement
+
+By default, tests run with `MATCHING_LEASE_ENFORCED=false` (lease is bypassed), allowing all instances to match orders. To test with production-like behavior (lease actually enforced):
+
+```bash
+# Run integration tests with lease enforced
+MATCHING_LEASE_ENFORCED=true pnpm test:integration
+
+# Or run the matching-engine tests specifically
+pnpm test:matching
+```
+
+### CI Lease Enforcement Job
+
+The CI workflow runs two integration test passes:
+
+1. **Default (lease disabled):** `MATCHING_LEASE_ENFORCED=false` — tests the baseline API behavior
+2. **Lease enforced:** `MATCHING_LEASE_ENFORCED=true` — validates single-writer behavior (rejects concurrent matching from non-leaders with 503 MatchingUnavailable)
+
+The lease-enforced job catches regressions where matching logic inadvertently violates the single-writer invariant.
+
+### Configuring Lease Behavior
+
+Lease timing is configurable via environment variables:
+
+- `MATCHING_LEASE_TTL_MS` — Lease expiry in Redis (default: 15000 ms)
+- `MATCHING_LEASE_RENEW_INTERVAL_MS` — Heartbeat renewal interval (default: 5000 ms)
+- `MATCHING_LEASE_ENFORCED` — Enable/disable enforcement (default: `true` in production, `false` in tests)
+
+### Exercising the Lease Path from an Integration Test
+
+`buildTestApp` (the integration route harness) bypasses the lease by default.
+Pass `enableLease: true` to run a route test through the real production
+single-writer gate:
+
+```ts
+const app = await buildTestApp({ plugins: [ordersRoutes], enableLease: true });
+// MATCHING_LEASE_ENFORCED is forced to "true" and the Redis-backed lease is
+// acquired before the app is ready; matchingService.placeOrder now runs the
+// same leaderLease.isLeader() check it runs in production.
+await app.close(); // releases the lease and restores the previous env value
+```
+
+Enablement is **fail-fast**: if the lease cannot be acquired (Redis
+unreachable, or another holder owns it) `buildTestApp` throws rather than
+silently returning a lease-disabled app.
+
+## Test Infrastructure & External Dependencies
+
+Each test only needs the backing services it actually exercises. In
+particular:
+
+- **Prisma seed / schema tests** (`prisma/seed.test.ts`,
+  `prisma/schema.test.ts`) and the seed script itself (`prisma/seed.ts`)
+  require **only Postgres** — never Redis. `prisma/seed-no-redis.test.ts`
+  is a regression guard that fails if a Redis import creeps into that path.
+  The seed script also refuses to run when `NODE_ENV=production`.
+- **Fills SSE resume after trim**
+  (`tests/integration/fills-stream-xtrim.test.ts`) covers the Redis `XTRIM`
+  case: when a client's resume cursor has been trimmed from the audit
+  stream, missed fills are backfilled from Postgres and the request only
+  returns `410 stream_gap` when Postgres also cannot serve the cursor.
+
+## Best Practices Summary
+
+1. **Write tests first** (TDD when possible)
+2. **Keep tests fast** - Use mocks for external dependencies
+3. **Test edge cases** - Don't just test happy paths
+4. **Use descriptive names** - Test should document behavior
+5. **Maintain test independence** - Tests shouldn't depend on each other
+6. **Review coverage reports** - Aim for meaningful coverage, not just metrics
+7. **Test with lease enforced** - Run `MATCHING_LEASE_ENFORCED=true` locally to catch single-writer violations
+8. **Monitor coverage trends** - Coverage floors prevent silent regressions in test quality
+9. **Update tests with code** - Keep tests in sync with implementation
