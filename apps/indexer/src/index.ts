@@ -38,3 +38,6 @@ export type {
   BatchWriter,
 } from "./batchWriter.js";
 export { PrismaBatchWriter } from "./batchWriter.js";
+export { PrismaCursorStorageClient } from "./storage.js";
+export type { CursorStorageClient, CursorTransactionClient } from "./storage.js";
+export { CursorConflictError, CursorStorageConfigError } from "./storage.js";

@@ -53,6 +53,52 @@ Gap detection is read-only and does not mutate money-path state. If a
 regression is detected, disable the detector via its feature flag and
 fall back to the previous behavior; no mainnet state is affected.
 
+## Cursor durability
+
+`src/storage.ts` provides `PrismaCursorStorageClient` for durable
+checkpointing of the indexer's ledger cursor. The cursor is the
+indexer's bookmark into the Stellar blockchain and must advance
+monotonically.
+
+### Invariants
+
+- **Cursor advances monotonically.** `saveCursor` rejects any value
+  that would regress the stored cursor, throwing `CursorConflictError`.
+  This prevents replayed or out-of-order requests from rewinding the
+  indexer.
+- **Batch writes and cursor saves are atomic.** `saveCursorWithBatch`
+  wraps both the event batch write and the cursor advance in a single
+  Prisma `$transaction`. If either side fails, the entire transaction
+  rolls back so the cursor never advances without the data being
+  persisted.
+- **Fail closed on storage errors.** If the database is unreachable,
+  `saveCursor`, `saveLedgerHash`, and `saveCursorWithBatch` propagate
+  the error up to the ingestion loop, which halts rather than
+  silently skipping the checkpoint.
+- **Concurrent writers are detected.** When `saveCursorWithBatch` is
+  called with an `expectedPreviousCursor`, it verifies that the
+  current DB value matches before advancing. If a concurrent writer
+  has already advanced the cursor, a `CursorConflictError` is thrown
+  and the batch is rolled back.
+- **No secrets in logs or metrics.** Cursor values are ledger sequence
+  numbers (non-sensitive). Ledger hashes are truncated in log output.
+
+### Error codes
+
+| Code | Meaning |
+| --- | --- |
+| `CURSOR_CONFLICT` | Concurrent writer advanced the cursor; batch rolled back. |
+| `CURSOR_STORAGE_CONFIG_ERROR` | Storage path misconfigured; fail fast. |
+| `CURSOR_REGRESSION_REJECTED` | Replayed request would regress the cursor; denied. |
+
+### Rollback
+
+Cursor durability is a read/write surface that affects the indexer's
+watermark. If a regression is detected, the indexer can be rolled back
+by manually resetting the cursor in the `indexer_cursors` table. No
+mainnet state is corrupted by a cursor rollback — only already-indexed
+events are re-fetched and deduplicated by the idempotency layer.
+
 ## Stellar Wave contributors
 
 See `SECURITY.md` for the deny-by-default policy on privileged surfaces

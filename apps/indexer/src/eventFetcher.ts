@@ -163,6 +163,8 @@ export class EventFetcher {
       await sleep(DISCONNECTED_BACKOFF_MS);
     }
 
+    const requestId = randomUUID();
+
     const allEvents: RawChainEvent[] = [];
     let cursor: string | undefined;
     let latestLedger = 0;
