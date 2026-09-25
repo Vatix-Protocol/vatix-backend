@@ -1,4 +1,9 @@
 import Redis from "ioredis";
+import {
+  redactRedisUrl,
+  redisAuthFromUrl,
+  redisTlsFromEnv,
+} from "../../packages/shared/src/queue-config.js";
 
 const ORDER_BOOK_TTL = 60; // seconds
 
@@ -24,6 +29,15 @@ function loadKeyPrefix(): string {
  *   REDIS_RETRY_BASE_DELAY   — base delay in ms for exponential backoff (default: 100)
  *   REDIS_RETRY_MAX_DELAY    — cap on retry delay in ms (default: 2000)
  *   REDIS_CONNECT_TIMEOUT    — socket connect timeout in ms (default: 5000)
+ *
+ * TLS and ACL credentials (#1131) are resolved by the shared queue-config
+ * helpers so this client, BullMQ producers, and the workers all honour the
+ * same REDIS_TLS* / REDIS_USERNAME / REDIS_PASSWORD rules:
+ *   REDIS_TLS                     — "true" forces TLS for a redis:// URL
+ *   REDIS_TLS_REQUIRED            — "true" fails closed when TLS is off
+ *   REDIS_TLS_REJECT_UNAUTHORIZED — "false" allows a private/self-signed CA
+ *   REDIS_TLS_CA_FILE|_CERT       — pin the CA bundle used for verification
+ *   REDIS_USERNAME|_PASSWORD      — explicit ACL credentials (win over the URL)
  */
 function loadRetryConfig(): {
   maxRetries: number;
@@ -139,9 +153,17 @@ class RedisService {
         const { maxRetries, baseDelay, maxDelay, connectTimeout } =
           loadRetryConfig();
 
+        // TLS + ACL options (#1131). Resolved before the client is created so
+        // a misconfiguration (e.g. REDIS_TLS_REQUIRED with a plaintext URL)
+        // fails closed at connect time instead of silently going plaintext.
+        const auth = redisAuthFromUrl(redisUrl, process.env);
+        const tls = redisTlsFromEnv(redisUrl, process.env);
+
         const client = new Redis(redisUrl, {
           maxRetriesPerRequest: maxRetries,
           connectTimeout,
+          ...auth,
+          ...(tls ? { tls } : {}),
           retryStrategy: (times: number) => {
             if (times > maxRetries) {
               console.error(
@@ -169,7 +191,16 @@ class RedisService {
           if (!isResolved) {
             isResolved = true;
             this.client = client;
-            console.info({ service: "redis" }, "Redis connected");
+            // Log the credential-free endpoint only — REDIS_URL may carry an
+            // ACL password, which must never reach logs (#1131).
+            console.info(
+              {
+                service: "redis",
+                endpoint: redactRedisUrl(redisUrl),
+                tls: Boolean(tls),
+              },
+              "Redis connected"
+            );
             this.retryCount = 0;
             resolve(client);
           }

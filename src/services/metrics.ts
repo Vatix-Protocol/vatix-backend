@@ -134,3 +134,17 @@ export const auditChainGapTotal = new client.Counter({
   labelNames: ["market_id"],
   registers: [metricsRegistry],
 });
+
+/**
+ * Scrapes rejected by the /metrics authz policy (#1130), labelled by reason
+ * (`missing_token` | `invalid_token` | `ip_not_allowed` |
+ * `auth_not_configured`). Alert on any non-zero rate: it means either a
+ * misconfigured scraper (metrics gap) or probing of an internal endpoint.
+ * Reasons are stable strings and never contain the presented credential.
+ */
+export const metricsScrapeRejectedTotal = new client.Counter({
+  name: "vatix_metrics_scrape_rejected_total",
+  help: "Total /metrics scrapes denied by the scrape authz policy, by reason",
+  labelNames: ["reason"],
+  registers: [metricsRegistry],
+});

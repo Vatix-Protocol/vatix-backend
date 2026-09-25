@@ -1,5 +1,6 @@
 import {
   loadIndexerConfig as loadSharedIndexerConfig,
+  loadIndexerContractId,
   type IndexerConfig as SharedIndexerConfig,
   ConfigValidationError,
 } from "../../../packages/shared/src/config.js";
@@ -36,7 +37,10 @@ export class EnvValidationError extends ConfigValidationError {
   readonly variable: string;
 
   constructor(code: EnvErrorCode, variable: string, message: string) {
-    super(message);
+    // The stable code leads the message so log lines and test assertions can
+    // match on it (e.g. /ENV_MISSING/) without a second lookup — matching the
+    // documented `[env] ENV_MISSING: DATABASE_URL` shape in docs/env-validation.md.
+    super(`${code}: ${message}`, { code, variable });
     this.name = "EnvValidationError";
     this.code = code;
     this.variable = variable;
@@ -75,15 +79,32 @@ export function pickIngestionLoopConfig(
  * Only variable names and error codes are ever surfaced — never values.
  * Unknown passphrases (custom networks like futurenet/standalone) are allowed
  * with a warning to support test deployments, but mainnet requires explicit opt-in.
+ *
+ * The target contract ID is validated here too (#1132): a boot without it would
+ * start an ingestion loop that connects, polls, and silently indexes nothing.
+ * `loadIndexerContractId` owns presence/precedence/format rules (including the
+ * production strkey check) so the indexer, oracle worker, and CLI share one
+ * implementation; this gate only re-labels its errors with the indexer's
+ * stable codes.
  */
 export function validateEnv(env: Env = process.env): void {
   const passphrase = env["SOROBAN_NETWORK_PASSPHRASE"];
 
-  if (!passphrase || passphrase.trim() === "") {
+  if (passphrase === undefined || passphrase === "") {
     throw new EnvValidationError(
       ENV_ERROR_CODES.ENV_MISSING,
       "SOROBAN_NETWORK_PASSPHRASE",
       "Missing required environment variable: SOROBAN_NETWORK_PASSPHRASE"
+    );
+  }
+
+  if (passphrase.trim() === "") {
+    // Present but blank is a malformed value, not a missing one — the
+    // distinction matters for ops alerting (docs/env-validation.md).
+    throw new EnvValidationError(
+      ENV_ERROR_CODES.ENV_INVALID,
+      "SOROBAN_NETWORK_PASSPHRASE",
+      "SOROBAN_NETWORK_PASSPHRASE must not be blank"
     );
   }
 
@@ -108,6 +129,24 @@ export function validateEnv(env: Env = process.env): void {
         "Mainnet passphrase detected without explicit opt-in (set VATIX_ALLOW_MAINNET=true)"
       );
     }
+  }
+
+  // Contract ID boot gate (#1132). Place after the passphrase checks so the
+  // network is validated first, and fail closed in every environment — the
+  // indexer has nothing to ingest without a target contract.
+  try {
+    loadIndexerContractId(env);
+  } catch (err) {
+    if (err instanceof ConfigValidationError) {
+      throw new EnvValidationError(
+        err.code === ENV_ERROR_CODES.ENV_INVALID
+          ? ENV_ERROR_CODES.ENV_INVALID
+          : ENV_ERROR_CODES.ENV_MISSING,
+        err.variable ?? "INDEXER_CONTRACT_ID",
+        err.message
+      );
+    }
+    throw err;
   }
 }
 

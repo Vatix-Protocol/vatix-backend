@@ -34,11 +34,11 @@ listener binds, worker loop starts, or money-path code runs.
 Every validation failure is reported with a **stable error code** so operators
 and tests can assert on it without parsing free-form messages:
 
-| Code                 | Meaning                                                        |
-| -------------------- | -------------------------------------------------------------- |
-| `ENV_MISSING`        | A required variable is absent or empty.                        |
-| `ENV_INVALID`        | A variable is present but malformed (bad URL, enum, integer).  |
-| `ENV_UNSAFE_MAINNET` | Mainnet-affecting config was set without explicit opt-in.      |
+| Code                 | Meaning                                                       |
+| -------------------- | ------------------------------------------------------------- |
+| `ENV_MISSING`        | A required variable is absent or empty.                       |
+| `ENV_INVALID`        | A variable is present but malformed (bad URL, enum, integer). |
+| `ENV_UNSAFE_MAINNET` | Mainnet-affecting config was set without explicit opt-in.     |
 
 Failures are logged with the **variable name and error code only** — never the
 value — so secrets cannot leak into logs or crash reports.
@@ -59,7 +59,47 @@ config or a drifted address set.
 
 ---
 
-## API boot validation (`parseApiEnv`)
+## Contract ID boot validation (#1132)
+
+The target Soroban contract is part of the boot contract, not a lazy lookup.
+Indexer/oracle/worker processes resolve it through `loadIndexerContractId()`
+(`packages/shared/src/config.ts`), which the indexer's fail-closed boot gate
+(`validateEnv()` in `apps/indexer/src/config.ts`) calls directly — so a process
+with no contract to ingest fails **before** any listener binds or polling loop
+starts. Starting anyway would connect, poll, and silently index nothing.
+
+| Variable              | Required | Notes                                                    |
+| --------------------- | -------- | -------------------------------------------------------- |
+| `INDEXER_CONTRACT_ID` | yes      | Preferred name.                                          |
+| `MARKET_CONTRACT_ID`  | alias    | Legacy alias; ignored when `INDEXER_CONTRACT_ID` is set. |
+
+Rules:
+
+- Absent or blank everywhere → `ENV_MISSING` (`variable: INDEXER_CONTRACT_ID`).
+- Both aliases present with **different** values → a warning is logged
+  (half-rotated deployment / address drift) and `INDEXER_CONTRACT_ID` wins.
+- `NODE_ENV=production` additionally requires a well-formed Stellar contract
+  strkey (`C` + 55 base32 characters) → otherwise `ENV_INVALID`. A truncated or
+  chain-mismatched ID would otherwise point the money path at the wrong
+  contract, so production refuses to boot rather than run blind. Dev/test keep
+  accepting short fixture IDs such as `CTESTCONTRACT`.
+- Errors carry the variable **name and code only**, never the value.
+
+```
+[env] ENV_MISSING Missing required environment variable: INDEXER_CONTRACT_ID (or MARKET_CONTRACT_ID)
+[env] ENV_INVALID INDEXER_CONTRACT_ID must be a Stellar contract strkey (C + 55 base32 chars), got: invalid value
+```
+
+### Metrics scrape authz boot gate (#1130)
+
+The API refuses to boot in production without a `/metrics` authorization policy
+(`METRICS_SCRAPE_TOKEN` or `METRICS_SCRAPE_ALLOWED_IPS`), unless
+`METRICS_REQUIRE_AUTH=false` is set explicitly as a documented rollback. The
+endpoint is excluded from the rate limiter and admission control, so this boot
+check is what stops an unauthenticated scrape surface from shipping by
+omission. See [Prometheus Metrics](metrics.md#scrape-authz-1130).
+
+---
 
 The HTTP API uses Zod to validate `NODE_ENV`, `PORT`, `DATABASE_URL`,
 `ORACLE_CHALLENGE_WINDOW_SECONDS`, `ORACLE_POLL_INTERVAL_MS`,

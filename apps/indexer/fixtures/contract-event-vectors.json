@@ -117,11 +117,20 @@
           }
         },
         {
-          "label": "large i128 amount (precision boundary)",
-          "decodedNative": ["GACCOUNT1234", 1, "9999999999999999999"],
+          "label": "large i128 amount at the Decimal(20,8) scale boundary",
+          "note": "Largest raw amount the 7-decimal collateral scale accepts: MAX_RAW = 9_999_999_999_990_000_000n (apps/indexer/src/decimalUtils.ts). The previous 9999999999999999999 vector was out of range and is now a malformed vector.",
+          "decodedNative": ["GACCOUNT1234", 1, "9999999999990000000"],
           "expectedNormalized": {
-            "amountRaw": "9999999999999999999"
+            "amountRaw": "9999999999990000000"
           }
+        }
+      ],
+      "malformedVectors": [
+        {
+          "label": "amount above the Decimal(20,8) collateral scale",
+          "note": "9999999999999999999 exceeds MAX_RAW, so the parser must reject it with SCALE_EXCEEDED rather than persist a value the Decimal(20,8) columns cannot hold.",
+          "decodedNative": ["GACCOUNT1234", 1, "9999999999999999999"],
+          "expectedError": "CollateralDepositedParseError"
         }
       ]
     },

@@ -120,6 +120,50 @@ The settlement worker (`apps/workers/src/settlement/`) consumes the Redis settle
 | `SETTLEMENT_QUEUE_NAME` | `settlement-trades` | Redis stream name for settlement jobs |
 | `REDIS_KEY_PREFIX`      | `vatix:`            | Key prefix applied to the stream name |
 
+### Redis TLS & credentials (#1131)
+
+Every queue connection (this consumer's BullMQ worker, the API's settlement
+outbox publisher, the oracle submission queue, and the `ioredis` cache client)
+resolves its socket options through `packages/shared/src/queue-config.ts`, so
+TLS and ACL credentials are configured once for the whole monorepo:
+
+| Variable                        | Default  | Description                                                                                                       |
+| ------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------- |
+| `REDIS_URL`                     | —        | Connection URL. `rediss://` implies TLS. Required in production (no silent `localhost` fallback).                 |
+| `REDIS_USERNAME`                | —        | ACL username (Redis 6+). Requires `REDIS_PASSWORD`; overrides the username embedded in `REDIS_URL`.               |
+| `REDIS_PASSWORD`                | —        | ACL password. Overrides the password embedded in `REDIS_URL`. Never logged.                                       |
+| `REDIS_TLS`                     | inferred | `true` forces TLS even for a `redis://` URL. `false` is rejected when `REDIS_URL` is `rediss://` (contradiction). |
+| `REDIS_TLS_REQUIRED`            | `false`  | `true` fails closed when TLS ends up disabled — recommended in production.                                        |
+| `REDIS_TLS_REJECT_UNAUTHORIZED` | `true`   | `false` permits a private/self-signed CA. Only takes effect when TLS is enabled, and must be set explicitly.      |
+| `REDIS_TLS_CA_FILE`             | —        | Path to the CA bundle used to verify the Redis server certificate.                                                |
+| `REDIS_TLS_CA_CERT`             | —        | Inline PEM CA bundle (alternative to `REDIS_TLS_CA_FILE`).                                                        |
+
+Fail-closed rules, enforced when the connection options are resolved
+(before any handshake):
+
+| Code                      | Raised when                                                                  |
+| ------------------------- | ---------------------------------------------------------------------------- |
+| `REDIS_URL_REQUIRED`      | `NODE_ENV=production` and `REDIS_URL` is unset.                              |
+| `REDIS_TLS_REQUIRED`      | `REDIS_TLS_REQUIRED=true` but TLS is not enabled.                            |
+| `REDIS_TLS_CONFLICT`      | `rediss://` URL with `REDIS_TLS=false`, or a non-boolean flag.               |
+| `REDIS_TLS_CA_UNREADABLE` | `REDIS_TLS_CA_FILE` cannot be read (the path is reported, not the contents). |
+| `REDIS_AUTH_INCOMPLETE`   | `REDIS_USERNAME` set without `REDIS_PASSWORD`.                               |
+
+Log-safety: never log the resolved connection options or `REDIS_URL` — the URL
+can embed an ACL password. Use `redactRedisUrl()` from the same module to emit a
+credential-free endpoint (e.g. `rediss://***@cache.internal:6380`); the
+`RedisService` connect log already does this.
+
+Example TLS deployment:
+
+```bash
+REDIS_URL=rediss://cache.internal:6380
+REDIS_USERNAME=vatix-workers
+REDIS_PASSWORD=<from secret manager>
+REDIS_TLS_REQUIRED=true
+REDIS_TLS_CA_FILE=/etc/ssl/certs/vatix-redis-ca.pem
+```
+
 ### `SettlementJob` Payload
 
 | Field           | Type     | Description                               |
@@ -254,7 +298,7 @@ above.
 Workers expose their own HTTP probes via `apps/workers/src/health-server.ts`
 (`/live` and `/ready`, see [health-probes.md](health-probes.md#workers-health-probes)).
 Previously workers had no bootstrapped health server, so k8s deployments were
-liveness-probing the API's `/v1/health` instead — which reports the *API*
+liveness-probing the API's `/v1/health` instead — which reports the _API_
 process's liveness, not the worker's. Under that setup a worker process could
 be wedged (event loop blocked, poll loop dead) while the API stayed healthy,
 so k8s never restarted it; conversely, pointing a worker's liveness at a

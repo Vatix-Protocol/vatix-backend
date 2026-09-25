@@ -4,6 +4,13 @@ Canonical reference for every on-chain contract event: topic discriminator, XDR 
 
 Test vectors: [`apps/indexer/fixtures/contract-event-vectors.json`](../apps/indexer/fixtures/contract-event-vectors.json)
 
+The fixture is enforced by
+[`apps/indexer/src/contract-event-vectors.test.ts`](../apps/indexer/src/contract-event-vectors.test.ts),
+which drives every vector (and every `malformedVectors` entry) through the real
+parser. **If you add or change an on-chain event, update the fixture in the same
+PR** — the test fails when the fixture and the parsers disagree, which is the
+signal that the indexer would otherwise mis-index (or silently drop) events.
+
 ---
 
 ## Event table
@@ -49,14 +56,14 @@ When a parser encounters an event with a topic symbol it does not recognize, it 
 
 **Stable error codes:** All `TradeParseError` instances carry an optional `errorCode` from the `TradeErrorCode` constant map (defined in `tradeParser.ts`). Downstream consumers and alerting rules MUST match against these codes, not free-form message text. Current codes:
 
-| Code                      | Meaning                                          |
-| ------------------------- | ------------------------------------------------ |
-| `TRADE_WRONG_TOPIC`       | Event topic does not match `trade_executed_event`|
+| Code                      | Meaning                                           |
+| ------------------------- | ------------------------------------------------- |
+| `TRADE_WRONG_TOPIC`       | Event topic does not match `trade_executed_event` |
 | `TRADE_BAD_VALUE_XDR`     | Event value XDR cannot be decoded                 |
 | `TRADE_VALUE_NOT_MAP`     | Decoded value is not an ScvMap                    |
-| `TRADE_MISSING_FIELD`     | Required map key is absent                       |
-| `TRADE_INVALID_OUTCOME`   | `outcome` is not `"YES"` or `"NO"`               |
-| `TRADE_INVALID_DIRECTION` | `direction` is not `"buy"` or `"sell"`           |
+| `TRADE_MISSING_FIELD`     | Required map key is absent                        |
+| `TRADE_INVALID_OUTCOME`   | `outcome` is not `"YES"` or `"NO"`                |
+| `TRADE_INVALID_DIRECTION` | `direction` is not `"buy"` or `"sell"`            |
 | `TRADE_PRECISION_LOSS`    | Numeric field is a non-integer number             |
 | `TRADE_BAD_BIGINT`        | Field cannot be safely converted to bigint        |
 | `TRADE_EMPTY_ORDER_ID`    | Order id field is empty/blank                     |
@@ -80,17 +87,17 @@ When a parser encounters an event with a topic symbol it does not recognize, it 
 
 **Stable error codes:** All `CollateralDepositedParseError` instances carry an optional `errorCode` from the `CollateralDepositedErrorCode` constant map (defined in `collateralDepositedParser.ts`). Downstream consumers and alerting rules MUST match against these codes, not free-form message text. Current codes:
 
-| Code | Meaning |
-| ---- | ------- |
-| `COLLATERAL_WRONG_TOPIC` | Event topic does not match `collateral_deposited` |
-| `COLLATERAL_BAD_VALUE_XDR` | Event value XDR cannot be decoded |
-| `COLLATERAL_VALUE_NOT_TUPLE` | Decoded value is not a 3-element tuple |
-| `COLLATERAL_BAD_ACCOUNT` | `account` field is not a string |
-| `COLLATERAL_BAD_BIGINT` | `amount` field cannot be converted to bigint |
+| Code                         | Meaning                                                     |
+| ---------------------------- | ----------------------------------------------------------- |
+| `COLLATERAL_WRONG_TOPIC`     | Event topic does not match `collateral_deposited`           |
+| `COLLATERAL_BAD_VALUE_XDR`   | Event value XDR cannot be decoded                           |
+| `COLLATERAL_VALUE_NOT_TUPLE` | Decoded value is not a 3-element tuple                      |
+| `COLLATERAL_BAD_ACCOUNT`     | `account` field is not a string                             |
+| `COLLATERAL_BAD_BIGINT`      | `amount` field cannot be converted to bigint                |
 | `COLLATERAL_NUMBER_NOT_I128` | `amount` decoded as a plain number in production (not i128) |
-| `COLLATERAL_NEGATIVE_AMOUNT` | `amount` is negative |
-| `COLLATERAL_ZERO_AMOUNT` | `amount` is zero |
-| `COLLATERAL_SCALE_EXCEEDED` | `amount` exceeds the `Decimal(20,8)` column range |
+| `COLLATERAL_NEGATIVE_AMOUNT` | `amount` is negative                                        |
+| `COLLATERAL_ZERO_AMOUNT`     | `amount` is zero                                            |
+| `COLLATERAL_SCALE_EXCEEDED`  | `amount` exceeds the `Decimal(20,8)` column range           |
 
 ---
 
@@ -118,18 +125,18 @@ The contract does not publish an oracle address on this event, so `oracleAddress
 
 **Stable error codes:** All `ResolutionParseError` instances carry an optional `errorCode` from the `ResolutionErrorCode` constant map (defined in `resolutionParser.ts`). Downstream consumers and alerting rules MUST match against these codes, not free-form message text. Current codes:
 
-| Code | Meaning |
-| ---- | ------- |
-| `RESOLUTION_WRONG_TOPIC` | Event topic does not match `market_resolved_event` |
-| `RESOLUTION_BAD_VALUE_XDR` | Event value XDR cannot be decoded |
-| `RESOLUTION_VALUE_NOT_MAP_OR_TUPLE` | Decoded value is neither an ScvMap nor a tuple |
-| `RESOLUTION_MISSING_FIELD` | Required map key is absent |
-| `RESOLUTION_INVALID_OUTCOME` | `outcome` is not `"YES"`, `"NO"`, or a boolean |
-| `RESOLUTION_MISSING_MARKET_ID` | `market_id` topic is absent (topicsXdr.length < 2) |
-| `RESOLUTION_BAD_MARKET_ID_XDR` | `market_id` topic XDR cannot be decoded |
-| `RESOLUTION_LEGACY_SHAPE_REJECTED` | Legacy ScvVec/ScvMap payload in production |
-| `RESOLUTION_MISSING_ORACLE` | `oracle` field is missing/empty (legacy ScvMap only) |
-| `RESOLUTION_BAD_CONFIDENCE` | `confidence` score is invalid |
+| Code                                | Meaning                                              |
+| ----------------------------------- | ---------------------------------------------------- |
+| `RESOLUTION_WRONG_TOPIC`            | Event topic does not match `market_resolved_event`   |
+| `RESOLUTION_BAD_VALUE_XDR`          | Event value XDR cannot be decoded                    |
+| `RESOLUTION_VALUE_NOT_MAP_OR_TUPLE` | Decoded value is neither an ScvMap nor a tuple       |
+| `RESOLUTION_MISSING_FIELD`          | Required map key is absent                           |
+| `RESOLUTION_INVALID_OUTCOME`        | `outcome` is not `"YES"`, `"NO"`, or a boolean       |
+| `RESOLUTION_MISSING_MARKET_ID`      | `market_id` topic is absent (topicsXdr.length < 2)   |
+| `RESOLUTION_BAD_MARKET_ID_XDR`      | `market_id` topic XDR cannot be decoded              |
+| `RESOLUTION_LEGACY_SHAPE_REJECTED`  | Legacy ScvVec/ScvMap payload in production           |
+| `RESOLUTION_MISSING_ORACLE`         | `oracle` field is missing/empty (legacy ScvMap only) |
+| `RESOLUTION_BAD_CONFIDENCE`         | `confidence` score is invalid                        |
 
 ---
 
