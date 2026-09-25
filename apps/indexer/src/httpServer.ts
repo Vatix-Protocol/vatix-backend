@@ -1,4 +1,4 @@
-import fastify, { type FastifyInstance } from "fastify";
+import fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type { Registry } from "prom-client";
 import { indexerCorsPlugin } from "./middleware/cors.js";
 import { marketsRoutes } from "./routes/markets.js";
@@ -9,9 +9,7 @@ import { marketsRoutes } from "./routes/markets.js";
  * than free-form messages.
  */
 export type ProbeErrorCode =
-  | "NOT_READY"
-  | "DEPENDENCY_UNAVAILABLE"
-  | "UNAUTHORIZED";
+  "NOT_READY" | "DEPENDENCY_UNAVAILABLE" | "UNAUTHORIZED";
 
 /**
  * Stable error codes for rate-limit responses. Kept as a closed union so
@@ -24,7 +22,8 @@ export type RateLimitErrorCode = "RATE_LIMITED";
  * Stable error codes for indexer authz failures. Kept as a closed union
  * so clients and dashboards can branch on exact strings.
  */
-export type MarketErrorCode = "UNAUTHORIZED" | "MARKET_NOT_FOUND" | "MARKET_QUERY_FAILED";
+export type MarketErrorCode =
+  "UNAUTHORIZED" | "MARKET_NOT_FOUND" | "MARKET_QUERY_FAILED";
 
 /**
  * A single critical dependency check. `check` must resolve when the
@@ -57,6 +56,39 @@ export interface ReadinessResult {
 export interface ProbeLogger {
   info: (fields: Record<string, unknown>, msg: string) => void;
   warn: (fields: Record<string, unknown>, msg: string) => void;
+}
+
+/** Current epoch milliseconds. Indirection keeps the clock swappable in tests. */
+function nowMs(): number {
+  return Date.now();
+}
+
+/**
+ * Attach IETF-style quota-visibility headers to a response.
+ *
+ * Header names follow the IETF RateLimit header fields draft
+ * (draft-ietf-httpapi-ratelimit-headers), matching the main API surface
+ * (src/api/middleware/rateLimiter.ts) and RATE_LIMIT_POLICY.md:
+ *
+ *   RateLimit-Limit     — maximum requests allowed in the window
+ *   RateLimit-Remaining — requests still available in the current window
+ *   RateLimit-Reset     — Unix timestamp (seconds) when the window resets
+ *
+ * `remaining` is clamped at 0 so a client never sees a negative quota.
+ */
+function setQuotaHeaders(
+  reply: FastifyReply,
+  policy: RateLimitPolicy,
+  remaining: number,
+  now: number = nowMs()
+): void {
+  reply
+    .header("RateLimit-Limit", String(policy.limit))
+    .header("RateLimit-Remaining", String(Math.max(0, remaining)))
+    .header(
+      "RateLimit-Reset",
+      String(Math.ceil((now + policy.windowMs) / 1000))
+    );
 }
 
 /**
@@ -104,7 +136,7 @@ export interface RateLimitStore {
  * Redis-backed store so limits are shared across replicas.
  */
 export function createInMemoryRateLimitStore(
-  now: () => number = Date.now,
+  now: () => number = Date.now
 ): RateLimitStore {
   const buckets = new Map<string, { count: number; resetAt: number }>();
   return {
@@ -130,7 +162,7 @@ export function createInMemoryRateLimitStore(
 export function rateLimitKey(
   routePath: string,
   principal: string | undefined,
-  remoteAddress: string | undefined,
+  remoteAddress: string | undefined
 ): string {
   const identity = principal ?? remoteAddress ?? "unknown";
   return `${routePath}:${identity}`;
@@ -144,7 +176,7 @@ export function rateLimitKey(
 export async function runReadinessChecks(
   checks: ReadinessCheck[],
   correlationId: string,
-  logger?: ProbeLogger,
+  logger?: ProbeLogger
 ): Promise<ReadinessResult> {
   const results: Record<string, "ok" | "unavailable"> = {};
   await Promise.all(
@@ -155,7 +187,7 @@ export async function runReadinessChecks(
       } catch {
         results[name] = "unavailable";
       }
-    }),
+    })
   );
 
   const ready = checks.every(({ name }) => results[name] === "ok");
@@ -261,8 +293,7 @@ export async function buildIndexerHttpServer(options?: {
   app.addHook("onRequest", async (request, reply) => {
     const routePath = request.routeOptions?.url ?? request.url.split("?")[0];
     const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ??
-      request.id;
+      (request.headers["x-correlation-id"] as string | undefined) ?? request.id;
 
     // Exempt ops-internal endpoints from rate limiting
     if (RATE_LIMIT_EXEMPT_PATHS.has(routePath)) {
@@ -285,7 +316,7 @@ export async function buildIndexerHttpServer(options?: {
         if (logger) {
           logger.warn(
             { correlationId, routePath },
-            "indexer authz rejected: principal mismatch",
+            "indexer authz rejected: principal mismatch"
           );
         }
         return reply.code(401).send({
@@ -303,7 +334,7 @@ export async function buildIndexerHttpServer(options?: {
         if (logger) {
           logger.warn(
             { correlationId, routePath },
-            "indexer authz rejected: invalid API key",
+            "indexer authz rejected: invalid API key"
           );
         }
         return reply.code(401).send({
@@ -317,6 +348,13 @@ export async function buildIndexerHttpServer(options?: {
     const policy = rateLimitPolicies[routePath];
 
     if (!policy) {
+      // Deny-by-default: an entrypoint with no explicit policy is rejected
+      // rather than served unlimited. Advertise a zero quota so a client
+      // sees the denial is a policy decision, not a transient failure.
+      reply
+        .header("RateLimit-Limit", "0")
+        .header("RateLimit-Remaining", "0")
+        .header("RateLimit-Reset", String(Math.ceil(nowMs() / 1000)));
       return reply.code(429).send({
         code: "RATE_LIMITED" satisfies RateLimitErrorCode,
         correlationId,
@@ -334,7 +372,7 @@ export async function buildIndexerHttpServer(options?: {
       if (logger) {
         logger.warn(
           { correlationId, routePath },
-          "rate limit store unavailable",
+          "rate limit store unavailable"
         );
       }
       return reply.code(503).send({
@@ -347,11 +385,19 @@ export async function buildIndexerHttpServer(options?: {
       if (logger) {
         logger.warn({ correlationId, routePath }, "rate limit exceeded");
       }
-      return reply.code(429).send({
-        code: "RATE_LIMITED" satisfies RateLimitErrorCode,
-        correlationId,
-      });
+      setQuotaHeaders(reply, policy, Math.max(0, policy.limit - count));
+      return reply
+        .code(429)
+        .header("Retry-After", String(Math.ceil(policy.windowMs / 1000)))
+        .send({
+          code: "RATE_LIMITED" satisfies RateLimitErrorCode,
+          correlationId,
+        });
     }
+
+    // Advertise the remaining quota on every allowed response so clients
+    // can back off proactively instead of discovering the limit as a 429.
+    setQuotaHeaders(reply, policy, Math.max(0, policy.limit - count));
 
     // Authz: every external entrypoint (market data) requires an
     // authenticated principal.  Probes (/health, /ready) are exempt
@@ -367,7 +413,7 @@ export async function buildIndexerHttpServer(options?: {
       if (logger) {
         logger.warn(
           { correlationId, routePath },
-          "unauthorized: missing x-principal",
+          "unauthorized: missing x-principal"
         );
       }
       return reply.code(401).send({
@@ -379,13 +425,9 @@ export async function buildIndexerHttpServer(options?: {
 
   app.get("/health", async (request, reply) => {
     const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ??
-      request.id;
+      (request.headers["x-correlation-id"] as string | undefined) ?? request.id;
     if (logger) {
-      logger.info(
-        { correlationId, route: "/health" },
-        "liveness probe ok",
-      );
+      logger.info({ correlationId, route: "/health" }, "liveness probe ok");
     }
     return reply.code(200).send({
       status: "ok",
@@ -395,18 +437,17 @@ export async function buildIndexerHttpServer(options?: {
 
   app.get("/ready", async (request, reply) => {
     const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ??
-      request.id;
+      (request.headers["x-correlation-id"] as string | undefined) ?? request.id;
     const result = await runReadinessChecks(
       readinessChecks,
       correlationId,
-      logger,
+      logger
     );
     if (logger) {
       const logLevel = result.ready ? "info" : "warn";
       logger[logLevel](
         { correlationId, ready: result.ready, checks: result.checks },
-        result.ready ? "readiness probe ok" : "readiness probe failed",
+        result.ready ? "readiness probe ok" : "readiness probe failed"
       );
     }
     return reply.code(result.ready ? 200 : 503).send(result);

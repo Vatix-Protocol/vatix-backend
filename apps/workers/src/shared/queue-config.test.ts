@@ -166,10 +166,14 @@ describe("queue-config", () => {
 
     it("parses password and host/port from an authenticated rediss:// URL", () => {
       process.env.REDIS_URL = "rediss://user:secret@redis-host:6380";
+      // rediss:// implies TLS with certificate verification on, and the ACL
+      // username is carried through alongside the password (#1131).
       expect(redisConnectionFromEnv()).toEqual({
         host: "redis-host",
         port: 6380,
+        username: "user",
         password: "secret",
+        tls: { rejectUnauthorized: true },
       });
     });
   });

@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { marketsRoutes } from "./markets.js";
-import { getPrismaClient } from "../../../src/services/prisma.js";
-import type { PrismaClient } from "../../../src/generated/prisma/client.js";
+import { getPrismaClient } from "../../../../src/services/prisma.js";
+import type { PrismaClient } from "../../../../src/generated/prisma/client.js";
 
-vi.mock("../../../src/services/prisma.js", () => ({
-  getPrismaClient: vi.fn(),
+vi.mock("../../../../src/services/prisma.js", () => ({
+  getPrismaClient: () => mockPrisma,
 }));
 
 const mockPrisma = {
@@ -76,8 +76,7 @@ describe("GET /markets", () => {
     expect(mockPrisma.market.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ status: "ACTIVE" }),
-      }),
-      expect.anything(),
+      })
     );
   });
 
@@ -95,8 +94,7 @@ describe("GET /markets", () => {
         where: expect.objectContaining({
           id: { gt: "market-1" },
         }),
-      }),
-      expect.anything(),
+      })
     );
   });
 
@@ -209,8 +207,7 @@ describe("GET /markets/:id", () => {
         where: expect.objectContaining({
           deletedAt: null,
         }),
-      }),
-      expect.anything(),
+      })
     );
   });
 
