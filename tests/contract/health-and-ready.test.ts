@@ -44,14 +44,16 @@ describe("Health and readiness probes (#559)", () => {
       expect(["ok", "degraded"]).toContain(body.status);
     });
 
-    it("includes service info and dependencies", async () => {
+    it("includes service info but no dependency checks", async () => {
       const res = await server.inject({ method: "GET", url: "/v1/health" });
       const body = res.json();
       expect(body).toHaveProperty("service");
       expect(body).toHaveProperty("version");
       expect(body).toHaveProperty("uptime");
       expect(body).toHaveProperty("timestamp");
-      expect(body).toHaveProperty("dependencies");
+      // Liveness must not run dependency checks — a DB blip must never
+      // restart a healthy pod (README "Health vs. readiness probes").
+      expect(body).not.toHaveProperty("dependencies");
     });
   });
 
@@ -71,6 +73,31 @@ describe("Health and readiness probes (#559)", () => {
       expect(body.dependencies).toHaveProperty("indexFreshness");
       expect(body.dependencies.database).toHaveProperty("status");
       expect(body.dependencies.indexFreshness).toHaveProperty("status");
+    });
+
+    it("includes a stable error code and correlation id", async () => {
+      const res = await server.inject({
+        method: "GET",
+        url: "/v1/ready",
+        headers: { "x-correlation-id": "corr-contract-1" },
+      });
+      const body = res.json();
+      expect(["OK", "DEPENDENCY_UNAVAILABLE", "DEPENDENCY_TIMEOUT"]).toContain(
+        body.code
+      );
+      expect(body.correlationId).toBe("corr-contract-1");
+      expect(res.headers["x-correlation-id"]).toBe("corr-contract-1");
+    });
+
+    it("never leaks connection strings or credentials in the response (#1141)", async () => {
+      const res = await server.inject({ method: "GET", url: "/v1/ready" });
+      // Probe bodies carry only dependency names, coarse statuses, fixed
+      // reasons, and ids — never URLs, userinfo, or host:port pairs.
+      expect(res.body).not.toMatch(/:\/\//);
+      expect(res.body).not.toMatch(
+        /(?:password|passwd|secret|token|api[_-]?key)/i
+      );
+      expect(res.body).not.toMatch(/\b\d{1,3}(?:\.\d{1,3}){3}:\d+\b/);
     });
 
     it("returns 200 when all dependencies are healthy", async () => {

@@ -63,6 +63,19 @@ export const openApiSpec = {
                   type: "object",
                   properties: {
                     ready: { type: "boolean", example: true },
+                    code: {
+                      type: "string",
+                      enum: ["OK"],
+                      example: "OK",
+                      description:
+                        "Stable error code; OK when every critical dependency is reachable.",
+                    },
+                    correlationId: {
+                      type: "string",
+                      example: "3f6c1a3e-8a1f-4b7e-9d2c-5f0a1b2c3d4e",
+                      description:
+                        "Echoes x-correlation-id (or the request id) for cross-referencing probe logs.",
+                    },
                     dependencies: {
                       type: "object",
                       properties: {
@@ -87,6 +100,19 @@ export const openApiSpec = {
                   type: "object",
                   properties: {
                     ready: { type: "boolean", example: false },
+                    code: {
+                      type: "string",
+                      enum: ["DEPENDENCY_UNAVAILABLE", "DEPENDENCY_TIMEOUT"],
+                      example: "DEPENDENCY_UNAVAILABLE",
+                      description:
+                        "Stable error code. Probe responses never include connection strings, credentials, or hostnames.",
+                    },
+                    correlationId: {
+                      type: "string",
+                      example: "3f6c1a3e-8a1f-4b7e-9d2c-5f0a1b2c3d4e",
+                      description:
+                        "Echoes x-correlation-id (or the request id) for cross-referencing probe logs.",
+                    },
                     dependencies: {
                       type: "object",
                       properties: {
