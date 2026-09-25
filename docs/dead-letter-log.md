@@ -126,6 +126,53 @@ pnpm dlq discard   --queue oracle --job <jobId> --yes
 - Unit tests: `apps/workers/src/consumers/bullmq-dlq.test.ts`. Integration
   test (real Redis + worker): `tests/integration/bullmq-dlq.test.ts`.
 
+### Raw-stream replay CLI (`pnpm replay:dlq`)
+
+`scripts/replay-dlq.ts` (pure helpers in `scripts/replay-dlq.lib.ts`) is the
+operator tool for the raw `vatix:dead-letter:*` streams written by
+`logDeadLetter()`. It reads each entry, re-enqueues the payload to
+`{prefix}{queue}`, and removes the entry only after the re-enqueue succeeds.
+
+```bash
+pnpm replay:dlq                                # replay every queue
+pnpm replay:dlq --queue settlement             # one queue only
+pnpm replay:dlq --queue settlement --limit 10  # cap entries per run
+pnpm replay:dlq --dry-run                      # preview, mutates nothing
+pnpm replay:dlq --queue settlement --yes       # confirm a production run
+```
+
+Production safeguards (#1136):
+
+- **Confirmation gate:** in `NODE_ENV=production` any run without `--dry-run`
+  refuses to start unless `--yes` is passed (exit code 2) — same policy as
+  `pnpm dlq`.
+- **Strict arguments:** unknown flags, a malformed `--limit`, or a `--queue`
+  containing glob metacharacters (`*`, `?`, `[`, ...) are usage errors (exit
+  code 2) — the filter never widens a `SCAN MATCH` beyond the named stream.
+- **Correlation ID:** every log line is structured JSON carrying a
+  per-invocation `correlationId` for stitching an operator session back to its
+  audit trail.
+- **Payload redaction:** payloads are never logged — entries are identified by
+  `payloadType` and `payloadHash` (SHA-256, the same algorithm as
+  `logDeadLetter`), so secrets cannot leak into terminal scrollback or log
+  aggregators.
+- **Fail-closed replay:** an entry whose payload cannot be flattened into
+  stream fields (primitive, array, or empty object) is _kept_ in the DLQ and
+  counted as a failure — it is never deleted without a re-enqueue. Any failure
+  during a run makes the script exit `1`.
+- **At-least-once:** replaying twice re-enqueues twice; dedupe lives in the
+  consumers (e.g. the settlement worker's idempotency lock), never in this
+  script. Always `--dry-run` first in production.
+
+Unit tests: `tests/replay-dlq.test.ts`.
+
+## Related Documentation
+
+- [Architecture Overview](architecture.md) — How workers fit into the system
+- [Graceful Shutdown](graceful-shutdown.md) — Worker shutdown patterns
+- [Logger](logger.md) — Structured logging conventions
+- [Incident Runbook — Incident 6](runbooks/incident-runbook.md#incident-6-queue-backlog-settlement--oracle-submission) — queue backlog response
+
 ## Related Documentation
 
 - [Architecture Overview](architecture.md) — How workers fit into the system
