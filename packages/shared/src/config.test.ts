@@ -4,6 +4,8 @@ import {
   loadIndexerConfig,
   loadOracleWorkerConfig,
   loadFinalizationConfig,
+  assertHorizonUrlMatchesNetwork,
+  defaultHorizonUrlForNetwork,
   ConfigValidationError,
 } from "./config.js";
 
@@ -57,6 +59,102 @@ describe("loadBaseConfig", () => {
   it("uses PORT from env when provided", () => {
     const config = loadBaseConfig({ ...BASE_ENV, PORT: "4000" });
     expect(config.port).toBe(4000);
+  });
+});
+
+describe("assertHorizonUrlMatchesNetwork (#1134)", () => {
+  it("accepts the testnet Horizon host for testnet", () => {
+    expect(() =>
+      assertHorizonUrlMatchesNetwork(
+        "https://horizon-testnet.stellar.org",
+        "testnet"
+      )
+    ).not.toThrow();
+  });
+
+  it("accepts the mainnet Horizon host for mainnet", () => {
+    expect(() =>
+      assertHorizonUrlMatchesNetwork("https://horizon.stellar.org", "mainnet")
+    ).not.toThrow();
+  });
+
+  it("rejects the testnet Horizon host on a mainnet deployment", () => {
+    expect(() =>
+      assertHorizonUrlMatchesNetwork(
+        "https://horizon-testnet.stellar.org",
+        "mainnet"
+      )
+    ).toThrow(/belongs to Stellar testnet.*STELLAR_NETWORK="mainnet"/);
+  });
+
+  it("rejects the mainnet Horizon host on a testnet deployment", () => {
+    expect(() =>
+      assertHorizonUrlMatchesNetwork("https://horizon.stellar.org", "testnet")
+    ).toThrow(/belongs to Stellar mainnet.*STELLAR_NETWORK="testnet"/);
+  });
+
+  it("rejects a self-hosted hostname whose tokens say testnet while on mainnet", () => {
+    expect(() =>
+      assertHorizonUrlMatchesNetwork(
+        "https://horizon.testnet.internal.example.com",
+        "mainnet"
+      )
+    ).toThrow(/STELLAR_HORIZON_URL/);
+  });
+
+  it("allows self-hosted hosts with no network signal", () => {
+    expect(() =>
+      assertHorizonUrlMatchesNetwork(
+        "https://horizon.internal.example.com",
+        "mainnet"
+      )
+    ).not.toThrow();
+  });
+
+  it("rejects a malformed URL fail-closed", () => {
+    expect(() =>
+      assertHorizonUrlMatchesNetwork("not a url", "testnet")
+    ).toThrow(/STELLAR_HORIZON_URL is not a valid URL/);
+  });
+
+  it("skips unknown/custom networks", () => {
+    expect(() =>
+      assertHorizonUrlMatchesNetwork(
+        "https://horizon-testnet.stellar.org",
+        "futurenet"
+      )
+    ).not.toThrow();
+  });
+
+  it("defaults the Horizon URL by network", () => {
+    expect(defaultHorizonUrlForNetwork("mainnet")).toBe(
+      "https://horizon.stellar.org"
+    );
+    expect(defaultHorizonUrlForNetwork("testnet")).toBe(
+      "https://horizon-testnet.stellar.org"
+    );
+  });
+
+  it("is enforced by loadBaseConfig: mainnet without an explicit URL gets the mainnet default", () => {
+    const config = loadBaseConfig({ ...BASE_ENV, STELLAR_NETWORK: "mainnet" });
+    expect(config.stellarHorizonUrl).toBe("https://horizon.stellar.org");
+  });
+
+  it("is enforced by loadBaseConfig: mainnet + explicit testnet Horizon fails closed", () => {
+    expect(() =>
+      loadBaseConfig({
+        ...BASE_ENV,
+        STELLAR_NETWORK: "mainnet",
+        STELLAR_HORIZON_URL: "https://horizon-testnet.stellar.org",
+      })
+    ).toThrow(/STELLAR_HORIZON_URL.*does not match STELLAR_NETWORK="mainnet"/);
+  });
+
+  it("keeps the testnet default when nothing is configured", () => {
+    const config = loadBaseConfig(BASE_ENV);
+    expect(config.stellarHorizonUrl).toBe(
+      "https://horizon-testnet.stellar.org"
+    );
   });
 });
 

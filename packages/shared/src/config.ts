@@ -215,6 +215,89 @@ function loadUrl(name: string, env: Env, allowedProtocols: string[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Horizon URL ↔ network consistency (#1134)
+// ---------------------------------------------------------------------------
+
+/**
+ * Known public Horizon hosts and the network each one serves, keyed by the
+ * identifier accepted in `STELLAR_NETWORK`. Hosts are public infrastructure —
+ * safe to echo in boot-time error messages.
+ */
+export const KNOWN_HORIZON_NETWORK_HOSTS = {
+  testnet: ["horizon-testnet.stellar.org"],
+  mainnet: ["horizon.stellar.org"],
+} as const;
+
+/** Network-appropriate default Horizon URL when STELLAR_HORIZON_URL is unset. */
+export function defaultHorizonUrlForNetwork(network: string): string {
+  return network.trim().toLowerCase() === "mainnet"
+    ? "https://horizon.stellar.org"
+    : "https://horizon-testnet.stellar.org";
+}
+
+/**
+ * Best-effort network affinity of a Horizon hostname: exact matches against
+ * {@link KNOWN_HORIZON_NETWORK_HOSTS}, then a `testnet`/`mainnet` token in a
+ * self-hosted hostname (e.g. `horizon.testnet.internal.example.com`).
+ * Returns undefined when the host gives no signal — self-hosted Horizon
+ * instances cannot be verified from the URL alone and are allowed.
+ */
+function horizonHostNetwork(hostname: string): string | undefined {
+  for (const [network, hosts] of Object.entries(KNOWN_HORIZON_NETWORK_HOSTS)) {
+    if ((hosts as readonly string[]).includes(hostname)) return network;
+  }
+  const tokens = hostname.split(/[^a-z0-9]+/);
+  if (tokens.includes("testnet")) return "testnet";
+  if (tokens.includes("mainnet")) return "mainnet";
+  return undefined;
+}
+
+/**
+ * Asserts that the configured Horizon URL belongs to the network declared by
+ * `STELLAR_NETWORK` (issue #1134). Fail-closed: a Horizon endpoint on the
+ * wrong network would submit account/ledger reads against the wrong chain
+ * while the deployment believes it is on another one.
+ *
+ * Skip semantics: unknown/custom `STELLAR_NETWORK` values are skipped (no
+ * known-good host set), and self-hosted hosts without a `testnet`/`mainnet`
+ * token are allowed because they cannot be verified from the URL alone.
+ *
+ * @param horizonUrl - Resolved STELLAR_HORIZON_URL (after defaulting)
+ * @param network - Declared deployment network (STELLAR_NETWORK)
+ * @throws {ConfigValidationError} when the URL is malformed or network-mismatched
+ */
+export function assertHorizonUrlMatchesNetwork(
+  horizonUrl: string,
+  network: string
+): void {
+  const normalized = network.trim().toLowerCase();
+  if (!(normalized in KNOWN_HORIZON_NETWORK_HOSTS)) return;
+
+  let hostname: string;
+  try {
+    hostname = new URL(horizonUrl).hostname.toLowerCase();
+  } catch {
+    throw new ConfigValidationError(
+      `STELLAR_HORIZON_URL is not a valid URL (expected format: https://host), got: ${JSON.stringify(horizonUrl)}`
+    );
+  }
+
+  if (!hostname) {
+    throw new ConfigValidationError(
+      "STELLAR_HORIZON_URL must include a hostname"
+    );
+  }
+
+  const hostNetwork = horizonHostNetwork(hostname);
+  if (hostNetwork !== undefined && hostNetwork !== normalized) {
+    throw new ConfigValidationError(
+      `STELLAR_HORIZON_URL host "${hostname}" belongs to Stellar ${hostNetwork}, which does not match STELLAR_NETWORK="${normalized}": ` +
+        `expected a ${normalized} Horizon endpoint (e.g. ${defaultHorizonUrlForNetwork(normalized)})`
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Base config — consumed by API server, and optionally by other services
 // ---------------------------------------------------------------------------
 
@@ -289,11 +372,19 @@ export function loadBaseConfig(env: Env = processEnv): BaseConfig {
     redisUrl: loadUrl("REDIS_URL", env, ["redis:", "rediss:"]),
     stellarRpcUrl: loadUrl("STELLAR_RPC_URL", env, ["https:", "http:"]),
     stellarNetwork: optionalString("STELLAR_NETWORK", "testnet", env),
-    stellarHorizonUrl: optionalString(
-      "STELLAR_HORIZON_URL",
-      "https://horizon-testnet.stellar.org",
-      env
-    ),
+    stellarHorizonUrl: (() => {
+      // Network-matched default and validation (#1134): a mainnet deployment
+      // must not silently fall back to — or be configured with — the testnet
+      // Horizon host. Fail closed on mismatch before anything boots.
+      const network = optionalString("STELLAR_NETWORK", "testnet", env);
+      const horizonUrl = optionalString(
+        "STELLAR_HORIZON_URL",
+        defaultHorizonUrlForNetwork(network),
+        env
+      );
+      assertHorizonUrlMatchesNetwork(horizonUrl, network);
+      return horizonUrl;
+    })(),
     oracleChallengeWindowSeconds: requirePositiveInt(
       "ORACLE_CHALLENGE_WINDOW_SECONDS",
       env,
