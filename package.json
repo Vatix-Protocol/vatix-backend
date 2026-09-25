@@ -43,14 +43,18 @@
     "test:matching": "vitest run src/matching",
     "matching:test": "vitest run src/matching",
     "prepare": "husky install",
+    "engines:check": "tsx scripts/check-engines.ts",
     "generate:keypair": "tsx scripts/generate-keypair.ts",
     "load-test:orders": "tsx scripts/load-test-orders.ts",
+    "replay:market": "tsx scripts/replay-market.ts",
+    "replay:dlq": "tsx scripts/replay-dlq.ts",
+    "dlq": "tsx scripts/dlq.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
   "engines": {
     "node": ">=22.0.0",
-    "pnpm": ">=8.0.0",
+    "pnpm": ">=10.0.0",
     "npm": "please-use-pnpm",
     "yarn": "please-use-pnpm"
   },
@@ -93,6 +97,9 @@
     "*.ts": [
       "prettier --write",
       "tsc-files --noEmit"
+    ],
+    "{apps,packages}/**/*.ts": [
+      "tsc-files -p apps/tsconfig.json --noEmit"
     ],
     "*.{js,json,md,yml,yaml}": [
       "prettier --write"

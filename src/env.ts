@@ -92,6 +92,22 @@ export const apiEnvSchema = z.object({
       .default(3000)
   ),
   DATABASE_URL: postgresUrlSchema,
+  /**
+   * Max size of the pg.Pool used by the Prisma adapter (#806, ties to #742).
+   * Recommended defaults documented in .env.example — tune per environment.
+   */
+  DATABASE_POOL_SIZE: positiveInt("DATABASE_POOL_SIZE").default(10),
+  /**
+   * Max size of the pg.Pool used by the read-only analytics Prisma client
+   * (#979). Kept small and independent of DATABASE_POOL_SIZE so heavy
+   * analytics queries cannot exhaust connections the matching/OLTP path
+   * needs — this bound matters most when ANALYTICS_DATABASE_URL is unset and
+   * the analytics client shares the primary database (dev/test only;
+   * production requires a dedicated replica). Default: 5.
+   */
+  ANALYTICS_DATABASE_POOL_SIZE: positiveInt(
+    "ANALYTICS_DATABASE_POOL_SIZE"
+  ).default(5),
   ORACLE_CHALLENGE_WINDOW_SECONDS: positiveInt(
     "ORACLE_CHALLENGE_WINDOW_SECONDS"
   ).default(86400),
@@ -123,6 +139,63 @@ export const apiEnvSchema = z.object({
       .transform((value) => value === "true")
   ),
   ANALYTICS_DATABASE_URL: optionalPostgresUrlSchema("ANALYTICS_DATABASE_URL"),
+  /**
+   * Per-transaction Postgres `statement_timeout` (ms) applied to unbounded
+   * read paths such as `GET /v1/markets` via
+   * `DatabaseService.withStatementTimeout` (#983). Bounds a pathological or
+   * unindexed query so it aborts instead of pinning a pool connection — and
+   * stalling the event loop behind it — indefinitely.
+   * Configured via DATABASE_STATEMENT_TIMEOUT_MS (default: 5000). An empty
+   * value is treated as unset and falls back to the default.
+   */
+  DATABASE_STATEMENT_TIMEOUT_MS: z.preprocess(
+    emptyToUndefined,
+    z.coerce
+      .number({
+        invalid_type_error:
+          "Environment variable DATABASE_STATEMENT_TIMEOUT_MS must be a positive integer",
+      })
+      .int(
+        "Environment variable DATABASE_STATEMENT_TIMEOUT_MS must be a positive integer"
+      )
+      .min(
+        1,
+        "Environment variable DATABASE_STATEMENT_TIMEOUT_MS must be a positive integer"
+      )
+      .default(5_000)
+  ),
+  /**
+   * @deprecated Static admin bearer token, superseded by the rotatable
+   * AdminIdentity model. Declared here so the value flows through this single
+   * Zod schema instead of being read ad-hoc from `process.env` in
+   * `src/config.ts` (#984 — one parser, no undeclared env).
+   *
+   * Production/dev split: in `NODE_ENV=production` a non-empty `ADMIN_TOKEN`
+   * is a hard startup failure (it is a fail-open auth path and must not
+   * ship); in development/test it is tolerated as a local stub. The
+   * production check lives in `parseApiEnv` so `apiEnvSchema` stays a plain
+   * object (its `.shape` is consumed by tooling and tests).
+   */
+  ADMIN_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  /**
+   * Maximum request body size in bytes. Requests exceeding this are rejected
+   * with 413 before any route handler runs. Defaults to 64 KB (65536 bytes).
+   * See docs/body-limit.md.
+   */
+  BODY_LIMIT_BYTES: z.preprocess(
+    emptyToUndefined,
+    z.coerce
+      .number({
+        invalid_type_error:
+          "Environment variable BODY_LIMIT_BYTES must be a positive integer",
+      })
+      .int("Environment variable BODY_LIMIT_BYTES must be a positive integer")
+      .min(
+        1,
+        "Environment variable BODY_LIMIT_BYTES must be a positive integer"
+      )
+      .default(65_536)
+  ),
 });
 
 export type ParsedApiEnv = z.infer<typeof apiEnvSchema>;
@@ -163,5 +236,19 @@ export function parseApiEnv(env: ApiEnvInput = process.env): ParsedApiEnv {
   if (!result.success) {
     throw new Error(formatZodError(result.error));
   }
-  return result.data;
+
+  const parsed = result.data;
+
+  // Production/dev split (#984): the deprecated static ADMIN_TOKEN is a
+  // fail-open auth path. Fail fast in production; allow it as a local stub
+  // in development/test.
+  if (parsed.NODE_ENV === "production" && parsed.ADMIN_TOKEN) {
+    throw new Error(
+      "ADMIN_TOKEN must not be set when NODE_ENV=production: it is a " +
+        "deprecated fail-open auth path. Use the AdminIdentity model for " +
+        "rotatable admin credentials."
+    );
+  }
+
+  return parsed;
 }

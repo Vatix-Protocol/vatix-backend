@@ -11,6 +11,7 @@ import type {
   DuplicateEventLogger,
 } from "./idempotency.js";
 import { insertAllIfNew, insertIfNew } from "./idempotency.js";
+import { sharesRawToInt } from "./decimalUtils.js";
 import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client/index.js";
@@ -85,6 +86,16 @@ const UNKNOWN_OPERATOR_ADDRESS =
  * P1017 — Server closed the connection
  * 40001 — Serialization failure (Postgres)
  * 40P01 — Deadlock detected (Postgres)
+ * P2002 — Unique constraint violation (#946). Every `create()` issued inside
+ *   this transaction targets a row keyed by `idempotencyKey`, so this code
+ *   can only mean a concurrent batch writer (another instance, or an
+ *   overlapping retry of this same event range under Horizon's
+ *   at-least-once delivery) committed the identical idempotent record
+ *   between our dedup read and our insert. Postgres aborts the whole
+ *   transaction on the conflicting statement, so we cannot locally
+ *   downgrade it to a skip — retrying is safe and correct: the next
+ *   attempt's dedup check will see the now-committed row and classify it
+ *   as a duplicate instead of racing it again.
  */
 const RETRYABLE_PRISMA_CODES = new Set([
   "P1001",
@@ -92,6 +103,7 @@ const RETRYABLE_PRISMA_CODES = new Set([
   "P1017",
   "40001",
   "40P01",
+  "P2002",
 ]);
 
 /**
@@ -328,6 +340,12 @@ export class PrismaBatchWriter implements BatchWriter {
           proposedOutcome: resolution.outcome === "YES",
           source: `${CHAIN_RESOLUTION_SOURCE_PREFIX}:${resolution.contractId}`,
           status: "PROPOSED",
+          operatorAddress:
+            resolution.oracleAddress.trim() !== ""
+              ? resolution.oracleAddress
+              : UNKNOWN_OPERATOR_ADDRESS,
+          idempotencyKey: resolution.idempotencyKey,
+          confidenceScore: resolution.confidenceScore ?? null,
         },
       });
     } else if (record.kind === "collateral_deposited") {
@@ -364,6 +382,26 @@ export class PrismaBatchWriter implements BatchWriter {
     >,
     trade: PersistedTrade
   ): Promise<void> {
+    // #948: validated bigint -> Number boundary (rejects negative/non-integer/
+    // precision-losing quantities) instead of a bare `Number(raw)`, which
+    // silently truncates past Number.MAX_SAFE_INTEGER.
+    let quantity: number;
+    try {
+      quantity = sharesRawToInt(trade.quantityRaw);
+    } catch (err) {
+      this.logger?.warn(
+        "Skipping position reconciliation: invalid trade quantity",
+        {
+          idempotencyKey: trade.idempotencyKey,
+          marketId: trade.marketId,
+          quantityRaw: trade.quantityRaw.toString(),
+          error: err instanceof Error ? err.message : String(err),
+        }
+      );
+      return;
+    }
+    if (quantity <= 0) return;
+
     const delta = trade.direction === "BUY" ? trade.quantityRaw : -trade.quantityRaw;
 
     await tx.indexedPosition.upsert({

@@ -21,7 +21,10 @@ export function getPrismaClient(): PrismaClient {
     const isProduction = config.nodeEnv === "production";
 
     // create postgres connection pool — URL already validated at startup via config
-    pgPool = new Pool({ connectionString: config.databaseUrl });
+    pgPool = new Pool({
+      connectionString: config.databaseUrl,
+      max: config.databasePoolSize,
+    });
     const adapter = new PrismaPg(pgPool);
 
     prismaInstance = new PrismaClient({

@@ -42,11 +42,7 @@ export function toTitleCase(str: string): string {
  * @example truncate("Hello, world!", 8, "...") → "Hello..."
  * @example truncate("Hi", 10)                  → "Hi"
  */
-export function truncate(
-  str: string,
-  maxLen: number,
-  ellipsis = "…"
-): string {
+export function truncate(str: string, maxLen: number, ellipsis = "…"): string {
   if (maxLen < 1) return "";
   if (str.length <= maxLen) return str;
   const cut = maxLen - ellipsis.length;
@@ -100,11 +96,7 @@ export function maskEmail(email: string): string {
  * @example maskPhone("07911123456")            → "079******56"
  * @example maskPhone("07911123456", 4, 4)      → "0791***3456"
  */
-export function maskPhone(
-  phone: string,
-  keepStart = 3,
-  keepEnd = 2
-): string {
+export function maskPhone(phone: string, keepStart = 3, keepEnd = 2): string {
   const digits = phone.replace(/\D/g, "");
   if (digits.length === 0) return "***";
 

@@ -2,6 +2,7 @@ import { xdr, scValToNative } from "@stellar/stellar-sdk";
 import type { RawChainEvent } from "./types.js";
 import { MarketCreatedParseError } from "./types.js";
 import type { NormalizedMarketCreated } from "./types.js";
+import type { Telemetry } from "./telemetry.js";
 
 /**
  * Soroban's #[contractevent] macro derives the topic symbol by snake_casing
@@ -10,6 +11,17 @@ import type { NormalizedMarketCreated } from "./types.js";
  * "market_created_event", not "market_created".
  */
 const MARKET_CREATED_TOPIC = "market_created_event";
+
+/**
+ * Hard cap on `question` length, matching the on-chain contract's
+ * `MAX_QUESTION_LEN` (contracts/market/src/lib.rs) which rejects
+ * MarketCreated submissions with a longer question string. The indexer must
+ * reject — not silently truncate — any payload that exceeds this, otherwise
+ * the off-chain `markets.question` column would desync from what the chain
+ * actually stored/validated, corrupting UI display and any downstream
+ * consumer that assumes indexer state mirrors chain state 1:1.
+ */
+const MAX_QUESTION_LENGTH = 499;
 
 /**
  * Stable error codes for MarketCreated parsing. These are part of the
@@ -163,6 +175,19 @@ export function parseMarketCreatedChainEvent(
   }
 
   const map = decoded as Record<string, unknown>;
+  const question = String(map.question ?? "");
+
+  // Fail loudly rather than truncate (#986-style silent desync): a
+  // question longer than the contract allows means either the contract's
+  // cap changed without this constant being updated, or the event was
+  // mis-decoded — either way, storing a truncated question would silently
+  // diverge from on-chain state instead of surfacing the mismatch.
+  if (question.length > MAX_QUESTION_LENGTH) {
+    throw new MarketCreatedParseError(
+      `question exceeds max length of ${MAX_QUESTION_LENGTH} chars (got ${question.length}): contract cap may have changed`,
+      event.id
+    );
+  }
 
   if (typeof map.question !== "string" || map.question.length === 0) {
     throw new MarketCreatedParseError(
@@ -179,7 +204,7 @@ export function parseMarketCreatedChainEvent(
     ledgerClosedAt: event.ledgerClosedAt,
     contractId: event.contractId,
     marketId: String(marketIdRaw),
-    question: map.question,
+    question,
     endTime: toIsoEndTime(map.end_time, event.id),
     oracleAddress: "",
     status: "ACTIVE",
@@ -196,16 +221,28 @@ export function parseMarketCreatedChainEvent(
  * exactly once. The first occurrence wins; later duplicates are dropped
  * silently rather than surfaced as errors.
  */
-export function parseMarketCreatedEvents(events: RawChainEvent[]): {
+export function parseMarketCreatedEvents(
+  events: RawChainEvent[],
+  options?: { telemetry?: Telemetry }
+): {
   markets: NormalizedMarketCreated[];
   errors: MarketCreatedParseError[];
 } {
   const markets: NormalizedMarketCreated[] = [];
   const errors: MarketCreatedParseError[] = [];
   const seen = new Set<string>();
+  const telemetry = options?.telemetry;
 
   for (const event of events) {
-    if (!isMarketCreatedEvent(event.topicsXdr)) continue;
+    if (!isMarketCreatedEvent(event.topicsXdr)) {
+      telemetry?.record("indexer.parser.unknown_topics", 1, {
+        parser: "market_created",
+        eventId: event.id,
+        contractId: event.contractId,
+        ledger: String(event.ledger),
+      });
+      continue;
+    }
 
     const dedupeKey = `${event.ledger}:${event.eventIndex}`;
     if (seen.has(dedupeKey)) continue;

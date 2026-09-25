@@ -94,6 +94,32 @@ After completing the rollback:
 
 ---
 
+## Recent Migrations
+
+### `20260724074257_add_soft_delete_to_markets`
+
+Adds a nullable `deleted_at TIMESTAMP(3)` column to `markets` plus `markets_deleted_at_idx`.
+
+- **Rollback**: `DROP INDEX IF EXISTS "markets_deleted_at_idx";` then `ALTER TABLE "markets" DROP COLUMN IF EXISTS "deleted_at";`
+- **Caveat**: this migration is additive (the column is nullable, no default required), so it is safely reversible on its own. However, any code deployed after this migration that has started soft-deleting rows (setting `deleted_at`) will lose that soft-delete state if the column is dropped — those rows will look active again. Confirm no application code is relying on `deleted_at` before rolling back, or you will need to re-derive which rows were soft-deleted from application logs/audit tables.
+
+### `20260724080000_add_trades_traded_at_index`
+
+Adds `trades_traded_at_idx` (`DESC`) on `trades.traded_at`.
+
+- **Rollback**: `DROP INDEX IF EXISTS "trades_traded_at_idx";`
+- **Caveat**: purely additive and safe to drop with no data loss. Watch for query-plan regressions on trade-history endpoints that order/filter by `traded_at` — rolling back removes the index they may now depend on.
+
+## Expand/Contract Hazards
+
+Migrations in this repo increasingly follow an **expand/contract** pattern (add the new shape, migrate/dual-write, then drop the old shape in a later migration). This has specific rollback implications:
+
+- **Rolling back an "expand" migration** (e.g. adding a new nullable column or index, such as both migrations above) is generally safe — nothing depended on it yet, or the application can tolerate its absence.
+- **Rolling back a "contract" migration** (one that drops a column, table, or constraint that a previous "expand" step introduced) is **not safely reversible** — the dropped data is gone. Never roll back a contract migration without a pre-migration backup, and treat `pnpm prisma:validate`'s `DROP TABLE`/`DROP COLUMN`/`DROP INDEX` warnings (see [migrations.md](./migrations.md#migration-validation)) as a signal to double-check which phase of an expand/contract pair you're reverting.
+- If a failed deployment spans **both** an expand and a contract migration (e.g. a later migration drops a column added earlier), roll back in reverse order — contract migration first, then expand — and re-verify application compatibility at each step.
+
+---
+
 ## Notes
 
 - Always test rollback procedures in **staging** before a production incident occurs.
@@ -102,4 +128,4 @@ After completing the rollback:
 
 ---
 
-_Linked from: [Deployment Runbook](./deployment-runbook.md)_
+_Linked from: [Deployment Runbook](./deployment-runbook.md) · [Migration Guide](./migrations.md)_

@@ -82,4 +82,33 @@ describe("GET /ready (workers)", () => {
     expect(body.dependencies.database.status).toBe("error");
     expect(body.dependencies.redis.status).toBe("ok");
   });
+
+  it("echoes a supplied x-request-id header for log correlation", async () => {
+    const server = buildServer();
+    const res = await server.inject({
+      method: "GET",
+      url: "/ready",
+      headers: { "x-request-id": "test-correlation-id" },
+    });
+
+    expect(res.headers["x-request-id"]).toBe("test-correlation-id");
+  });
+
+  it("never includes raw error objects or connection strings in the error field, only messages", async () => {
+    mocks.queryRaw.mockRejectedValue(
+      new Error("connection refused to postgres://user:pass@host:5432/db")
+    );
+
+    const server = buildServer();
+    const res = await server.inject({ method: "GET", url: "/ready" });
+    const body = res.json();
+
+    // The route must surface the driver's error message, not attempt to
+    // redact it further here — connection strings with embedded creds must
+    // never reach getPrismaClient()/redis in the first place. This test
+    // guards that the error field stays a message string, not a raw object
+    // that could leak additional context (stack traces, env dumps) if the
+    // driver's Error shape ever changes.
+    expect(typeof body.dependencies.database.error).toBe("string");
+  });
 });

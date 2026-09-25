@@ -258,3 +258,42 @@ describe("FallbackAdapter", () => {
     });
   });
 });
+
+describe("FallbackAdapter timeout policy (#992)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("defaults to the documented fallback timeout policy", () => {
+    const adapter = makeAdapter();
+    expect(adapter.getSource()).toBe("fallback");
+  });
+
+  it("fails fast on construction when timeoutMs is out of range in production", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() => makeAdapter({ timeoutMs: 999_999 })).toThrow(
+      /refusing to silently clamp/i
+    );
+  });
+
+  it("clamps an out-of-range timeoutMs outside production instead of throwing", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    expect(() => makeAdapter({ timeoutMs: 999_999 })).not.toThrow();
+  });
+
+  it("fails fast on a per-request timeout override that is out of range in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(okResponse({ outcome: true, confidence: 0.9 }));
+    const adapter = makeAdapter({ fetchFn });
+
+    await expect(
+      adapter.resolve({
+        marketId: "market-1",
+        oracleAddress: "GORACLE",
+        timeoutMs: 500,
+      })
+    ).rejects.toThrow(/refusing to silently clamp/i);
+  });
+});

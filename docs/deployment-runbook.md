@@ -90,6 +90,67 @@ hard kill. See [Graceful Shutdown](graceful-shutdown.md) for the implementation
 pattern and per-process timeout configuration
 (`WORKERS_SHUTDOWN_TIMEOUT_MS` in `.env.example`).
 
+## Scaling the API / Matching Leader Lease
+
+The API container is safe to run at more than one replica for HTTP
+throughput, **but only one replica may match orders at a time.** Each API
+process competes for a Redis-backed leader lease with a monotonic fencing
+token (`src/matching/leader-lease.ts`); only the current holder hydrates
+order books and accepts `POST /v1/orders`. See
+[Architecture — Order placement](architecture.md#order-placement) for how
+this fits into the request path.
+
+- **Fencing under contention** (#956): leadership is checked twice per
+  `placeOrder` call — once at entry, and again immediately after the
+  per-book mutex is acquired. The mutex wait for a busy book is unbounded,
+  so a request can be enqueued while this instance is still the leader and
+  only reach its turn after losing the lease to a new (higher-token) holder;
+  the second check rejects that request with `503 matching_unavailable`
+  instead of letting a fenced instance commit a match. Both checks are a
+  local field read (`leaderLease.isLeader()`), not a Redis round-trip, so
+  this adds no latency to the hot path.
+
+- **Non-leader behavior**: instances that do not hold the lease still serve
+  everything else normally (health/ready probes, market/position/fill reads,
+  order cancellation) — only order _placement_ is gated. A non-leader
+  returns `503` with error code `matching_unavailable` for `POST
+/v1/orders`. This is expected and does not indicate an unhealthy pod; do
+  not configure liveness/readiness probes to key off this response.
+- **Failover time**: the lease TTL and heartbeat interval are configurable
+  via `MATCHING_LEASE_TTL_MS` (default `15000`) and
+  `MATCHING_LEASE_RENEW_INTERVAL_MS` (default `5000`). After the leader is
+  killed ungracefully (crash, OOM), expect matching to be unavailable
+  cluster-wide for up to `MATCHING_LEASE_TTL_MS` while the lease expires and
+  a standby acquires it. A graceful shutdown (`SIGTERM`) releases the lease
+  immediately so a standby can take over without waiting out the TTL.
+- **Rehydration safety on handover** (#955): losing the lease drops every
+  in-memory book (`invalidateAllBooks()`); acquiring it re-hydrates every
+  active market's books from PostgreSQL OPEN/PARTIALLY_FILLED orders
+  (`hydrateAllActiveMarkets()`). Each book's rehydration is queued behind
+  that same book's per-order mutex — the one `POST /v1/orders` and
+  `DELETE /v1/orders/:id` hold for the duration of a match/cancel — so a
+  rehydration triggered while this instance still has in-flight matches for
+  a book can never read a DB snapshot from _before_ those commits and clobber
+  the in-memory book with stale (already-filled) resting orders. No operator
+  action needed; this is transparent to clients.
+- **Monitoring**: scrape `vatix_matching_leader` (gauge, 1 on the current
+  holder / 0 everywhere else) and `vatix_matching_lease_renew_failures_total`
+  (counter) from `GET /metrics` on every replica. Alert if:
+  - No replica reports `vatix_matching_leader == 1` for longer than a couple
+    of lease TTLs (matching is stuck unavailable cluster-wide).
+  - More than one replica reports `vatix_matching_leader == 1`
+    simultaneously (would indicate a fencing bug — treat as a production
+    incident, not a metrics glitch).
+  - A rising rate of `vatix_matching_lease_renew_failures_total` on the
+    current holder (at risk of an imminent, possibly avoidable, handover).
+- **Read replicas**: any replica may safely serve `GET` endpoints (markets,
+  positions, fills, order book depth) regardless of lease status — those
+  reads go through PostgreSQL/Redis cache, not the in-memory book, so they
+  stay correct even on a non-leader. Only the _authoritative_ in-memory book
+  used for matching is lease-gated; a non-leader proactively drops its
+  in-memory books on lease loss rather than risk serving stale depth as
+  authoritative.
+
 ## If Something Goes Wrong
 
 See the [Incident Response Runbook](./runbooks/incident-runbook.md) for
@@ -102,3 +163,4 @@ service-specific triage steps (indexer lag, DB outages, RPC outages, etc.).
 - [Incident Response Runbook](./runbooks/incident-runbook.md)
 - [Graceful Shutdown](graceful-shutdown.md)
 - [Architecture Overview](architecture.md)
+- [Metrics](metrics.md)

@@ -1,0 +1,196 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`cross-book sweep fill scenarios (snapshots) > independently sweeps both YES and NO books for the same market in one run 1`] = `
+{
+  "noResult": {
+    "positionDeltas": [
+      {
+        "noSharesDelta": 60,
+        "userAddress": "GTAKERN020",
+        "yesSharesDelta": 0,
+      },
+      {
+        "noSharesDelta": -40,
+        "userAddress": "GMAKERN020",
+        "yesSharesDelta": 0,
+      },
+      {
+        "noSharesDelta": -20,
+        "userAddress": "GMAKERN021",
+        "yesSharesDelta": 0,
+      },
+    ],
+    "remainingOrder": null,
+    "trades": [
+      {
+        "buyOrderId": "taker-no-2",
+        "buyerAddress": "GTAKERN020",
+        "id": "trade_taker-no-2_no-maker-1_40_1700000000000",
+        "marketId": "market-cross-book",
+        "outcome": "NO",
+        "price": 0.42,
+        "quantity": 40,
+        "sellOrderId": "no-maker-1",
+        "sellerAddress": "GMAKERN020",
+        "timestamp": 1700000000000,
+      },
+      {
+        "buyOrderId": "taker-no-2",
+        "buyerAddress": "GTAKERN020",
+        "id": "trade_taker-no-2_no-maker-2_20_1700000000000",
+        "marketId": "market-cross-book",
+        "outcome": "NO",
+        "price": 0.48,
+        "quantity": 20,
+        "sellOrderId": "no-maker-2",
+        "sellerAddress": "GMAKERN021",
+        "timestamp": 1700000000000,
+      },
+    ],
+  },
+  "yesResult": {
+    "positionDeltas": [
+      {
+        "noSharesDelta": 0,
+        "userAddress": "GTAKERY020",
+        "yesSharesDelta": 60,
+      },
+      {
+        "noSharesDelta": 0,
+        "userAddress": "GMAKERY020",
+        "yesSharesDelta": -40,
+      },
+      {
+        "noSharesDelta": 0,
+        "userAddress": "GMAKERY021",
+        "yesSharesDelta": -20,
+      },
+    ],
+    "remainingOrder": null,
+    "trades": [
+      {
+        "buyOrderId": "taker-yes-2",
+        "buyerAddress": "GTAKERY020",
+        "id": "trade_taker-yes-2_yes-maker-1_40_1700000000000",
+        "marketId": "market-cross-book",
+        "outcome": "YES",
+        "price": 0.5,
+        "quantity": 40,
+        "sellOrderId": "yes-maker-1",
+        "sellerAddress": "GMAKERY020",
+        "timestamp": 1700000000000,
+      },
+      {
+        "buyOrderId": "taker-yes-2",
+        "buyerAddress": "GTAKERY020",
+        "id": "trade_taker-yes-2_yes-maker-2_20_1700000000000",
+        "marketId": "market-cross-book",
+        "outcome": "YES",
+        "price": 0.55,
+        "quantity": 20,
+        "sellOrderId": "yes-maker-2",
+        "sellerAddress": "GMAKERY021",
+        "timestamp": 1700000000000,
+      },
+    ],
+  },
+}
+`;
+
+exports[`cross-book sweep fill scenarios (snapshots) > sweeps the NO book across price levels while the YES book stays untouched 1`] = `
+{
+  "positionDeltas": [
+    {
+      "noSharesDelta": 65,
+      "userAddress": "GTAKERN010",
+      "yesSharesDelta": 0,
+    },
+    {
+      "noSharesDelta": -20,
+      "userAddress": "GMAKERN010",
+      "yesSharesDelta": 0,
+    },
+    {
+      "noSharesDelta": -45,
+      "userAddress": "GMAKERN011",
+      "yesSharesDelta": 0,
+    },
+  ],
+  "remainingOrder": null,
+  "trades": [
+    {
+      "buyOrderId": "taker-no-1",
+      "buyerAddress": "GTAKERN010",
+      "id": "trade_taker-no-1_no-maker-1_20_1700000000000",
+      "marketId": "market-cross-book",
+      "outcome": "NO",
+      "price": 0.3,
+      "quantity": 20,
+      "sellOrderId": "no-maker-1",
+      "sellerAddress": "GMAKERN010",
+      "timestamp": 1700000000000,
+    },
+    {
+      "buyOrderId": "taker-no-1",
+      "buyerAddress": "GTAKERN010",
+      "id": "trade_taker-no-1_no-maker-2_45_1700000000000",
+      "marketId": "market-cross-book",
+      "outcome": "NO",
+      "price": 0.35,
+      "quantity": 45,
+      "sellOrderId": "no-maker-2",
+      "sellerAddress": "GMAKERN011",
+      "timestamp": 1700000000000,
+    },
+  ],
+}
+`;
+
+exports[`cross-book sweep fill scenarios (snapshots) > sweeps the YES book across price levels while the NO book stays untouched 1`] = `
+{
+  "positionDeltas": [
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GTAKERY001",
+      "yesSharesDelta": 70,
+    },
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GMAKERY001",
+      "yesSharesDelta": -30,
+    },
+    {
+      "noSharesDelta": 0,
+      "userAddress": "GMAKERY002",
+      "yesSharesDelta": -40,
+    },
+  ],
+  "remainingOrder": null,
+  "trades": [
+    {
+      "buyOrderId": "taker-yes-1",
+      "buyerAddress": "GTAKERY001",
+      "id": "trade_taker-yes-1_yes-maker-1_30_1700000000000",
+      "marketId": "market-cross-book",
+      "outcome": "YES",
+      "price": 0.4,
+      "quantity": 30,
+      "sellOrderId": "yes-maker-1",
+      "sellerAddress": "GMAKERY001",
+      "timestamp": 1700000000000,
+    },
+    {
+      "buyOrderId": "taker-yes-1",
+      "buyerAddress": "GTAKERY001",
+      "id": "trade_taker-yes-1_yes-maker-2_40_1700000000000",
+      "marketId": "market-cross-book",
+      "outcome": "YES",
+      "price": 0.45,
+      "quantity": 40,
+      "sellOrderId": "yes-maker-2",
+      "sellerAddress": "GMAKERY002",
+      "timestamp": 1700000000000,
+    },
+  ],
+}
+`;

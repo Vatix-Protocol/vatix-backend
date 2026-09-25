@@ -17,9 +17,25 @@ async function bootstrap(): Promise<void> {
   });
 
   logger.info("Finalization worker started", {
+    component: "finalization-worker",
     intervalMs: config.intervalMs,
     challengeWindowSeconds: config.challengeWindowSeconds,
+    onChainChallengeWindowSeconds: config.onChainChallengeWindowSeconds,
   });
+
+  // Production rejects a drifting override in loadFinalizationConfig; this
+  // branch only fires for dev/test local stubs, which must never be silent.
+  if (config.challengeWindowOverridden) {
+    logger.warn(
+      "Finalization challenge window overridden and drifts from the on-chain resolution contract window",
+      {
+        component: "finalization-worker",
+        challengeWindowSeconds: config.challengeWindowSeconds,
+        onChainChallengeWindowSeconds: config.onChainChallengeWindowSeconds,
+        nodeEnv: process.env.NODE_ENV ?? "development",
+      }
+    );
+  }
 
   let activePollPromise: Promise<void> | null = null;
 

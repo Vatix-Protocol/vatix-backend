@@ -15,6 +15,11 @@ Allowed origins are controlled by the `CORS_ALLOWED_ORIGINS` environment variabl
 | **Production**       | None (empty list — must be explicitly configured) |
 | **Development/Test** | `http://localhost:3000`, `http://localhost:5173`  |
 
+### Production rules (fail-fast)
+
+1. **`CORS_ALLOWED_ORIGINS` is required in production.** The server refuses to start if the variable is unset or empty — an empty allowlist combined with `credentials: true` would silently block all credentialed browser requests, causing trades and admin actions to be dropped without a useful error.
+2. **All origins must use `https://`.** Any `http://` or scheme-less origin throws a startup error in `NODE_ENV=production`. The shared helper (`packages/shared/src/cors.ts`) enforces this so both the API and any future CORS surface apply the same rule.
+
 ### Configuration Examples
 
 #### Production Setup

@@ -41,15 +41,23 @@ describe("Prisma Schema", () => {
       "OracleReport",
       "UserPosition",
       "ResolutionCandidate",
+      "ResolutionAuditLog",
       "Resolution",
       "Position",
       "IndexerCursor",
       "IndexerProcessedEvent",
       "Trade",
+      "OutboxEvent",
+      "TradeAuditEvent",
+      "TradeStreamWatermark",
+      "AdminAction",
+      "AdminApprovalToken",
       "IndexedTrade",
       "OracleSourceAlias",
       "CollateralDeposit",
+      "PositionReconciliationJob",
+      "DepositReconciliation",
     ]);
-    expect(modelNames).toHaveLength(13);
+    expect(modelNames).toHaveLength(21);
   });
 });

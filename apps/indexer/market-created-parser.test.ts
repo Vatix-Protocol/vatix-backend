@@ -74,7 +74,7 @@ describe("parseMarketCreatedEvent", () => {
       expect(result.data!.status).toBe("ACTIVE");
     });
 
-    it("should accept RESOLVED status", () => {
+    it("should fall back to ACTIVE for non-initial statuses like RESOLVED", () => {
       const event: RawMarketCreatedEvent = {
         ...validEvent,
         status: "RESOLVED",
@@ -82,10 +82,10 @@ describe("parseMarketCreatedEvent", () => {
       const result = parseMarketCreatedEvent(event);
 
       expect(result.success).toBe(true);
-      expect(result.data!.status).toBe("RESOLVED");
+      expect(result.data!.status).toBe("ACTIVE");
     });
 
-    it("should accept CANCELLED status", () => {
+    it("should fall back to ACTIVE for non-initial statuses like CANCELLED", () => {
       const event: RawMarketCreatedEvent = {
         ...validEvent,
         status: "CANCELLED",
@@ -93,7 +93,7 @@ describe("parseMarketCreatedEvent", () => {
       const result = parseMarketCreatedEvent(event);
 
       expect(result.success).toBe(true);
-      expect(result.data!.status).toBe("CANCELLED");
+      expect(result.data!.status).toBe("ACTIVE");
     });
 
     it("should preserve original payload in rawPayload field", () => {
@@ -269,7 +269,10 @@ describe("parseMarketCreatedEvent", () => {
 
     it("should uppercase a lowercase oracleAddress before validation", () => {
       const lower = validEvent.oracleAddress!.toLowerCase();
-      const event: RawMarketCreatedEvent = { ...validEvent, oracleAddress: lower };
+      const event: RawMarketCreatedEvent = {
+        ...validEvent,
+        oracleAddress: lower,
+      };
       const result = parseMarketCreatedEvent(event);
 
       expect(result.success).toBe(true);

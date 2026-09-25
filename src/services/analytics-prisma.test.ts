@@ -3,7 +3,11 @@ import {
   getAnalyticsPrismaClient,
   disconnectAnalyticsPrisma,
   isAnalyticsDatabaseConfigured,
+  getAnalyticsPool,
+  assertAnalyticsDatabaseConfig,
+  AnalyticsDatabaseConfigError,
 } from "./analytics-prisma.js";
+import { config } from "../config.js";
 
 describe("Analytics Prisma Client Service (#743)", () => {
   afterEach(async () => {
@@ -51,5 +55,69 @@ describe("Analytics Prisma Client Service (#743)", () => {
     getAnalyticsPrismaClient();
     await disconnectAnalyticsPrisma();
     await expect(disconnectAnalyticsPrisma()).resolves.toBeUndefined();
+  });
+
+  describe("connection-pool isolation (#979)", () => {
+    it("bounds the analytics pool by ANALYTICS_DATABASE_POOL_SIZE", () => {
+      getAnalyticsPrismaClient();
+      const pool = getAnalyticsPool();
+      expect(pool).not.toBeNull();
+      // pg exposes the resolved options on the pool instance.
+      expect(
+        (pool as unknown as { options: { max: number } }).options.max
+      ).toBe(config.analyticsDatabasePoolSize);
+    });
+
+    it("uses a small default pool cap independent of the primary pool", () => {
+      // Default is 5 and must not simply inherit DATABASE_POOL_SIZE (10).
+      expect(config.analyticsDatabasePoolSize).toBe(5);
+      expect(config.analyticsDatabasePoolSize).toBeLessThan(
+        config.databasePoolSize
+      );
+    });
+  });
+
+  describe("production/dev split (#979)", () => {
+    it("throws in production when no dedicated ANALYTICS_DATABASE_URL is set", () => {
+      expect(() =>
+        assertAnalyticsDatabaseConfig({
+          nodeEnv: "production",
+          databaseUrl: "postgresql://primary/db",
+        })
+      ).toThrow(AnalyticsDatabaseConfigError);
+    });
+
+    it("throws in production when ANALYTICS_DATABASE_URL equals DATABASE_URL", () => {
+      expect(() =>
+        assertAnalyticsDatabaseConfig({
+          nodeEnv: "production",
+          databaseUrl: "postgresql://primary/db",
+          analyticsDatabaseUrl: "postgresql://primary/db",
+        })
+      ).toThrow(/dedicated read replica/);
+    });
+
+    it("allows a distinct replica URL in production", () => {
+      const resolved = assertAnalyticsDatabaseConfig({
+        nodeEnv: "production",
+        databaseUrl: "postgresql://primary/db",
+        analyticsDatabaseUrl: "postgresql://replica/db",
+      });
+      expect(resolved).toEqual({
+        connectionString: "postgresql://replica/db",
+        usingReplica: true,
+      });
+    });
+
+    it("falls back to the primary connection outside production (local stub)", () => {
+      const resolved = assertAnalyticsDatabaseConfig({
+        nodeEnv: "development",
+        databaseUrl: "postgresql://primary/db",
+      });
+      expect(resolved).toEqual({
+        connectionString: "postgresql://primary/db",
+        usingReplica: false,
+      });
+    });
   });
 });

@@ -512,8 +512,9 @@ describe("sanitizeUserAddress", () => {
     const withNewline = valid56.slice(0, 28) + "\n" + valid56.slice(28);
     const sanitized = sanitizeUserAddress(withNewline)!;
     expect(sanitized).not.toContain("\n");
-    // The removed char leaves 55 chars — validateUserAddress correctly rejects it
-    expect(validateUserAddress(sanitized)).not.toBeNull();
+    // Embedding a newline yields 57 chars; stripping it restores a valid 56-char key.
+    expect(sanitized).toHaveLength(56);
+    expect(validateUserAddress(sanitized)).toBeNull();
   });
 
   it("strips carriage-return characters", () => {

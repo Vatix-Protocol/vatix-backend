@@ -29,6 +29,7 @@ import type { FastifyInstance } from "fastify";
 import { Keypair } from "@stellar/stellar-sdk";
 import { ordersRoutes } from "../../src/api/routes/orders.js";
 import { buildSignableMessage } from "../../src/api/middleware/stellarAuth.js";
+import { issueChallenge } from "../../src/api/middleware/nonceStore.js";
 import { buildTestApp, resetRateLimits } from "./helpers/build-test-app.js";
 import { testUtils, getTestPrismaClient } from "../setup.js";
 import {
@@ -49,7 +50,7 @@ const takerAddress = takerKeypair.publicKey();
 const makerAddress = makerKeypair.publicKey();
 const maker2Address = maker2Keypair.publicKey();
 
-function authHeaders(
+async function authHeaders(
   keypair: Keypair,
   body: {
     marketId: string;
@@ -59,12 +60,17 @@ function authHeaders(
     price: number;
     quantity: number;
   }
-): Record<string, string> {
+): Promise<Record<string, string>> {
   const timestamp = Date.now();
+  const { nonce } = await issueChallenge(keypair.publicKey());
   const sig = keypair
-    .sign(buildSignableMessage({ ...body, timestamp }))
+    .sign(buildSignableMessage({ ...body, nonce, timestamp }))
     .toString("base64");
-  return { "x-signature": sig, "x-timestamp": String(timestamp) };
+  return {
+    "x-signature": sig,
+    "x-timestamp": String(timestamp),
+    "x-nonce": nonce,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +126,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -161,7 +167,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -199,7 +205,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -235,7 +241,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -264,7 +270,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -298,7 +304,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -342,7 +348,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -395,7 +401,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -433,7 +439,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -473,7 +479,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -512,11 +518,11 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, p1),
+      headers: await authHeaders(takerKeypair, p1),
       payload: p1,
     });
 
-    // Second fill: 30 more shares
+    // Second fill: 30 more shares (DB seed bypasses the in-memory book)
     await testUtils.createTestOrder(market.id, maker2Address, {
       side: "SELL",
       outcome: "YES",
@@ -525,6 +531,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
       filledQuantity: 0,
       status: "OPEN",
     });
+    matchingService.invalidateAllBooks();
     const p2 = {
       marketId: market.id,
       userAddress: takerAddress,
@@ -536,7 +543,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, p2),
+      headers: await authHeaders(takerKeypair, p2),
       payload: p2,
     });
 
@@ -578,7 +585,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -608,7 +615,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -654,7 +661,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -692,7 +699,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -740,7 +747,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -779,7 +786,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 
@@ -812,7 +819,7 @@ describe("Orders Matching Integration — CLOB engine via POST /v1/orders", () =
     const res = await app.inject({
       method: "POST",
       url: "/v1/orders",
-      headers: authHeaders(takerKeypair, payload),
+      headers: await authHeaders(takerKeypair, payload),
       payload,
     });
 

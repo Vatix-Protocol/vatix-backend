@@ -19,6 +19,8 @@
     "../src/config.ts",
     "../src/services/prisma.ts",
     "../src/services/redis.ts",
+    "../src/services/metrics.ts",
+    "../src/services/position-reconciliation.ts",
     "../src/types/index.ts",
     "../src/types/docker-compose.ts",
     "../src/generated/**/*"

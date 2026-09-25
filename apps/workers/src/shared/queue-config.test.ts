@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import {
   DEFAULT_JOB_OPTIONS,
+  SETTLEMENT_JOB_OPTIONS,
+  ORACLE_SUBMISSION_JOB_OPTIONS,
   redisConnectionFromEnv,
   settlementQueueName,
   submissionQueueName,
@@ -21,6 +23,23 @@ describe("queue-config", () => {
       removeOnComplete: { count: 100 },
       removeOnFail: false,
     });
+  });
+
+  // Regression coverage: oracle submissions and settlement previously shared
+  // a single DEFAULT_JOB_OPTIONS, so a backoff tuned for settlement (slow,
+  // few retries) also throttled oracle resolution submissions, and a backoff
+  // tuned for oracle (fast, many retries) would have hammered settlement on
+  // failure. They must diverge and DEFAULT_JOB_OPTIONS must stay aliased to
+  // settlement for existing callers that haven't migrated.
+  it("gives settlement and oracle submission queues distinct backoff/attempts", () => {
+    expect(SETTLEMENT_JOB_OPTIONS).toEqual(DEFAULT_JOB_OPTIONS);
+    expect(ORACLE_SUBMISSION_JOB_OPTIONS).not.toEqual(SETTLEMENT_JOB_OPTIONS);
+    expect(ORACLE_SUBMISSION_JOB_OPTIONS.attempts).toBeGreaterThan(
+      SETTLEMENT_JOB_OPTIONS.attempts as number
+    );
+    expect(
+      (ORACLE_SUBMISSION_JOB_OPTIONS.backoff as { delay: number }).delay
+    ).toBeLessThan((SETTLEMENT_JOB_OPTIONS.backoff as { delay: number }).delay);
   });
 
   describe("settlementQueueName", () => {
@@ -95,6 +114,7 @@ describe("queue-config", () => {
 
   describe("redisConnectionFromEnv", () => {
     const originalRedisUrl = process.env.REDIS_URL;
+    const originalNodeEnv = process.env.NODE_ENV;
 
     afterEach(() => {
       if (originalRedisUrl === undefined) {
@@ -102,6 +122,30 @@ describe("queue-config", () => {
       } else {
         process.env.REDIS_URL = originalRedisUrl;
       }
+      if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
+    });
+
+    // Regression coverage for the gap this issue fixes: silently defaulting
+    // to localhost:6379 in production means queue producers "succeed" while
+    // enqueuing jobs nobody ever processes, silently dropping trades /
+    // resolutions / admin actions.
+    it("fails fast when REDIS_URL is unset and NODE_ENV=production", () => {
+      delete process.env.REDIS_URL;
+      process.env.NODE_ENV = "production";
+      expect(() => redisConnectionFromEnv()).toThrow(/REDIS_URL is required/);
+    });
+
+    it("still falls back to localhost outside production", () => {
+      delete process.env.REDIS_URL;
+      process.env.NODE_ENV = "test";
+      expect(redisConnectionFromEnv()).toEqual({
+        host: "localhost",
+        port: 6379,
+      });
     });
 
     it("defaults to localhost:6379 when REDIS_URL is unset", () => {

@@ -7,18 +7,14 @@ const env = parseApiEnv();
 
 export type NodeEnv = typeof env.NODE_ENV;
 
-function requireString(name: string): string {
-  const raw = process.env[name];
-  if (!raw || raw.trim() === "") {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return raw.trim();
-}
+// Single source of truth (#984): every value below is read from the Zod-parsed
+// `env` object. This module must never touch `process.env` directly — that
+// would reintroduce a second, unvalidated parser. `src/config.test.ts` guards
+// this with a source scan.
 
-// Validate ADMIN_TOKEN at startup (except in test environment)
-if (process.env.NODE_ENV !== "test") {
-  requireString("ADMIN_TOKEN");
-}
+// Note: ADMIN_TOKEN is deprecated. Use AdminIdentity model for rotatable
+// credentials. It is declared in the schema (src/env.ts) and rejected outright
+// when NODE_ENV=production.
 
 export const config = {
   /**
@@ -40,6 +36,12 @@ export const config = {
    */
   databaseUrl: env.DATABASE_URL,
   /**
+   * Max connections in the pg.Pool backing the Prisma adapter (#806).
+   * Configured via DATABASE_POOL_SIZE (default: 10). See .env.example for
+   * recommended values per environment.
+   */
+  databasePoolSize: env.DATABASE_POOL_SIZE,
+  /**
    * Read-only PostgreSQL connection string for analytics/reporting queries (#743).
    * Intended to point at a read replica so heavy analytical queries don't
    * compete with the primary's write/OLTP workload.
@@ -48,12 +50,27 @@ export const config = {
    */
   analyticsDatabaseUrl: env.ANALYTICS_DATABASE_URL,
   /**
-   * Admin bearer token for protected admin endpoints.
-   * Configured via ADMIN_TOKEN.
+   * Max connections in the pg.Pool backing the read-only analytics Prisma
+   * client (#979). Independent of `databasePoolSize` so analytics load
+   * cannot starve the primary/matching pool.
+   * Configured via ANALYTICS_DATABASE_POOL_SIZE (default: 5).
    */
-  get adminToken(): string {
-    return process.env.ADMIN_TOKEN || "";
-  },
+  analyticsDatabasePoolSize: env.ANALYTICS_DATABASE_POOL_SIZE,
+  /**
+   * @deprecated Use AdminIdentity model for rotatable credentials.
+   * Read from the Zod-parsed `env` (#984) — never `process.env` — so the value
+   * passes through the single validated schema. Empty string when unset;
+   * `parseApiEnv` rejects a non-empty value outright when NODE_ENV=production.
+   */
+  adminToken: env.ADMIN_TOKEN ?? "",
+  /**
+   * Per-transaction Postgres `statement_timeout` (ms) for unbounded read paths
+   * such as `GET /v1/markets`, applied via `DatabaseService.withStatementTimeout`
+   * (#983). A query that exceeds this is aborted by Postgres instead of pinning
+   * a pool connection indefinitely.
+   * Configured via DATABASE_STATEMENT_TIMEOUT_MS (default: 5000).
+   */
+  databaseStatementTimeoutMs: env.DATABASE_STATEMENT_TIMEOUT_MS,
   /**
    * Feature flag: whether the matching engine accepts and matches new orders (#744).
    * When false, startup order-book hydration is skipped and placeOrder()

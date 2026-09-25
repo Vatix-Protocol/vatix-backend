@@ -3,6 +3,8 @@ import type { CursorStorageClient } from "./storage.js";
 import type { InternalIndexerMetricsService } from "./metrics.js";
 import type { BatchWriter, BatchRecord } from "./batchWriter.js";
 import type { EventFetcher } from "./eventFetcher.js";
+import type { Telemetry } from "./telemetry.js";
+import { consoleTelemetry } from "./telemetry.js";
 import { parseTradeEvents } from "./tradeParser.js";
 import { parseResolutionEvents } from "./resolutionParser.js";
 import { parseCollateralDepositedEvents } from "./collateralDepositedParser.js";
@@ -14,6 +16,7 @@ import {
   CollateralDepositedParseError,
   MarketCreatedParseError,
 } from "./types.js";
+import { GapDetector, type GapPagingConfig } from "./gapDetector.js";
 
 /**
  * Number of ledgers to rewind when a chain reorganisation is detected.
@@ -32,6 +35,15 @@ export interface IngestionDependencies {
   batchWriter: BatchWriter;
   contractId: string;
   ledgerWindowSize: number;
+  /** @see GapDetectorConfig.gapPauseThreshold */
+  gapPauseThreshold?: number;
+  /** @see GapDetectorConfig.backfillMaxLedgers */
+  backfillMaxLedgers?: number;
+  /** @see GapDetectorConfig.pagingConfig */
+  gapPagingConfig?: GapPagingConfig;
+  /** @see GapDetectorConfig.nodeEnv */
+  nodeEnv?: string;
+  telemetry?: Telemetry;
 }
 
 interface IngestionBatchResult {
@@ -57,6 +69,19 @@ export class PollingIngestionLoop implements IngestionLoop {
   /** Last known latest ledger hash for reorg detection. */
   private lastKnownLatestHash: string | null = null;
 
+  /**
+   * When true, the gap detector has triggered fail-closed mode.
+   * No further ticks are scheduled; operators must resolve the gap and
+   * restart the process.
+   */
+  private isPaused = false;
+
+  /** GapDetector wired in for all ingestion ticks. */
+  private readonly gapDetector: GapDetector;
+
+  /** Emits spans for the fetch/parse/write stages of each ingestion batch. */
+  private readonly telemetry: Telemetry;
+
   constructor(
     private readonly logger: ILogger,
     private readonly storage: CursorStorageClient,
@@ -64,7 +89,22 @@ export class PollingIngestionLoop implements IngestionLoop {
     private readonly intervalMs: number,
     private readonly checkpointFlushEveryBatches: number,
     private readonly deps: IngestionDependencies
-  ) {}
+  ) {
+    this.telemetry = deps.telemetry ?? consoleTelemetry;
+    this.gapDetector = new GapDetector(
+      {
+        gapPauseThreshold: deps.gapPauseThreshold ?? 1000,
+        backfillMaxLedgers: deps.backfillMaxLedgers ?? 500,
+        contractId: deps.contractId,
+        pagingConfig: deps.gapPagingConfig,
+        nodeEnv: deps.nodeEnv,
+      },
+      deps.eventFetcher,
+      deps.batchWriter,
+      metrics,
+      logger
+    );
+  }
 
   async start(initialCursor: string | null): Promise<void> {
     this.cursor = initialCursor;
@@ -92,6 +132,8 @@ export class PollingIngestionLoop implements IngestionLoop {
       lastKnownHash: this.lastKnownLatestHash
         ? `${this.lastKnownLatestHash.slice(0, 16)}…`
         : null,
+      gapPauseThreshold: this.deps.gapPauseThreshold ?? 1000,
+      backfillMaxLedgers: this.deps.backfillMaxLedgers ?? 500,
     });
 
     await this.tick();
@@ -150,6 +192,15 @@ export class PollingIngestionLoop implements IngestionLoop {
   }
 
   private async tick(): Promise<void> {
+    // Fail-closed: once paused, refuse all further ticks.
+    if (this.isPaused) {
+      this.logger.warn(
+        "Ingestion loop is paused (gap threshold exceeded) — skipping tick",
+        { event: "indexer.gap.paused" }
+      );
+      return;
+    }
+
     if (this.isTickInProgress) {
       this.logger.warn(
         "Skipping ingestion tick because previous tick is active"
@@ -223,12 +274,14 @@ export class PollingIngestionLoop implements IngestionLoop {
         : null;
 
     this.logger.info("Indexer heartbeat", {
+      ...this.metrics.toLogFields(),
       event: "indexer.heartbeat",
       cursor: this.cursor,
       latestIndexedLedgerSequence,
       batchesProcessed: this.batchesSinceLastHeartbeat,
       ledgerDelta,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+      isPaused: this.isPaused,
     });
 
     this.batchesSinceLastHeartbeat = 0;
@@ -245,7 +298,10 @@ export class PollingIngestionLoop implements IngestionLoop {
       const info = await this.deps.eventFetcher.getLatestLedgerInfo();
       return info.hash;
     } catch {
-      this.logger.warn("Failed to fetch latest ledger hash for reorg check", {});
+      this.logger.warn(
+        "Failed to fetch latest ledger hash for reorg check",
+        {}
+      );
       return null;
     }
   }
@@ -288,11 +344,15 @@ export class PollingIngestionLoop implements IngestionLoop {
     const startLedger = safeCurrentSequence + 1;
     const provisionalEnd = startLedger + this.deps.ledgerWindowSize - 1;
 
+    const fetchSpan = this.telemetry.startSpan("indexer.ingestion.fetch", {
+      contractId: this.deps.contractId,
+    });
     const { events, latestLedger } =
       await this.deps.eventFetcher.fetchByLedgerWindow({
         startLedger,
         endLedger: provisionalEnd,
       });
+    fetchSpan.end({ eventCount: String(events.length) });
 
     // Track the latest network ledger for lag computation (Issue #713)
     if (latestLedger > 0) {
@@ -362,14 +422,86 @@ export class PollingIngestionLoop implements IngestionLoop {
 
     const endLedger = Math.min(provisionalEnd, latestLedger);
 
-    const { trades, errors: tradeErrors } = parseTradeEvents(events);
-    const { resolutions, errors: resolutionErrors } =
-      parseResolutionEvents(events);
-    const { deposits, errors: depositErrors } =
-      parseCollateralDepositedEvents(events);
-    const { markets, errors: marketErrors } = parseMarketCreatedEvents(events);
+    // ── Cursor-level gap detection ────────────────────────────────────────
+    // Check whether the high-water mark (the last successfully indexed ledger
+    // sequence recorded in metrics) is contiguous with the batch start.
+    // This detects cases where:
+    //   - The cursor was manually advanced past unprocessed ledgers.
+    //   - A previous run crashed between batch-write and checkpoint-flush,
+    //     then the cursor was re-pointed forward.
+    //   - Two consecutive ticks saw the startLedger jump non-contiguously.
+    //
+    // We use the metrics high-water mark (lastIndexedLedgerSequence) rather
+    // than safeCurrentSequence because safeCurrentSequence == startLedger - 1
+    // (always contiguous by construction), whereas the high-water mark
+    // records the last *confirmed written* ledger across restarts.
+    const lastConfirmedIndexed = this.metrics.getLatestIndexedLedgerSequence();
+
+    if (
+      lastConfirmedIndexed !== null &&
+      lastConfirmedIndexed > 0 &&
+      latestLedger > 0
+    ) {
+      const cursorGap = this.gapDetector.detectCursorGap(
+        lastConfirmedIndexed,
+        startLedger,
+        latestLedger
+      );
+      if (cursorGap.gapDetected) {
+        this.logger.warn(
+          "Cursor-level ledger gap detected — starting backfill",
+          {
+            event: "indexer.gap.cursor_gap",
+            lastIndexedLedger: lastConfirmedIndexed,
+            batchStartLedger: startLedger,
+            gapStartLedger: cursorGap.gapStartLedger,
+            gapEndLedger: cursorGap.gapEndLedger,
+            gapSize: cursorGap.gapSize,
+          }
+        );
+
+        const backfillResult = await this.gapDetector.runBackfill(
+          cursorGap.gapStartLedger!,
+          cursorGap.gapEndLedger!
+        );
+
+        if (backfillResult.paused) {
+          this.isPaused = true;
+          return {
+            nextCursor: currentCursor ?? String(safeCurrentSequence),
+            lastIndexedLedgerSequence: safeCurrentSequence,
+            batchWriteSucceeded: false,
+          };
+        }
+      }
+    }
+
+    const parseSpan = this.telemetry.startSpan("indexer.ingestion.parse", {
+      contractId: this.deps.contractId,
+    });
+    const { trades, errors: tradeErrors } = parseTradeEvents(events, {
+      telemetry: this.telemetry,
+    });
+    const { resolutions, errors: resolutionErrors } = parseResolutionEvents(
+      events,
+      { telemetry: this.telemetry }
+    );
+    const { deposits, errors: depositErrors } = parseCollateralDepositedEvents(
+      events,
+      { telemetry: this.telemetry }
+    );
+    const { markets, errors: marketErrors } = parseMarketCreatedEvents(events, {
+      telemetry: this.telemetry,
+    });
+    parseSpan.end({
+      trades: String(trades.length),
+      resolutions: String(resolutions.length),
+      deposits: String(deposits.length),
+      markets: String(markets.length),
+    });
 
     for (const error of tradeErrors) {
+      this.metrics.incrementParseError();
       this.logger.warn("Trade parse error — skipping event", {
         eventId: error.eventId,
         error: error.message,
@@ -441,7 +573,15 @@ export class PollingIngestionLoop implements IngestionLoop {
       })),
     ];
 
+    const writeSpan = this.telemetry.startSpan("indexer.ingestion.write", {
+      contractId: this.deps.contractId,
+    });
     const writeResult = await this.deps.batchWriter.write(records);
+    writeSpan.end({
+      written: String(writeResult.written),
+      skipped: String(writeResult.skipped),
+      errors: String(writeResult.errors.length),
+    });
 
     if (writeResult.errors.length > 0) {
       this.logger.warn("Indexer batch write completed with errors", {
@@ -458,6 +598,17 @@ export class PollingIngestionLoop implements IngestionLoop {
         batchWriteSucceeded: false,
       };
     }
+
+    // ── Within-window gap detection (after successful batch write) ────────
+    // Note: Within-window detection (checking every ledger for events) is NOT
+    // performed here because Stellar ledgers are commonly quiet (no contract
+    // events) — absent event-ledgers within a fetched range are normal.
+    // Operators wanting fine-grained per-ledger verification should use the
+    // GapDetector.detectGap() API directly with an explicit seenLedgers set
+    // constructed from domain-specific knowledge of expected event cadence.
+    //
+    // The cursor-level gap check (above, before the batch) is the durable
+    // watermark signal for production alerting.
 
     this.logger.debug("Ingestion batch complete", {
       startLedger,

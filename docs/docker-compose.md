@@ -22,6 +22,13 @@ just the data layer (for host-run development) or the fully containerized stack.
 | `migrate`             | `tools`, `migrate`                      | `vatix-migrate`             | One-off `prisma migrate deploy` job                |
 | `load-test`           | `tools`, `load-test`                    | `vatix-load-test`           | One-off local order-placement load test (~100 rps) |
 
+`finalization-worker`, `oracle-worker`, and `settlement-worker` have no HTTP
+port to probe, so each declares a `healthcheck:` that greps `/proc/1/cmdline`
+for its entrypoint script — `docker compose ps` and `docker inspect` report
+`unhealthy` if the process has crash-looped or hung, instead of the workers
+profile silently going dark (no trades settling, no resolutions finalizing)
+with every container still showing as "running".
+
 Container names match the ones referenced in
 [`docs/runbooks/incident-runbook.md`](runbooks/incident-runbook.md), so
 commands like `docker logs vatix-indexer` work as documented there.
@@ -29,6 +36,14 @@ commands like `docker logs vatix-indexer` work as documented there.
 `postgres` and `redis` have no `profiles:` entry, so they always start by
 default — this preserves the original host-run development workflow below.
 Every application process lives behind a profile so you opt in explicitly.
+
+All application images (`api`, `indexer`, `finalization-worker`,
+`oracle-worker`, `settlement-worker`) run as the non-root `vatix` user
+(uid/gid `1001`), set in the Dockerfile `runtime` stage. CI's
+`docker-image-smoke` job builds all worker target images and asserts
+`id -u` inside each container is non-zero, ensuring non-root execution is
+consistent across all processes. The `api` target additionally confirms
+`postgres`/`redis` healthchecks pass with the stack up.
 
 ## Option A — Data layer only (host-run development)
 
@@ -181,6 +196,28 @@ RATE_LIMIT_WRITE_MAX=2000 RATE_LIMIT_WRITE_WINDOW_MS=1000 pnpm dev
 
 See the header comment in `scripts/load-test-orders.ts` for the full option
 list (`--url`, `--market-id`, `--traders`, etc.) and prerequisites.
+
+### SLO gates & the CI nightly job
+
+The run reports a **capacity number** — `capacityRps`, the sustained rate of
+accepted (`201`) orders — for tuning the admission-control watermarks
+(`SETTLEMENT_LAG_SHED_THRESHOLD` et al., see
+[ADMISSION_CONTROL_CONFIG.md](ADMISSION_CONTROL_CONFIG.md)), plus
+`successRate` (201s excluding 429s) and p50/p95/p99 latency.
+
+Two optional SLO gates make a regression fail loudly instead of silently:
+
+| Flag / env                                              | Effect                                               |
+| ------------------------------------------------------- | ---------------------------------------------------- |
+| `--max-p95-ms <n>` / `LOAD_TEST_MAX_P95_MS`             | Exit non-zero if observed p95 latency exceeds `n`ms  |
+| `--min-success-rate <r>` / `LOAD_TEST_MIN_SUCCESS_RATE` | Exit non-zero if the 201 rate drops below `r` (0..1) |
+
+With neither set (a local ad-hoc run) the gates are a no-op and the script
+always exits `0`. `.github/workflows/nightly-load-test.yml` runs this nightly
+(cron `0 3 * * *`) and on `workflow_dispatch`: it boots Postgres + Redis,
+seeds an ACTIVE market, starts the API, and runs
+`pnpm load-test:orders` with both gates set (defaults: p95 ≤ 1500ms,
+success rate ≥ 0.95). It never runs on pull requests.
 
 ## Graceful shutdown
 

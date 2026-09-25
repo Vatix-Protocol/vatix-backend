@@ -179,7 +179,7 @@ entries:
 Rules enforced by the middleware and verified in CI:
 
 - Request and response bodies are **never** logged.
-- Sensitive headers (`Authorization`, `Cookie`, `x-api-key`, etc.) are **never** logged.
+- Sensitive headers (`Authorization`, `Cookie`, `x-api-key`, `x-signature`, `x-admin-token`, etc.) are **never** logged.
 - `durationMs` and `statusCode` are numeric — not stringified — for log aggregation.
 - Every response includes an `x-request-id` header matching `requestId` in the logs.
 

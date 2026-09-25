@@ -6,6 +6,8 @@ import {
 } from "./helpers/test-database.js";
 
 // Global test setup — no advisory lock here; DB test files acquire their own.
+process.env.MATCHING_LEASE_ENFORCED ??= "false";
+
 afterAll(async () => {
   try {
     await Promise.race([

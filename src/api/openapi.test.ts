@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { openApiSpec } from "./openapi.js";
+import { openApiSpec, getOpenApiSpec } from "./openapi.js";
 
 vi.hoisted(() => {
   process.env.DATABASE_URL =
@@ -224,5 +224,41 @@ describe("OpenAPI contract", () => {
       totalDocumented,
       "OpenAPI spec should document all public API routes"
     ).toBeGreaterThan(0);
+  });
+});
+
+describe("getOpenApiSpec — Admin route visibility by environment (#805)", () => {
+  const adminPaths = Object.entries(openApiSpec.paths).filter(([, item]) =>
+    Object.values(item).some(
+      (op) =>
+        op &&
+        typeof op === "object" &&
+        "tags" in op &&
+        (op as { tags?: readonly string[] }).tags?.includes("Admin")
+    )
+  );
+
+  it("has at least one Admin-tagged path in the source spec", () => {
+    expect(adminPaths.length).toBeGreaterThan(0);
+  });
+
+  it("includes Admin routes for non-production environments", () => {
+    const spec = getOpenApiSpec("development");
+    for (const [path] of adminPaths) {
+      expect(spec.paths).toHaveProperty(path);
+    }
+  });
+
+  it("strips Admin routes in production", () => {
+    const spec = getOpenApiSpec("production");
+    for (const [path] of adminPaths) {
+      expect(spec.paths).not.toHaveProperty(path);
+    }
+  });
+
+  it("keeps non-Admin routes in production", () => {
+    const spec = getOpenApiSpec("production");
+    expect(spec.paths).toHaveProperty("/v1/markets");
+    expect(spec.paths).toHaveProperty("/v1/orders");
   });
 });

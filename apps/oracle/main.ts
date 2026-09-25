@@ -15,18 +15,21 @@ import {
   disconnectPrisma,
 } from "../../src/services/prisma.js";
 import { redis } from "../../src/services/redis.js";
+import { RESOLVABLE_MARKET_STATUSES } from "../../packages/shared/src/marketLifecycle.js";
 import { createLogger } from "../indexer/src/logger.js";
 import { loadOracleConfig } from "./oracle-config.js";
 import { OracleService } from "./oracle-service.js";
 import { PrimaryAdapter } from "./primary-adapter.js";
 import { FallbackAdapter } from "./fallback-adapter.js";
 import { signResolutionReport } from "./signature-helper.js";
-import { RedisSubmissionQueue } from "../workers/src/oracle/redis-submission-queue.js";
+import { BullMQSubmissionQueue } from "../workers/src/oracle/bullmq-submission-queue.js";
 import type { ResolutionRequest } from "./provider-adapter.js";
 import type {
   ShutdownHandler,
   ShutdownSignal,
 } from "../workers/src/finalization/types.js";
+
+let globalQueue: BullMQSubmissionQueue | null = null;
 
 export async function poll(): Promise<void> {
   const config = loadOracleConfig();
@@ -58,20 +61,23 @@ export async function poll(): Promise<void> {
       })),
     }),
     logger,
-    enableFallback: true,
+    enableFallback: process.env.NODE_ENV !== "production",
+    primaryTimeoutMs: config.primaryTimeoutMs,
+    fallbackTimeoutMs: config.fallbackTimeoutMs,
   });
 
-  const queue = new RedisSubmissionQueue({
-    redisClient: redis,
-    visibilityTimeoutMs: 300_000,
-    logger,
-  });
+  if (!globalQueue) {
+    globalQueue = new BullMQSubmissionQueue(logger);
+  }
+  const queue = globalQueue;
 
-  await queue.initialize();
-
-  // Fetch all ACTIVE markets that have an oracle address
+  // Only markets in a resolvable lifecycle state may be submitted for resolution.
+  // Soft-deleted markets (deletedAt set) are excluded, matching the finalization worker.
   const markets = await prisma.market.findMany({
-    where: { status: "ACTIVE" },
+    where: {
+      status: { in: [...RESOLVABLE_MARKET_STATUSES] },
+      deletedAt: null,
+    },
     select: { id: true, oracleAddress: true },
   });
 
@@ -85,6 +91,36 @@ export async function poll(): Promise<void> {
 
     try {
       const result = await oracleService.resolve(request);
+
+      if (
+        typeof result.confidence !== "number" ||
+        !Number.isFinite(result.confidence) ||
+        result.confidence < 0 ||
+        result.confidence > 1
+      ) {
+        throw new Error(
+          `Resolved confidence ${result.confidence} is out of range [0, 1]`
+        );
+      }
+
+      // A market may have been CANCELLED (admin cancel or expiry sweep) while
+      // the provider resolution was in flight. Re-check the lifecycle state
+      // immediately before persisting a report or enqueuing a submission so
+      // the scheduler never emits reports for dead markets.
+      const stillResolvable = await prisma.market.findMany({
+        where: {
+          id: market.id,
+          status: { in: [...RESOLVABLE_MARKET_STATUSES] },
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      if (stillResolvable.length === 0) {
+        logger.info("Market no longer resolvable, skipping", {
+          marketId: market.id,
+        });
+        continue;
+      }
 
       const report = signResolutionReport(
         {
@@ -194,6 +230,9 @@ export async function bootstrap(): Promise<void> {
     clearInterval(timer);
 
     try {
+      if (globalQueue) {
+        await globalQueue.close();
+      }
       await disconnectPrisma();
       await redis.disconnect();
       logger.info("Oracle shutdown complete", { signal });

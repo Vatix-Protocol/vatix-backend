@@ -4,6 +4,8 @@ import {
   type SettlementWorkerConfig,
   type SettlementRedisClient,
   type SettlementStellarConfig,
+  type SettlementPrismaClient,
+  type SettlementTradeRow,
 } from "./settlement-worker.js";
 import type { QueueJob } from "../consumers/queue-consumer.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
@@ -128,8 +130,66 @@ function makeRedisClient(
     exists: vi.fn().mockResolvedValue(false),
     set: vi.fn().mockResolvedValue(undefined),
     setnx: vi.fn().mockResolvedValue(true),
+    del: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
+}
+
+/**
+ * Builds a mock SettlementPrismaClient backed by an in-memory map of trade
+ * rows keyed by tradeId. `$transaction` runs the callback against the same
+ * mock (no real isolation), which is sufficient to exercise the read-then-
+ * write logic in applySettlement/recordPermanentFailure.
+ */
+function makeMockPrisma(
+  seedTrades: Record<string, Partial<SettlementTradeRow>> = {}
+): {
+  prisma: SettlementPrismaClient;
+  trades: Map<string, SettlementTradeRow>;
+} {
+  const trades = new Map<string, SettlementTradeRow>();
+  for (const [tradeId, overrides] of Object.entries(seedTrades)) {
+    trades.set(tradeId, {
+      tradeId,
+      settlementStatus: "PENDING",
+      settlementFailureCount: 0,
+      quarantinedAt: null,
+      ...overrides,
+    });
+  }
+
+  const trade = {
+    findUnique: vi.fn(async ({ where }: { where: { tradeId: string } }) => {
+      return trades.get(where.tradeId) ?? null;
+    }),
+    update: vi.fn(
+      async ({
+        where,
+        data,
+      }: {
+        where: { tradeId: string };
+        data: Record<string, unknown>;
+      }) => {
+        const existing = trades.get(where.tradeId);
+        if (!existing) throw new Error("trade not found");
+        const updated = { ...existing, ...data } as SettlementTradeRow;
+        trades.set(where.tradeId, updated);
+        return updated;
+      }
+    ),
+    count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+      return [...trades.values()].filter((t) =>
+        Object.entries(where).every(([key, value]) => (t as any)[key] === value)
+      ).length;
+    }),
+  };
+
+  const prisma: SettlementPrismaClient = {
+    trade,
+    $transaction: vi.fn(async (fn) => fn(prisma)),
+  };
+
+  return { prisma, trades };
 }
 
 function makeConfig(
@@ -316,7 +376,7 @@ describe("SettlementWorker", () => {
 
     it("does not dead-letter when attempts are below max", async () => {
       redisClient = makeRedisClient({
-        exists: vi.fn().mockRejectedValue(new Error("transient")),
+        setnx: vi.fn().mockRejectedValue(new Error("ECONNRESET: transient")),
       });
       worker = new SettlementWorker(
         redisClient,
@@ -332,6 +392,192 @@ describe("SettlementWorker", () => {
         logger.error as ReturnType<typeof vi.fn>
       ).mock.calls.filter((call) => call[0] === "Job dead-lettered");
       expect(deadLetterCalls).toHaveLength(0);
+    });
+
+    it("releases the idempotency lock so a retryable failure can be redelivered", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockRejectedValue(new Error("ECONNRESET: transient")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ maxAttempts: 3 })
+      );
+
+      const job = makeJob({ attempts: 1 });
+
+      await expect(worker.process(job)).rejects.toThrow();
+
+      expect(redisClient.del).toHaveBeenCalledWith(
+        "settlement:processed:trade-abc-123"
+      );
+    });
+
+    it("fails fast (does not retry) and dead-letters immediately on a permanent error", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi
+          .fn()
+          .mockRejectedValue(new Error("400 Bad Request: bad auth signature")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ maxAttempts: 3 })
+      );
+
+      const job = makeJob({ attempts: 1 });
+
+      await expect(worker.process(job)).rejects.toThrow();
+
+      expect(logger.error).toHaveBeenCalledWith(
+        "Job dead-lettered",
+        expect.objectContaining({
+          messageId: job.id,
+          queue: "settlement",
+        })
+      );
+    });
+  });
+
+  describe("process — transactional settlement apply (#870)", () => {
+    it("marks the trade SETTLED in a single Prisma transaction on success", async () => {
+      const { prisma, trades } = makeMockPrisma({
+        "trade-abc-123": { settlementStatus: "PENDING" },
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig(), prisma);
+
+      const job = makeJob();
+      await worker.process(job);
+
+      expect(prisma.$transaction).toHaveBeenCalled();
+      const updated = trades.get("trade-abc-123")!;
+      expect(updated.settlementStatus).toBe("SETTLED");
+    });
+
+    it("rolls back and leaves the trade unsettled when the mid-transaction write fails", async () => {
+      const { prisma, trades } = makeMockPrisma({
+        "trade-abc-123": { settlementStatus: "PENDING" },
+      });
+      (prisma.trade.update as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+        new Error("connection lost mid-write")
+      );
+
+      worker = new SettlementWorker(redisClient, logger, makeConfig(), prisma);
+
+      const job = makeJob();
+      await expect(worker.process(job)).rejects.toThrow(
+        "connection lost mid-write"
+      );
+
+      // No observable half-applied settlement: status is unchanged from PENDING.
+      const unchanged = trades.get("trade-abc-123")!;
+      expect(unchanged.settlementStatus).toBe("PENDING");
+    });
+
+    it("is idempotent when the trade is already SETTLED", async () => {
+      const { prisma, trades } = makeMockPrisma({
+        "trade-abc-123": { settlementStatus: "SETTLED" },
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig(), prisma);
+
+      const job = makeJob();
+      await expect(worker.process(job)).resolves.not.toThrow();
+
+      expect(prisma.trade.update).not.toHaveBeenCalled();
+      expect(trades.get("trade-abc-123")!.settlementStatus).toBe("SETTLED");
+    });
+  });
+
+  describe("process — poison-pill quarantine (#870)", () => {
+    it("quarantines a trade after the configured number of permanent failures", async () => {
+      const { prisma, trades } = makeMockPrisma({
+        "trade-abc-123": {
+          settlementStatus: "PENDING",
+          settlementFailureCount: 1,
+        },
+      });
+      redisClient = makeRedisClient({
+        setnx: vi
+          .fn()
+          .mockRejectedValue(new Error("400 Bad Request: bad auth signature")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ quarantineThreshold: 2 }),
+        prisma
+      );
+
+      const job = makeJob();
+      await expect(worker.process(job)).rejects.toThrow();
+
+      const trade = trades.get("trade-abc-123")!;
+      expect(trade.settlementFailureCount).toBe(2);
+      expect(trade.settlementStatus).toBe("QUARANTINED");
+      expect(trade.quarantinedAt).not.toBeNull();
+    });
+
+    it("does not quarantine on a transient failure, only counts permanent ones", async () => {
+      const { prisma, trades } = makeMockPrisma({
+        "trade-abc-123": { settlementStatus: "PENDING" },
+      });
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockRejectedValue(new Error("ECONNRESET: transient")),
+      });
+      worker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ quarantineThreshold: 1 }),
+        prisma
+      );
+
+      const job = makeJob();
+      await expect(worker.process(job)).rejects.toThrow();
+
+      const trade = trades.get("trade-abc-123")!;
+      expect(trade.settlementFailureCount).toBe(0);
+      expect(trade.settlementStatus).toBe("PENDING");
+    });
+
+    it("skips a quarantined trade without touching Redis or Stellar", async () => {
+      const { prisma } = makeMockPrisma({
+        "trade-abc-123": {
+          settlementStatus: "QUARANTINED",
+          quarantinedAt: new Date("2026-01-01T00:00:00Z"),
+        },
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig(), prisma);
+
+      const job = makeJob();
+      await expect(worker.process(job)).resolves.not.toThrow();
+
+      expect(redisClient.setnx).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        "Settlement job skipped (trade quarantined)",
+        expect.objectContaining({ tradeId: "trade-abc-123" })
+      );
+    });
+
+    it("reports quarantine depth via getQuarantineDepth()", async () => {
+      const { prisma } = makeMockPrisma({
+        "trade-1": { settlementStatus: "QUARANTINED" },
+        "trade-2": { settlementStatus: "QUARANTINED" },
+        "trade-3": { settlementStatus: "SETTLED" },
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig(), prisma);
+
+      await expect(worker.getQuarantineDepth()).resolves.toBe(2);
+    });
+
+    it("tracks retry classification counts across failures", async () => {
+      redisClient = makeRedisClient({
+        setnx: vi.fn().mockRejectedValue(new Error("ECONNRESET: transient")),
+      });
+      worker = new SettlementWorker(redisClient, logger, makeConfig());
+
+      await expect(worker.process(makeJob())).rejects.toThrow();
+
+      expect(worker.getRetryClassificationCounts().transient).toBe(1);
     });
   });
 });

@@ -3,15 +3,37 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 import "dotenv/config";
 
-// Sample Stellar addresses (56 characters, starting with 'G')
-const ORACLE_ADDRESS =
-  "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGSNFHEYVXM3XOJMDS674JZ";
+// ---------------------------------------------------------------------------
+// Seed identity policy (issue #969)
+// ---------------------------------------------------------------------------
+// These addresses are PLACEHOLDER values used exclusively for local
+// development / CI seeding.  They are intentionally NOT valid Stellar
+// keys (the G-addresses below do not correspond to any real keypair and
+// will be rejected by the Stellar network). They must NEVER be copied to
+// staging or production configuration.
+//
+// In production, oracle and user addresses are provisioned via:
+//   - ORACLE_SECRET_KEY environment variable (oracle)
+//   - on-chain wallet registration (users)
+//
+// Operator checklist before promoting seed data:
+//   [ ] DATABASE_URL points at a non-production database
+//   [ ] NODE_ENV is "development" or "test"
+//   [ ] No ORACLE_SECRET_KEY in the seeding environment
+// ---------------------------------------------------------------------------
+
+// Placeholder oracle address — NOT a real keypair. 56-char G-address format
+// required by Prisma schema validation, but the private key is unknown and
+// the address has never been funded on any network.
+const ORACLE_ADDRESS = "GSEEDNOORACLEKEYPLACEHOLDERDONOTUSEPRODUCTION000000000000";
+
+// Placeholder user addresses — same policy as ORACLE_ADDRESS above.
 const USER_ADDRESSES = [
-  "GBDEVU63Y6NTHJQQZIKVTC23NWLQVP3WJ2RI2OTSJTNYOIGICST6DUXR",
-  "GCFXHS4GXL6BVUCXBWXGTITROWLVYXQKQLF4YH5O5JT3YZXCYPAFBJZB",
-  "GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOBD3SDPKFKDCWDI",
-  "GBCR5OVQ54S2EKHLBZMK6S5VMWJX4SC5CJWNTB4CGUQQVNTS5MZWFLJW",
-  "GAHK7EEG2WWHVKDNT4CEQFZGKF2LGDSW2IVM4S5DP42RBW3K6BTODB4A",
+  "GSEEDUSER1PLACEHOLDERDONOTUSEPRODUCTIONXXXXXXXXXXXXXXXXXX",
+  "GSEEDUSER2PLACEHOLDERDONOTUSEPRODUCTIONXXXXXXXXXXXXXXXXXX",
+  "GSEEDUSER3PLACEHOLDERDONOTUSEPRODUCTIONXXXXXXXXXXXXXXXXXX",
+  "GSEEDUSER4PLACEHOLDERDONOTUSEPRODUCTIONXXXXXXXXXXXXXXXXXX",
+  "GSEEDUSER5PLACEHOLDERDONOTUSEPRODUCTIONXXXXXXXXXXXXXXXXXX",
 ];
 
 interface SeedResult {
@@ -370,8 +392,20 @@ async function createPositions(
 /**
  * Main seed function that populates the database with sample data
  * Exported for testing use
+ *
+ * Issue #969: seed data uses placeholder addresses — never run in production.
  */
 export async function seed(prisma?: PrismaClient): Promise<SeedResult> {
+  // Fail fast in production to prevent placeholder data from contaminating
+  // live databases (issue #969: seed secrets copied to staging become real
+  // signers).
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "Seed script must not run in production (NODE_ENV=production). " +
+        "Set NODE_ENV to 'development' or 'test' before seeding."
+    );
+  }
+
   const client = prisma ?? createPrismaClient();
   const shouldDisconnect = !prisma;
 

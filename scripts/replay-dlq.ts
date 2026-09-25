@@ -53,7 +53,11 @@ function parseArgs(): {
   return { queueFilter, limit, dryRun };
 }
 
-function log(level: string, message: string, meta?: Record<string, unknown>): void {
+function log(
+  level: string,
+  message: string,
+  meta?: Record<string, unknown>
+): void {
   console.log(
     JSON.stringify({
       ts: new Date().toISOString(),
@@ -120,7 +124,10 @@ function fieldsToRecord(fields: string[]): Record<string, unknown> {
 async function main(): Promise<void> {
   const { queueFilter, limit, dryRun } = parseArgs();
 
-  log("info", "DLQ replay started", { queueFilter: queueFilter ?? "*", dryRun });
+  log("info", "DLQ replay started", {
+    queueFilter: queueFilter ?? "*",
+    dryRun,
+  });
 
   const redis = new Redis(REDIS_URL, {
     maxRetries: 3,

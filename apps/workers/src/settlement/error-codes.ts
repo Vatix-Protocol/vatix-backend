@@ -32,6 +32,7 @@ export type SettlementErrorCode =
   | "STELLAR_TX_INSUFFICIENT_FUNDS"
   | "STELLAR_TX_BAD_SEQUENCE"
   | "STELLAR_TX_BAD_AUTH"
+  | "INVALID_SIGNATURE"
   | "SOROBAN_CONTRACT_ERROR"
   | "HORIZON_RATE_LIMITED"
   | "INVALID_PAYLOAD"
@@ -53,6 +54,19 @@ export interface SettlementErrorInfo {
  */
 export function isRetryable(info: SettlementErrorInfo): boolean {
   return info.status === "transient";
+}
+
+/**
+ * Returns true when a classified error should be quarantined (moved to the
+ * dead-letter/quarantine path) rather than retried. This is the same
+ * condition as `!isRetryable(info)` today, but named and exported
+ * separately so callers express *intent* ("should this stop consuming
+ * retry budget and RPC calls") rather than re-deriving it from
+ * retryability, and so the two can diverge later without a call-site
+ * rewrite.
+ */
+export function shouldQuarantine(info: SettlementErrorInfo): boolean {
+  return !isRetryable(info);
 }
 
 const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
@@ -79,7 +93,8 @@ const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
   STELLAR_TX_NOT_CONFIRMED: {
     code: "STELLAR_TX_NOT_CONFIRMED",
     status: "transient",
-    message: "settle_trade transaction was not confirmed within the polling window",
+    message:
+      "settle_trade transaction was not confirmed within the polling window",
   },
   /**
    * The submitted transaction's fee was below the network's base fee.
@@ -88,7 +103,8 @@ const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
   STELLAR_TX_INSUFFICIENT_FEE: {
     code: "STELLAR_TX_INSUFFICIENT_FEE",
     status: "transient",
-    message: "Transaction rejected: fee below network minimum (tx_insufficient_fee)",
+    message:
+      "Transaction rejected: fee below network minimum (tx_insufficient_fee)",
   },
   /**
    * The source account does not have enough XLM to cover the transaction fee
@@ -97,7 +113,8 @@ const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
   STELLAR_TX_INSUFFICIENT_FUNDS: {
     code: "STELLAR_TX_INSUFFICIENT_FUNDS",
     status: "fatal",
-    message: "Transaction rejected: source account has insufficient funds (op_underfunded / tx_insufficient_balance)",
+    message:
+      "Transaction rejected: source account has insufficient funds (op_underfunded / tx_insufficient_balance)",
   },
   /**
    * Account sequence number mismatch — likely a race between concurrent
@@ -106,7 +123,8 @@ const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
   STELLAR_TX_BAD_SEQUENCE: {
     code: "STELLAR_TX_BAD_SEQUENCE",
     status: "transient",
-    message: "Transaction rejected: account sequence number mismatch (tx_bad_seq)",
+    message:
+      "Transaction rejected: account sequence number mismatch (tx_bad_seq)",
   },
   /**
    * Signature validation failure. Fatal — signing key is wrong or revoked.
@@ -115,6 +133,20 @@ const ERROR_REGISTRY: Record<SettlementErrorCode, SettlementErrorInfo> = {
     code: "STELLAR_TX_BAD_AUTH",
     status: "fatal",
     message: "Transaction rejected: signature validation failed (tx_bad_auth)",
+  },
+  /**
+   * The settlement payload's own signature failed local verification
+   * *before* submission (distinct from the on-chain tx_bad_auth rejection
+   * above). Fatal and quarantined immediately — retrying will re-derive
+   * the same invalid signature every time and only burn RPC quota against
+   * a request that was never going to succeed (the reported gap: retrying
+   * InvalidSignature forever).
+   */
+  INVALID_SIGNATURE: {
+    code: "INVALID_SIGNATURE",
+    status: "fatal",
+    message:
+      "Settlement payload signature failed local verification (InvalidSignature)",
   },
   /**
    * Soroban contract invocation returned an error code (trap, panic, or
@@ -190,7 +222,10 @@ export function classifySettlementError(
     msg.includes("socket hang up") ||
     msg.includes("connection refused")
   ) {
-    return { ...ERROR_REGISTRY.STELLAR_RPC_UNAVAILABLE, message: error.message };
+    return {
+      ...ERROR_REGISTRY.STELLAR_RPC_UNAVAILABLE,
+      message: error.message,
+    };
   }
 
   // ── Timeouts ───────────────────────────────────────────────────────────────
@@ -210,7 +245,10 @@ export function classifySettlementError(
     msg.includes("fee is too low") ||
     msg.includes("fee too low")
   ) {
-    return { ...ERROR_REGISTRY.STELLAR_TX_INSUFFICIENT_FEE, message: error.message };
+    return {
+      ...ERROR_REGISTRY.STELLAR_TX_INSUFFICIENT_FEE,
+      message: error.message,
+    };
   }
 
   // ── Soroban/Horizon: insufficient funds ───────────────────────────────────
@@ -221,7 +259,10 @@ export function classifySettlementError(
     msg.includes("insufficient balance") ||
     msg.includes("underfunded")
   ) {
-    return { ...ERROR_REGISTRY.STELLAR_TX_INSUFFICIENT_FUNDS, message: error.message };
+    return {
+      ...ERROR_REGISTRY.STELLAR_TX_INSUFFICIENT_FUNDS,
+      message: error.message,
+    };
   }
 
   // ── Soroban/Horizon: sequence number mismatch ─────────────────────────────
@@ -231,7 +272,24 @@ export function classifySettlementError(
     msg.includes("sequence number") ||
     msg.includes("sequence mismatch")
   ) {
-    return { ...ERROR_REGISTRY.STELLAR_TX_BAD_SEQUENCE, message: error.message };
+    return {
+      ...ERROR_REGISTRY.STELLAR_TX_BAD_SEQUENCE,
+      message: error.message,
+    };
+  }
+
+  // ── Local signature verification failure (pre-submission) ────────────────
+  // Checked before the on-chain tx_bad_auth bucket below: this is the
+  // client-side "InvalidSignature" case — the payload never even reached
+  // the network — and must be distinguished from an on-chain rejection so
+  // operators can tell "our signer is broken" apart from "the network
+  // rejected our signed tx".
+  if (
+    error.name === "InvalidSignature" ||
+    msg.includes("invalidsignature") ||
+    msg.includes("invalid signature")
+  ) {
+    return { ...ERROR_REGISTRY.INVALID_SIGNATURE, message: error.message };
   }
 
   // ── Soroban/Horizon: auth / signature failure ─────────────────────────────
@@ -265,8 +323,14 @@ export function classifySettlementError(
   }
 
   // ── Not confirmed ──────────────────────────────────────────────────────────
-  if (msg.includes("not confirmed after") || msg.includes("settle_trade not confirmed")) {
-    return { ...ERROR_REGISTRY.STELLAR_TX_NOT_CONFIRMED, message: error.message };
+  if (
+    msg.includes("not confirmed after") ||
+    msg.includes("settle_trade not confirmed")
+  ) {
+    return {
+      ...ERROR_REGISTRY.STELLAR_TX_NOT_CONFIRMED,
+      message: error.message,
+    };
   }
 
   // ── Invalid payload ────────────────────────────────────────────────────────
@@ -298,7 +362,10 @@ export function classifySettlementError(
  * error code to their structured log fields without needing to import the
  * classifier.
  */
-export function annotateError(error: unknown, info: SettlementErrorInfo): Error {
+export function annotateError(
+  error: unknown,
+  info: SettlementErrorInfo
+): Error {
   const actual = error instanceof Error ? error : new Error(String(error));
   (actual as any).settlementErrorCode = info.code;
   (actual as any).settlementErrorStatus = info.status;

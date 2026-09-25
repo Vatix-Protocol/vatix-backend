@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { rpc as StellarRpc } from "@stellar/stellar-sdk";
 import type {
   EventFetcherConfig,
@@ -8,6 +9,7 @@ import type {
 import type { Telemetry } from "./telemetry.js";
 import { consoleTelemetry } from "./telemetry.js";
 import { isTransientError, sleep, withRetry } from "./retry.js";
+import { StellarTransport } from "../../../packages/shared/src/stellarTransport.js";
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
@@ -34,10 +36,51 @@ const MAX_CONSECUTIVE_DISCONNECTIONS = 5;
  */
 const DISCONNECTED_BACKOFF_MS = 10_000;
 
+/**
+ * Stable error codes surfaced by the event fetcher. Callers can branch on
+ * `code` without parsing messages, and ops can alert on them.
+ */
+export type EventFetcherErrorCode =
+  | "EVENT_FETCH_RETRIES_EXHAUSTED"
+  | "EVENT_FETCH_NON_RETRYABLE";
+
+/**
+ * Fail-closed error thrown when a page cannot be fetched. We never return
+ * partial/empty results on failure so downstream settlement cannot act on
+ * an incomplete view of chain state.
+ */
+export class EventFetcherError extends Error {
+  readonly code: EventFetcherErrorCode;
+  readonly attempts: number;
+  readonly startLedger: number;
+  readonly cursor?: string;
+  readonly cause?: unknown;
+
+  constructor(
+    code: EventFetcherErrorCode,
+    message: string,
+    details: {
+      attempts: number;
+      startLedger: number;
+      cursor?: string;
+      cause?: unknown;
+    }
+  ) {
+    super(message);
+    this.name = "EventFetcherError";
+    this.code = code;
+    this.attempts = details.attempts;
+    this.startLedger = details.startLedger;
+    this.cursor = details.cursor;
+    this.cause = details.cause;
+  }
+}
+
 export class EventFetcher {
-  private readonly server: StellarRpc.Server;
+  private server: StellarRpc.Server;
   private readonly config: Required<EventFetcherConfig>;
   private readonly telemetry: Telemetry;
+  private readonly transport: StellarTransport;
   /** Tracks consecutive RPC failures to detect sustained disconnect. */
   private consecutiveDisconnections = 0;
 
@@ -52,8 +95,30 @@ export class EventFetcher {
       fetchTimeoutMs: DEFAULT_FETCH_TIMEOUT_MS,
       ...config,
     };
-    this.server = new StellarRpc.Server(this.config.rpcUrl);
     this.telemetry = telemetry;
+
+    // Initialize transport for multi-endpoint failover
+    const horizonUrls = Array.isArray(this.config.rpcUrl)
+      ? this.config.rpcUrl
+      : [this.config.rpcUrl];
+
+    const logger = {
+      info: (msg: string, ctx?: any) =>
+        telemetry.record("indexer.transport.info", 1, ctx || {}),
+      warn: (msg: string, ctx?: any) =>
+        telemetry.record("indexer.transport.warn", 1, ctx || {}),
+      error: (msg: string, ctx?: any) =>
+        telemetry.record("indexer.transport.error", 1, ctx || {}),
+      debug: (msg: string, ctx?: any) =>
+        telemetry.record("indexer.transport.debug", 1, ctx || {}),
+      child: (_childPrefix: string) => logger,
+    };
+
+    this.transport = new StellarTransport(horizonUrls, logger, {
+      timeoutMs: this.config.fetchTimeoutMs || DEFAULT_FETCH_TIMEOUT_MS,
+    });
+
+    this.server = new StellarRpc.Server(this.transport.getActiveEndpoint());
   }
 
   /**
@@ -70,12 +135,17 @@ export class EventFetcher {
    */
   async getLatestLedgerInfo(): Promise<{ sequence: number; hash: string }> {
     const info = await this.server.getLatestLedger();
-    return { sequence: info.sequence, hash: info.hash.id };
+    // Soroban RPC getLatestLedger returns the ledger hash as `id`.
+    return { sequence: info.sequence, hash: info.id };
   }
 
   /**
    * Fetch all raw chain events within [startLedger, endLedger].
    * Handles multi-page responses and retries on transient failures.
+   *
+   * Fail-closed: if any page cannot be fetched after retries, throws an
+   * `EventFetcherError` instead of returning a partial result.
+   *
    * Applies an extended ingestion backoff when the RPC endpoint has been
    * consecutively unreachable (Issue #710).
    */
@@ -96,9 +166,11 @@ export class EventFetcher {
     const allEvents: RawChainEvent[] = [];
     let cursor: string | undefined;
     let latestLedger = 0;
+    let previousCursor: string | undefined;
+    let stallIterations = 0;
 
     do {
-      const page = await this.fetchPageWithRetry(startLedger, cursor);
+      const page = await this.fetchPageWithRetry(startLedger, requestId, cursor);
       latestLedger = page.latestLedger;
 
       const inWindow = page.events.filter((e) => {
@@ -121,11 +193,26 @@ export class EventFetcher {
         fullPage && last && lastLedger <= endLedger
           ? (last as any).pagingToken
           : undefined;
+
+      if (cursor !== undefined && cursor === previousCursor) {
+        stallIterations += 1;
+        if (stallIterations >= MAX_STALL_ITERATIONS) {
+          this.telemetry.record("indexer.rpc.cursor_stalled", 1, {
+            requestId,
+            cursor: cursor ?? "none",
+          });
+          throw new CursorStallError(cursor, stallIterations);
+        }
+      } else {
+        stallIterations = 0;
+      }
+      previousCursor = cursor;
     } while (cursor !== undefined);
 
     this.telemetry.record("indexer.events.fetched", allEvents.length, {
       startLedger: String(startLedger),
       endLedger: String(endLedger),
+      requestId,
     });
 
     return { events: allEvents, latestLedger };
@@ -134,9 +221,11 @@ export class EventFetcher {
   /**
    * Fetch a single page, retrying transient RPC failures with the shared
    * jittered-backoff policy in retry.ts (bounded by config.maxRetries).
+   * Uses StellarTransport for multi-endpoint failover and circuit breaking.
    */
   private async fetchPageWithRetry(
     startLedger: number,
+    requestId: string,
     cursor?: string
   ): Promise<StellarRpc.Api.GetEventsResponse> {
     const { maxRetries, retryDelayMs, pageLimit, contractId, fetchTimeoutMs } =
@@ -149,36 +238,58 @@ export class EventFetcher {
         async () => {
           attempt++;
           try {
-            const fetchCall = this.server.getEvents({
-              startLedger,
-              filters: [{ contractIds: [contractId] }],
-              limit: pageLimit,
-              ...(cursor ? ({ cursor } as any) : {}),
-            } as any);
+            const response = await this.transport.execute(
+              async (url: string) => {
+                // Prefer an injected mock server (unit tests replace this.server
+                // with a stub). In production, rebuild the RPC client whenever
+                // transport fails over to a different endpoint URL.
+                const isRealServer = this.server instanceof StellarRpc.Server;
+                if (!this.server || isRealServer) {
+                  this.server = new StellarRpc.Server(url);
+                }
+                const fetchCall = this.server.getEvents({
+                  startLedger,
+                  filters: [{ contractIds: [contractId] }],
+                  limit: pageLimit,
+                  ...(cursor ? ({ cursor } as any) : {}),
+                } as any);
 
-            // Wrap with a per-page timeout when fetchTimeoutMs > 0 so a
-            // stalled RPC endpoint cannot block the ingestion loop
-            // indefinitely.
-            const response: StellarRpc.Api.GetEventsResponse =
-              fetchTimeoutMs > 0
-                ? await Promise.race([
-                    fetchCall,
-                    new Promise<never>((_, reject) =>
-                      setTimeout(
-                        () =>
-                          reject(
-                            Object.assign(
-                              new Error(
-                                `EventFetcher: getEvents timed out after ${fetchTimeoutMs}ms`
-                              ),
-                              { code: "ETIMEDOUT" }
-                            )
-                          ),
-                        fetchTimeoutMs
-                      )
-                    ),
-                  ])
-                : await fetchCall;
+                // Wrap with a per-page timeout when fetchTimeoutMs > 0 so a
+                // stalled RPC endpoint cannot block the ingestion loop
+                // indefinitely. Always clear the timer when fetchCall settles
+                // so a fast rejection cannot leave an unhandled timeout later.
+                let result: StellarRpc.Api.GetEventsResponse;
+                if (fetchTimeoutMs > 0) {
+                  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+                  try {
+                    result = await Promise.race([
+                      fetchCall,
+                      new Promise<never>((_, reject) => {
+                        timeoutId = setTimeout(
+                          () =>
+                            reject(
+                              Object.assign(
+                                new Error(
+                                  `EventFetcher: getEvents timed out after ${fetchTimeoutMs}ms`
+                                ),
+                                { code: "ETIMEDOUT" }
+                              )
+                            ),
+                          fetchTimeoutMs
+                        );
+                      }),
+                    ]);
+                  } finally {
+                    if (timeoutId !== undefined) clearTimeout(timeoutId);
+                  }
+                } else {
+                  result = await fetchCall;
+                }
+
+                return result;
+              },
+              "getEvents"
+            );
 
             // Success — reset the consecutive disconnection counter
             this.consecutiveDisconnections = 0;
@@ -201,16 +312,52 @@ export class EventFetcher {
             }
             throw err;
           }
-        },
-        { maxRetries, retryDelayMs }
-      );
-    } catch (err) {
-      this.telemetry.record("indexer.rpc.error", 1, {
-        attempt: String(attempt),
-        transient: String(isTransientError(err)),
-      });
-      throw err;
+        );
+
+        return response;
+      } catch (err) {
+        const transient = isTransientError(err);
+        const isLast = attempt === maxRetries;
+
+        if (isLast || !transient) {
+          const code: EventFetcherErrorCode = transient
+            ? "EVENT_FETCH_RETRIES_EXHAUSTED"
+            : "EVENT_FETCH_NON_RETRYABLE";
+
+          this.telemetry.record("indexer.rpc.error", 1, {
+            attempt: String(attempt),
+            transient: String(transient),
+            code,
+          });
+
+          throw new EventFetcherError(
+            code,
+            transient
+              ? `Event fetch exhausted ${maxRetries + 1} attempts for ledger ${startLedger}`
+              : `Event fetch failed with non-retryable error for ledger ${startLedger}`,
+            { attempts: attempt + 1, startLedger, cursor, cause: err }
+          );
+        }
+
+        const delay = retryDelayMs * 2 ** attempt;
+        this.telemetry.record("indexer.rpc.retry", 1, {
+          attempt: String(attempt),
+          delayMs: String(delay),
+        });
+        console.warn(
+          `[EventFetcher] transient error (attempt ${attempt + 1}), retrying in ${delay}ms`,
+          err
+        );
+        await sleep(delay);
+      }
     }
+
+    // Unreachable — satisfies TypeScript
+    throw new EventFetcherError(
+      "EVENT_FETCH_RETRIES_EXHAUSTED",
+      `Event fetch exhausted retries for ledger ${startLedger}`,
+      { attempts: maxRetries + 1, startLedger, cursor }
+    );
   }
 
   private toRawEvent(e: StellarRpc.Api.EventResponse): RawChainEvent {

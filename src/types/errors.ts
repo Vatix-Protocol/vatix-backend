@@ -1,10 +1,6 @@
-// Error response format
+// Error response format — re-exports the shared envelope (#793) so API
+// consumers keep importing from `../types/errors.js` unchanged.
 
-export interface ErrorResponse {
-  error: string;
-  code: string;
-  message: string;
-  requestId: string;
-  statusCode: number;
-  fields?: Record<string, string>;
-}
+export type { ErrorEnvelope as ErrorResponse } from "../../packages/shared/src/errors.js";
+export { ContractError } from "../api/middleware/errors.js";
+

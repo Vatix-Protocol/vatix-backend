@@ -48,8 +48,10 @@ describe("docker-compose.yml", () => {
 
   it("gates application services behind profiles, leaving postgres/redis on by default", () => {
     const content = readFileSync(COMPOSE_PATH, "utf8");
-    expect(content).toMatch(/profiles:\s*\[\s*"app",\s*"api"\s*\]/);
-    expect(content).toMatch(/profiles:\s*\[\s*"app",\s*"indexer"\s*\]/);
+    expect(content).toMatch(/profiles:\s*\[\s*"app",\s*"full",\s*"api"\s*\]/);
+    expect(content).toMatch(
+      /profiles:\s*\[\s*"app",\s*"full",\s*"indexer"\s*\]/
+    );
 
     const postgresBlock = content.slice(
       content.indexOf("\n  postgres:"),
@@ -89,6 +91,26 @@ describe("docker-compose.yml", () => {
     const content = readFileSync(COMPOSE_PATH, "utf8");
     expect(content).toContain("migrate:");
     expect(content).toMatch(/profiles:\s*\[\s*"tools",\s*"migrate"\s*\]/);
+  });
+
+  it("gives every workers-profile service its own healthcheck", () => {
+    const content = readFileSync(COMPOSE_PATH, "utf8");
+    const servicesSection = content.slice(content.indexOf("\nservices:"));
+
+    for (const [service, nextService] of [
+      ["finalization-worker", "oracle-worker"],
+      ["oracle-worker", "settlement-worker"],
+      ["settlement-worker", "migrate"],
+    ] as const) {
+      const start = servicesSection.indexOf(`\n  ${service}:`);
+      const end = servicesSection.indexOf(`\n  ${nextService}:`);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const block = servicesSection.slice(start, end);
+      expect(block).toContain("healthcheck:");
+      expect(block).toMatch(/CMD-SHELL/);
+      expect(block).toMatch(/\/proc\/1\/cmdline/);
+    }
   });
 });
 

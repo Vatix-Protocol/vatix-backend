@@ -467,4 +467,153 @@ describe("RedisService", () => {
       await svc2.disconnect();
     });
   });
+
+  // =========================================================================
+  // acquireOrRenewLease / releaseLeaseIfHeld — matching leader lease CAS
+  // primitives (single-writer enforcement)
+  // =========================================================================
+  describe("acquireOrRenewLease / releaseLeaseIfHeld", () => {
+    const lockKey = "test:lease:lock";
+    const fencingKey = "test:lease:fencing";
+
+    afterEach(async () => {
+      await redis.del(lockKey);
+      await redis.del(fencingKey);
+    });
+
+    it("grants a fresh lease with a new fencing token when the lock is free", async () => {
+      const token = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        0
+      );
+      expect(token).toBeGreaterThan(0);
+    });
+
+    it("refuses a second holder while the first still holds the lease", async () => {
+      const tokenA = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        0
+      );
+      const tokenB = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-b",
+        5000,
+        0
+      );
+      expect(tokenA).toBeGreaterThan(0);
+      expect(tokenB).toBe(-1);
+    });
+
+    it("renews the same token for the current holder without minting a new one", async () => {
+      const token = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        0
+      );
+      const renewed = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        token
+      );
+      expect(renewed).toBe(token);
+    });
+
+    it("fences a stale token: refuses to renew once a different holder owns the lease", async () => {
+      const tokenA = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        1,
+        0
+      );
+      // Let holder-a's 1ms lease expire so holder-b can legitimately take over.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const tokenB = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-b",
+        5000,
+        0
+      );
+      expect(tokenB).toBeGreaterThan(tokenA);
+
+      // holder-a retrying with its old (stale) token must be fenced off,
+      // even though it doesn't know yet that it lost the lease.
+      const staleRenewal = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        tokenA
+      );
+      expect(staleRenewal).toBe(-1);
+    });
+
+    it("releaseLeaseIfHeld deletes the lease only when still held by (holder, token)", async () => {
+      const token = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        5000,
+        0
+      );
+
+      const releasedWrongToken = await redis.releaseLeaseIfHeld(
+        lockKey,
+        "holder-a",
+        token + 1
+      );
+      expect(releasedWrongToken).toBe(false);
+      expect(await redis.exists(lockKey)).toBe(true);
+
+      const released = await redis.releaseLeaseIfHeld(
+        lockKey,
+        "holder-a",
+        token
+      );
+      expect(released).toBe(true);
+      expect(await redis.exists(lockKey)).toBe(false);
+    });
+
+    it("releaseLeaseIfHeld never deletes a lease a different holder has since acquired", async () => {
+      const tokenA = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-a",
+        1,
+        0
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const tokenB = await redis.acquireOrRenewLease(
+        lockKey,
+        fencingKey,
+        "holder-b",
+        5000,
+        0
+      );
+
+      // holder-a's belated release attempt (using its stale token) must not
+      // remove holder-b's now-active lease.
+      const released = await redis.releaseLeaseIfHeld(
+        lockKey,
+        "holder-a",
+        tokenA
+      );
+      expect(released).toBe(false);
+      expect(await redis.exists(lockKey)).toBe(true);
+
+      await redis.releaseLeaseIfHeld(lockKey, "holder-b", tokenB);
+    });
+  });
 });

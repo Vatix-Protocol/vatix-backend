@@ -182,6 +182,117 @@ describe("matchOrder fill scenarios (snapshots)", () => {
     expect(orderBook.getOrderCount()).toBe(0);
   });
 
+  it("breaks ties at an identical price level by time priority (FIFO)", () => {
+    // Three makers all resting at the same price — the earliest-timestamp
+    // (first-inserted) maker must fill first, then the second, leaving the
+    // last maker resting. This isolates the *time* half of price-time
+    // priority, which the multi-level sweep test above does not exercise.
+    orderBook.addOrder(
+      createBookOrder(
+        "maker-earliest",
+        "ask",
+        0.5,
+        30,
+        FIXED_NOW - 3000,
+        "GMAKER00000000000000000000000000000000000000000008"
+      )
+    );
+    orderBook.addOrder(
+      createBookOrder(
+        "maker-middle",
+        "ask",
+        0.5,
+        30,
+        FIXED_NOW - 2000,
+        "GMAKER00000000000000000000000000000000000000000009"
+      )
+    );
+    orderBook.addOrder(
+      createBookOrder(
+        "maker-latest",
+        "ask",
+        0.5,
+        30,
+        FIXED_NOW - 1000,
+        "GMAKER00000000000000000000000000000000000000000010"
+      )
+    );
+
+    const taker = createMatchingOrder(
+      "taker-1",
+      "BUY",
+      0.5,
+      50,
+      "GTAKER00000000000000000000000000000000000000000005"
+    );
+
+    const result = matchOrder(taker, orderBook);
+
+    expect(result).toMatchSnapshot();
+    expect(result.trades.map((t) => t.sellOrderId)).toEqual([
+      "maker-earliest",
+      "maker-middle",
+    ]);
+    // maker-earliest (30) fills fully, maker-middle (30) fills partially (20 of
+    // 30, taker had 20 left) and — being a quantity update, not a re-insert —
+    // keeps its FIFO position ahead of the untouched maker-latest.
+    const remaining = orderBook.getOrdersAtPrice("ask", 0.5);
+    expect(remaining.map((o) => [o.id, o.quantity])).toEqual([
+      ["maker-middle", 10],
+      ["maker-latest", 30],
+    ]);
+  });
+
+  it("sweeps multiple bid price levels for a SELL taker (opposite-side cross-book sweep)", () => {
+    // Mirrors the BUY-taker sweep above, but from the other side of the
+    // book, to confirm cross-book sweep coverage isn't asymmetric.
+    orderBook.addOrder(
+      createBookOrder(
+        "maker-bid-1",
+        "bid",
+        0.6,
+        30,
+        FIXED_NOW - 3000,
+        "GMAKER00000000000000000000000000000000000000000011"
+      )
+    );
+    orderBook.addOrder(
+      createBookOrder(
+        "maker-bid-2",
+        "bid",
+        0.55,
+        50,
+        FIXED_NOW - 2000,
+        "GMAKER00000000000000000000000000000000000000000012"
+      )
+    );
+    orderBook.addOrder(
+      createBookOrder(
+        "maker-bid-3",
+        "bid",
+        0.5,
+        50,
+        FIXED_NOW - 1000,
+        "GMAKER00000000000000000000000000000000000000000013"
+      )
+    );
+
+    const taker = createMatchingOrder(
+      "taker-1",
+      "SELL",
+      0.5,
+      90,
+      "GTAKER00000000000000000000000000000000000000000006"
+    );
+
+    const result = matchOrder(taker, orderBook);
+
+    expect(result).toMatchSnapshot();
+    // Best bid (highest price) fills first: 0.60, then 0.55, then partially 0.50.
+    expect(result.trades.map((t) => t.price)).toEqual([0.6, 0.55, 0.5]);
+    expect(result.trades.map((t) => t.quantity)).toEqual([30, 50, 10]);
+  });
+
   it("returns no trades and the original order unchanged when nothing crosses", () => {
     orderBook.addOrder(
       createBookOrder(

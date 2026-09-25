@@ -2,6 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { Keypair } from "@stellar/stellar-sdk";
 import { SigningService } from "./signing";
 import type { OrderData } from "../types";
+import {
+  SIGNING_DOMAINS,
+  buildDomainSeparatedMessage,
+} from "../../packages/shared/src/signingDomain.js";
 
 describe("Order Receipt Signing Service", () => {
   let signingService: SigningService;
@@ -280,6 +284,111 @@ describe("Order Receipt Signing Service", () => {
       const receipt2 = signingService.signOrderReceipt(modifiedOrder);
 
       expect(receipt1.signature).not.toBe(receipt2.signature);
+    });
+  });
+
+  describe("domain separation (#978)", () => {
+    const originalNetwork = process.env.SOROBAN_NETWORK_PASSPHRASE;
+    const originalNodeEnv = process.env.NODE_ENV;
+
+    afterEach(() => {
+      if (originalNetwork === undefined) {
+        delete process.env.SOROBAN_NETWORK_PASSPHRASE;
+      } else {
+        process.env.SOROBAN_NETWORK_PASSPHRASE = originalNetwork;
+      }
+      if (originalNodeEnv === undefined) {
+        delete process.env.NODE_ENV;
+      } else {
+        process.env.NODE_ENV = originalNodeEnv;
+      }
+    });
+
+    const order: OrderData = {
+      orderId: "order-domain",
+      userAddress: "GDOMAIN123",
+      side: "BUY",
+      outcome: "YES",
+      price: 0.5,
+      quantity: 100,
+      timestamp: 1234567890,
+    };
+
+    it("signs the domain- and network-separated envelope, not the bare order", () => {
+      process.env.SOROBAN_NETWORK_PASSPHRASE =
+        "Test SDF Network ; September 2015";
+      const service = new SigningService();
+      service.initialize();
+
+      const receipt = service.signOrderReceipt(order);
+
+      const envelope = buildDomainSeparatedMessage(
+        SIGNING_DOMAINS.ORDER_RECEIPT,
+        "Test SDF Network ; September 2015",
+        {
+          orderId: order.orderId,
+          userAddress: order.userAddress,
+          side: order.side,
+          outcome: order.outcome,
+          price: order.price,
+          quantity: order.quantity,
+          timestamp: order.timestamp,
+        }
+      );
+
+      const kp = Keypair.fromPublicKey(receipt.publicKey);
+      // Signature verifies against the enveloped message...
+      expect(
+        kp.verify(
+          Buffer.from(envelope, "utf8"),
+          Buffer.from(receipt.signature, "base64")
+        )
+      ).toBe(true);
+      // ...and NOT against the bare legacy layout.
+      const bare = JSON.stringify({
+        orderId: order.orderId,
+        userAddress: order.userAddress,
+        side: order.side,
+        outcome: order.outcome,
+        price: order.price,
+        quantity: order.quantity,
+        timestamp: order.timestamp,
+      });
+      expect(
+        kp.verify(
+          Buffer.from(bare, "utf8"),
+          Buffer.from(receipt.signature, "base64")
+        )
+      ).toBe(false);
+    });
+
+    it("fails verification when the network passphrase changes (cross-network replay)", () => {
+      process.env.SOROBAN_NETWORK_PASSPHRASE =
+        "Test SDF Network ; September 2015";
+      const service = new SigningService();
+      service.initialize();
+      const receipt = service.signOrderReceipt(order);
+      expect(service.verifyOrderReceipt(receipt).isValid).toBe(true);
+
+      // Same key, same order, different network — signature must not verify.
+      process.env.SOROBAN_NETWORK_PASSPHRASE =
+        "Public Global Stellar Network ; September 2015";
+      const mainnetService = new SigningService();
+      process.env.ORACLE_SECRET_KEY = testKeypair.secret();
+      mainnetService.initialize();
+
+      expect(mainnetService.verifyOrderReceipt(receipt).isValid).toBe(false);
+    });
+
+    it("initialize() fails fast in production when SOROBAN_NETWORK_PASSPHRASE is unset", () => {
+      delete process.env.SOROBAN_NETWORK_PASSPHRASE;
+      process.env.NODE_ENV = "production";
+      process.env.ORACLE_SECRET_KEY = testKeypair.secret();
+
+      const service = new SigningService();
+      expect(() => service.initialize()).toThrow(
+        /SOROBAN_NETWORK_PASSPHRASE is required in production/
+      );
     });
   });
 

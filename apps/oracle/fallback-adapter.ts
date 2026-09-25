@@ -14,7 +14,11 @@ import type {
   ProviderResult,
   ResolutionRequest,
 } from "./provider-adapter.js";
-import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
+import {
+  withTimeout,
+  validateTimeout,
+  FALLBACK_PROVIDER_TIMEOUT_POLICY_MS,
+} from "./timeout-utils.js";
 import { withRetry, type RetryConfig } from "./retry-utils.js";
 
 /**
@@ -86,7 +90,13 @@ export class FallbackAdapter implements ProviderAdapter {
     if (!config.providers || config.providers.length === 0) {
       throw new Error("FallbackAdapter requires at least one provider");
     }
-    this.config = { timeoutMs: DEFAULT_TIMEOUT_MS, ...config };
+    this.config = {
+      timeoutMs: FALLBACK_PROVIDER_TIMEOUT_POLICY_MS,
+      ...config,
+    };
+    // Fail fast (in production) rather than silently running with a
+    // timeout that doesn't match the documented fallback policy.
+    this.config.timeoutMs = validateTimeout(this.config.timeoutMs);
     this.fetchFn = config.fetchFn ?? fetch;
   }
 
@@ -95,8 +105,11 @@ export class FallbackAdapter implements ProviderAdapter {
    * Each provider is retried per retryConfig before advancing.
    */
   async resolve(request: ResolutionRequest): Promise<ProviderResult> {
-    const timeoutMs =
-      request.timeoutMs ?? this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = validateTimeout(
+      request.timeoutMs ??
+        this.config.timeoutMs ??
+        FALLBACK_PROVIDER_TIMEOUT_POLICY_MS
+    );
     const errors: Error[] = [];
 
     for (const provider of this.config.providers) {

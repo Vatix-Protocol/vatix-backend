@@ -23,6 +23,12 @@ export interface RetryConfig {
   useJitter?: boolean;
 }
 
+import {
+  ProviderRetryError,
+  RetryableError,
+  retryWithBackoff,
+} from "../../src/services/providerRetry.js";
+
 /**
  * Default retry configuration.
  */
@@ -85,42 +91,41 @@ export async function withRetry<T>(
   onRetry?: (error: Error, attempt: number, delayMs: number) => void
 ): Promise<T> {
   const fullConfig = { ...DEFAULT_RETRY_CONFIG, ...config };
-  let lastError: any;
 
-  for (let attempt = 0; attempt <= fullConfig.maxRetries; attempt++) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-
-      if (attempt >= fullConfig.maxRetries || !isRetryableError(error)) {
-        throw error;
+  try {
+    return await retryWithBackoff(
+      async () => {
+        try {
+          return await operation();
+        } catch (error) {
+          if (!isRetryableError(error)) {
+            throw error;
+          }
+          throw RetryableError.wrap(
+            error instanceof Error ? error : new Error(String(error))
+          );
+        }
+      },
+      {
+        maxAttempts: fullConfig.maxRetries + 1,
+        initialDelayMs: fullConfig.initialDelayMs,
+        maxDelayMs: fullConfig.maxDelayMs,
+        factor: fullConfig.factor,
+        jitter: fullConfig.useJitter !== false,
+        onRetry: onRetry
+          ? (error, attempt, delayMs) =>
+              onRetry(error.cause ?? error, attempt, delayMs)
+          : undefined,
       }
-
-      // Calculate delay: initialDelay * factor^attempt
-      let delayMs =
-        fullConfig.initialDelayMs * Math.pow(fullConfig.factor, attempt);
-
-      // Cap at maxDelay
-      delayMs = Math.min(delayMs, fullConfig.maxDelayMs);
-
-      // Add jitter (randomly vary delay by +/- 20%)
-      if (fullConfig.useJitter !== false) {
-        const jitter = (Math.random() * 0.4 - 0.2) * delayMs;
-        delayMs = Math.max(0, delayMs + jitter);
+    );
+  } catch (error) {
+    if (error instanceof ProviderRetryError) {
+      const originalError = error.originalError;
+      if (originalError instanceof RetryableError) {
+        throw originalError.cause ?? originalError;
       }
-
-      if (onRetry) {
-        onRetry(
-          error instanceof Error ? error : new Error(String(error)),
-          attempt + 1,
-          delayMs
-        );
-      }
-
-      await wait(delayMs);
+      throw originalError;
     }
+    throw error;
   }
-
-  throw lastError;
 }

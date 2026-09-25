@@ -196,6 +196,50 @@ export const openApiSpec = {
         },
       },
     },
+    "/v1/auth/challenge": {
+      post: {
+        summary: "Issue a signing challenge",
+        description:
+          "Returns a single-use nonce that must be included in the signed message and sent as the x-nonce header on the next mutating request. The nonce is stored in shared Redis with a TTL, so it is valid across API replicas exactly once.",
+        tags: ["Auth"],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["userAddress"],
+                properties: {
+                  userAddress: {
+                    type: "string",
+                    description:
+                      "Stellar public key (G...) requesting the challenge",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "201": {
+            description: "Challenge issued",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    nonce: { type: "string" },
+                    expiresAt: { type: "string", format: "date-time" },
+                    ttlSeconds: { type: "integer" },
+                  },
+                },
+              },
+            },
+          },
+          "401": { description: "Invalid userAddress" },
+        },
+      },
+    },
     "/v1/orders": {
       post: {
         summary: "Create an order",
@@ -217,6 +261,14 @@ export const openApiSpec = {
             required: true,
             description:
               "Unix timestamp in milliseconds (string). Must be within ±5 minutes of server time to prevent replay attacks.",
+            schema: { type: "string" },
+          },
+          {
+            name: "x-nonce",
+            in: "header",
+            required: true,
+            description:
+              "Single-use nonce obtained from POST /v1/auth/challenge and included in the signed message. Consumed atomically in shared Redis, so a captured request cannot be replayed against another API replica.",
             schema: { type: "string" },
           },
         ],
@@ -336,6 +388,63 @@ export const openApiSpec = {
               },
             },
           },
+          "409": {
+            description:
+              "The order could not be accepted against current market state. `order_conflict`: a maker order this request would have matched was concurrently filled or cancelled (optimistic-concurrency conflict on Order.version) — safe and expected to retry. `market_not_active`: the market is RESOLVED or CANCELLED — do not retry. `market_expired` (issue #951): the market's trading window (`endTime`) has closed even though its status is still ACTIVE because the expiry worker has not yet caught up — do not retry.",
+            content: {
+              "application/json": {
+                examples: {
+                  makerConflict: {
+                    summary: "Maker order concurrently modified",
+                    value: {
+                      code: "order_conflict",
+                      message:
+                        "Maker order ord_01j9z3k4p2q8r5t6u7v8w9x0y2 was concurrently modified; please retry",
+                      statusCode: 409,
+                    },
+                  },
+                  marketNotActive: {
+                    summary: "Market is resolved or cancelled",
+                    value: {
+                      code: "market_not_active",
+                      message:
+                        "Market mkt_01j9z3k4p2q8r5t6u7v8w9x0y2 is cancelled, orders cannot be placed",
+                      statusCode: 409,
+                    },
+                  },
+                  marketExpired: {
+                    summary:
+                      "Market trading window has closed (expiry worker lagging)",
+                    value: {
+                      code: "market_expired",
+                      message:
+                        "Market mkt_01j9z3k4p2q8r5t6u7v8w9x0y2 ended at 2026-08-29T12:00:00.000Z; new orders and matches are rejected",
+                      statusCode: 409,
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "503": {
+            description:
+              "Matching engine disabled, or this API replica does not currently hold the matching leader lease (matching_unavailable — see docs/deployment-runbook.md#scaling-the-api--matching-leader-lease). Safe to retry against any replica.",
+            content: {
+              "application/json": {
+                examples: {
+                  notLeader: {
+                    summary: "Not the current matching leader",
+                    value: {
+                      code: "matching_unavailable",
+                      message:
+                        "This instance does not currently hold the matching leader lease",
+                      statusCode: 503,
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -421,10 +530,30 @@ export const openApiSpec = {
             description: "Order cancelled successfully",
           },
           "400": {
-            description: "Invalid order ID or order already filled/cancelled",
+            description:
+              "Invalid order ID, order does not belong to the caller, or order was already filled/cancelled at the time it was read",
           },
           "404": {
             description: "Order not found",
+          },
+          "409": {
+            description:
+              "Optimistic-concurrency conflict (order_conflict): the order was filled or cancelled by a concurrent request between this call's read and its version-conditioned UPDATE (Order.version). Distinct from 400 — the order was still cancellable when this request started but lost the race. Safe and expected to retry: re-fetch the order's current status; if it is now FILLED/CANCELLED, no further action is needed.",
+            content: {
+              "application/json": {
+                examples: {
+                  raceLost: {
+                    summary: "Order filled or cancelled concurrently",
+                    value: {
+                      code: "order_conflict",
+                      message:
+                        "Order was concurrently filled or cancelled; please retry",
+                      statusCode: 409,
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -759,6 +888,158 @@ export const openApiSpec = {
         },
       },
     },
+    "/v1/admin/audit/verify-chain": {
+      post: {
+        summary: "Verify audit trail hash chain",
+        description:
+          "Verify hash chain integrity for a market's audit trail. Requires " +
+          "API key and admin auth. Detects payload tampering (`mismatchCount`) " +
+          "and — issue #952 — broken chain links from deleted or expired " +
+          "archived rows (`gapCount`). Each error carries `kind`: " +
+          "`hash_mismatch`, `chain_gap`, or `genesis`. A non-zero `gapCount` " +
+          "increments `vatix_audit_chain_gap_total` and, in production, logs " +
+          "at error level.",
+        tags: ["Admin", "Audit"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["marketId"],
+                properties: {
+                  marketId: { type: "string" },
+                  startTime: { type: "string", format: "date-time" },
+                  endTime: { type: "string", format: "date-time" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          "200": {
+            description: "Chain verification result",
+          },
+          "400": {
+            description: "Invalid request parameters",
+          },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
+          },
+        },
+      },
+    },
+    "/v1/admin/audit/watermark/{marketId}": {
+      get: {
+        summary: "Get audit archival watermark",
+        description:
+          "Get archival watermark for a market's audit trail. " +
+          "Requires API key and admin auth.",
+        tags: ["Admin", "Audit"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
+        parameters: [
+          {
+            name: "marketId",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Archival watermark",
+          },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
+          },
+        },
+      },
+    },
+    "/v1/admin/audit/events/{marketId}": {
+      get: {
+        summary: "Get archived audit events",
+        description:
+          "Get archived audit events for a market with pagination. " +
+          "Requires API key and admin auth.",
+        tags: ["Admin", "Audit"],
+        security: [{ ApiKeyAuth: [], BearerAuth: [] }],
+        parameters: [
+          {
+            name: "marketId",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+          },
+          {
+            name: "limit",
+            in: "query",
+            description: "Max events per page (default 100, max 1000)",
+            schema: {
+              type: "integer",
+              minimum: 1,
+              maximum: 1000,
+              default: 100,
+            },
+          },
+          {
+            name: "offset",
+            in: "query",
+            description: "Skip N events (default 0)",
+            schema: { type: "integer", minimum: 0, default: 0 },
+          },
+        ],
+        responses: {
+          "200": {
+            description: "Paginated audit events",
+          },
+          "401": {
+            description: "Missing or invalid API key",
+          },
+          "403": {
+            description: "Invalid admin token",
+          },
+        },
+      },
+    },
+    "/v1/wallets/{wallet}/fills/stream": {
+      get: {
+        summary: "Order fill notifications stream",
+        description:
+          "Server-Sent Events stream of order fill notifications for a wallet. " +
+          "Only fills that occur after the client connects are pushed.",
+        tags: ["Fills"],
+        parameters: [
+          {
+            name: "wallet",
+            in: "path",
+            required: true,
+            schema: { type: "string" },
+            description: "Wallet address",
+          },
+          {
+            name: "after",
+            in: "query",
+            description:
+              "Resume cursor (stream ID or ISO timestamp); fallback for " +
+              "clients that cannot set Last-Event-ID header",
+            schema: { type: "string" },
+          },
+        ],
+        responses: {
+          "200": {
+            description:
+              "Event stream of fills (Server-Sent Events; text/event-stream)",
+          },
+        },
+      },
+    },
   },
   components: {
     securitySchemes: {
@@ -852,3 +1133,31 @@ export const openApiSpec = {
     },
   },
 } as const;
+
+/**
+ * Returns the OpenAPI spec served to clients. In production, paths tagged
+ * "Admin" (internal-only endpoints) are stripped so they never appear in
+ * the public /docs Swagger UI or /v1/openapi.json response — reducing the
+ * discoverable surface area for internal admin routes (#805, ties to #741).
+ * Non-production environments continue to see the full spec, including
+ * Admin routes, for local/dev testing.
+ */
+export function getOpenApiSpec(nodeEnv: string): typeof openApiSpec {
+  if (nodeEnv !== "production") {
+    return openApiSpec;
+  }
+
+  const publicPaths = Object.fromEntries(
+    Object.entries(openApiSpec.paths).filter(([, pathItem]) => {
+      const operations = Object.values(pathItem) as Array<{
+        tags?: readonly string[];
+      }>;
+      return !operations.some((op) => op?.tags?.includes("Admin"));
+    })
+  );
+
+  return {
+    ...openApiSpec,
+    paths: publicPaths,
+  } as typeof openApiSpec;
+}

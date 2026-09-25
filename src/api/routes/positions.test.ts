@@ -87,13 +87,6 @@ vi.mock("../../matching/validation", () => ({
       : null,
   validateUserAddress: (addr: string) =>
     /^G[A-Z2-7]{55}$/.test(addr) ? null : "Invalid Stellar address",
-  sanitizeUserAddress: (addr: unknown) =>
-    typeof addr === "string"
-      ? addr
-          .trim()
-          .toUpperCase()
-          .replace(/[\x00-\x1F\x7F]/g, "")
-      : null,
   STELLAR_PUBLIC_KEY_REGEX: /^G[A-Z2-7]{55}$/,
 }));
 

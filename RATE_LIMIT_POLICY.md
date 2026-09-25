@@ -67,6 +67,33 @@ Privileged operations gated behind API key + admin role token. Requires `Authori
 
 ---
 
+## Orders API Authorization & Validation
+
+The orders API is a money-path surface. Every entrypoint is **deny-by-default** and enforces the following invariants:
+
+1. **Authorization** — `POST /v1/orders` requires a valid Stellar signature over the canonical order payload. The recovered signer address MUST equal the order's `owner`/`address` field; mismatches are rejected with `403 FORBIDDEN`. Read endpoints (`GET /v1/orders/user/:address`) are public but scoped to the requested address only. No client-supplied field may override server-derived identity.
+2. **Typed validation** — Request bodies and query params are validated against typed schemas before any DB or matching-engine work. Invalid input fails fast with `400 VALIDATION_ERROR` and a stable `code`.
+3. **Idempotency** — Order writes accept an `Idempotency-Key` header (or a deterministic client order id). Replayed/concurrent requests with the same key return the original result instead of creating a duplicate order. Missing keys on retried writes are treated as new requests only after signature verification.
+4. **Fail-closed writes** — If a dependency (DB, Redis, or Stellar RPC) is unavailable, order writes return `503 DEPENDENCY_UNAVAILABLE` and MUST NOT partially persist or match. Reads may degrade but never fabricate balances.
+5. **Correlation ids** — Every orders request is tagged with a correlation id (from `X-Request-Id` when present, otherwise generated) that is echoed in responses and logs for tracing. Logs never include secrets, signatures, or full tokens.
+
+### Stable Error Codes (Orders)
+
+| Code                     | HTTP | Meaning                                                        |
+| ------------------------ | ---- | ------------------------------------------------------------- |
+| `VALIDATION_ERROR`       | 400  | Malformed or out-of-range request payload/params.             |
+| `UNAUTHORIZED`           | 401  | Missing or expired authentication/signature.                  |
+| `FORBIDDEN`              | 403  | Signature valid but signer does not own the order.            |
+| `IDEMPOTENCY_CONFLICT`   | 409  | Same idempotency key reused with a different payload.         |
+| `RATE_LIMITED`           | 429  | Write tier exceeded.                                          |
+| `DEPENDENCY_UNAVAILABLE` | 503  | DB/Redis/RPC outage; write failed closed.                     |
+
+### Kill Switch
+
+Order writes are gated behind the `ORDERS_WRITE_ENABLED` feature flag (default `true`). Setting it to `false` disables `POST /v1/orders` (returns `503 DEPENDENCY_UNAVAILABLE`) without affecting reads, providing a fast rollback for mainnet-affecting changes.
+
+---
+
 ## Response Headers
 
 All responses include IETF-compliant rate limit headers:
@@ -146,6 +173,8 @@ Rate limiting is tested in `src/api/middleware/rateLimiter.test.ts`. Key test sc
 - ✓ 429 response includes Retry-After header
 - ✓ Window resets after expiration
 - ✓ Separate tiers do not interfere with each other
+
+Orders authz/validation is covered by unit tests for the invariants above (auth negatives, idempotency replay, fail-closed writes) plus integration/e2e on the critical order path.
 
 ---
 

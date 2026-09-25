@@ -3,7 +3,11 @@ import { getPrismaClient } from "../../services/prisma.js";
 import type { Market, MarketStatus, Outcome } from "../../types/index.js";
 import { heavyReadLimiter } from "../middleware/rateLimiter.js";
 import { success } from "../middleware/responses.js";
-import { MarketNotFoundError } from "../middleware/errors.js";
+import {
+  MarketNotFoundError,
+  ServiceUnavailableError,
+} from "../middleware/errors.js";
+import { db, StatementTimeoutError } from "../../services/database.js";
 import type {
   MarketDetailsDto,
   MarketListItemDto,
@@ -117,11 +121,31 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         [sort]: direction,
       };
 
-      const markets = await prisma.market.findMany({
-        where: whereClause,
-        orderBy,
-        take: limit,
-      });
+      // #983: this list scan is unbounded beyond `take` — a missing index or
+      // pathological filter must abort, not pin a pool connection and stall
+      // the event loop. Cap it with a per-transaction statement_timeout and
+      // shed the request (503) rather than surfacing a generic 500 if it fires.
+      let markets: Awaited<ReturnType<typeof prisma.market.findMany>>;
+      try {
+        markets = await db.withStatementTimeout((tx) =>
+          tx.market.findMany({
+            where: whereClause,
+            orderBy,
+            take: limit,
+          })
+        );
+      } catch (error) {
+        if (error instanceof StatementTimeoutError) {
+          request.log.warn(
+            { err: error, route: "GET /markets", query: request.query },
+            "market list query exceeded statement timeout"
+          );
+          throw new ServiceUnavailableError(
+            "Market listing is temporarily unavailable; please retry"
+          );
+        }
+        throw error;
+      }
 
       const response: GetMarketsResponse = {
         markets: markets.map(toMarketDto),

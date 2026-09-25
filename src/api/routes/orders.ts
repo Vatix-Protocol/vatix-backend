@@ -10,11 +10,16 @@ import {
   validateUserAddress,
   sanitizeUserAddress,
   assertValidOrder,
+  validateTickSize,
+  TICK_SIZE,
   STELLAR_PUBLIC_KEY_REGEX,
   type OrderInput,
 } from "../../matching/validation.js";
 import { heavyReadLimiter, writeLimiter } from "../middleware/rateLimiter.js";
-import { verifyStellarSignature } from "../middleware/stellarAuth.js";
+import {
+  verifyStellarSignature,
+  verifyStellarCancellationSignature,
+} from "../middleware/stellarAuth.js";
 
 // ---------------------------------------------------------------------------
 // Zod schema for POST /orders body
@@ -33,7 +38,10 @@ const CreateOrderSchema = z.object({
   price: z
     .number()
     .gt(0, "price must be greater than 0")
-    .lt(1, "price must be less than 1"),
+    .lt(1, "price must be less than 1")
+    .refine((val) => validateTickSize(val) === null, {
+      message: `price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`,
+    }),
   quantity: z
     .number()
     .int("quantity must be an integer")
@@ -686,11 +694,12 @@ export async function ordersRoutes(fastify: FastifyInstance) {
     }
   );
 
-  // DELETE /orders/:id — cancel an open order and release locked collateral
+  // DELETE /orders/:id — cancel an open order with Stellar signature verification
+  // Requires x-signature, x-timestamp, and x-nonce headers plus userAddress in body (per ADR 002).
   fastify.delete<{ Params: { id: string } }>(
     "/orders/:id",
     {
-      onRequest: [writeLimiter],
+      onRequest: [writeLimiter, verifyStellarCancellationSignature],
       schema: {
         params: {
           type: "object",
@@ -698,6 +707,16 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           additionalProperties: false,
           properties: {
             id: { type: "string" },
+          },
+        },
+        body: {
+          type: "object",
+          required: ["userAddress"],
+          properties: {
+            userAddress: {
+              type: "string",
+              pattern: STELLAR_PUBLIC_KEY_REGEX.source,
+            },
           },
         },
         response: {
@@ -726,19 +745,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
     },
     async (request: FastifyRequest<{ Params: { id: string } }>, reply) => {
       const { id } = request.params;
-
-      // userAddress must be provided in the request body or query for ownership verification
-      const body = request.body as { userAddress?: string } | undefined;
-      const userAddress = body?.userAddress;
-
-      if (!userAddress) {
-        throw new ValidationError(
-          "userAddress is required to cancel an order",
-          {
-            userAddress: "userAddress is required to cancel an order",
-          }
-        );
-      }
+      const body = request.body as { userAddress: string };
+      const userAddress = body.userAddress;
 
       const order = await matchingService.cancelOrder(id, userAddress);
 

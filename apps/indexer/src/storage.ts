@@ -1,6 +1,33 @@
 import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { ILogger } from "../../../packages/shared/src/logger.js";
 
+/** Thrown when the production storage path is misconfigured. Fail fast, no silent fallback. */
+export class CursorStorageConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CursorStorageConfigError";
+  }
+}
+
+/** Raised when a batch write commits but a concurrent writer already advanced the cursor. */
+export class CursorConflictError extends Error {
+  constructor(expected: string | null, actual: string | null) {
+    super(
+      `IndexerCursor conflict: expected previous cursor ${expected ?? "null"} but found ${actual ?? "null"}`
+    );
+    this.name = "CursorConflictError";
+  }
+}
+
+/**
+ * Minimal transaction-scoped Prisma client. Callers use this to perform their
+ * event/trade/resolution writes in the *same* transaction as the cursor
+ * upsert, so a batch write failure rolls back the cursor advance too.
+ */
+export type CursorTransactionClient = Parameters<
+  Parameters<ReturnType<typeof getPrismaClient>["$transaction"]>[0]
+>[0];
+
 export interface CursorStorageClient {
   loadCursor(): Promise<string | null>;
   saveCursor(cursor: string): Promise<void>;
@@ -117,4 +144,113 @@ export class PrismaCursorStorageClient implements CursorStorageClient {
       networkId: this.networkId,
     });
   }
+
+  async saveCursorWithBatch(
+    cursor: string,
+    writeBatch: (tx: CursorTransactionClient) => Promise<void>,
+    expectedPreviousCursor?: string | null
+  ): Promise<void> {
+    const correlationId = `${this.networkId}:${this.cursorKey}:${cursor}`;
+
+    await this.prisma.$transaction(async (tx) => {
+      if (expectedPreviousCursor !== undefined) {
+        const current = await tx.indexerCursor.findUnique({
+          where: {
+            networkId_cursorKey: {
+              networkId: this.networkId,
+              cursorKey: this.cursorKey,
+            },
+          },
+          select: { cursor: true },
+        });
+        const currentCursor = current?.cursor ?? null;
+        if (currentCursor !== expectedPreviousCursor) {
+          throw new CursorConflictError(expectedPreviousCursor, currentCursor);
+        }
+      }
+
+      // Batch writes run first: if they fail, the cursor upsert below never
+      // executes and the whole transaction rolls back. This is what
+      // guarantees the cursor cannot advance past ledger data that was not
+      // durably persisted (no "holes").
+      await writeBatch(tx);
+
+      await tx.indexerCursor.upsert({
+        where: {
+          networkId_cursorKey: {
+            networkId: this.networkId,
+            cursorKey: this.cursorKey,
+          },
+        },
+        create: {
+          networkId: this.networkId,
+          cursorKey: this.cursorKey,
+          cursor,
+        },
+        update: {
+          cursor,
+        },
+      });
+    });
+
+    this.logger?.debug("Ledger cursor and batch persisted atomically", {
+      networkId: this.networkId,
+      cursorKey: this.cursorKey,
+      cursor,
+      correlationId,
+    });
+  }
+}
+
+/**
+ * Soft-delete status for a market record.
+ *
+ * A market is considered soft-deleted when `deletedAt` is set to a non-null
+ * timestamp. Soft-deletion is a first-class status: money-path and read
+ * endpoints must exclude soft-deleted markets by default.
+ */
+export interface MarketSoftDeleteStatus {
+  deletedAt: Date | null;
+}
+
+/**
+ * Prisma `where` fragment that excludes soft-deleted markets.
+ *
+ * Fail-closed: only markets whose `deletedAt` is explicitly `null` are
+ * surfaced. If the deletion status is unknown/unavailable (e.g. the field is
+ * missing or the row cannot be resolved), the market is NOT returned.
+ */
+export const NOT_SOFT_DELETED = { deletedAt: null } as const;
+
+/**
+ * Returns true only when the market is explicitly known to be live.
+ *
+ * Fail-closed: any unknown/undefined status is treated as deleted so that
+ * money-path/read endpoints never surface a market whose deletion status
+ * cannot be confirmed.
+ */
+export function isMarketVisible(
+  status: MarketSoftDeleteStatus | null | undefined
+): boolean {
+  if (!status) {
+    return false;
+  }
+  return status.deletedAt === null;
+}
+
+/**
+ * Builds a Prisma `where` clause for market queries that excludes
+ * soft-deleted markets unless the caller explicitly opts in.
+ *
+ * @param where  Base filter to merge with the soft-delete guard.
+ * @param options.includeDeleted  Explicit opt-in for admin/audit paths only.
+ */
+export function marketVisibilityWhere<T extends Record<string, unknown>>(
+  where: T = {} as T,
+  options: { includeDeleted?: boolean } = {}
+): T & { deletedAt?: null } {
+  if (options.includeDeleted) {
+    return { ...where };
+  }
+  return { ...where, ...NOT_SOFT_DELETED };
 }
