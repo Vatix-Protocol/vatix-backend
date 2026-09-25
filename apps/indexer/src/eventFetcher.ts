@@ -361,13 +361,20 @@ export class EventFetcher {
   }
 
   private toRawEvent(e: StellarRpc.Api.EventResponse): RawChainEvent {
+    const id = e.id;
+    // Event id format: "{ledger(10d)}-{txIndex(10d)}-{eventIndex(10d)}"
+    const idParts = id.split("-");
+    const eventIndex =
+      idParts.length === 3 ? parseInt(idParts[2], 10) : 0;
+
     return {
-      id: e.id,
+      id,
       ledger: (e as any).ledger as number,
       ledgerClosedAt: (e as any).ledgerClosedAt as string,
       contractId: (e as any).contractId as string,
       type: e.type,
       pagingToken: (e as any).pagingToken as string,
+      eventIndex,
       valueXdr: (e as any).value.xdr as string,
       topicsXdr: (e as any).topic.map((t: any) => t.xdr) as string[],
     };

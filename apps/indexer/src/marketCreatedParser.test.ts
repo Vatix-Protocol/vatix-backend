@@ -46,6 +46,7 @@ function makeEvent(overrides: Partial<RawChainEvent> = {}): RawChainEvent {
     contractId: "CMARKET",
     type: "contract",
     pagingToken: "token-market-1",
+    eventIndex: 0,
     valueXdr: XDR.value.valid,
     topicsXdr: [XDR.topic.marketCreatedEvent, XDR.marketId[42]],
     ...overrides,

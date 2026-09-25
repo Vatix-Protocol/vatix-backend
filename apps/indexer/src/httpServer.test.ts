@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
+import { Registry, Counter } from "prom-client";
 import { buildIndexerHttpServer } from "./httpServer.js";
 import { getPrismaClient } from "./services/prisma.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client.js";
@@ -172,6 +173,49 @@ describe("buildIndexerHttpServer", () => {
     await app.close();
   });
 
+  // ── Metrics endpoint (#1096) ───────────────────────────────────────────────
+  //
+  // The /metrics endpoint returns Prometheus-formatted metrics when a registry
+  // is supplied, and a stub response when it is not.
+
+  it("returns 200 with Prometheus content-type from /metrics when a registry is supplied", async () => {
+    const registry = new Registry();
+    const testCounter = new Counter({
+      name: "test_requests_total",
+      help: "test counter for /metrics endpoint",
+      registers: [registry],
+    });
+    testCounter.inc(42);
+
+    const app = await buildIndexerHttpServer({ metricsRegistry: registry });
+    await app.ready();
+
+    const response = await app.inject({ method: "GET", url: "/metrics" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/plain");
+    const body = response.body;
+    expect(body).toContain("test_requests_total 42");
+
+    await app.close();
+  });
+
+  // Issue #1099: GET /markets/:id returns a single market by ID.
+  it("returns 200 with a single market from GET /markets/:id", async () => {
+    const mockPrisma = {
+      market: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "market-1",
+          question: "Will it rain?",
+          endTime: new Date("2026-06-01T00:00:00Z"),
+          oracleAddress: "GABC...",
+          status: "ACTIVE",
+          outcome: null,
+          createdA
+
+    await app.close();
+  });
+
   // Issue #1099: GET /markets/:id returns a single market by ID.
   it("returns 200 with a single market from GET /markets/:id", async () => {
     const mockPrisma = {
@@ -202,6 +246,24 @@ describe("buildIndexerHttpServer", () => {
     const body = response.json();
     expect(body.market.id).toBe("market-1");
     expect(body).toHaveProperty("correlationId");
+
+    await app.close();
+  });
+
+  it("returns 200 with a stub from /metrics when no registry is supplied", async () => {
+    const app = await buildIndexerHttpServer();
+    await app.ready();
+
+    const response = await app.inject({ method: "GET", url: "/metrics" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/plain");
+    const body = response.body;
+    expect(body).toContain("No metrics registry configured");
+
+    await app.close();
+  });
+
 
     await app.close();
   });
@@ -279,6 +341,21 @@ describe("buildIndexerHttpServer", () => {
     const body = response.json();
     expect(body.code).toBe("MARKETS_DEPENDENCY_UNAVAILABLE");
     expect(body).toHaveProperty("correlationId");
+
+    await app.close();
+  });
+
+  // Issue #1096: /metrics must be exempt from rate limiting so that
+  // Prometheus scrapers are never throttled (matching /health and /ready).
+  it("does not rate-limit /metrics even under load (no RATE_LIMITED response)", async () => {
+    const app = await buildIndexerHttpServer();
+    await app.ready();
+
+    // Send many rapid requests — none should be rate limited
+    for (let i = 0; i < 10; i++) {
+      const response = await app.inject({ method: "GET", url: "/metrics" });
+      expect(response.statusCode).toBe(200);
+    }
 
     await app.close();
   });

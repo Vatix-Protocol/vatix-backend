@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { safeJsonParse, safeStringify, sanitizeForJson } from "./safeJson.js";
 
-// ── #776: safeJsonParse — no uncaught SyntaxError from event bodies ───────────
+// ── #776 / #1100: safeJsonParse — no uncaught SyntaxError from event bodies & DoS limits ───
 
 describe("safeJsonParse", () => {
   it("returns ok:true and the parsed value for valid JSON", () => {
@@ -33,7 +33,6 @@ describe("safeJsonParse", () => {
   });
 
   it("returns ok:false for invalid JSON — does NOT throw", () => {
-    // This is the key acceptance criterion for #776: no uncaught SyntaxError
     expect(() => safeJsonParse("{not valid json}")).not.toThrow();
     const result = safeJsonParse("{not valid json}");
     expect(result.ok).toBe(false);
@@ -82,6 +81,61 @@ describe("safeJsonParse", () => {
       expect(() => safeJsonParse(bad)).not.toThrow();
     }
   });
+
+  // ── DoS Limits for safeJsonParse ──────────────────────────────────────────
+
+  it("rejects JSON strings exceeding maxLength", () => {
+    const longStr = '{"a":' + '"x"'.repeat(100) + "}";
+    const result = safeJsonParse(longStr, { maxLength: 50 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("exceeds maximum allowed length");
+    }
+  });
+
+  it("rejects JSON exceeding maxDepth", () => {
+    // Build nested JSON: {"a":{"a":{...}}}
+    let json = "1";
+    for (let i = 0; i < 10; i++) {
+      json = `{"a":${json}}`;
+    }
+    const result = safeJsonParse(json, { maxDepth: 3 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("exceeds maximum allowed depth");
+    }
+  });
+
+  it("rejects arrays exceeding maxArrayLength", () => {
+    const result = safeJsonParse("[1,2,3,4,5]", { maxArrayLength: 2 });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects objects exceeding maxObjectKeys", () => {
+    const result = safeJsonParse('{"a":1,"b":2,"c":3}', { maxObjectKeys: 2 });
+    expect(result.ok).toBe(false);
+  });
+
+  it("uses default limits when options not provided", () => {
+    // Very deeply nested object that exceeds default maxDepth (32)
+    let json = "1";
+    for (let i = 0; i < 40; i++) {
+      json = `{"a":${json}}`;
+    }
+    const result = safeJsonParse(json);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("exceeds maximum allowed depth");
+    }
+  });
+
+  it("handles non-string input gracefully", () => {
+    const result = safeJsonParse(123 as unknown as string);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toBe("Input must be a string");
+    }
+  });
 });
 
 // ── safeStringify ─────────────────────────────────────────────────────────────
@@ -110,6 +164,28 @@ describe("safeStringify", () => {
     const result = JSON.parse(safeStringify(obj));
     expect(result.self).toBe("[Circular]");
   });
+
+  it("handles maxDepth gracefully in safeStringify", () => {
+    let obj: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < 10; i++) {
+      obj = { next: obj };
+    }
+    expect(() => safeStringify(obj, { maxDepth: 3 })).not.toThrow();
+    const parsed = JSON.parse(safeStringify(obj, { maxDepth: 3 }));
+    expect(safeStringify(obj, { maxDepth: 3 })).toContain("[Depth Exceeded]");
+  });
+
+  it("truncates arrays exceeding maxArrayLength in safeStringify", () => {
+    const arr = [1, 2, 3, 4, 5];
+    const res = JSON.parse(safeStringify(arr, { maxArrayLength: 2 }));
+    expect(res).toEqual([1, 2, "[Array Truncated]"]);
+  });
+
+  it("truncates objects exceeding maxObjectKeys in safeStringify", () => {
+    const obj = { a: 1, b: 2, c: 3 };
+    const res = JSON.parse(safeStringify(obj, { maxObjectKeys: 1 }));
+    expect(res).toEqual({ a: 1, "[KeysTruncated]": true });
+  });
 });
 
 // ── sanitizeForJson ───────────────────────────────────────────────────────────
@@ -132,5 +208,27 @@ describe("sanitizeForJson", () => {
 
   it("recursively sanitizes objects", () => {
     expect(sanitizeForJson({ a: 1n, b: "ok" })).toEqual({ a: "1", b: "ok" });
+  });
+
+  it("handles maxDepth in sanitizeForJson", () => {
+    let obj: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < 5; i++) {
+      obj = { next: obj };
+    }
+    const res = sanitizeForJson(obj, { maxDepth: 2 });
+    const str = JSON.stringify(res);
+    expect(str).toContain("[Depth Exceeded]");
+  });
+
+  it("truncates arrays in sanitizeForJson", () => {
+    const arr = [1, 2, 3, 4, 5];
+    const res = sanitizeForJson(arr, { maxArrayLength: 2 });
+    expect(res).toEqual([1, 2, "[Array Truncated]"]);
+  });
+
+  it("truncates objects in sanitizeForJson", () => {
+    const obj = { a: 1, b: 2, c: 3 };
+    const res = sanitizeForJson(obj, { maxObjectKeys: 1 });
+    expect(res).toEqual({ a: 1, "[KeysTruncated]": true });
   });
 });

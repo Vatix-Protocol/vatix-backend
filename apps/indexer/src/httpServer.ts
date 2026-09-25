@@ -1,4 +1,5 @@
 import fastify, { type FastifyInstance } from "fastify";
+import type { Registry } from "prom-client";
 import { indexerCorsPlugin } from "./middleware/cors.js";
 import { marketsRoutes } from "./routes/markets.js";
 
@@ -166,8 +167,15 @@ export async function runReadinessChecks(
 }
 
 /**
- * Builds the indexer's read-only HTTP surface (GET /markets, /markets/:id)
- * plus liveness (/health) and readiness (/ready) probes.
+ * Routes exempt from rate limiting. These are ops-internal endpoints that
+ * infrastructure scrapes on a fixed short interval and must never be
+ * throttled (matching Prometheus/Grafana convention — see docs/metrics.md).
+ */
+const RATE_LIMIT_EXEMPT_PATHS = new Set(["/health", "/ready", "/metrics"]);
+
+/**
+ * Builds the indexer's read-only HTTP surface (GET /markets, /markets/:id,
+ * GET /metrics) plus liveness (/health) and readiness (/ready) probes.
  *
  * indexerCorsPlugin is registered before any route so no path is ever
  * reachable without going through the shared origin-allowlist policy
@@ -186,6 +194,12 @@ export async function runReadinessChecks(
  *   stable error codes, and never include connection strings, credentials, or
  *   internal addresses.
  *
+ * Metrics endpoint:
+ * - GET /metrics returns Prometheus-formatted metrics from the supplied
+ *   registry (or a default empty one). It is excluded from rate limiting
+ *   matching Prometheus/Grafana convention, and is unauthenticated by
+ *   convention — restrict network access at the infra/ingress layer.
+ *
  * Rate limiting (#1084, RATE_LIMIT_POLICY.md):
  * - Every external entrypoint is rate limited via an onRequest hook that runs
  *   before route handlers. Policies are declared in RATE_LIMIT_POLICIES; a
@@ -197,6 +211,8 @@ export async function runReadinessChecks(
  *   with 503 DEPENDENCY_UNAVAILABLE rather than allowing the request through.
  * - Rejections return a stable error code and the request correlation id, and
  *   never leak credentials or internal addresses.
+ * - Ops-internal endpoints (/health, /ready, /metrics) are exempt from rate
+ *   limiting so infrastructure scrapers are never throttled.
  *
  * Not started automatically: apps/indexer/src/main.ts only calls this when
  * INDEXER_HTTP_ENABLED=true, so the indexer's default off-chain
@@ -208,6 +224,8 @@ export async function buildIndexerHttpServer(options?: {
   logger?: ProbeLogger;
   rateLimitStore?: RateLimitStore;
   rateLimitPolicies?: Record<string, RateLimitPolicy>;
+  /** Prometheus registry to serve at GET /metrics. Defaults to a new empty registry. */
+  metricsRegistry?: Registry;
 }): Promise<FastifyInstance> {
   const app = fastify({ logger: false });
   const readinessChecks = options?.readinessChecks ?? [];
@@ -215,15 +233,22 @@ export async function buildIndexerHttpServer(options?: {
   const rateLimitStore =
     options?.rateLimitStore ?? createInMemoryRateLimitStore();
   const rateLimitPolicies = options?.rateLimitPolicies ?? RATE_LIMIT_POLICIES;
+  const metricsRegistry = options?.metricsRegistry;
 
   await app.register(indexerCorsPlugin);
 
   app.addHook("onRequest", async (request, reply) => {
     const routePath = request.routeOptions?.url ?? request.url.split("?")[0];
-    const policy = rateLimitPolicies[routePath];
     const correlationId =
       (request.headers["x-correlation-id"] as string | undefined) ??
       request.id;
+
+    // Exempt ops-internal endpoints from rate limiting
+    if (RATE_LIMIT_EXEMPT_PATHS.has(routePath)) {
+      return;
+    }
+
+    const policy = rateLimitPolicies[routePath];
 
     if (!policy) {
       return reply.code(429).send({
@@ -278,6 +303,24 @@ export async function buildIndexerHttpServer(options?: {
     );
     return reply.code(result.ready ? 200 : 503).send(result);
   });
+
+  // GET /metrics — Prometheus scrape endpoint (#745, #1096)
+  // Excluded from rate limiting (see RATE_LIMIT_EXEMPT_PATHS above).
+  // Unauthenticated by convention — restrict network access at the
+  // infra/ingress layer (e.g. only allow the internal Prometheus scraper).
+  if (metricsRegistry) {
+    app.get("/metrics", async (_request, reply) => {
+      reply.header("Content-Type", metricsRegistry.contentType);
+      return metricsRegistry.metrics();
+    });
+  } else {
+    // When no registry is supplied, return an empty metrics response so the
+    // endpoint is always defined and scrapers never get 404/429.
+    app.get("/metrics", async (_request, reply) => {
+      reply.header("Content-Type", "text/plain; charset=utf-8; version=0.0.4");
+      return "# No metrics registry configured\n";
+    });
+  }
 
   await app.register(marketsRoutes);
   return app;
