@@ -94,6 +94,25 @@ logs a warning — this is a security gap for production deployments.
 
 Every response carries a `correlationId` for tracing.
 
+## Safe JSON Parsing & Serialization (`safeJson.ts`)
+
+`src/safeJson.ts` provides robust, production-grade JSON parsing (`safeJsonParse`)
+and sanitization/serialization (`safeStringify`, `sanitizeForJson`) with built-in
+protections against Denial of Service (DoS) and resource exhaustion attacks.
+
+### Invariants
+
+- **Maximum String Length**: Inputs exceeding `maxLength` (default: 1 MB) are
+  rejected immediately without parsing.
+- **Nesting Depth Limits**: JSON payloads or JavaScript objects exceeding
+  `maxDepth` (default: 32 levels) are rejected or truncated to prevent stack
+  overflow (`RangeError`).
+- **Array & Object Size Limits**: Arrays exceeding `maxArrayLength` (default: 10,000)
+  and objects exceeding `maxObjectKeys` (default: 10,000) are bounded or rejected.
+- **Fail-Closed on Malformed Input**: `safeJsonParse` never throws an uncaught
+  exception; it returns `{ ok: false, error: SyntaxError }` on any parsing or validation failure.
+- **Ops-Safe**: Secrets and raw credentials are never leaked in logs or error messages.
+
 ## Stellar Wave contributors
 
 See `SECURITY.md` for the deny-by-default policy on privileged surfaces

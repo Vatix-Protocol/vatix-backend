@@ -36,6 +36,7 @@ function makeEvent(overrides: Partial<RawChainEvent> = {}): RawChainEvent {
     contractId: "CTEST",
     type: "contract",
     pagingToken: "token-1",
+    eventIndex: 0,
     valueXdr: XDR.value.validBuy,
     topicsXdr: [XDR.topic.tradeExecuted],
     ...overrides,

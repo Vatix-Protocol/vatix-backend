@@ -59,6 +59,7 @@ function makeTradeEvent(id: string, ledger: number): RawChainEvent {
     contractId: "CTEST",
     type: "contract",
     pagingToken: `token-${id}`,
+    eventIndex: 0,
     valueXdr,
     topicsXdr: [TRADE_TOPIC],
   };

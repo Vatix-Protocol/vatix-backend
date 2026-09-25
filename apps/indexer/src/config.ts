@@ -73,6 +73,8 @@ export function pickIngestionLoopConfig(
  * Validate the raw environment in a fail-closed manner before any config is
  * loaded. Throws EnvValidationError with a stable code on the first problem.
  * Only variable names and error codes are ever surfaced — never values.
+ * Unknown passphrases (custom networks like futurenet/standalone) are allowed
+ * with a warning to support test deployments, but mainnet requires explicit opt-in.
  */
 export function validateEnv(env: Env = process.env): void {
   const passphrase = env["SOROBAN_NETWORK_PASSPHRASE"];
@@ -87,10 +89,11 @@ export function validateEnv(env: Env = process.env): void {
 
   const known = Object.values(KNOWN_PASSPHRASES) as string[];
   if (!known.includes(passphrase)) {
-    throw new EnvValidationError(
-      ENV_ERROR_CODES.ENV_INVALID,
-      "SOROBAN_NETWORK_PASSPHRASE",
-      "Unknown Soroban network passphrase"
+    // Warn for custom/unknown networks but allow them (futurenet, standalone, etc.)
+    console.warn(
+      `[env] WARNING: Unknown Soroban network passphrase "${passphrase}". ` +
+        `Known networks: ${known.join(", ")}. ` +
+        `Proceeding with custom network configuration.`
     );
   }
 

@@ -23,8 +23,14 @@ GET /metrics
   collected automatically via `prom-client`'s `collectDefaultMetrics()`, all
   prefixed `vatix_`.
 - `src/api/routes/metrics.ts` — the Fastify route that serves the registry.
+- `apps/indexer/src/metrics.ts` — the indexer process's `Registry`
+  (`indexerMetricsRegistry`). A separate registry from the API process
+  because the indexer may run as an independent service. See `apps/indexer/src/httpServer.ts`
+  for the Fastify route that serves it.
 
 ## Metrics
+
+### API process
 
 | Metric                                                 | Type      | Description                                                                                                                                                     |
 | ------------------------------------------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -45,6 +51,64 @@ GET /metrics
 | `vatix_settlement_lag_current`                         | gauge     | Latest instantaneous settlement lag score. Dashboard signal only — alert on the `vatix_settlement_lag` histogram instead (#981).                                |
 | `vatix_orders_shed_total`                              | counter   | Total orders shed by admission control due to settlement lag.                                                                                                   |
 | `vatix_admission_shedding`                             | gauge     | `1` while admission control is shedding order traffic, `0` otherwise.                                                                                           |
+
+### Indexer process
+
+| Metric                                              | Type    | Description                                                                                        |
+| --------------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------- |
+| `vatix_process_*`, `vatix_nodejs_*`                 | various | Default Node.js process/runtime metrics from `prom-client`.                                        |
+| `vatix_indexer_latest_indexed_ledger_sequence`      | gauge   | Latest ledger sequence that has been successfully indexed (#713, #1096).                           |
+| `vatix_indexer_latest_network_ledger_sequence`      | gauge   | Latest ledger sequence reported by the Stellar network (#713, #1096).                              |
+| `vatix_indexer_lag`                                 | gauge   | Difference between the latest network ledger and the indexed ledger (#713, #1096).                 |
+| `vatix_indexer_gap_detected_total`                  | counter | Total number of ledger gaps detected since process start (#711, #1096).                            |
+| `vatix_indexer_backfill_ledgers_total`              | counter | Total number of ledgers back-filled during gap catch-up since process start (#711, #1096).         |
+| `vatix_indexer_parse_error_total`                   | counter | Total number of event parse errors (all parsers) since process start (#712, #1096).                |
+
+#### `vatix_indexer_latest_indexed_ledger_sequence`
+
+Updated by `InternalIndexerMetricsService.setLatestIndexedLedgerSequence()` in
+`apps/indexer/src/metrics.ts`. This is the high-water mark of the ingestion
+loop — the ledger sequence up to which events have been fetched, parsed, and
+persisted. Used to compute the gauge `vatix_indexer_lag` and to detect
+cursor-level gaps via `GapDetector.detectCursorGap()`.
+
+#### `vatix_indexer_latest_network_ledger_sequence`
+
+Updated by `InternalIndexerMetricsService.setLatestNetworkLedgerSequence()`.
+Reflects the latest ledger sequence reported by the Stellar RPC/Horizon node.
+Used alongside `vatix_indexer_latest_indexed_ledger_sequence` to compute the
+indexer lag.
+
+#### `vatix_indexer_lag`
+
+A derived gauge computed as `max(0, network_ledger_sequence - indexed_ledger_sequence)`.
+A rising lag indicates the indexer is falling behind the network tip and may
+need operator attention. Alert when this value exceeds the ingestion
+interval's acceptable drift (typically a few windows).
+
+#### `vatix_indexer_gap_detected_total`
+
+Incremented by `GapDetector.runBackfill()` in `apps/indexer/src/gapDetector.ts`
+each time a discontinuous ledger range is detected. A low but non-zero rate is
+normal (e.g. after a process restart or a short network blip). A rapidly
+rising counter or a persistent non-zero rate warrants investigation.
+
+#### `vatix_indexer_backfill_ledgers_total`
+
+Incremented by the number of ledgers re-fetched during gap catch-up. Each
+increment is `gapSize` (the number of ledgers in the detected gap range).
+Tracked alongside `vatix_indexer_gap_detected_total` to understand the volume
+of catch-up work.
+
+#### `vatix_indexer_parse_error_total`
+
+Incremented by `PollingIngestionLoop.ingestFromCursor()` for each event that
+a parser rejects (see `TradeParseError`, `ResolutionParseError`,
+`CollateralDepositedParseError`, `MarketCreatedParseError` in
+`apps/indexer/src/types.ts`). A non-zero value indicates contract events that
+the indexer was unable to decode. Investigate whether the event topic shape
+has changed or a new event type has been introduced without a corresponding
+parser.
 
 ### `vatix_orderbook_hydrated_markets`
 
@@ -119,6 +183,8 @@ for "has it been bad for a while" alerts.**
 
 ## Adding a new metric
 
-1. Define it in `src/services/metrics.ts`, registered against `metricsRegistry`.
+1. Define it in the relevant `metrics.ts` file (API: `src/services/metrics.ts`,
+   indexer: `apps/indexer/src/metrics.ts`), registered against the appropriate
+   registry.
 2. Update it wherever the underlying state changes.
 3. Document it in the table above.
