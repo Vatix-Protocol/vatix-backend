@@ -172,3 +172,10 @@ Unit tests: `tests/replay-dlq.test.ts`.
 - [Graceful Shutdown](graceful-shutdown.md) — Worker shutdown patterns
 - [Logger](logger.md) — Structured logging conventions
 - [Incident Runbook — Incident 6](runbooks/incident-runbook.md#incident-6-queue-backlog-settlement--oracle-submission) — queue backlog response
+
+## Related Documentation
+
+- [Architecture Overview](architecture.md) — How workers fit into the system
+- [Graceful Shutdown](graceful-shutdown.md) — Worker shutdown patterns
+- [Logger](logger.md) — Structured logging conventions
+- [Incident Runbook — Incident 6](runbooks/incident-runbook.md#incident-6-queue-backlog-settlement--oracle-submission) — queue backlog response
