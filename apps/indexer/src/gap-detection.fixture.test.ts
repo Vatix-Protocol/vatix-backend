@@ -327,6 +327,8 @@ describe("GapDetector.detectGap — explicit within-window verification API", ()
     const fakeMetrics = {
       incrementGapDetected: vi.fn(),
       incrementBackfillLedgers: vi.fn(),
+      incrementGapBackfillOutcome: vi.fn(),
+      incrementBatchRejected: vi.fn(),
     } as unknown as InternalIndexerMetricsService;
 
     const detector = new GapDetector(

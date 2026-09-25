@@ -130,6 +130,26 @@ Failure (max retries exceeded):
   - Log dead-letter event
 ```
 
+## Poison Handling (#1150)
+
+Submissions that can never succeed are quarantined instead of retried forever:
+after `ORACLE_SUBMISSION_POISON_MAX_ATTEMPTS` failed attempts (default 5) an
+item moves to the terminal `quarantined` state, is logged once as a poison
+message, and any replay of the same `id` is rejected with
+`SUBMISSION_QUEUE_POISON` (non-retryable, HTTP 422) so the consumer
+dead-letters it rather than re-arming the loop. The queue also deduplicates
+replayed enqueues by `id` (idempotency) and fails closed with
+`SUBMISSION_QUEUE_FULL` (503, retryable) beyond
+`ORACLE_SUBMISSION_QUEUE_MAX_DEPTH`.
+
+Stable error codes: `SUBMISSION_QUEUE_INVALID_ITEM`,
+`SUBMISSION_QUEUE_POISON`, `SUBMISSION_QUEUE_FULL`,
+`SUBMISSION_QUEUE_NOT_FOUND`. Every operational error carries a
+`correlationId` and a `retryable` flag.
+
+See [`docs/submission-queue-poison-handling.md`](submission-queue-poison-handling.md)
+for invariants, runbook steps, and rollback.
+
 ## Idempotency & Deduplication
 
 The system prevents duplicate submissions through:

@@ -1,5 +1,6 @@
 import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { BatchWriter, BatchRecord } from "./batchWriter.js";
+import { BatchWriteError } from "./batchWriterError.js";
 import type { EventFetcher } from "./eventFetcher.js";
 import type { InternalIndexerMetricsService } from "./metrics.js";
 import { parseTradeEvents } from "./tradeParser.js";
@@ -45,6 +46,13 @@ export interface GapDetectorConfig {
    * In production, this should be configured to alert operators.
    */
   pagingConfig?: GapPagingConfig;
+  /**
+   * Kill-switch for the gap back-fill job (#1151). Defaults to enabled.
+   * When set to `false`, `runBackfill` performs no fetch and no write, and
+   * reports `{ paused: true, pausedReason: "disabled" }` so the caller halts
+   * rather than advancing the cursor past un-back-filled ledgers.
+   */
+  backfillEnabled?: boolean;
   /** Current environment (dev, test, production). */
   nodeEnv?: string;
 }
@@ -76,6 +84,92 @@ export interface BackfillResult {
   written: number;
   /** Number of records skipped (duplicates) during the back-fill. */
   skipped: number;
+  /**
+   * Why the run stopped short of a full catch-up. Absent on a completed run.
+   *
+   * - `threshold`              — gap ≥ `gapPauseThreshold` (fail-closed pause).
+   * - `disabled`               — kill-switch `backfillEnabled: false`.
+   * - `in_progress`            — a concurrent back-fill was already running.
+   * - `dependency_unavailable` — the batch write failed closed (DB outage).
+   */
+  pausedReason?: GapBackfillPauseReason;
+  /** Correlation id for tracing this run across logs and metrics. */
+  correlationId: string;
+}
+
+export type GapBackfillPauseReason =
+  "threshold" | "disabled" | "in_progress" | "dependency_unavailable";
+
+/**
+ * Stable, machine-readable error codes for the gap back-fill job. Callers and
+ * ops dashboards branch on `code`; messages are never parsed.
+ */
+export const GAP_BACKFILL_ERROR_CODES = {
+  /** The requested range was not a valid `[start ≤ end]` ledger interval. */
+  GAP_BACKFILL_INVALID_RANGE: "GAP_BACKFILL_INVALID_RANGE",
+  /** The back-fill job failed for a reason other than a dependency outage. */
+  GAP_BACKFILL_FAILED: "GAP_BACKFILL_FAILED",
+} as const;
+
+export type GapBackfillErrorCode =
+  (typeof GAP_BACKFILL_ERROR_CODES)[keyof typeof GAP_BACKFILL_ERROR_CODES];
+
+/**
+ * Typed error thrown by the gap back-fill job. Always carries a correlation id
+ * (echoed in logs and metrics) and never a secret or raw dependency address.
+ */
+export class GapBackfillError extends Error {
+  readonly code: GapBackfillErrorCode;
+  readonly correlationId: string;
+  readonly retryable: boolean;
+  readonly cause?: unknown;
+
+  constructor(
+    code: GapBackfillErrorCode,
+    message: string,
+    correlationId: string,
+    retryable: boolean,
+    cause?: unknown
+  ) {
+    super(message);
+    this.name = "GapBackfillError";
+    this.code = code;
+    this.correlationId = correlationId;
+    this.retryable = retryable;
+    this.cause = cause;
+  }
+}
+
+/** Correlation id for a single back-fill run (#1151). */
+function newBackfillCorrelationId(): string {
+  return `gb_${Date.now().toString(36)}_${Math.random()
+    .toString(36)
+    .slice(2, 10)}`;
+}
+
+/** Inclusive size of a `[start, end]` ledger range (always ≥ 1 for valid input). */
+function rawGapSizeOf(gapStartLedger: number, gapEndLedger: number): number {
+  return gapEndLedger - gapStartLedger + 1;
+}
+
+/** Kill-switch env var for the gap back-fill job (#1151). */
+export const BACKFILL_ENABLED_ENV_VAR = "INDEXER_GAP_BACKFILL_ENABLED";
+
+/**
+ * Resolve the back-fill kill-switch.
+ *
+ * Explicit `false` / `0` / `no` (case-insensitive) disables the job. Absent,
+ * blank, or *unrecognised* values leave it enabled: silently turning off gap
+ * catch-up because of a typo would hide real ledger gaps, which is worse than
+ * leaving the (bounded, idempotent) job running.
+ */
+function resolveBackfillEnabled(raw: string | undefined): boolean {
+  if (raw === undefined || raw.trim() === "") {
+    return true;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  return normalized !== "false" && normalized !== "0" && normalized !== "no";
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +221,10 @@ export class GapDetector {
   private lastGapStartLedger: number | null = null;
   private persistentGapCycles = 0;
   private hasPagedForCurrentGap = false;
+  /** True while a `runBackfill` call is executing (#1151 concurrency guard). */
+  private backfillInFlight = false;
+  /** Kill-switch state resolved from config, then env (#1151). */
+  private readonly backfillEnabled: boolean;
 
   constructor(
     private readonly config: GapDetectorConfig,
@@ -141,6 +239,11 @@ export class GapDetector {
         "Production indexer requires INDEXER_GAP_PAGING_WEBHOOK_URL to be configured"
       );
     }
+
+    this.backfillEnabled =
+      config.backfillEnabled !== undefined
+        ? config.backfillEnabled
+        : resolveBackfillEnabled(process.env[BACKFILL_ENABLED_ENV_VAR]);
   }
 
   // -------------------------------------------------------------------------
@@ -305,22 +408,170 @@ export class GapDetector {
    * - The range is clamped to `backfillMaxLedgers` to prevent unbounded
    *   catch-up runs.
    * - Writes go through the existing `BatchWriter` → `withIdempotencyKey`
-   *   path, so the operation is fully idempotent.
-   * - Emits `gap_detected_total` and `backfill_ledgers_total` metrics.
-   * - Returns `{ paused: true }` when the unclamped gap size meets or exceeds
-   *   `gapPauseThreshold` (fail-closed).
+   *   path, so the operation is fully idempotent — replaying the same range
+   *   after a crash inserts no duplicate rows.
+   * - Emits `gap_detected_total`, `backfill_ledgers_total`, and
+   *   `gap_backfill_outcome_total{outcome}` metrics.
+   * - Returns `{ paused: true, pausedReason }` when the unclamped gap size
+   *   meets or exceeds `gapPauseThreshold` (fail-closed), when the job is
+   *   disabled by the `backfillEnabled` kill-switch, when a concurrent run is
+   *   already in flight, or when the batch write failed closed because its
+   *   database dependency was unavailable.
    * - Tracks persistent gaps and pages operators when a gap recurs
    *   across multiple consecutive cycles.
    *
    * @param gapStartLedger - First missing ledger (inclusive).
    * @param gapEndLedger   - Last missing ledger (inclusive).
+   * @throws {GapBackfillError} `GAP_BACKFILL_INVALID_RANGE` for a malformed
+   *   range, or `GAP_BACKFILL_FAILED` when the run fails for any other reason.
    */
   async runBackfill(
     gapStartLedger: number,
     gapEndLedger: number
   ): Promise<BackfillResult> {
-    const rawGapSize = gapEndLedger - gapStartLedger + 1;
+    const correlationId = newBackfillCorrelationId();
 
+    // Adversarial-input guard (#1151): ranges normally come from gap
+    // detection, but a malformed caller must never be able to trigger a fetch
+    // or a write (negative sizes would otherwise produce nonsense ranges).
+    if (
+      !Number.isInteger(gapStartLedger) ||
+      !Number.isInteger(gapEndLedger) ||
+      gapStartLedger < 0 ||
+      gapEndLedger < gapStartLedger
+    ) {
+      this.metrics.incrementGapBackfillOutcome("failed");
+      this.logger.error("Rejected invalid ledger gap back-fill range", {
+        event: "indexer.gap.backfill.invalid_range",
+        correlationId,
+        gapStartLedger,
+        gapEndLedger,
+      });
+      throw new GapBackfillError(
+        GAP_BACKFILL_ERROR_CODES.GAP_BACKFILL_INVALID_RANGE,
+        `Invalid back-fill range: start=${gapStartLedger} end=${gapEndLedger}`,
+        correlationId,
+        false
+      );
+    }
+
+    // Kill-switch (#1151): disable catch-up without a redeploy. Fail closed —
+    // no fetch, no write — and report a pause so the caller halts instead of
+    // advancing the cursor past ledgers that were never back-filled.
+    if (!this.backfillEnabled) {
+      this.metrics.incrementGapBackfillOutcome("disabled");
+      this.logger.warn("Ledger gap back-fill disabled by kill-switch", {
+        event: "indexer.gap.backfill.disabled",
+        correlationId,
+        gapStartLedger,
+        gapEndLedger,
+      });
+      return {
+        paused: true,
+        pausedReason: "disabled",
+        backfilledLedgers: 0,
+        written: 0,
+        skipped: 0,
+        correlationId,
+      };
+    }
+
+    // Concurrency / replay guard (#1151): a second in-flight run for the same
+    // detector would re-fetch and re-parse the same range. Writes stay
+    // idempotent, but denying the duplicate keeps RPC load bounded and stops
+    // two runs racing on persistent-gap paging.
+    if (this.backfillInFlight) {
+      this.metrics.incrementGapBackfillOutcome("in_progress");
+      this.logger.warn("Denied concurrent ledger gap back-fill run", {
+        event: "indexer.gap.backfill.in_progress",
+        correlationId,
+        gapStartLedger,
+        gapEndLedger,
+      });
+      return {
+        paused: true,
+        pausedReason: "in_progress",
+        backfilledLedgers: 0,
+        written: 0,
+        skipped: 0,
+        correlationId,
+      };
+    }
+
+    this.backfillInFlight = true;
+
+    try {
+      return await this.executeBackfill(
+        gapStartLedger,
+        gapEndLedger,
+        rawGapSizeOf(gapStartLedger, gapEndLedger),
+        correlationId
+      );
+    } catch (err) {
+      if (err instanceof GapBackfillError) {
+        throw err;
+      }
+
+      // Dependency outage on the write path: fail closed. Nothing was
+      // partially persisted (the batch writer aborts and rolls back), and the
+      // caller must not advance the cursor past the un-back-filled range.
+      if (
+        err instanceof BatchWriteError &&
+        err.code === "BATCH_WRITE_DEPENDENCY_UNAVAILABLE"
+      ) {
+        this.metrics.incrementGapBackfillOutcome("dependency_unavailable");
+        this.logger.error(
+          "Ledger gap back-fill aborted — dependency unavailable (fail-closed)",
+          {
+            event: "indexer.gap.backfill.dependency_unavailable",
+            correlationId,
+            gapStartLedger,
+            gapEndLedger,
+            error: err.message,
+          }
+        );
+        return {
+          paused: true,
+          pausedReason: "dependency_unavailable",
+          backfilledLedgers: 0,
+          written: 0,
+          skipped: 0,
+          correlationId,
+        };
+      }
+
+      this.metrics.incrementGapBackfillOutcome("failed");
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error("Ledger gap back-fill failed", {
+        event: "indexer.gap.backfill.failed",
+        correlationId,
+        gapStartLedger,
+        gapEndLedger,
+        error: message,
+      });
+      throw new GapBackfillError(
+        GAP_BACKFILL_ERROR_CODES.GAP_BACKFILL_FAILED,
+        `Ledger gap back-fill failed (correlationId=${correlationId}): ${message}`,
+        correlationId,
+        true,
+        err
+      );
+    } finally {
+      this.backfillInFlight = false;
+    }
+  }
+
+  /**
+   * Body of a single back-fill run: persistent-gap accounting, paging,
+   * fail-closed threshold check, clamped fetch, idempotent write.
+   * Always invoked with `backfillInFlight = true`.
+   */
+  private async executeBackfill(
+    gapStartLedger: number,
+    gapEndLedger: number,
+    rawGapSize: number,
+    correlationId: string
+  ): Promise<BackfillResult> {
     this.metrics.incrementGapDetected();
 
     // Track persistent gaps: if the gap we're seeing is the same ledger range
@@ -363,17 +614,26 @@ export class GapDetector {
     // the true gap size in the log even when pausing.
     const { gapPauseThreshold } = this.config;
     if (gapPauseThreshold > 0 && rawGapSize >= gapPauseThreshold) {
+      this.metrics.incrementGapBackfillOutcome("paused");
       this.logger.error(
         "Ledger gap exceeds fail-closed threshold — pausing ingestion loop",
         {
           event: "indexer.gap.pause",
+          correlationId,
           gapStartLedger,
           gapEndLedger,
           gapSize: rawGapSize,
           gapPauseThreshold,
         }
       );
-      return { paused: true, backfilledLedgers: 0, written: 0, skipped: 0 };
+      return {
+        paused: true,
+        pausedReason: "threshold",
+        backfilledLedgers: 0,
+        written: 0,
+        skipped: 0,
+        correlationId,
+      };
     }
 
     // Clamp to backfillMaxLedgers
@@ -400,6 +660,7 @@ export class GapDetector {
 
     this.logger.info("Starting ledger gap back-fill", {
       event: "indexer.gap.backfill.start",
+      correlationId,
       gapStartLedger,
       gapEndLedger: clampedEnd,
       backfillSize,
@@ -447,6 +708,7 @@ export class GapDetector {
       if (writeResult.errors.length > 0) {
         this.logger.warn("Back-fill batch write completed with errors", {
           event: "indexer.gap.backfill.write_errors",
+          correlationId,
           gapStartLedger,
           gapEndLedger: clampedEnd,
           writeErrors: writeResult.errors.length,
@@ -457,9 +719,11 @@ export class GapDetector {
     }
 
     this.metrics.incrementBackfillLedgers(backfillSize);
+    this.metrics.incrementGapBackfillOutcome("completed");
 
     this.logger.info("Ledger gap back-fill complete", {
       event: "indexer.gap.backfill.complete",
+      correlationId,
       gapStartLedger,
       gapEndLedger: clampedEnd,
       backfillSize,
@@ -468,7 +732,12 @@ export class GapDetector {
       skipped,
     });
 
-    return { paused: false, backfilledLedgers: backfillSize, written, skipped };
+    return {
+      paused: false,
+      backfilledLedgers: backfillSize,
+      written,
+      skipped,
+      correlationId,
+    };
   }
-}
 }

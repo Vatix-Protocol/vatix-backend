@@ -51,3 +51,20 @@ omitted, so local dev and tests keep working without extra configuration.
 If every configured provider (primary, then fallback) fails, `fetchPrice()`
 throws `AllPriceProvidersFailedError` — no default or stale price is ever
 returned in its place.
+
+## Provider Allowlist (#1149)
+
+Provider names can be restricted to an explicit allowlist —
+`PriceFetcherConfig.allowedProviders` or the comma-separated
+`ORACLE_PRICE_PROVIDER_ALLOWLIST` environment variable. When an allowlist is
+in force it is enforced at construction **and** immediately before every
+fetch: an unlisted provider throws `PriceProviderNotAllowedError`
+(`PRICE_PROVIDER_NOT_ALLOWED`, 403) and no fetch is attempted.
+
+A provider that returns a non-finite, zero, or negative price raises
+`PriceProviderInvalidPriceError` (`PRICE_PROVIDER_INVALID_PRICE`), which is
+treated as a provider failure — fail over, and if nothing sane is available,
+fail closed.
+
+Full behaviour, error codes, ops notes, and rollback:
+[`docs/price-provider-allowlist.md`](price-provider-allowlist.md).
