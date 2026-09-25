@@ -1,5 +1,11 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { buildIndexerHttpServer } from "./httpServer.js";
+import { getPrismaClient } from "./services/prisma.js";
+import type { PrismaClient } from "../../../src/generated/prisma/client.js";
+
+vi.mock("./services/prisma.js", () => ({
+  getPrismaClient: vi.fn(),
+}));
 
 // Integration-style: exercises the real wiring (indexerCorsPlugin +
 // marketsRoutes composed together), not just the CORS plugin registered
@@ -127,6 +133,152 @@ describe("buildIndexerHttpServer", () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.status).toBe("ok");
+
+    await app.close();
+  });
+
+  // Issue #1099: GET /markets returns a paginated list of non-soft-deleted markets.
+  it("returns 200 with a paginated list of markets from GET /markets", async () => {
+    const mockPrisma = {
+      market: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "market-1",
+            question: "Will it rain?",
+            endTime: new Date("2026-06-01T00:00:00Z"),
+            oracleAddress: "GABC...",
+            status: "ACTIVE",
+            outcome: null,
+            createdAt: new Date("2026-01-01T00:00:00Z"),
+          },
+        ]),
+        count: vi.fn().mockResolvedValue(1),
+      },
+    } as unknown as PrismaClient;
+    vi.mocked(getPrismaClient).mockReturnValue(mockPrisma);
+
+    const app = await buildIndexerHttpServer();
+    await app.ready();
+
+    const response = await app.inject({ method: "GET", url: "/markets" });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.markets).toBeInstanceOf(Array);
+    expect(body.markets).toHaveLength(1);
+    expect(body.total).toBe(1);
+    expect(body).toHaveProperty("correlationId");
+
+    await app.close();
+  });
+
+  // Issue #1099: GET /markets/:id returns a single market by ID.
+  it("returns 200 with a single market from GET /markets/:id", async () => {
+    const mockPrisma = {
+      market: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "market-1",
+          question: "Will it rain?",
+          endTime: new Date("2026-06-01T00:00:00Z"),
+          oracleAddress: "GABC...",
+          status: "ACTIVE",
+          outcome: null,
+          createdAt: new Date("2026-01-01T00:00:00Z"),
+          updatedAt: new Date("2026-01-01T00:00:00Z"),
+        }),
+      },
+    } as unknown as PrismaClient;
+    vi.mocked(getPrismaClient).mockReturnValue(mockPrisma);
+
+    const app = await buildIndexerHttpServer();
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets/market-1",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.market.id).toBe("market-1");
+    expect(body).toHaveProperty("correlationId");
+
+    await app.close();
+  });
+
+  // Issue #1099: GET /markets/:id returns 404 for a non-existent market.
+  it("returns 404 for a non-existent market from GET /markets/:id", async () => {
+    const mockPrisma = {
+      market: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
+    } as unknown as PrismaClient;
+    vi.mocked(getPrismaClient).mockReturnValue(mockPrisma);
+
+    const app = await buildIndexerHttpServer();
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets/nonexistent",
+    });
+
+    expect(response.statusCode).toBe(404);
+    const body = response.json();
+    expect(body.code).toBe("MARKETS_NOT_FOUND");
+    expect(body).toHaveProperty("correlationId");
+
+    await app.close();
+  });
+
+  // Issue #1099: GET /markets returns 503 when the database is unavailable (fail-closed).
+  it("returns 503 from GET /markets when the database is unavailable", async () => {
+    const mockPrisma = {
+      market: {
+        findMany: vi.fn().mockRejectedValue(new Error("DB down")),
+        count: vi.fn().mockRejectedValue(new Error("DB down")),
+      },
+    } as unknown as PrismaClient;
+    vi.mocked(getPrismaClient).mockReturnValue(mockPrisma);
+
+    const app = await buildIndexerHttpServer();
+    await app.ready();
+
+    const response = await app.inject({ method: "GET", url: "/markets" });
+
+    expect(response.statusCode).toBe(503);
+    const body = response.json();
+    expect(body.code).toBe("MARKETS_DEPENDENCY_UNAVAILABLE");
+    expect(body).toHaveProperty("correlationId");
+
+    // Fail-closed responses must not leak secrets or internal addresses.
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("DB down");
+
+    await app.close();
+  });
+
+  // Issue #1099: GET /markets/:id returns 503 when the database is unavailable (fail-closed).
+  it("returns 503 from GET /markets/:id when the database is unavailable", async () => {
+    const mockPrisma = {
+      market: {
+        findUnique: vi.fn().mockRejectedValue(new Error("DB down")),
+      },
+    } as unknown as PrismaClient;
+    vi.mocked(getPrismaClient).mockReturnValue(mockPrisma);
+
+    const app = await buildIndexerHttpServer();
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets/market-1",
+    });
+
+    expect(response.statusCode).toBe(503);
+    const body = response.json();
+    expect(body.code).toBe("MARKETS_DEPENDENCY_UNAVAILABLE");
+    expect(body).toHaveProperty("correlationId");
 
     await app.close();
   });
