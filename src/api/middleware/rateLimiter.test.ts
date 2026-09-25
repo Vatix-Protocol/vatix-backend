@@ -448,15 +448,11 @@ describe("stale entry cleanup", () => {
 
     const s = buildServer(rateLimiter);
 
-    // Distinct IPs so each gets its own tracked entry.
-    for (let i = 0; i < 5; i++) {
-      await s.inject({
-        method: "GET",
-        url: "/test",
-        headers: { "x-forwarded-for": `10.0.0.${i}` },
-      });
-    }
-    expect(getRateLimitStoreSize("global")).toBe(5);
+    // One entry for the single client IP. trustProxy is off outside
+    // production, so every injected request shares the socket address —
+    // X-Forwarded-For is deliberately ignored (see docs/rate-limiting.md).
+    await s.inject({ method: "GET", url: "/test" });
+    expect(getRateLimitStoreSize("global")).toBe(1);
 
     // Let the window pass, then sweep.
     await new Promise((resolve) => setTimeout(resolve, 60));
