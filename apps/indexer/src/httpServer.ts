@@ -4,12 +4,14 @@ import { indexerCorsPlugin } from "./middleware/cors.js";
 import { marketsRoutes } from "./routes/markets.js";
 
 /**
- * Stable error codes for probe responses. Kept as a closed union so callers
- * and dashboards can rely on exact strings rather than free-form messages.
+ * Stable error codes for probe and auth responses.  Kept as a closed
+ * union so callers and dashboards can branch on exact strings rather
+ * than free-form messages.
  */
 export type ProbeErrorCode =
   | "NOT_READY"
-  | "DEPENDENCY_UNAVAILABLE";
+  | "DEPENDENCY_UNAVAILABLE"
+  | "UNAUTHORIZED";
 
 /**
  * Stable error codes for rate-limit responses. Kept as a closed union so
@@ -74,8 +76,14 @@ export interface RateLimitPolicy {
  * Per-entrypoint rate-limit policies keyed by route path. Only paths listed
  * here are served; everything else fails closed with RATE_LIMITED so a new
  * route cannot silently ship without a policy.
+ *
+ * Probes (/health, /ready) are included so they are rate-limited like
+ * every other external entrypoint (deny-by-default).  They use generous
+ * limits because orchestrators and load balancers may poll them frequently.
  */
 export const RATE_LIMIT_POLICIES: Record<string, RateLimitPolicy> = {
+  "/health": { limit: 30, windowMs: 60_000 },
+  "/ready": { limit: 30, windowMs: 60_000 },
   "/markets": { limit: 60, windowMs: 60_000 },
   "/markets/:id": { limit: 120, windowMs: 60_000 },
 };
@@ -220,6 +228,13 @@ const RATE_LIMIT_EXEMPT_PATHS = new Set(["/health", "/ready", "/metrics"]);
  * - Ops-internal endpoints (/health, /ready, /metrics) are exempt from rate
  *   limiting so infrastructure scrapers are never throttled.
  *
+ * Authz (#1097):
+ * - Every external data route (/markets, /markets/:id) requires a valid
+ *   x-principal header.  Requests without a principal are rejected with 401
+ *   UNAUTHORIZED so untrusted clients cannot bypass the rate-limit policy.
+ * - Probe endpoints (/health, /ready) are exempt from authz so that
+ *   kubelet and load balancers can reach them without credentials.
+ *
  * Not started automatically: apps/indexer/src/main.ts only calls this when
  * INDEXER_HTTP_ENABLED=true, so the indexer's default off-chain
  * event-ingestion role stays HTTP-free unless an operator explicitly opts
@@ -337,10 +352,45 @@ export async function buildIndexerHttpServer(options?: {
         correlationId,
       });
     }
+
+    // Authz: every external entrypoint (market data) requires an
+    // authenticated principal.  Probes (/health, /ready) are exempt
+    // so that kubelet and load balancers can reach them without
+    // credentials.  A missing principal on a money-path or data
+    // route is rejected with 401 rather than served — deny-by-default.
+    // CORS preflight (OPTIONS) is exempt so that browser preflight
+    // requests are not blocked by authz before the CORS plugin can
+    // evaluate the origin allowlist.
+    const isProbe = routePath === "/health" || routePath === "/ready";
+    const isPreflight = request.method === "OPTIONS";
+    if (!isProbe && !isPreflight && !principal) {
+      if (logger) {
+        logger.warn(
+          { correlationId, routePath },
+          "unauthorized: missing x-principal",
+        );
+      }
+      return reply.code(401).send({
+        code: "UNAUTHORIZED" satisfies ProbeErrorCode,
+        correlationId,
+      });
+    }
   });
 
-  app.get("/health", async (_request, reply) => {
-    return reply.code(200).send({ status: "ok" });
+  app.get("/health", async (request, reply) => {
+    const correlationId =
+      (request.headers["x-correlation-id"] as string | undefined) ??
+      request.id;
+    if (logger) {
+      logger.info(
+        { correlationId, route: "/health" },
+        "liveness probe ok",
+      );
+    }
+    return reply.code(200).send({
+      status: "ok",
+      correlationId,
+    });
   });
 
   app.get("/ready", async (request, reply) => {
@@ -352,6 +402,13 @@ export async function buildIndexerHttpServer(options?: {
       correlationId,
       logger,
     );
+    if (logger) {
+      const logLevel = result.ready ? "info" : "warn";
+      logger[logLevel](
+        { correlationId, ready: result.ready, checks: result.checks },
+        result.ready ? "readiness probe ok" : "readiness probe failed",
+      );
+    }
     return reply.code(result.ready ? 200 : 503).send(result);
   });
 

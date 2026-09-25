@@ -61,3 +61,9 @@ be routed to a process that cannot serve it).
 
 See [`docs/docker-compose.md`](docs/docker-compose.md) for local orchestration
 and probe configuration.
+
+## Security
+
+See [`SECURITY.md`](SECURITY.md) for the deny-by-default policy, rate-limit
+governance, and probe safety invariants.
+

@@ -5,6 +5,60 @@ backend read models. It is the source of truth for ledger-derived state
 (balances, swaps, settlement) and must fail closed whenever that source
 of truth is unreachable.
 
+## Startup health
+
+The indexer validates its configuration and critical dependencies before
+binding an HTTP server.  The startup pipeline is:
+
+1. **Env validation** (`validateEnv`) — fail-closed on missing or
+   invalid `SOROBAN_NETWORK_PASSPHRASE`; mainnet requires explicit
+   `VATIX_ALLOW_MAINNET=true` opt-in.
+2. **Config-shape health** (`checkStartupHealth`) — validates cursor,
+   networkId, cursorKey, and `DATABASE_URL` before the indexer starts
+   polling.  Returns stable error codes, never values.
+3. **Live dependency probes** (`checkLiveDependencies`) — optional
+   real I/O checks (DB, Horizon/RPC) that run in production or when
+   `INDEXER_HTTP_FORCE_LIVE_CHECK=true`.  Retries with backoff to
+   tolerate startup jitter.
+4. **HTTP server** (`buildIndexerHttpServer`) — starts only after all
+   gates pass.  Binds only when `INDEXER_HTTP_ENABLED=true`.
+
+### Error codes
+
+| Code | Meaning |
+| --- | --- |
+| `ENV_MISSING` | Required environment variable not set. |
+| `ENV_INVALID` | Environment variable has an invalid value. |
+| `ENV_UNSAFE_MAINNET` | Mainnet passphrase without `VATIX_ALLOW_MAINNET=true`. |
+| `RATE_LIMITED` | Request exceeds the per-endpoint rate limit. |
+| `DEPENDENCY_UNAVAILABLE` | Critical dependency (DB/Redis/RPC) unreachable. |
+| `PROBE_TIMEOUT` | Dependency probe exceeded its timeout. |
+| `UNAUTHORIZED` | Missing or invalid `x-principal` header on a data route. |
+
+Every response carries a `correlationId` for log/trace stitching.
+No secrets, connection strings, or credentials are ever surfaced in
+probe responses or error messages.
+
+### Feature flags
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `INDEXER_HTTP_ENABLED` | unset (disabled) | Opt-in to expose the HTTP server. |
+| `INDEXER_HTTP_FORCE_LIVE_CHECK` | unset (false) | Run live dependency probes outside production. |
+| `INDEXER_HTTP_PORT` | `3000` | Port for the HTTP server. |
+| `INDEXER_CURSOR` | unset | Initial cursor for the ingestion loop. |
+| `INDEXER_CURSOR_KEY` | `ingestion` | Cursor key for the indexer. |
+
+## Stellar Wave contributors
+
+See `SECURITY.md` for the deny-by-default policy on privileged surfaces
+and the rate-limit/authorization requirements for every external
+entrypoint. New privileged surfaces must be authorized and rate-limited
+before landing.
+
+See `docs/runbooks/incident-runbook.md` for operational runbooks and
+`docs/health-probes.md` for probe design details.
+
 ## Gap detection
 
 `src/gapDetector.ts` detects missing ledger ranges in the ingested event
