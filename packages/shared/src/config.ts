@@ -215,6 +215,57 @@ function loadUrl(name: string, env: Env, allowedProtocols: string[]): string {
 }
 
 // ---------------------------------------------------------------------------
+// Network passphrase consistency (#1133)
+// ---------------------------------------------------------------------------
+
+/**
+ * Known passphrase for each supported deployment network, keyed by the
+ * identifier accepted in `STELLAR_NETWORK`. Network passphrases are public —
+ * they bind signatures, transaction envelopes, and domain separation to
+ * exactly one chain, they are not secrets, so they are safe to echo in
+ * boot-time error messages.
+ */
+export const KNOWN_STELLAR_NETWORK_PASSPHRASES = {
+  testnet: "Test SDF Network ; September 2015",
+  mainnet: "Public Global Stellar Network ; September 2015",
+} as const;
+
+/**
+ * Asserts that `SOROBAN_NETWORK_PASSPHRASE` is the passphrase of the network
+ * declared by `STELLAR_NETWORK` (issue #1133). Fail-closed: a disagreement
+ * throws `ConfigValidationError` so the service refuses to boot instead of
+ * signing for — or submitting to — the wrong network.
+ *
+ * Skip semantics (mirrors `assertPassphraseMatchesDeployment` in
+ * apps/workers/src/oracle/stellar-config.ts):
+ *   - passphrase unset/empty → skip. Outside production the signing paths fall
+ *     back to the testnet stub (see signingDomain.ts); production requires the
+ *     passphrase explicitly, which those paths enforce on their own.
+ *   - unknown `STELLAR_NETWORK` (e.g. futurenet, a custom standalone network)
+ *     → skip. There is no known-good passphrase to compare against.
+ *
+ * @param env - Environment map (defaults to the caller's env; injectable in tests)
+ * @throws {ConfigValidationError} when the passphrase and network disagree
+ */
+export function assertPassphraseMatchesNetwork(env: Env): void {
+  const passphrase = env["SOROBAN_NETWORK_PASSPHRASE"]?.trim();
+  if (!passphrase) return;
+
+  const network = (env["STELLAR_NETWORK"] ?? "testnet").trim().toLowerCase();
+  const expected = (
+    KNOWN_STELLAR_NETWORK_PASSPHRASES as Record<string, string | undefined>
+  )[network];
+  if (!expected) return;
+
+  if (passphrase !== expected) {
+    throw new ConfigValidationError(
+      `SOROBAN_NETWORK_PASSPHRASE does not match STELLAR_NETWORK="${network}": ` +
+        `expected "${expected}" but got "${passphrase}"`
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Base config — consumed by API server, and optionally by other services
 // ---------------------------------------------------------------------------
 
@@ -273,6 +324,10 @@ export interface BaseConfig {
  */
 export function loadBaseConfig(env: Env = processEnv): BaseConfig {
   const nodeEnv = loadNodeEnv(env);
+
+  // Network passphrase consistency (#1133): refuse to boot when the signing
+  // passphrase disagrees with the declared deployment network.
+  assertPassphraseMatchesNetwork(env);
 
   const corsAllowedOrigins = resolveCorsAllowedOrigins(
     nodeEnv as CorsNodeEnv,

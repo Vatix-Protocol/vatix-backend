@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { parseApiEnv, apiEnvSchema } from "./env.js";
-
 const VALID_ENV = {
   NODE_ENV: "development",
   PORT: "3000",
@@ -62,6 +61,37 @@ describe("parseApiEnv", () => {
 
   it("exports a schema for documentation and tooling", () => {
     expect(apiEnvSchema.shape.DATABASE_URL).toBeDefined();
+  });
+});
+
+describe("parseApiEnv — network passphrase consistency (#1133)", () => {
+  const TESTNET = "Test SDF Network ; September 2015";
+  const MAINNET = "Public Global Stellar Network ; September 2015";
+
+  it("accepts a passphrase that matches STELLAR_NETWORK", () => {
+    expect(() =>
+      parseApiEnv({
+        ...VALID_ENV,
+        STELLAR_NETWORK: "mainnet",
+        SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+      })
+    ).not.toThrow();
+  });
+
+  it("rejects a passphrase that does not match STELLAR_NETWORK", () => {
+    expect(() =>
+      parseApiEnv({
+        ...VALID_ENV,
+        STELLAR_NETWORK: "mainnet",
+        SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+      })
+    ).toThrow(/does not match STELLAR_NETWORK="mainnet"/);
+  });
+
+  it("skips the check when the passphrase is unset", () => {
+    expect(() =>
+      parseApiEnv({ ...VALID_ENV, STELLAR_NETWORK: "mainnet" })
+    ).not.toThrow();
   });
 });
 

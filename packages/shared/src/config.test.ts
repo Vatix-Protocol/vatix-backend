@@ -4,6 +4,7 @@ import {
   loadIndexerConfig,
   loadOracleWorkerConfig,
   loadFinalizationConfig,
+  assertPassphraseMatchesNetwork,
   ConfigValidationError,
 } from "./config.js";
 
@@ -57,6 +58,78 @@ describe("loadBaseConfig", () => {
   it("uses PORT from env when provided", () => {
     const config = loadBaseConfig({ ...BASE_ENV, PORT: "4000" });
     expect(config.port).toBe(4000);
+  });
+});
+
+describe("assertPassphraseMatchesNetwork (#1133)", () => {
+  const TESTNET = "Test SDF Network ; September 2015";
+  const MAINNET = "Public Global Stellar Network ; September 2015";
+
+  it("accepts the testnet passphrase for the default network", () => {
+    expect(() =>
+      assertPassphraseMatchesNetwork({ SOROBAN_NETWORK_PASSPHRASE: TESTNET })
+    ).not.toThrow();
+  });
+
+  it("accepts the mainnet passphrase when STELLAR_NETWORK=mainnet", () => {
+    expect(() =>
+      assertPassphraseMatchesNetwork({
+        STELLAR_NETWORK: "mainnet",
+        SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+      })
+    ).not.toThrow();
+  });
+
+  it("normalizes the network id case-insensitively", () => {
+    expect(() =>
+      assertPassphraseMatchesNetwork({
+        STELLAR_NETWORK: "MainNet",
+        SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+      })
+    ).not.toThrow();
+  });
+
+  it("rejects a testnet passphrase on a mainnet deployment", () => {
+    expect(() =>
+      assertPassphraseMatchesNetwork({
+        STELLAR_NETWORK: "mainnet",
+        SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+      })
+    ).toThrow(/does not match STELLAR_NETWORK="mainnet"/);
+  });
+
+  it("rejects a mainnet passphrase when STELLAR_NETWORK is unset (defaults to testnet)", () => {
+    expect(() =>
+      assertPassphraseMatchesNetwork({
+        SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+      })
+    ).toThrow(/does not match STELLAR_NETWORK="testnet"/);
+  });
+
+  it("skips the check when the passphrase is unset or empty", () => {
+    expect(() => assertPassphraseMatchesNetwork({})).not.toThrow();
+    expect(() =>
+      assertPassphraseMatchesNetwork({ SOROBAN_NETWORK_PASSPHRASE: "  " })
+    ).not.toThrow();
+  });
+
+  it("skips unknown/custom networks (no known-good passphrase)", () => {
+    expect(() =>
+      assertPassphraseMatchesNetwork({
+        STELLAR_NETWORK: "futurenet",
+        SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+      })
+    ).not.toThrow();
+  });
+
+  it("is enforced by loadBaseConfig so services fail closed at boot", () => {
+    expect(() =>
+      loadBaseConfig({
+        ...BASE_ENV,
+        STELLAR_NETWORK: "mainnet",
+        SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+      })
+    ).toThrow(/does not match STELLAR_NETWORK="mainnet"/);
   });
 });
 

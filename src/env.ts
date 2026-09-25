@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assertPassphraseMatchesNetwork } from "../packages/shared/src/config.js";
 
 export type ApiNodeEnv = z.infer<typeof apiEnvSchema>["NODE_ENV"];
 
@@ -276,6 +277,12 @@ export function parseApiEnv(env: ApiEnvInput = process.env): ParsedApiEnv {
   }
 
   const parsed = result.data;
+
+  // Network passphrase consistency (#1133): the API signs order receipts and
+  // oracle reports with the network passphrase, so a passphrase that disagrees
+  // with STELLAR_NETWORK would produce signatures bound to the wrong chain.
+  // Fail closed before the HTTP server binds.
+  assertPassphraseMatchesNetwork(env);
 
   // Production/dev split (#984): the deprecated static ADMIN_TOKEN is a
   // fail-open auth path. Fail fast in production; allow it as a local stub
