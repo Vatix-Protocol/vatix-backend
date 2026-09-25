@@ -47,6 +47,21 @@ When a parser encounters an event with a topic symbol it does not recognize, it 
 
 **Order id join validation:** `buy_order_id`/`sell_order_id` must resolve to a real `Order.id` (a `uuid()` per `prisma/schema.prisma`). `tradeParser.ts` always rejects an empty order id, and in `NODE_ENV=production` additionally rejects any value that isn't UUID-shaped — this is a dev-fixture allowance only, since non-UUID ids (e.g. legacy fixtures like `"buy-1"`) can never join to a CLOB `Order` row. A production rejection increments `indexer.parser.unjoinable_order_id` (tags: `parser`, `eventId`, `contractId`, `ledger`).
 
+**Stable error codes:** All `TradeParseError` instances carry an optional `errorCode` from the `TradeErrorCode` constant map (defined in `tradeParser.ts`). Downstream consumers and alerting rules MUST match against these codes, not free-form message text. Current codes:
+
+| Code                      | Meaning                                          |
+| ------------------------- | ------------------------------------------------ |
+| `TRADE_WRONG_TOPIC`       | Event topic does not match `trade_executed_event`|
+| `TRADE_BAD_VALUE_XDR`     | Event value XDR cannot be decoded                 |
+| `TRADE_VALUE_NOT_MAP`     | Decoded value is not an ScvMap                    |
+| `TRADE_MISSING_FIELD`     | Required map key is absent                       |
+| `TRADE_INVALID_OUTCOME`   | `outcome` is not `"YES"` or `"NO"`               |
+| `TRADE_INVALID_DIRECTION` | `direction` is not `"buy"` or `"sell"`           |
+| `TRADE_PRECISION_LOSS`    | Numeric field is a non-integer number             |
+| `TRADE_BAD_BIGINT`        | Field cannot be safely converted to bigint        |
+| `TRADE_EMPTY_ORDER_ID`    | Order id field is empty/blank                     |
+| `TRADE_NON_UUID_ORDER_ID` | Order id is not a valid UUID (production only)    |
+
 ---
 
 ## 2. `collateral_deposited`
@@ -62,6 +77,20 @@ When a parser encounters an event with a topic symbol it does not recognize, it 
 **DB write:** `CollateralDeposit` row via `PrismaBatchWriter`. `amountRaw` is stored as `String` (bigint serialized) to avoid precision loss, matching `IndexedTrade.priceRaw`/`quantityRaw`. Position accounting against `UserPosition` is handled separately by a worker — `batchWriter` only persists the raw deposit for audit/reconciliation.
 
 **Scale validation:** `collateralDepositedParser.ts` now validates every `amountRaw` against the same 7-decimal / `Decimal(20,8)` bounds `decimalUtils.amountRawToDecimal` enforces (see [Decimal/share conversion utilities](#decimalshare-conversion-utilities)), and rejects zero/negative amounts. In `NODE_ENV=production` it additionally rejects an `amount` that decodes as a plain JS `number` instead of a `bigint` — the on-chain `i128` type always decodes to `bigint`, so a `number` signals a wrong-width/wrong-scale decode path rather than a legitimate deposit. A rejection increments `indexer.parser.invalid_collateral_scale` (tags: `parser`, `eventId`, `contractId`, `ledger`).
+
+**Stable error codes:** All `CollateralDepositedParseError` instances carry an optional `errorCode` from the `CollateralDepositedErrorCode` constant map (defined in `collateralDepositedParser.ts`). Downstream consumers and alerting rules MUST match against these codes, not free-form message text. Current codes:
+
+| Code | Meaning |
+| ---- | ------- |
+| `COLLATERAL_WRONG_TOPIC` | Event topic does not match `collateral_deposited` |
+| `COLLATERAL_BAD_VALUE_XDR` | Event value XDR cannot be decoded |
+| `COLLATERAL_VALUE_NOT_TUPLE` | Decoded value is not a 3-element tuple |
+| `COLLATERAL_BAD_ACCOUNT` | `account` field is not a string |
+| `COLLATERAL_BAD_BIGINT` | `amount` field cannot be converted to bigint |
+| `COLLATERAL_NUMBER_NOT_I128` | `amount` decoded as a plain number in production (not i128) |
+| `COLLATERAL_NEGATIVE_AMOUNT` | `amount` is negative |
+| `COLLATERAL_ZERO_AMOUNT` | `amount` is zero |
+| `COLLATERAL_SCALE_EXCEEDED` | `amount` exceeds the `Decimal(20,8)` column range |
 
 ---
 
@@ -86,6 +115,21 @@ The contract does not publish an oracle address on this event, so `oracleAddress
 **Production vs. local stubs:** Both legacy shapes (ScvVec tuple and legacy ScvMap) exist only to decode local devnet/test fixtures and are rejected with a `ResolutionParseError` when `NODE_ENV=production` (or the `nodeEnv` option passed to `parseResolutionEvent`/`parseResolutionEvents` is `"production"`). Only the canonical on-chain shape (`topics[1]=market_id`, value `{outcome, resolved_at}`) is accepted in production. A rejection in production increments `indexer.parser.legacy_shape_rejected` (tags: `parser`, `eventId`, `contractId`, `ledger`) so operators can see a contract/topic regression instead of silently getting `ResolutionCandidate` rows with a blank `oracleAddress`.
 
 **DB write:** `ResolutionCandidate` row with `status = "PROPOSED"`, `source = "chain:market_resolved:{contractId}"`.
+
+**Stable error codes:** All `ResolutionParseError` instances carry an optional `errorCode` from the `ResolutionErrorCode` constant map (defined in `resolutionParser.ts`). Downstream consumers and alerting rules MUST match against these codes, not free-form message text. Current codes:
+
+| Code | Meaning |
+| ---- | ------- |
+| `RESOLUTION_WRONG_TOPIC` | Event topic does not match `market_resolved_event` |
+| `RESOLUTION_BAD_VALUE_XDR` | Event value XDR cannot be decoded |
+| `RESOLUTION_VALUE_NOT_MAP_OR_TUPLE` | Decoded value is neither an ScvMap nor a tuple |
+| `RESOLUTION_MISSING_FIELD` | Required map key is absent |
+| `RESOLUTION_INVALID_OUTCOME` | `outcome` is not `"YES"`, `"NO"`, or a boolean |
+| `RESOLUTION_MISSING_MARKET_ID` | `market_id` topic is absent (topicsXdr.length < 2) |
+| `RESOLUTION_BAD_MARKET_ID_XDR` | `market_id` topic XDR cannot be decoded |
+| `RESOLUTION_LEGACY_SHAPE_REJECTED` | Legacy ScvVec/ScvMap payload in production |
+| `RESOLUTION_MISSING_ORACLE` | `oracle` field is missing/empty (legacy ScvMap only) |
+| `RESOLUTION_BAD_CONFIDENCE` | `confidence` score is invalid |
 
 ---
 

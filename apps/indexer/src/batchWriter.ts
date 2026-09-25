@@ -355,7 +355,7 @@ export class PrismaBatchWriter implements BatchWriter {
           idempotencyKey: deposit.idempotencyKey,
           ledger: deposit.ledger,
           marketId: deposit.marketId,
-          depositorAddress: deposit.depositorAddress,
+          account: deposit.account,
           amountRaw: deposit.amountRaw.toString(),
         },
       });

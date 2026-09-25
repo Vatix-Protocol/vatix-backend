@@ -15,6 +15,28 @@ import type { Telemetry } from "./telemetry.js";
  */
 const RESOLUTION_EVENT_TOPIC = "market_resolved_event";
 
+/**
+ * Stable error codes for Resolution parsing. These are part of the parser's
+ * public contract: downstream consumers (indexer pipeline, ops dashboards,
+ * alerting) key off these codes, so they must not change without a
+ * coordinated migration.
+ */
+export const ResolutionErrorCode = {
+  WRONG_TOPIC: "RESOLUTION_WRONG_TOPIC",
+  BAD_VALUE_XDR: "RESOLUTION_BAD_VALUE_XDR",
+  VALUE_NOT_MAP_OR_TUPLE: "RESOLUTION_VALUE_NOT_MAP_OR_TUPLE",
+  MISSING_FIELD: "RESOLUTION_MISSING_FIELD",
+  INVALID_OUTCOME: "RESOLUTION_INVALID_OUTCOME",
+  MISSING_MARKET_ID: "RESOLUTION_MISSING_MARKET_ID",
+  BAD_MARKET_ID_XDR: "RESOLUTION_BAD_MARKET_ID_XDR",
+  LEGACY_SHAPE_REJECTED: "RESOLUTION_LEGACY_SHAPE_REJECTED",
+  MISSING_ORACLE: "RESOLUTION_MISSING_ORACLE",
+  BAD_CONFIDENCE: "RESOLUTION_BAD_CONFIDENCE",
+} as const;
+
+export type ResolutionErrorCode =
+  (typeof ResolutionErrorCode)[keyof typeof ResolutionErrorCode];
+
 function decodeScVal(xdrBase64: string): unknown {
   const val = xdr.ScVal.fromXDR(xdrBase64, "base64");
   return scValToNative(val);
@@ -26,7 +48,12 @@ function field<T>(
   eventId: string
 ): T {
   if (!(key in map)) {
-    throw new ResolutionParseError(`Missing field "${key}"`, eventId);
+    throw new ResolutionParseError(
+      `Missing field "${key}"`,
+      eventId,
+      undefined,
+      ResolutionErrorCode.MISSING_FIELD
+    );
   }
   return map[key] as T;
 }
@@ -40,7 +67,9 @@ function toResolutionOutcome(
   if (value === false) return "NO";
   throw new ResolutionParseError(
     `Unknown resolution outcome: "${String(value)}" — must be YES/NO or boolean`,
-    eventId
+    eventId,
+    undefined,
+    ResolutionErrorCode.INVALID_OUTCOME
   );
 }
 
@@ -72,7 +101,12 @@ interface ResolutionPayload {
 
 function marketIdFromTopic(topicsXdr: string[], eventId: string): string {
   if (topicsXdr.length < 2) {
-    throw new ResolutionParseError("Missing market_id topic", eventId);
+    throw new ResolutionParseError(
+      "Missing market_id topic",
+      eventId,
+      undefined,
+      ResolutionErrorCode.MISSING_MARKET_ID
+    );
   }
   try {
     return String(decodeScVal(topicsXdr[1]));
@@ -80,7 +114,8 @@ function marketIdFromTopic(topicsXdr: string[], eventId: string): string {
     throw new ResolutionParseError(
       "Failed to decode market_id topic XDR",
       eventId,
-      err
+      err,
+      ResolutionErrorCode.BAD_MARKET_ID_XDR
     );
   }
 }
@@ -122,13 +157,17 @@ function parseResolutionPayload(
         "Legacy ScvVec tuple resolution payload is not permitted in production — " +
           "the contract must emit the canonical MarketResolvedEvent shape " +
           "(topics[1]=market_id, value={outcome, resolved_at})",
-        eventId
+        eventId,
+        undefined,
+        ResolutionErrorCode.LEGACY_SHAPE_REJECTED
       );
     }
     if (decoded.length < 2) {
       throw new ResolutionParseError(
         "Tuple resolution payload must include market_id and outcome",
-        eventId
+        eventId,
+        undefined,
+        ResolutionErrorCode.MISSING_FIELD
       );
     }
 
@@ -143,7 +182,9 @@ function parseResolutionPayload(
   if (typeof decoded !== "object" || decoded === null) {
     throw new ResolutionParseError(
       "Event value is not an ScvMap or tuple",
-      eventId
+      eventId,
+      undefined,
+      ResolutionErrorCode.VALUE_NOT_MAP_OR_TUPLE
     );
   }
 
@@ -155,13 +196,20 @@ function parseResolutionPayload(
         "Legacy ScvMap resolution payload is not permitted in production — " +
           "the contract must emit the canonical MarketResolvedEvent shape " +
           "(topics[1]=market_id, value={outcome, resolved_at})",
-        eventId
+        eventId,
+        undefined,
+        ResolutionErrorCode.LEGACY_SHAPE_REJECTED
       );
     }
     // Legacy ScvMap payload: market_id, outcome, and oracle all in the value.
     const oracleAddress = map.oracle != null ? String(map.oracle) : "";
     if (oracleAddress === "") {
-      throw new ResolutionParseError('Missing field "oracle"', eventId);
+      throw new ResolutionParseError(
+        'Missing field "oracle"',
+        eventId,
+        undefined,
+        ResolutionErrorCode.MISSING_ORACLE
+      );
     }
     const confidenceScore = toConfidenceScore(map.confidence);
     return {
@@ -207,7 +255,9 @@ export function parseResolutionEvent(
   if (!isResolutionEvent(event.topicsXdr)) {
     throw new ResolutionParseError(
       `Event topic is not "${RESOLUTION_EVENT_TOPIC}"`,
-      event.id
+      event.id,
+      undefined,
+      ResolutionErrorCode.WRONG_TOPIC
     );
   }
 
@@ -218,7 +268,8 @@ export function parseResolutionEvent(
     throw new ResolutionParseError(
       "Failed to decode event value XDR",
       event.id,
-      err
+      err,
+      ResolutionErrorCode.BAD_VALUE_XDR
     );
   }
 
@@ -281,7 +332,12 @@ export function parseResolutionEvents(
       errors.push(
         err instanceof ResolutionParseError
           ? err
-          : new ResolutionParseError(String(err), event.id, err)
+          : new ResolutionParseError(
+              String(err),
+              event.id,
+              err,
+              ResolutionErrorCode.BAD_VALUE_XDR
+            )
       );
     }
   }

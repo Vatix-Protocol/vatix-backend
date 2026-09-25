@@ -35,6 +35,9 @@ export function getIndexerAllowedOrigins(
 /**
  * CORS plugin for indexer HTTP surfaces (read-only market routes).
  * Uses the shared origin policy so browser clients see consistent behaviour.
+ *
+ * Ops-safe: never logs the raw origin value (adversarial input) — only
+ * a boolean allowed signal and a stable correlation id when available.
  */
 export const indexerCorsPlugin = fp(async (fastify: FastifyInstance) => {
   const nodeEnv = (process.env.NODE_ENV ?? "development") as NodeEnv;
@@ -43,6 +46,15 @@ export const indexerCorsPlugin = fp(async (fastify: FastifyInstance) => {
     process.env.CORS_ALLOWED_ORIGINS
   );
 
+  // Fail-closed in production: an empty allowlist means no cross-origin
+  // browser request can succeed — which is the intended deny-by-default.
+  if (nodeEnv === "production" && allowedOrigins.length === 0) {
+    fastify.log.warn(
+      "CORS deny-by-default active in production — no origins allowed; " +
+        "set CORS_ALLOWED_ORIGINS to explicitly permit browser clients"
+    );
+  }
+
   const corsConfig: CorsConfig = {
     origin: (origin, callback) => {
       if (!origin) {
@@ -50,11 +62,20 @@ export const indexerCorsPlugin = fp(async (fastify: FastifyInstance) => {
         return;
       }
 
-      if (allowedOrigins.includes(origin)) {
+      const allowed = allowedOrigins.includes(origin);
+      if (allowed) {
+        fastify.log.debug(
+          { originAllowed: true },
+          "CORS origin allowed (origin value redacted)"
+        );
         callback(null, true);
       } else {
+        fastify.log.warn(
+          { originAllowed: false },
+          "CORS origin rejected (origin value redacted)"
+        );
         callback(
-          new Error(`Origin '${origin}' not allowed by CORS policy`),
+          new Error("Origin not allowed by CORS policy"),
           false
         );
       }

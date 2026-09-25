@@ -3,6 +3,7 @@ import { nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import {
   parseCollateralDepositedEvent,
   parseCollateralDepositedEvents,
+  CollateralDepositedErrorCode,
 } from "./collateralDepositedParser.js";
 import { CollateralDepositedParseError } from "./types.js";
 import type { RawChainEvent } from "./types.js";
@@ -34,6 +35,7 @@ function makeEvent(overrides: Partial<RawChainEvent> = {}): RawChainEvent {
     contractId: "CDEPOSIT",
     type: "contract",
     pagingToken: "token-dep-1",
+    eventIndex: 0,
     valueXdr: makeDepositValueXdr("GACCOUNT1234", 7, 500_000_000n),
     topicsXdr: [COLLATERAL_TOPIC],
     ...overrides,
@@ -113,6 +115,135 @@ describe("parseCollateralDepositedEvent", () => {
       expect.fail("should have thrown");
     } catch (err) {
       expect((err as CollateralDepositedParseError).eventId).toBe("bad-evt");
+    }
+  });
+
+  it("throws COLLATERAL_WRONG_TOPIC when topic does not match", () => {
+    try {
+      parseCollateralDepositedEvent(makeEvent({ topicsXdr: [TRADE_TOPIC] }));
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CollateralDepositedParseError).errorCode).toBe(
+        CollateralDepositedErrorCode.WRONG_TOPIC
+      );
+    }
+  });
+
+  it("throws COLLATERAL_BAD_VALUE_XDR on malformed XDR", () => {
+    try {
+      parseCollateralDepositedEvent(makeEvent({ valueXdr: "not-xdr!!" }));
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CollateralDepositedParseError).errorCode).toBe(
+        CollateralDepositedErrorCode.BAD_VALUE_XDR
+      );
+    }
+  });
+
+  it("throws COLLATERAL_VALUE_NOT_TUPLE when payload is not a tuple", () => {
+    const mapXdr = nativeToScVal({ market_id: 1, account: "G" }).toXDR(
+      "base64"
+    );
+    try {
+      parseCollateralDepositedEvent(makeEvent({ valueXdr: mapXdr }));
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CollateralDepositedParseError).errorCode).toBe(
+        CollateralDepositedErrorCode.VALUE_NOT_TUPLE
+      );
+    }
+  });
+
+  it("throws COLLATERAL_BAD_ACCOUNT when account is not a string", () => {
+    const badAccountXdr = nativeToScVal([123, 1, 500_000_000n]).toXDR(
+      "base64"
+    );
+    try {
+      parseCollateralDepositedEvent(
+        makeEvent({ valueXdr: badAccountXdr })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CollateralDepositedParseError).errorCode).toBe(
+        CollateralDepositedErrorCode.BAD_ACCOUNT
+      );
+    }
+  });
+
+  it("throws COLLATERAL_BAD_BIGINT for unparseable amount", () => {
+    const badAmountXdr = nativeToScVal(["GABC", 1, "not-a-number"]).toXDR(
+      "base64"
+    );
+    try {
+      parseCollateralDepositedEvent(
+        makeEvent({ valueXdr: badAmountXdr })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CollateralDepositedParseError).errorCode).toBe(
+        CollateralDepositedErrorCode.BAD_BIGINT
+      );
+    }
+  });
+
+  it("throws COLLATERAL_NEGATIVE_AMOUNT for negative amount", () => {
+    try {
+      parseCollateralDepositedEvent(
+        makeEvent({
+          valueXdr: makeDepositValueXdr("GABC", 1, -500n),
+        })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CollateralDepositedParseError).errorCode).toBe(
+        CollateralDepositedErrorCode.NEGATIVE_AMOUNT
+      );
+    }
+  });
+
+  it("throws COLLATERAL_ZERO_AMOUNT for zero amount", () => {
+    try {
+      parseCollateralDepositedEvent(
+        makeEvent({
+          valueXdr: makeDepositValueXdr("GABC", 1, 0n),
+        })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CollateralDepositedParseError).errorCode).toBe(
+        CollateralDepositedErrorCode.ZERO_AMOUNT
+      );
+    }
+  });
+
+  it("throws COLLATERAL_SCALE_EXCEEDED when amount exceeds Decimal(20,8) range", () => {
+    const tooLarge = 10_000_000_000_000_000_000n;
+    try {
+      parseCollateralDepositedEvent(
+        makeEvent({
+          valueXdr: makeDepositValueXdr("GABC", 1, tooLarge),
+        })
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CollateralDepositedParseError).errorCode).toBe(
+        CollateralDepositedErrorCode.SCALE_EXCEEDED
+      );
+    }
+  });
+
+  it("throws COLLATERAL_NUMBER_NOT_I128 for plain-number amount in production", () => {
+    const numberAmountXdr = nativeToScVal(["GABC", 1, 500]).toXDR("base64");
+    try {
+      parseCollateralDepositedEvent(
+        makeEvent({ valueXdr: numberAmountXdr }),
+        { nodeEnv: "production" }
+      );
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect((err as CollateralDepositedParseError).errorCode).toBe(
+        CollateralDepositedErrorCode.NUMBER_NOT_I128
+      );
     }
   });
 });
