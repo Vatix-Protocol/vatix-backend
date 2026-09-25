@@ -100,7 +100,11 @@ function toBigInt(
  * mismatch would only surface later — e.g. as a DB error or, worse, a
  * silently truncated amount — far from the event that caused it.
  */
-function validateCollateralScale(amountRaw: bigint, eventId: string): void {
+function validateCollateralScale(
+  amountRaw: bigint,
+  eventId: string,
+  options?: { telemetry?: Telemetry; correlationId?: string }
+): void {
   if (amountRaw <= 0n) {
     throw new CollateralDepositedParseError(
       `Field "amount" must be a positive i128, got ${amountRaw}`,
@@ -112,7 +116,10 @@ function validateCollateralScale(amountRaw: bigint, eventId: string): void {
     );
   }
   try {
-    amountRawToDecimal(amountRaw);
+    amountRawToDecimal(amountRaw, {
+      telemetry: options?.telemetry,
+      correlationId: options?.correlationId,
+    });
   } catch (err) {
     throw new CollateralDepositedParseError(
       `Field "amount" (${amountRaw}) is out of range for the 7-decimal ` +
@@ -136,6 +143,8 @@ export interface ParseCollateralDepositedOptions {
   telemetry?: Telemetry;
   /** Defaults to `process.env.NODE_ENV`; override in tests only. */
   nodeEnv?: string;
+  /** Correlation ID for request tracing and log correlation. */
+  correlationId?: string;
 }
 
 export function parseCollateralDepositedEvent(
@@ -143,6 +152,8 @@ export function parseCollateralDepositedEvent(
   options?: ParseCollateralDepositedOptions
 ): NormalizedCollateralDeposit {
   const nodeEnv = options?.nodeEnv ?? process.env.NODE_ENV ?? "development";
+  const telemetry = options?.telemetry;
+  const correlationId = options?.correlationId ?? event.id;
 
   if (!isCollateralDepositedEvent(event.topicsXdr)) {
     throw new CollateralDepositedParseError(
@@ -186,7 +197,7 @@ export function parseCollateralDepositedEvent(
   }
 
   const amountRaw = toBigInt(amount, "amount", event.id, nodeEnv);
-  validateCollateralScale(amountRaw, event.id);
+  validateCollateralScale(amountRaw, event.id, { telemetry, correlationId });
 
   return {
     eventId: event.id,
