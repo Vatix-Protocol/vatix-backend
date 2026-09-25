@@ -64,6 +64,58 @@ export const parseErrorTotalCounter = new client.Counter({
   registers: [indexerMetricsRegistry],
 });
 
+/**
+ * Why a batch write was rejected before touching the database (#1152).
+ *
+ * - `too_large`    — record count exceeded the configured hard cap (DoS guard).
+ * - `invalid_input` — the batch was not an array of well-formed records.
+ */
+export type BatchRejectedReason = "too_large" | "invalid_input";
+
+/**
+ * Total number of indexer batches rejected *before* any persistence attempt,
+ * labelled by reason. A non-zero rate means an upstream producer is sending
+ * oversized or malformed batches — the guard fails closed instead of letting
+ * the database absorb the load (#1152).
+ */
+export const batchRejectedTotalCounter = new client.Counter({
+  name: "vatix_indexer_batch_rejected_total",
+  help: "Total number of indexer batch writes rejected before persistence, by reason",
+  labelNames: ["reason"],
+  registers: [indexerMetricsRegistry],
+});
+
+/**
+ * Terminal outcome of a ledger gap back-fill run (#1151).
+ *
+ * - `completed`              — the clamped range was fetched and written.
+ * - `paused`                 — gap exceeded `gapPauseThreshold`; ingestion halts.
+ * - `disabled`               — kill-switch `backfillEnabled=false`; nothing fetched.
+ * - `in_progress`            — a concurrent back-fill was already running; denied.
+ * - `dependency_unavailable` — the batch write failed closed (DB/RPC outage).
+ * - `failed`                 — any other back-fill error.
+ */
+export type GapBackfillOutcome =
+  | "completed"
+  | "paused"
+  | "disabled"
+  | "in_progress"
+  | "dependency_unavailable"
+  | "failed";
+
+/**
+ * Total number of ledger gap back-fill runs by terminal outcome. Operators
+ * alert on any non-`completed` outcome: `dependency_unavailable` and `failed`
+ * indicate the indexer is not catching up, while `paused` means ingestion has
+ * deliberately halted (fail-closed) and needs a human (#1151).
+ */
+export const gapBackfillOutcomeTotalCounter = new client.Counter({
+  name: "vatix_indexer_gap_backfill_outcome_total",
+  help: "Total number of ledger gap back-fill runs by terminal outcome",
+  labelNames: ["outcome"],
+  registers: [indexerMetricsRegistry],
+});
+
 // ---------------------------------------------------------------------------
 // In-memory metrics service (also updates Prometheus metrics)
 // ---------------------------------------------------------------------------
@@ -185,6 +237,24 @@ export class InternalIndexerMetricsService {
 
   getParseErrorTotal(): number {
     return this.parseErrorTotal;
+  }
+
+  /**
+   * Increment the batch-rejected counter. Called by the batch writer's size /
+   * input guards before any database work happens (#1152). Counter-only — it
+   * is intentionally excluded from the JSON snapshot because it is a
+   * Prometheus-only alerting signal.
+   */
+  incrementBatchRejected(reason: BatchRejectedReason, count = 1): void {
+    batchRejectedTotalCounter.inc({ reason }, count);
+  }
+
+  /**
+   * Record the terminal outcome of a gap back-fill run so operators can alert
+   * on stalled catch-up (#1151). Counter-only — see `incrementBatchRejected`.
+   */
+  incrementGapBackfillOutcome(outcome: GapBackfillOutcome, count = 1): void {
+    gapBackfillOutcomeTotalCounter.inc({ outcome }, count);
   }
 
   getSnapshot(): IndexerMetricsSnapshot {

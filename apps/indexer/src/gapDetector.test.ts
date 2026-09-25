@@ -23,6 +23,8 @@ function makeMetrics(): InternalIndexerMetricsService {
   return {
     incrementGapDetected: vi.fn(),
     incrementBackfillLedgers: vi.fn(),
+    incrementGapBackfillOutcome: vi.fn(),
+    incrementBatchRejected: vi.fn(),
     getGapDetectedTotal: vi.fn().mockReturnValue(0),
     getBackfillLedgersTotal: vi.fn().mockReturnValue(0),
   } as unknown as InternalIndexerMetricsService;

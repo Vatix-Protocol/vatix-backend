@@ -16,6 +16,8 @@ import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { ILogger } from "../../../packages/shared/src/logger.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client/index.js";
 import { sleep } from "./retry.js";
+import { batchRejectedTotalCounter } from "./metrics.js";
+import { BatchWriteError } from "./batchWriterError.js";
 
 export type BatchRecord =
   | { kind: "trade"; data: PersistedTrade }
@@ -42,34 +44,13 @@ export interface BatchWriter {
 /**
  * Stable, typed error codes surfaced by the batch writer. Callers (and ops
  * dashboards) can branch on `code` without parsing free-form messages.
+ *
+ * Re-exported from `./batchWriterError.js` so existing importers keep working
+ * while consumers that only need the error type (e.g. the gap back-fill job)
+ * can avoid loading the Prisma-backed writer.
  */
-export type BatchWriteErrorCode =
-  | "BATCH_WRITE_DEPENDENCY_UNAVAILABLE"
-  | "BATCH_WRITE_FAILED";
-
-/**
- * Thrown when a batch cannot be committed. The batch is applied atomically or
- * not at all — a mid-batch failure aborts the transaction and rolls back every
- * record, so callers never observe a partially persisted batch.
- */
-export class BatchWriteError extends Error {
-  readonly code: BatchWriteErrorCode;
-  readonly correlationId: string;
-  readonly cause?: unknown;
-
-  constructor(
-    code: BatchWriteErrorCode,
-    message: string,
-    correlationId: string,
-    cause?: unknown
-  ) {
-    super(message);
-    this.name = "BatchWriteError";
-    this.code = code;
-    this.correlationId = correlationId;
-    this.cause = cause;
-  }
-}
+export type { BatchWriteErrorCode } from "./batchWriterError.js";
+export { BatchWriteError };
 
 const CHAIN_RESOLUTION_SOURCE_PREFIX = "chain:market_resolved";
 /** Stellar null account — used when the on-chain tuple omits oracle address. */
@@ -143,10 +124,112 @@ function newCorrelationId(): string {
     .slice(2, 10)}`;
 }
 
+// ---------------------------------------------------------------------------
+// Size / input DoS guard (#1152)
+// ---------------------------------------------------------------------------
+
+/** Env var that overrides the hard cap on records accepted per batch. */
+export const MAX_BATCH_RECORDS_ENV_VAR = "INDEXER_BATCH_MAX_RECORDS";
+
+/**
+ * Safe default cap on records accepted in a single batch. Chosen well above
+ * any legitimate ingestion or back-fill batch (`INDEXER_LEDGER_WINDOW_SIZE`
+ * defaults to 100 ledgers, which cannot produce anything close to this many
+ * records) while still bounding the work a single call can enqueue inside one
+ * database transaction.
+ */
+export const DEFAULT_MAX_BATCH_RECORDS = 1_000;
+
+/**
+ * Resolve the effective record cap.
+ *
+ * An absent, blank, non-integer, or non-positive value falls back to
+ * `DEFAULT_MAX_BATCH_RECORDS` — a malformed/attacker-controlled config must
+ * never *disable* the guard (fail-closed, never fail-open).
+ */
+export function resolveMaxBatchRecords(env: Env = process.env): number {
+  const raw = env[MAX_BATCH_RECORDS_ENV_VAR];
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_MAX_BATCH_RECORDS;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    return DEFAULT_MAX_BATCH_RECORDS;
+  }
+
+  return parsed;
+}
+
+type Env = Record<string, string | undefined>;
+
+/**
+ * Assert that a batch may be persisted, before any database work happens.
+ *
+ * Exported so every entrypoint that builds a batch (ingestion, gap back-fill,
+ * operator scripts) can pre-check with the same rule the writer enforces
+ * internally. Fails closed: an oversized or malformed batch is rejected with a
+ * typed `BatchWriteError` and nothing reaches the database.
+ *
+ * @throws {BatchWriteError} `BATCH_WRITE_INVALID_INPUT` when `records` is not
+ *   an array, or `BATCH_WRITE_TOO_LARGE` when it exceeds `maxRecords`.
+ */
+export function assertBatchWithinLimits(
+  records: unknown,
+  options: { maxRecords?: number; correlationId?: string } = {}
+): asserts records is BatchRecord[] {
+  const maxRecords = options.maxRecords ?? resolveMaxBatchRecords();
+  const correlationId = options.correlationId ?? newCorrelationId();
+
+  if (!Array.isArray(records)) {
+    batchRejectedTotalCounter.inc({ reason: "invalid_input" });
+    throw new BatchWriteError(
+      "BATCH_WRITE_INVALID_INPUT",
+      "Batch write rejected: records must be an array",
+      correlationId
+    );
+  }
+
+  if (records.length > maxRecords) {
+    batchRejectedTotalCounter.inc({ reason: "too_large" });
+    throw new BatchWriteError(
+      "BATCH_WRITE_TOO_LARGE",
+      `Batch write rejected: ${records.length} records exceeds the maximum of ${maxRecords}`,
+      correlationId
+    );
+  }
+}
+
+export interface PrismaBatchWriterConfig {
+  /**
+   * Hard cap on records accepted per `write()` call (#1152). Defaults to
+   * `INDEXER_BATCH_MAX_RECORDS` when set, otherwise
+   * `DEFAULT_MAX_BATCH_RECORDS`. Values must be positive integers.
+   */
+  maxRecords?: number;
+}
+
 export class PrismaBatchWriter implements BatchWriter {
   private readonly prisma = getPrismaClient();
+  /** Effective, already-validated record cap for this writer instance. */
+  private readonly maxRecords: number;
 
-  constructor(private readonly logger?: ILogger) {}
+  constructor(
+    private readonly logger?: ILogger,
+    config: PrismaBatchWriterConfig = {}
+  ) {
+    if (
+      config.maxRecords !== undefined &&
+      (!Number.isInteger(config.maxRecords) || config.maxRecords < 1)
+    ) {
+      throw new BatchWriteError(
+        "BATCH_WRITE_INVALID_INPUT",
+        "maxRecords must be a positive integer",
+        newCorrelationId()
+      );
+    }
+    this.maxRecords = config.maxRecords ?? resolveMaxBatchRecords();
+  }
 
   async write(records: BatchRecord[]): Promise<BatchWriteResult> {
     if (records.length === 0) {
@@ -154,6 +237,24 @@ export class PrismaBatchWriter implements BatchWriter {
     }
 
     const correlationId = newCorrelationId();
+
+    // Size / input DoS guard (#1152) — must run before any database work so a
+    // griefing caller cannot force a huge transaction or exhaust memory.
+    try {
+      assertBatchWithinLimits(records, {
+        maxRecords: this.maxRecords,
+        correlationId,
+      });
+    } catch (err) {
+      this.logger?.error("Batch write rejected by size guard", {
+        code: err instanceof BatchWriteError ? err.code : "BATCH_WRITE_FAILED",
+        correlationId,
+        recordCount: Array.isArray(records) ? records.length : null,
+        maxRecords: this.maxRecords,
+      });
+      throw err;
+    }
+
     let written = 0;
     let skipped = 0;
     const errors: BatchWriteError[] = [];
@@ -402,7 +503,8 @@ export class PrismaBatchWriter implements BatchWriter {
     }
     if (quantity <= 0) return;
 
-    const delta = trade.direction === "BUY" ? trade.quantityRaw : -trade.quantityRaw;
+    const delta =
+      trade.direction === "BUY" ? trade.quantityRaw : -trade.quantityRaw;
 
     await tx.indexedPosition.upsert({
       where: {
