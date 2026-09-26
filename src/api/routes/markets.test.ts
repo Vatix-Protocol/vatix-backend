@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
 import { marketsRoutes } from "./markets.js";
 import { errorHandler } from "../middleware/errorHandler.js";
+import { marketSearchRequestsTotal } from "../../services/metrics.js";
 import type { PrismaClient } from "../../generated/prisma/client";
 
 const mockPrismaClient = {
@@ -794,5 +795,165 @@ describe("GET /markets/:id", () => {
       expect(body).toHaveProperty("error");
       expect(body.error).toContain("non-existent-id");
     });
+  });
+});
+
+/**
+ * Market search (#1145). The invariant under test is that a text search only
+ * ever *narrows* the predicate: `deletedAt: null` is present for every query,
+ * including when a status filter and a search term are combined, so
+ * soft-deleted markets can never reappear through the search path.
+ */
+describe("GET /markets search (#1145)", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    app = Fastify({ logger: false });
+    app.setErrorHandler(errorHandler);
+    await app.register(marketsRoutes);
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("matches the question case-insensitively and still excludes soft-deleted markets", async () => {
+    (
+      mockPrismaClient.market.findMany as ReturnType<typeof vi.fn>
+    ).mockResolvedValue([]);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets?q=bitcoin",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
+      where: {
+        question: { contains: "bitcoin", mode: "insensitive" },
+        deletedAt: null,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+  });
+
+  it("keeps the soft-delete filter when search, status, sort, and limit are combined", async () => {
+    (
+      mockPrismaClient.market.findMany as ReturnType<typeof vi.fn>
+    ).mockResolvedValue([]);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets?q=rain&status=ACTIVE&sort=endTime&direction=asc&limit=5",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
+      where: {
+        status: "ACTIVE",
+        question: { contains: "rain", mode: "insensitive" },
+        deletedAt: null,
+      },
+      orderBy: { endTime: "asc" },
+      take: 5,
+    });
+  });
+
+  it("trims the search term before querying", async () => {
+    (
+      mockPrismaClient.market.findMany as ReturnType<typeof vi.fn>
+    ).mockResolvedValue([]);
+
+    await app.inject({ method: "GET", url: "/markets?q=%20rain%20" });
+
+    expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          question: { contains: "rain", mode: "insensitive" },
+          deletedAt: null,
+        },
+      })
+    );
+  });
+
+  it("treats a whitespace-only search term as no search", async () => {
+    (
+      mockPrismaClient.market.findMany as ReturnType<typeof vi.fn>
+    ).mockResolvedValue([]);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets?q=%20%20",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(mockPrismaClient.market.findMany).toHaveBeenCalledWith({
+      where: { deletedAt: null },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+  });
+
+  it("still returns 404 for a soft-deleted market looked up by id", async () => {
+    (
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      id: "deleted-market",
+      question: "Deleted?",
+      endTime: new Date(),
+      resolutionTime: null,
+      oracleAddress: "GABC",
+      status: "ACTIVE",
+      outcome: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      deletedAt: new Date(),
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets/deleted-market",
+    });
+
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("rejects a search term shorter than two characters", async () => {
+    const response = await app.inject({ method: "GET", url: "/markets?q=a" });
+
+    expect(response.statusCode).toBe(400);
+    expect(mockPrismaClient.market.findMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects an over-long search term instead of scanning with it", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/markets?q=${"a".repeat(201)}`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(mockPrismaClient.market.findMany).not.toHaveBeenCalled();
+  });
+
+  it("counts search requests without recording the term itself", async () => {
+    const readCount = async (filtered: string) =>
+      (await marketSearchRequestsTotal.get()).values
+        .filter((series) => series.labels["filtered"] === filtered)
+        .reduce((sum, series) => sum + series.value, 0);
+
+    (
+      mockPrismaClient.market.findMany as ReturnType<typeof vi.fn>
+    ).mockResolvedValue([]);
+
+    const filteredBefore = await readCount("true");
+    const unfilteredBefore = await readCount("false");
+
+    await app.inject({ method: "GET", url: "/markets?q=weather" });
+    await app.inject({ method: "GET", url: "/markets" });
+
+    expect(await readCount("true")).toBe(filteredBefore + 1);
+    expect(await readCount("false")).toBe(unfilteredBefore + 1);
   });
 });

@@ -20,6 +20,7 @@ import {
   FALLBACK_PROVIDER_TIMEOUT_POLICY_MS,
 } from "./timeout-utils.js";
 import { withRetry, type RetryConfig } from "./retry-utils.js";
+import { oracleFallbackChainAttemptsTotal } from "../../src/services/metrics.js";
 
 /**
  * Configuration for a single provider in the fallback chain.
@@ -128,6 +129,7 @@ export class FallbackAdapter implements ProviderAdapter {
         );
 
         if (timedResult.timedOut) {
+          oracleFallbackChainAttemptsTotal.labels(label, "failure").inc();
           errors.push(
             timedResult.error ??
               new FallbackProviderError(
@@ -139,12 +141,15 @@ export class FallbackAdapter implements ProviderAdapter {
         }
 
         if (timedResult.error) {
+          oracleFallbackChainAttemptsTotal.labels(label, "failure").inc();
           errors.push(timedResult.error);
           continue;
         }
 
+        oracleFallbackChainAttemptsTotal.labels(label, "success").inc();
         return timedResult.value!;
       } catch (err) {
+        oracleFallbackChainAttemptsTotal.labels(label, "failure").inc();
         errors.push(err instanceof Error ? err : new Error(String(err)));
       }
     }

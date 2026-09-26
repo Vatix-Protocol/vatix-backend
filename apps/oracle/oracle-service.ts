@@ -18,6 +18,10 @@ import type { ILogger } from "../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "./submission-queue.js";
 import { SubmissionQueue } from "./submission-queue.js";
 import { oracleFailClosedTotal } from "../../src/services/metrics.js";
+import {
+  oracleDryRunEvaluationsTotal,
+  oracleProviderAttemptsTotal,
+} from "../../src/services/metrics.js";
 
 /**
  * Callback invoked when a resolution succeeds and should be enqueued.
@@ -54,6 +58,16 @@ export interface OracleServiceConfig {
    * being silently enqueued with weak signal. Defaults to 0.75.
    */
   minConfidenceThreshold?: number;
+  /**
+   * Dry-run mode (#1146). When `true` the service still runs the full
+   * primary → fallback resolution and the confidence gate, but it **never**
+   * hands a result to `submissionQueue` / `enqueueCallback`. Instead it logs
+   * and counts what *would* have been submitted (`would: "submit"`) or
+   * refused (`would: "fail_closed"`). This lets operators validate provider
+   * wiring and confidence thresholds against live data without touching the
+   * money path. Defaults to `false`.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -117,6 +131,12 @@ export interface OracleMetrics {
  *    stale or default values).
  * 5. Successful resolutions are enqueued via `submissionQueue` or
  *    `enqueueCallback` when configured.
+ * 6. Per-provider outcomes are exported as `vatix_oracle_provider_attempts_total`
+ *    (`provider` = primary|fallback, `outcome` = success|failure) so failover
+ *    is observable without reading process metrics (#1147).
+ * 7. When `dryRun` is enabled (#1146) the resolution and confidence gate run
+ *    exactly as in production, but nothing is enqueued — dry-run is
+ *    fail-closed with respect to the money path by construction.
  */
 export class OracleService {
   private primaryAdapter: ProviderAdapter;
@@ -157,6 +177,7 @@ export class OracleService {
       fallbackTimeoutMs: DEFAULT_TIMEOUT_MS,
       retryConfig: { maxRetries: 0 },
       minConfidenceThreshold: 0.75,
+      dryRun: false,
       ...config,
     };
     if (isProduction) {
@@ -204,6 +225,7 @@ export class OracleService {
       );
 
       this.metrics.primarySuccessCount++;
+      oracleProviderAttemptsTotal.labels("primary", "success").inc();
       this.logger.info("Primary provider resolved market", {
         marketId: request.marketId,
         requestId,
@@ -218,6 +240,7 @@ export class OracleService {
       return result;
     } catch (primaryError) {
       this.metrics.primaryFailureCount++;
+      oracleProviderAttemptsTotal.labels("primary", "failure").inc();
       this.logger.error("Primary provider failed", {
         marketId: request.marketId,
         requestId,
@@ -267,6 +290,7 @@ export class OracleService {
 
       const result = await this.fallbackAdapter.resolve(fallbackRequest);
       this.metrics.fallbackUsageCount++;
+      oracleProviderAttemptsTotal.labels("fallback", "success").inc();
       this.logger.info("Fallback provider resolved market", {
         marketId: request.marketId,
         requestId: request.marketId,
@@ -282,6 +306,7 @@ export class OracleService {
     } catch (fallbackError) {
       this.metrics.fallbackFailureCount++;
       this.metrics.totalOutageCount++;
+      oracleProviderAttemptsTotal.labels("fallback", "failure").inc();
       oracleFailClosedTotal.inc();
       this.logger.error("All providers unreachable — total provider outage", {
         event: "oracle.total_outage",
@@ -343,6 +368,14 @@ export class OracleService {
   }
 
   /**
+   * Whether dry-run mode is enabled (#1146). When `true`, resolutions are
+   * evaluated but never enqueued for on-chain submission.
+   */
+  isDryRun(): boolean {
+    return this.config.dryRun === true;
+  }
+
+  /**
    * Get the primary adapter instance.
    */
   getPrimaryAdapter(): ProviderAdapter {
@@ -374,6 +407,24 @@ export class OracleService {
       return;
     }
 
+    if (this.config.dryRun) {
+      // Dry-run mirrors what production *would* do: the low-confidence result
+      // is still refused, so operators see the fail-closed rate they would
+      // get if the flag were turned off.
+      oracleDryRunEvaluationsTotal.labels("fail_closed").inc();
+      this.logger.warn(
+        "Oracle dry-run: low-confidence resolution would be refused",
+        {
+          event: "oracle.dry_run_would_fail_closed",
+          marketId: request.marketId,
+          requestId: request.marketId,
+          confidence: result.confidence,
+          threshold,
+          source: result.source,
+        }
+      );
+    }
+
     this.metrics.totalOutageCount++;
     oracleFailClosedTotal.inc();
     this.logger.error(
@@ -403,6 +454,24 @@ export class OracleService {
     request: ResolutionRequest,
     result: ProviderResult
   ): Promise<void> {
+    if (this.config.dryRun) {
+      // #1146: dry-run must never touch the submission path. Record the
+      // would-be submission and return — no queue, no callback, no writes.
+      oracleDryRunEvaluationsTotal.labels("submit").inc();
+      this.logger.info(
+        "Oracle dry-run: resolution would be enqueued for submission",
+        {
+          event: "oracle.dry_run_would_submit",
+          marketId: request.marketId,
+          requestId: request.marketId,
+          outcome: result.outcome,
+          confidence: result.confidence,
+          source: result.source,
+        }
+      );
+      return;
+    }
+
     if (!this.submissionQueue && !this.enqueueCallback) {
       return;
     }

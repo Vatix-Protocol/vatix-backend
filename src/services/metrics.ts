@@ -40,6 +40,66 @@ export const oracleFailClosedTotal = new client.Counter({
 });
 
 /**
+ * Per-provider oracle call outcomes (#1147 failover metrics).
+ *
+ * `provider` is the role the result came from — `primary` or `fallback` — and
+ * `outcome` is `success` or `failure` for that provider call. The `outcome`
+ * reflects the provider call itself, not the confidence gate that runs after
+ * it, so `primary`/`fallback` success ratios stay a faithful failover signal.
+ *
+ * Alerting example (primary success share dropping while fallback usage rises):
+ *   `sum(rate(vatix_oracle_provider_attempts_total{provider="fallback",outcome="success"}[5m])) > 0`
+ *   is the "we are running on the fallback" condition. Both labels are part of
+ *   the metric contract — never rename them without a docs + dashboard update.
+ */
+export const oracleProviderAttemptsTotal = new client.Counter({
+  name: "vatix_oracle_provider_attempts_total",
+  help: "Total oracle provider call outcomes by provider role (primary/fallback) and outcome (success/failure)",
+  labelNames: ["provider", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Per-provider outcome inside the fallback *chain* (#1147). Unlike
+ * `oracleProviderAttemptsTotal`, `provider` here is the concrete chain entry
+ * that was tried (`fallback-1`, `fallback-2`, … or the configured `source`,
+ * e.g. a provider hostname), so operators can see which specific fallback
+ * provider is carrying traffic or flapping.
+ */
+export const oracleFallbackChainAttemptsTotal = new client.Counter({
+  name: "vatix_oracle_fallback_chain_attempts_total",
+  help: "Total outcomes of each provider tried inside the fallback provider chain, labelled by provider source and outcome",
+  labelNames: ["provider", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Dry-run oracle evaluations (#1146). `would` is `submit` when the resolution
+ * passed every gate and would have been enqueued for on-chain submission, and
+ * `fail_closed` when the result would have been refused (below the confidence
+ * threshold). Dry-run never writes an OracleReport and never enqueues.
+ */
+export const oracleDryRunEvaluationsTotal = new client.Counter({
+  name: "vatix_oracle_dry_run_evaluations_total",
+  help: "Total oracle resolutions evaluated in dry-run mode, by would-be outcome (submit/fail_closed)",
+  labelNames: ["would"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Market search requests served by GET /markets (#1145). `filtered` is `true`
+ * when the caller supplied a text search term. Soft-deleted markets are
+ * excluded from every value of `filtered` — the label is telemetry only and
+ * must never be used to bypass the `deletedAt IS NULL` predicate.
+ */
+export const marketSearchRequestsTotal = new client.Counter({
+  name: "vatix_market_search_requests_total",
+  help: "Total market list/search requests, labelled by whether a text search term was supplied",
+  labelNames: ["filtered"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
  * Settlement outbox metrics (transactional outbox pattern for
  * MatchingService.placeOrder -> settlement queue delivery).
  * Updated by src/services/outbox-publisher.ts after each drain cycle.

@@ -70,6 +70,19 @@ be routed to a process that cannot serve it).
 See [`docs/docker-compose.md`](docs/docker-compose.md) for local orchestration
 and probe configuration.
 
+## Documentation
+
+- [`docs/SOFT_DELETED_MARKETS.md`](docs/SOFT_DELETED_MARKETS.md) — the
+  soft-delete invariant, the `GET /markets?q=` search contract, and the
+  ghost-market runbook.
+- [`docs/oracle-dry-run.md`](docs/oracle-dry-run.md) — `ORACLE_DRY_RUN`,
+  what dry-run does and does not touch, and its rollback.
+- [`docs/metrics.md`](docs/metrics.md) — every exported metric, including the
+  oracle failover metrics and their label contracts.
+- [`docs/signature-helper.md`](docs/signature-helper.md) — oracle report
+  signing, the domain/network envelope, and the frozen test vectors.
+- [`docs/architecture.md`](docs/architecture.md) — end-to-end system layout.
+
 ## Security
 
 See [`SECURITY.md`](SECURITY.md) for the deny-by-default policy, rate-limit

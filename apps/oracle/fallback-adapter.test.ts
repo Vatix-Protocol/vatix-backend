@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { FallbackAdapter, FallbackProviderError } from "./fallback-adapter.js";
 import type { FallbackAdapterConfig } from "./fallback-adapter.js";
+import { oracleFallbackChainAttemptsTotal } from "../../src/services/metrics.js";
 
 const PROVIDER_URL = "https://fallback.example.com";
 
@@ -295,5 +296,91 @@ describe("FallbackAdapter timeout policy (#992)", () => {
         timeoutMs: 500,
       })
     ).rejects.toThrow(/refusing to silently clamp/i);
+  });
+});
+
+/**
+ * Failover telemetry (#1147). The chain must record an outcome for every
+ * provider it tried, keyed by that provider's `source`, so operators can see
+ * which fallback is carrying traffic and which one is failing.
+ */
+describe("FallbackAdapter chain metrics (#1147)", () => {
+  const NO_RETRY = {
+    maxRetries: 0,
+    initialDelayMs: 1,
+    maxDelayMs: 1,
+    factor: 1,
+    useJitter: false,
+  };
+
+  async function chainValue(
+    provider: string,
+    outcome: string
+  ): Promise<number> {
+    const { values } = await oracleFallbackChainAttemptsTotal.get();
+    return values
+      .filter(
+        (series) =>
+          series.labels["provider"] === provider &&
+          series.labels["outcome"] === outcome
+      )
+      .reduce((sum, series) => sum + series.value, 0);
+  }
+
+  it("records the failure of the first provider and the success of the second", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse({ error: "upstream down" }, 500))
+      .mockResolvedValueOnce(okResponse({ outcome: false, confidence: 0.9 }));
+
+    const adapter = new FallbackAdapter({
+      providers: [
+        { url: "https://one.example.com", source: "fallback-1" },
+        { url: "https://two.example.com", source: "fallback-2" },
+      ],
+      retryConfig: NO_RETRY,
+      fetchFn,
+    });
+
+    const firstFailureBefore = await chainValue("fallback-1", "failure");
+    const secondSuccessBefore = await chainValue("fallback-2", "success");
+
+    const result = await adapter.resolve({
+      marketId: "market-1",
+      oracleAddress: "GORACLE",
+    });
+
+    expect(result.source).toBe("fallback-2");
+    expect(await chainValue("fallback-1", "failure")).toBe(
+      firstFailureBefore + 1
+    );
+    expect(await chainValue("fallback-2", "success")).toBe(
+      secondSuccessBefore + 1
+    );
+  });
+
+  it("records a failure for every provider when the whole chain is down", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(okResponse({ error: "upstream down" }, 503));
+
+    const adapter = new FallbackAdapter({
+      providers: [
+        { url: "https://one.example.com", source: "fallback-1" },
+        { url: "https://two.example.com", source: "fallback-2" },
+      ],
+      retryConfig: NO_RETRY,
+      fetchFn,
+    });
+
+    const before1 = await chainValue("fallback-1", "failure");
+    const before2 = await chainValue("fallback-2", "failure");
+
+    await expect(
+      adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" })
+    ).rejects.toThrow(FallbackProviderError);
+
+    expect(await chainValue("fallback-1", "failure")).toBe(before1 + 1);
+    expect(await chainValue("fallback-2", "failure")).toBe(before2 + 1);
   });
 });

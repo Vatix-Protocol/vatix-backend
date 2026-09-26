@@ -43,6 +43,15 @@ export interface OracleConfig {
    * for total provider outages.
    */
   minConfidenceThreshold: number;
+  /**
+   * Dry-run mode (#1146). When `true`, the oracle poll loop resolves markets
+   * and evaluates the confidence gate but does **not** write `OracleReport`
+   * rows, sign reports, or enqueue anything for on-chain submission. Use it to
+   * validate provider/allowlist wiring and confidence thresholds against live
+   * data before enabling a real submission path. Never a substitute for
+   * reviewing the fail-closed policy.
+   */
+  dryRun: boolean;
 }
 
 const VALID_LOG_LEVELS: ReadonlySet<string> = new Set([
@@ -61,6 +70,11 @@ const DEFAULT_LOG_LEVEL: LogLevel = "info";
  * `ORACLE_MIN_CONFIDENCE_THRESHOLD` if they want to accept weaker signals.
  */
 const DEFAULT_MIN_CONFIDENCE_THRESHOLD = 0.75;
+/**
+ * Dry-run defaults to `false` so an unconfigured deployment always runs the
+ * real submission path; enabling it is an explicit, deliberate action (#1146).
+ */
+const DEFAULT_DRY_RUN = false;
 
 type Env = Record<string, string | undefined>;
 
@@ -100,6 +114,12 @@ export function loadOracleConfig(env: Env = process.env): OracleConfig {
     DEFAULT_MIN_CONFIDENCE_THRESHOLD
   );
 
+  const dryRun = parseOptionalBoolean(
+    env["ORACLE_DRY_RUN"],
+    "ORACLE_DRY_RUN",
+    DEFAULT_DRY_RUN
+  );
+
   return {
     pollIntervalMs,
     challengeWindowSeconds,
@@ -108,7 +128,36 @@ export function loadOracleConfig(env: Env = process.env): OracleConfig {
     primaryTimeoutMs,
     fallbackTimeoutMs,
     minConfidenceThreshold,
+    dryRun,
   };
+}
+
+/**
+ * Parse an optional boolean environment variable. Accepts `true`/`false` and
+ * `1`/`0` (case-insensitive, surrounding whitespace ignored) and throws on
+ * anything else so a typo like `ORACLE_DRY_RUN=yes` cannot silently resolve to
+ * `false` and start submitting on-chain (#1146).
+ */
+function parseOptionalBoolean(
+  raw: string | undefined,
+  name: string,
+  defaultValue: boolean
+): boolean {
+  if (raw === undefined || raw.trim() === "") {
+    return defaultValue;
+  }
+
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0") {
+    return false;
+  }
+
+  throw new Error(
+    `${name} must be a boolean (true/false), got: ${JSON.stringify(raw)}`
+  );
 }
 
 /**

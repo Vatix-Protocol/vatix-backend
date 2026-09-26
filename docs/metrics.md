@@ -96,6 +96,10 @@ the endpoint is protected at the ingress layer, and expect a boot-time warning.
 | `vatix_matching_leader`                                | gauge     | Whether this process currently holds the matching leader lease: `1` while held, `0` otherwise.                                                                  |
 | `vatix_matching_lease_renew_failures_total`            | counter   | Total failed matching leader lease acquire/renew attempts on this process.                                                                                      |
 | `vatix_oracle_fail_closed_total`                       | counter   | Total times the oracle failed closed after all providers were unreachable (no report submitted on-chain).                                                       |
+| `vatix_oracle_provider_attempts_total`                 | counter   | Oracle provider call outcomes by `provider` (`primary`/`fallback`) and `outcome` (`success`/`failure`) — failover visibility (#1147).                           |
+| `vatix_oracle_fallback_chain_attempts_total`           | counter   | Outcomes of each provider tried inside the fallback chain, labelled by `provider` (chain entry `source`) and `outcome` (#1147).                                 |
+| `vatix_oracle_dry_run_evaluations_total`               | counter   | Dry-run oracle evaluations by would-be outcome (`would="submit"` / `would="fail_closed"`); dry-run never submits (#1146).                                       |
+| `vatix_market_search_requests_total`                   | counter   | Market list/search requests labelled by `filtered` (`true` when a `q` term was supplied); soft-deleted markets are excluded for both values (#1145).            |
 | `vatix_oracle_submission_ambiguous_total`              | counter   | Total oracle on-chain submissions left in an ambiguous confirmation state (e.g. NOT_FOUND that may still confirm).                                              |
 | `vatix_oracle_submission_confirmation_latency_ms`      | histogram | Milliseconds from oracle submission broadcast to on-chain confirmation.                                                                                         |
 | `vatix_settlement_outbox_depth`                        | gauge     | Number of settlement outbox rows not yet PUBLISHED (PENDING + FAILED).                                                                                          |
@@ -194,6 +198,51 @@ Incremented by `OracleService` whenever every provider (primary + fallback) fail
 for a resolution request and the oracle fails closed — i.e. no `OracleReport` is
 written and nothing is submitted on-chain. Alert when this counter rises to avoid
 silent resolution gaps.
+
+### `vatix_oracle_provider_attempts_total` / `vatix_oracle_fallback_chain_attempts_total` (#1147)
+
+Failover is only observable if primary and fallback traffic are separable:
+
+- **`vatix_oracle_provider_attempts_total{provider,outcome}`** — `provider` is
+  the role (`primary` or `fallback`) that was called; `outcome` is the result of
+  that call. The confidence gate runs _after_ this counter, so the series
+  reflects provider health, not gate decisions.
+
+  Useful queries:
+
+  ```promql
+  # Share of resolutions served by the fallback (should be ~0 in steady state)
+  sum(rate(vatix_oracle_provider_attempts_total{provider="fallback",outcome="success"}[5m]))
+    / sum(rate(vatix_oracle_provider_attempts_total{outcome="success"}[5m]))
+
+  # Primary failure rate — alert when it rises for 5m
+  sum(rate(vatix_oracle_provider_attempts_total{provider="primary",outcome="failure"}[5m]))
+  ```
+
+- **`vatix_oracle_fallback_chain_attempts_total{provider,outcome}`** — one
+  series per concrete chain entry (`fallback-1`, `fallback-2`, … or the
+  configured provider `source`), so a single flapping provider is identifiable
+  even while the chain as a whole still succeeds.
+
+Neither metric carries market ids, payloads, provider URLs, or API keys —
+`provider` values come from operator configuration, not from user input.
+
+### `vatix_oracle_dry_run_evaluations_total` (#1146)
+
+Counts resolutions evaluated while `ORACLE_DRY_RUN=true`, labelled by what
+_would_ have happened (`would="submit"` or `would="fail_closed"`). Use it to
+compare a dry-run's would-be submission rate against the real
+`vatix_oracle_provider_attempts_total` series before flipping the flag off. See
+`docs/oracle-dry-run.md`.
+
+### `vatix_market_search_requests_total` (#1145)
+
+`filtered="true"` when `GET /markets` was called with a `q` search term, and
+`filtered="false"` for a plain listing. It is an availability/latency signal for
+the search route, not a security control: soft-deleted markets are excluded by
+the SQL predicate (`deleted_at IS NULL`) regardless of this label, and the search
+term itself is deliberately never used as a label (cardinality and privacy). See
+`docs/SOFT_DELETED_MARKETS.md`.
 
 ### `vatix_settlement_outbox_*`
 

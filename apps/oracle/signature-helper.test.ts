@@ -3,6 +3,7 @@ import { Keypair } from "@stellar/stellar-sdk";
 import {
   signResolutionReport,
   verifyResolutionReport,
+  buildResolutionMessage,
   LegacySignatureRejectedError,
   CURRENT_SIGNATURE_VERSION,
 } from "./signature-helper.js";
@@ -215,5 +216,125 @@ describe("signature envelope versioning (#993)", () => {
     expect(() => verifyResolutionReport(downgraded)).toThrow(
       LegacySignatureRejectedError
     );
+  });
+});
+
+/**
+ * Frozen known-answer vectors (#1148).
+ *
+ * These vectors pin the *bytes* and the *signature* for a fixed, test-only
+ * keypair. They exist so any re-implementation (another service, a contract
+ * test harness, the web client) can be checked byte-for-byte against this
+ * repository, and so an accidental change to payload key order, domain tag, or
+ * network binding fails loudly here instead of silently invalidating every
+ * signature already in flight.
+ *
+ * The keypair seed below is a public constant and must never be used outside
+ * tests — it is derived from 32 bytes of `0x07`, not from any deployment key.
+ */
+describe("known-answer vectors (#1148)", () => {
+  const TESTNET = "Test SDF Network ; September 2015";
+  const MAINNET = "Public Global Stellar Network ; September 2015";
+
+  /** Deterministic, test-only keypair (seed = 32 × 0x07). */
+  const vectorKeypair = Keypair.fromRawEd25519Seed(Buffer.alloc(32, 7));
+  const VECTOR_SECRET = vectorKeypair.secret();
+  const VECTOR_PUBLIC_KEY =
+    "GDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57";
+
+  const vectorPayload: ResolutionPayload = {
+    marketId: "market-vector-001",
+    outcome: false,
+    timestamp: "2026-06-29T00:00:00.000Z",
+  };
+
+  const TESTNET_MESSAGE =
+    '{"domain":"vatix.oracle-resolution.v1","network":"Test SDF Network ; September 2015","payload":{"marketId":"market-vector-001","outcome":false,"timestamp":"2026-06-29T00:00:00.000Z"}}';
+  const MAINNET_MESSAGE =
+    '{"domain":"vatix.oracle-resolution.v1","network":"Public Global Stellar Network ; September 2015","payload":{"marketId":"market-vector-001","outcome":false,"timestamp":"2026-06-29T00:00:00.000Z"}}';
+
+  const TESTNET_SIGNATURE =
+    "LQ7YleBIxfi0H6I86dd9I2X5ArPVU6vOmfmGiUDe7jGkJMUfUPCTxzmX6KYtdjeZQNvw5jPnKOw8LohjFQIsDA==";
+  const MAINNET_SIGNATURE =
+    "r393T0RBHVFrvTOrBZKe5CVhNAi03WE+f4x6roXnv6+GZqQWB0IUOeGCIIRokoF6toOblcs8/AJUsKZrUXrHDg==";
+
+  it("derives the documented public key from the vector seed", () => {
+    expect(vectorKeypair.publicKey()).toBe(VECTOR_PUBLIC_KEY);
+  });
+
+  it("builds the frozen canonical message for testnet and mainnet", () => {
+    expect(buildResolutionMessage(vectorPayload, TESTNET)).toBe(
+      TESTNET_MESSAGE
+    );
+    expect(buildResolutionMessage(vectorPayload, MAINNET)).toBe(
+      MAINNET_MESSAGE
+    );
+  });
+
+  it("produces the frozen testnet signature", () => {
+    const report = signResolutionReport(vectorPayload, VECTOR_SECRET, TESTNET);
+
+    expect(report.publicKey).toBe(VECTOR_PUBLIC_KEY);
+    expect(report.signature).toBe(TESTNET_SIGNATURE);
+    expect(report.version).toBe(CURRENT_SIGNATURE_VERSION);
+  });
+
+  it("produces the frozen mainnet signature and keeps networks non-interchangeable", () => {
+    const onMainnet = signResolutionReport(
+      vectorPayload,
+      VECTOR_SECRET,
+      MAINNET
+    );
+
+    expect(onMainnet.signature).toBe(MAINNET_SIGNATURE);
+    expect(verifyResolutionReport(onMainnet, MAINNET)).toBe(true);
+    expect(verifyResolutionReport(onMainnet, TESTNET)).toBe(false);
+  });
+
+  it("verifies an externally produced signature over the frozen message", () => {
+    // A third-party signer only needs buildResolutionMessage() plus Ed25519 —
+    // no access to this module's internals.
+    const externalSignature = vectorKeypair
+      .sign(Buffer.from(TESTNET_MESSAGE, "utf8"))
+      .toString("base64");
+
+    expect(externalSignature).toBe(TESTNET_SIGNATURE);
+    expect(
+      verifyResolutionReport(
+        {
+          payload: vectorPayload,
+          signature: externalSignature,
+          publicKey: VECTOR_PUBLIC_KEY,
+          version: CURRENT_SIGNATURE_VERSION,
+        },
+        TESTNET
+      )
+    ).toBe(true);
+  });
+
+  it("still verifies the frozen pre-#978 legacy vector outside production", () => {
+    const legacyMessage = JSON.stringify({
+      domain: "vatix.oracle-resolution.v1",
+      payload: {
+        marketId: vectorPayload.marketId,
+        outcome: vectorPayload.outcome,
+        timestamp: vectorPayload.timestamp,
+      },
+    });
+    const legacySignature =
+      "d4MvjTpsgNciqDt6CeE7OckYkMLXwp01XK2GlTksu7Nm8+q4Oxi7yZA0tu9lz8qo4ob5lkoptwwceyHX8KcmCw==";
+
+    expect(
+      vectorKeypair.sign(Buffer.from(legacyMessage, "utf8")).toString("base64")
+    ).toBe(legacySignature);
+
+    const legacyReport: SignedResolutionReport = {
+      payload: vectorPayload,
+      signature: legacySignature,
+      publicKey: VECTOR_PUBLIC_KEY,
+      version: 1,
+    };
+
+    expect(verifyResolutionReport(legacyReport)).toBe(true);
   });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
 import { marketsRoutes } from "../../src/api/routes/markets.js";
 import { errorHandler } from "../../src/api/middleware/errorHandler.js";
-import { testUtils } from "../setup.js";
+import { testUtils, getTestPrismaClient } from "../setup.js";
 
 describe("Integration Tests: GET /v1/markets", () => {
   let app: FastifyInstance;
@@ -257,5 +257,80 @@ describe("Integration Tests: GET /v1/markets", () => {
       expect(body.data.markets[0].resolutionTime).not.toBeNull();
       expect(typeof body.data.markets[0].resolutionTime).toBe("string");
     });
+  });
+});
+
+/**
+ * Market search + soft-delete integration coverage (#1145). The mocked-Prisma
+ * unit tests pin the predicate; these pin the observable behaviour against a
+ * real database (soft-deleted rows exist but must never be returned).
+ */
+describe("Integration Tests: GET /v1/markets search (#1145)", () => {
+  let app: FastifyInstance;
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    app.setErrorHandler(errorHandler);
+    await app.register(marketsRoutes, { prefix: "/v1" });
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it("excludes soft-deleted markets from search results", async () => {
+    const prisma = getTestPrismaClient();
+
+    const visible = await testUtils.createTestMarket({
+      question: "Will it rain in Lisbon tomorrow?",
+    });
+    const deleted = await testUtils.createTestMarket({
+      question: "Will it rain in Lisbon forever?",
+    });
+    await prisma.market.update({
+      where: { id: deleted.id },
+      data: { deletedAt: new Date() },
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/markets?q=lisbon",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.data.markets.map((m: { id: string }) => m.id)).toEqual([
+      visible.id,
+    ]);
+    expect(body.data.count).toBe(1);
+  });
+
+  it("matches case-insensitively on a question substring", async () => {
+    await testUtils.createTestMarket({ question: "Will BITCOIN hit 200k?" });
+    await testUtils.createTestMarket({ question: "Will Ethereum merge?" });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/markets?q=bitcoin",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.data.markets).toHaveLength(1);
+    expect(body.data.markets[0].question).toContain("BITCOIN");
+  });
+
+  it("rejects an out-of-range search term before touching the database", async () => {
+    const tooShort = await app.inject({
+      method: "GET",
+      url: "/v1/markets?q=a",
+    });
+    const tooLong = await app.inject({
+      method: "GET",
+      url: `/v1/markets?q=${"a".repeat(201)}`,
+    });
+
+    expect(tooShort.statusCode).toBe(400);
+    expect(tooLong.statusCode).toBe(400);
   });
 });
