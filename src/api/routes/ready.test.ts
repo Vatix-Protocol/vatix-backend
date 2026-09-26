@@ -1,7 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import Fastify from "fastify";
 import {
   readyRoute,
+  beginDrain,
+  isDraining,
+  resetDrainForTests,
   INDEX_STALENESS_THRESHOLD_MS,
   type ReadyDeps,
 } from "./ready.js";
@@ -128,5 +131,75 @@ describe("GET /v1/ready", () => {
     expect(body.ready).toBe(false);
     expect(body.dependencies.database.status).toBe("error");
     expect(body.dependencies.indexFreshness.status).toBe("error");
+  });
+});
+
+/**
+ * Drain-on-shutdown (#1140).
+ *
+ * On SIGTERM the API flips readiness BEFORE closing the listener, so the load
+ * balancer stops routing to an instance that is refusing connections. Without
+ * this, /v1/ready keeps answering 200 during teardown and every request the LB
+ * sends in that window fails at the client.
+ */
+describe("readiness during graceful shutdown (#1140)", () => {
+  beforeEach(() => {
+    resetDrainForTests();
+  });
+
+  it("starts not draining", () => {
+    expect(isDraining()).toBe(false);
+  });
+
+  it("reports 503 while draining even though all dependencies are healthy", async () => {
+    const server = buildServer(freshDeps);
+    beginDrain();
+
+    const res = await server.inject({ method: "GET", url: "/v1/ready" });
+
+    expect(res.statusCode).toBe(503);
+    const body = res.json();
+    expect(body.ready).toBe(false);
+    // Dependencies are still reported so an operator can tell a planned drain
+    // from a genuine outage.
+    expect(body.dependencies.database.status).toBe("ok");
+    expect(body.dependencies.indexFreshness.status).toBe("ok");
+  });
+
+  it("labels the response as draining", async () => {
+    const server = buildServer(freshDeps);
+    beginDrain();
+
+    const body = (
+      await server.inject({ method: "GET", url: "/v1/ready" })
+    ).json();
+    expect(body.reason).toBe("draining");
+  });
+
+  it("omits the reason when not draining", async () => {
+    const server = buildServer(freshDeps);
+
+    const body = (
+      await server.inject({ method: "GET", url: "/v1/ready" })
+    ).json();
+    expect(body.reason).toBeUndefined();
+  });
+
+  it("transitions from ready to not-ready as soon as the drain starts", async () => {
+    const server = buildServer(freshDeps);
+
+    const before = await server.inject({ method: "GET", url: "/v1/ready" });
+    expect(before.statusCode).toBe(200);
+
+    beginDrain();
+
+    const after = await server.inject({ method: "GET", url: "/v1/ready" });
+    expect(after.statusCode).toBe(503);
+  });
+
+  it("is idempotent so a repeated signal cannot restart the sequence", () => {
+    beginDrain();
+    beginDrain();
+    expect(isDraining()).toBe(true);
   });
 });

@@ -34,6 +34,7 @@ import { walletRoutes } from "./api/routes/wallet.js";
 import { resolutionsRoutes } from "./api/routes/resolutions.js";
 import { admissionControl } from "./api/middleware/admissionControl.js";
 import { auditAdminRoutes } from "./api/routes/audit-verification.js";
+import { beginDrain } from "./api/routes/ready.js";
 
 // Default: 64 KB. Override via BODY_LIMIT_BYTES env var (validated by parseApiEnv).
 // Oversized requests are rejected with 413 Request Entity Too Large.
@@ -55,7 +56,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   // trustProxy=1 trusts only the immediate upstream proxy (load balancer),
   // rejecting spoofed X-Forwarded-For headers from untrusted sources.
   const trustProxyHops =
-    Number(process.env.TRUST_PROXY_HOPS) || (process.env.NODE_ENV === "production" ? 1 : 0);
+    Number(process.env.TRUST_PROXY_HOPS) ||
+    (process.env.NODE_ENV === "production" ? 1 : 0);
 
   const server: FastifyInstance = Fastify({
     logger: options.logger ?? true,
@@ -295,6 +297,15 @@ const start = async () => {
     type ShutdownSignal = (typeof VALID_SHUTDOWN_SIGNALS)[number];
 
     const SHUTDOWN_TIMEOUT_MS = 30_000; // 30 seconds
+    // Time between flipping /v1/ready to 503 and closing the listener, giving
+    // the load balancer time to observe the 503 and stop routing here. Must be
+    // <= the orchestrator's terminationGracePeriodSeconds. Set
+    // SHUTDOWN_DRAIN_DELAY_MS=0 to disable the wait.
+    const drainDelayRaw = Number(process.env.SHUTDOWN_DRAIN_DELAY_MS);
+    const SHUTDOWN_DRAIN_DELAY_MS =
+      Number.isFinite(drainDelayRaw) && drainDelayRaw >= 0
+        ? Math.floor(drainDelayRaw)
+        : 5_000;
     let isShuttingDown = false;
 
     const shutdown = async (signal: ShutdownSignal) => {
@@ -322,14 +333,29 @@ const start = async () => {
       }
       isShuttingDown = true;
 
+      // Flip readiness BEFORE closing the listener. The load balancer needs a
+      // moment to observe the 503 and stop routing here; closing immediately
+      // would make every request it sends in that window fail at the client.
+      beginDrain();
+
       server.log.info(
         {
           signal,
           component: "api-server",
           status: "initiated",
+          drainDelayMs: SHUTDOWN_DRAIN_DELAY_MS,
         },
         "API server shutdown initiated"
       );
+
+      // Propagation window for the load balancer to observe the 503. Set to 0
+      // to close immediately (acceptable when there is no load balancer in
+      // front, e.g. local development or a direct-port deployment).
+      if (SHUTDOWN_DRAIN_DELAY_MS > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, SHUTDOWN_DRAIN_DELAY_MS)
+        );
+      }
 
       // Set hard timeout to force exit if shutdown hangs
       const timeoutHandle = setTimeout(() => {
