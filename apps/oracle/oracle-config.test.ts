@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { Keypair } from "@stellar/stellar-sdk";
 import { loadOracleConfig } from "./oracle-config.js";
 
 describe("oracle-config", () => {
@@ -15,14 +16,17 @@ describe("oracle-config", () => {
   });
 
   it("loads config from env", () => {
+    const keypair = Keypair.random();
     const config = loadOracleConfig({
       ORACLE_CHALLENGE_WINDOW_SECONDS: "3600",
       ORACLE_LOG_LEVEL: "debug",
-      ORACLE_SECRET_KEY: "secret123",
+      ORACLE_SECRET_KEY: keypair.secret(),
     });
     expect(config.challengeWindowSeconds).toBe(3600);
     expect(config.logLevel).toBe("debug");
-    expect(config.secretKey).toBe("secret123");
+    expect(config.secretKey).toBe(keypair.secret());
+    // The derived public key is exposed so operators can confirm the signer.
+    expect(config.signerPublicKey).toBe(keypair.publicKey());
   });
 
   it("throws on invalid challenge window", () => {

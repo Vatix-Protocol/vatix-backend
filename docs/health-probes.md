@@ -70,6 +70,46 @@ readinessProbe:
   failureThreshold: 3
 ```
 
+### Oracle Health Probes
+
+The oracle process serves its own health server
+(`apps/oracle/health-server.ts`, started via `startHealthServer()` from
+`apps/oracle/main.ts`). It is **opt-in**: nothing listens unless
+`ORACLE_HEALTH_PORT` is set, so no new external surface appears by accident
+(#1116). Routes are defined in `apps/oracle/routes/health.ts`.
+
+| Route               | Env                  | Behavior                                                                                                                                             |
+| ------------------- | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /health`       | `ORACLE_HEALTH_PORT` | Liveness. Always `200` while the process is up. Performs **no** dependency checks, so a DB/Redis blip cannot restart the oracle mid-poll.            |
+| `GET /health/ready` | `ORACLE_HEALTH_PORT` | Readiness. Probes Postgres and Redis with a per-probe timeout (2s). `200` when both are `ok`, `503` with `code: "DEPENDENCY_UNAVAILABLE"` otherwise. |
+
+Bind/auth controls:
+
+- `ORACLE_HEALTH_HOST` — bind address, default `127.0.0.1` (loopback only).
+- `ORACLE_HEALTH_TOKEN` — when set, `GET /health/ready` requires a matching
+  `x-health-token` header (constant-time compare) and answers `401` with
+  `code: "UNAUTHORIZED"` otherwise. In `NODE_ENV=production` a non-loopback
+  `ORACLE_HEALTH_HOST` **requires** this token — startup fails otherwise.
+
+Both routes return a `correlationId` (echoed from `x-correlation-id`, otherwise
+the request id) and only ever report `"ok" | "unavailable"` per dependency:
+error messages, connection strings and hostnames are never returned or logged.
+
+**Do not point the oracle's liveness probe at the API's `/v1/health`** — that
+reports the API process's state, not the oracle's.
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: $ORACLE_HEALTH_PORT
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: $ORACLE_HEALTH_PORT
+  timeoutSeconds: 5
+```
+
 ---
 
 ## Configuration Reference

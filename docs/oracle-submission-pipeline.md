@@ -30,8 +30,34 @@ The oracle submission pipeline provides a durable, BullMQ-backed system for reso
 4. **Oracle Main** (`apps/oracle/main.ts`)
    - Entrypoint for the oracle resolution polling
    - Uses BullMQSubmissionQueue to enqueue submissions
+   - Derives the enqueue idempotency key with `buildSubmissionIdempotencyKey()` (#1114)
    - Manages bootstrap, polling loop, and graceful shutdown
    - Handles SIGINT/SIGTERM signals
+
+### Enqueue idempotency (#1114)
+
+The `SubmissionQueueItem.id` is the deduplication key, so it must be a pure
+function of the resolution:
+
+```ts
+id: buildSubmissionIdempotencyKey({
+  marketId: market.id,
+  oracleAddress: market.oracleAddress,
+  resolvedAt: result.timestamp,
+});
+```
+
+`marketId:oracleAddress:resolvedAt` (UTC-normalised) collapses a duplicated
+poll cycle, a crash/replay and a second producer onto one key, so the replay is
+a no-op instead of a possible second on-chain submission. Never derive the id
+from `Date.now()`.
+
+Replaying an id with a _different_ payload is a conflict, not a replay: the
+in-memory queue raises the non-retryable
+`SUBMISSION_QUEUE_IDEMPOTENCY_CONFLICT` (409) and leaves the live entry
+untouched, so a disagreeing resolution can never be silently swallowed. The
+BullMQ path deduplicates by `marketId:payloadHash` job id and additionally
+skips an enqueue when the job already exists.
 
 ## Deployment
 

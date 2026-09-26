@@ -31,15 +31,20 @@ In **production** (`NODE_ENV=production`), the following Stellar RPC and smart c
 - **`SOROBAN_NETWORK_PASSPHRASE`** — Must match the declared network (checked against `STELLAR_NETWORK`)
 
 ### Oracle Worker (On-Chain Resolution)
+
 - **`ORACLE_SECRET_KEY`** — Stellar secret key for signing resolution submissions (strictly required in production)
+- **`ORACLE_SIGNER_PUBLIC_KEY`** — Public `G…` key of the oracle signer; the trust anchor for resolution-report verification. Required in production: without it, verification fails closed with `ORACLE_SIGNATURE_TRUSTED_SIGNER_REQUIRED` (a report carries its own `publicKey`, so an unpinned verifier would accept any self-signed report). When `ORACLE_SECRET_KEY` is also set, a mismatch fails startup with `ORACLE_CONFIG_SIGNER_MISMATCH` — i.e. the wrong network's keypair was loaded. Update it together with the secret during rotation (see `docs/oracle-key-rotation.md`).
 
 ### Settlement Worker (On-Chain Settlement)
+
 - **`STELLAR_SECRET_KEY`** — Stellar secret key for signing settlement transactions (strictly required in production)
 
 ### Development & Test Behavior
+
 In **development** and **test** environments, incomplete Stellar config is allowed (with a warning log), permitting offline/off-chain-only development. Production deployment must have all variables explicitly configured.
 
 ### Why This Matters
+
 Silent off-chain fallback in production is a critical bug — operators cannot distinguish between "settlement actually succeeded on-chain" and "settlement ran off-chain and looks successful but is unfunded." Production must fail loud and early.
 
 ## Local Setup
