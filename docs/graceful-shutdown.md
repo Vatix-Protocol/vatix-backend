@@ -502,10 +502,39 @@ All services in the Vatix backend now implement coordinated graceful shutdown:
 
 ### ✅ API Server (`src/index.ts`)
 
-- Stops accepting new connections on SIGTERM/SIGINT
-- Drains in-flight HTTP requests
+- **Flips `/v1/ready` to 503 first** (`beginDrain()`) before touching the
+  listener, so the load balancer stops routing to an instance that is about to
+  refuse connections
+- Waits a configurable propagation window (`SHUTDOWN_DRAIN_DELAY_MS`, default
+  `5000`) for the load balancer to observe that 503
+- Stops accepting new connections, then drains in-flight HTTP requests
+- Releases the matching leader lease, then disconnects Postgres, analytics
+  Postgres and Redis
 - 30-second hard timeout
 - Structured logging with component identifier
+
+#### The drain window matters
+
+Without flipping readiness first, `/v1/ready` keeps answering `200` while the
+listener is closing. The load balancer keeps sending traffic to an instance
+that is refusing connections, so every request in that window fails at the
+client — a self-inflicted outage on every deploy and scale-in.
+
+`SHUTDOWN_DRAIN_DELAY_MS` **must be less than the orchestrator's
+`terminationGracePeriodSeconds`**, otherwise the pod is SIGKILLed mid-drain.
+The 30s hard timeout is enforced _after_ the drain window, so budget:
+
+```
+terminationGracePeriodSeconds  >  SHUTDOWN_DRAIN_DELAY_MS + SHUTDOWN_TIMEOUT_MS
+```
+
+Set `SHUTDOWN_DRAIN_DELAY_MS=0` to close immediately — appropriate only when no
+load balancer sits in front (local development, or a direct-port deployment
+where clients connect to the pod itself).
+
+While draining, `/v1/ready` returns `503` with `reason: "draining"` and still
+reports per-dependency status, so an operator can distinguish a planned rollout
+from a genuine outage.
 
 ### ✅ Indexer (`apps/indexer/src/main.ts`)
 
