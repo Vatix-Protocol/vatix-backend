@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { Registry, Counter } from "prom-client";
 import { buildIndexerHttpServer } from "./httpServer.js";
-import { getPrismaClient } from "./services/prisma.js";
+import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client.js";
 
-vi.mock("./services/prisma.js", () => ({
+vi.mock("../../../src/services/prisma.js", () => ({
   getPrismaClient: vi.fn(),
 }));
 
@@ -104,8 +104,11 @@ describe("buildIndexerHttpServer", () => {
 
     expect(response.statusCode).toBe(503);
     const body = response.json();
-    expect(body.status).toBe("unavailable");
+    expect(body.ready).toBe(false);
     expect(body.code).toBe("DEPENDENCY_UNAVAILABLE");
+    // Only the dependency name and a coarse status are exposed — never the
+    // underlying driver error (see docs/health-probes.md).
+    expect(body.checks.db).toBe("unavailable");
     expect(typeof body.correlationId).toBe("string");
     expect(body.correlationId.length).toBeGreaterThan(0);
 
@@ -133,7 +136,8 @@ describe("buildIndexerHttpServer", () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.status).toBe("ok");
+    expect(body.ready).toBe(true);
+    expect(body.code).toBeUndefined();
 
     await app.close();
   });
@@ -163,7 +167,7 @@ describe("buildIndexerHttpServer", () => {
     const response = await app.inject({ method: "GET", url: "/ready" });
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.status).toBe("ok");
+    expect(body.ready).toBe(true);
 
     await app.close();
   });
@@ -318,6 +322,9 @@ describe("buildIndexerHttpServer", () => {
         url: "/markets",
         headers: {
           "x-api-key": "valid-key",
+          // A valid API key alone is not enough for a data route:
+          // deny-by-default authz also requires a principal.
+          "x-principal": "test-user",
         },
       });
 
@@ -329,49 +336,42 @@ describe("buildIndexerHttpServer", () => {
 
   // ── Markets route integration ─────────────────────────────────────
   describe("markets routes", () => {
-    it("GET /markets returns a structured success envelope", async () => {
+    it("GET /markets returns a paginated list envelope", async () => {
       const app = await buildIndexerHttpServer();
       await app.ready();
 
       const response = await app.inject({
         method: "GET",
         url: "/markets",
+        headers: { "x-principal": "test-user" },
       });
 
-      // The route exists; 200 means it responded, 404 means the route
-      // is not registered (which would be a wiring bug).
-      expect(response.statusCode).not.toBe(404);
+      // 404 would mean the route is not registered (a wiring bug);
+      // 401 means it was rejected before authz.
+      expect(response.statusCode).toBe(503);
       const body = response.json();
-      if (response.statusCode === 200) {
-        expect(body.success).toBe(true);
-        expect(Array.isArray(body.data)).toBe(true);
-        expect(typeof body.requestId).toBe("string");
-        expect(typeof body.timestamp).toBe("string");
-      }
+      expect(body.code).toBe("MARKETS_DEPENDENCY_UNAVAILABLE");
+      expect(typeof body.correlationId).toBe("string");
 
       await app.close();
     });
 
-    it("GET /markets/:id returns 404 for a non-existent market", async () => {
+    it("GET /markets/:id fails closed when the database is unreachable", async () => {
       const app = await buildIndexerHttpServer();
       await app.ready();
 
       const response = await app.inject({
         method: "GET",
         url: "/markets/non-existent-id",
+        headers: { "x-principal": "test-user" },
       });
 
-      // 404 means the route exists and the market was not found.
-      // 500 could mean the DB is unreachable (acceptable in test env).
-      expect(
-        response.statusCode === 404 || response.statusCode === 500
-      ).toBe(true);
-
-      if (response.statusCode === 404) {
-        const body = response.json();
-        expect(body.code).toBe("MARKET_NOT_FOUND");
-        expect(typeof body.correlationId).toBe("string");
-      }
+      // No Prisma client is wired in this unit test, so the lookup must
+      // fail closed with the stable code rather than 500 or a bare 404.
+      expect(response.statusCode).toBe(503);
+      const body = response.json();
+      expect(body.code).toBe("MARKETS_DEPENDENCY_UNAVAILABLE");
+      expect(typeof body.correlationId).toBe("string");
 
       await app.close();
     });
@@ -400,7 +400,11 @@ describe("buildIndexerHttpServer", () => {
     const app = await buildIndexerHttpServer();
     await app.ready();
 
-    const response = await app.inject({ method: "GET", url: "/markets" });
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "test-user" },
+    });
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
@@ -408,23 +412,6 @@ describe("buildIndexerHttpServer", () => {
     expect(body.markets).toHaveLength(1);
     expect(body.total).toBe(1);
     expect(body).toHaveProperty("correlationId");
-
-    await app.close();
-  });
-
-  // ── Metrics endpoint (#1096) ────────────────────────────
-
-    await app.close();
-  });
-
-  it("returns 200 from /ready without x-principal (probe authz exemption)", async () => {
-    const app = await buildIndexerHttpServer({
-      readinessChecks: [{ name: "db", check: async () => undefined }],
-    });
-    await app.ready();
-
-    const response = await app.inject({ method: "GET", url: "/ready" });
-    expect(response.statusCode).toBe(200);
 
     await app.close();
   });
@@ -480,6 +467,7 @@ describe("buildIndexerHttpServer", () => {
     const response = await app.inject({
       method: "GET",
       url: "/markets/market-1",
+      headers: { "x-principal": "test-user" },
     });
 
     expect(response.statusCode).toBe(200);
@@ -519,6 +507,7 @@ describe("buildIndexerHttpServer", () => {
     const response = await app.inject({
       method: "GET",
       url: "/markets/nonexistent",
+      headers: { "x-principal": "test-user" },
     });
 
     expect(response.statusCode).toBe(404);
@@ -542,7 +531,11 @@ describe("buildIndexerHttpServer", () => {
     const app = await buildIndexerHttpServer();
     await app.ready();
 
-    const response = await app.inject({ method: "GET", url: "/markets" });
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "test-user" },
+    });
 
     expect(response.statusCode).toBe(503);
     const body = response.json();
@@ -571,12 +564,83 @@ describe("buildIndexerHttpServer", () => {
     const response = await app.inject({
       method: "GET",
       url: "/markets/market-1",
+      headers: { "x-principal": "test-user" },
     });
 
     expect(response.statusCode).toBe(503);
     const body = response.json();
     expect(body.code).toBe("MARKETS_DEPENDENCY_UNAVAILABLE");
     expect(body).toHaveProperty("correlationId");
+
+    await app.close();
+  });
+
+  // ── Quota-visibility headers (#1142) ─────────────────────────────
+  // Clients must be able to see their remaining budget before they
+  // discover the limit as a 429, and must get a Retry-After on the 429.
+  it("advertises RateLimit-* headers on allowed responses", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitPolicies: { "/markets": { limit: 3, windowMs: 60_000 } },
+    });
+    await app.ready();
+
+    const first = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "test-user" },
+    });
+
+    expect(first.statusCode).not.toBe(429);
+    expect(first.headers["ratelimit-limit"]).toBe("3");
+    expect(first.headers["ratelimit-remaining"]).toBe("2");
+    // Unix timestamp in seconds, in the future.
+    expect(Number(first.headers["ratelimit-reset"])).toBeGreaterThan(
+      Math.floor(Date.now() / 1000)
+    );
+
+    await app.close();
+  });
+
+  it("returns RateLimit-Remaining: 0 and Retry-After on a 429", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitPolicies: { "/markets": { limit: 1, windowMs: 60_000 } },
+    });
+    await app.ready();
+
+    const headers = { "x-principal": "test-user" };
+    await app.inject({ method: "GET", url: "/markets", headers });
+
+    const second = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers,
+    });
+
+    expect(second.statusCode).toBe(429);
+    expect(second.headers["ratelimit-limit"]).toBe("1");
+    // Never negative, even once the window is exhausted.
+    expect(second.headers["ratelimit-remaining"]).toBe("0");
+    expect(Number(second.headers["retry-after"])).toBeGreaterThan(0);
+    expect(second.json().code).toBe("RATE_LIMITED");
+
+    await app.close();
+  });
+
+  it("advertises a zero quota when a route has no policy (deny-by-default)", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitPolicies: {}, // no policy for any route
+    });
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "test-user" },
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.headers["ratelimit-limit"]).toBe("0");
+    expect(response.headers["ratelimit-remaining"]).toBe("0");
 
     await app.close();
   });

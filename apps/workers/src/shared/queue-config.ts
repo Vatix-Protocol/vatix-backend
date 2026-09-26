@@ -5,6 +5,8 @@
  */
 export {
   DEFAULT_JOB_OPTIONS,
+  SETTLEMENT_JOB_OPTIONS,
+  ORACLE_SUBMISSION_JOB_OPTIONS,
   settlementQueueName,
   submissionQueueName,
   redisConnectionFromEnv,
