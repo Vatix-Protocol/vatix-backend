@@ -9,6 +9,7 @@ import { describe, it, expect } from "vitest";
 import {
   QUEUE_NAME_PATTERN,
   UsageError,
+  assertQueueFilter,
   computePayloadHash,
   fieldsToRecord,
   isReplayablePayload,
@@ -173,5 +174,29 @@ describe("isReplayablePayload", () => {
     expect(isReplayablePayload(42)).toBe(false);
     expect(isReplayablePayload([])).toBe(false);
     expect(isReplayablePayload({})).toBe(false);
+  });
+});
+
+// The --queue filter is interpolated into a Redis SCAN MATCH pattern, so it is
+// validated before use; scripts/replay-dlq.ts relies on this helper (#1136).
+describe("assertQueueFilter", () => {
+  it("accepts an absent filter (means: all queues)", () => {
+    expect(() => assertQueueFilter(undefined)).not.toThrow();
+  });
+
+  it("accepts plain queue names, including the documented aliases", () => {
+    for (const queue of ["settlement", "oracle", "vatix:settlement", "q-1_2"]) {
+      expect(() => assertQueueFilter(queue)).not.toThrow();
+    }
+  });
+
+  it("rejects SCAN glob metacharacters that would widen the sweep", () => {
+    for (const queue of ["*", "settle*", "settle?", "[a-z]*", "a b", ""]) {
+      expect(() => assertQueueFilter(queue)).toThrow(UsageError);
+    }
+  });
+
+  it("never echoes the rejected filter into the message", () => {
+    expect(() => assertQueueFilter("*")).toThrow(/got: invalid value/);
   });
 });

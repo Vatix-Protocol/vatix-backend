@@ -25,6 +25,26 @@ export class UsageError extends Error {
  */
 export const QUEUE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:_-]*$/;
 
+/**
+ * Validates an optional `--queue` filter before it is interpolated into a
+ * Redis SCAN MATCH pattern.
+ *
+ * The filter is a glob fragment, so an unvalidated value (`*`, `?`, `[a-z]`)
+ * would widen the sweep to unrelated keys and could replay another queue's
+ * dead letters. Rejecting the whole filter keeps the blast radius to the
+ * queues the operator named. An absent filter is valid and means "all".
+ *
+ * @throws {UsageError} when the filter is present but not a plain queue name
+ */
+export function assertQueueFilter(queueFilter?: string): void {
+  if (queueFilter === undefined) return;
+  if (!QUEUE_NAME_PATTERN.test(queueFilter)) {
+    throw new UsageError(
+      "--queue must match [A-Za-z0-9][A-Za-z0-9:_-]* (got: invalid value)"
+    );
+  }
+}
+
 export interface ReplayArgs {
   /** Only replay this queue's dead-letter stream; undefined = all streams. */
   queueFilter?: string;

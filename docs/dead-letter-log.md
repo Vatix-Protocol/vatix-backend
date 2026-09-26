@@ -163,6 +163,20 @@ Production safeguards (#1136):
 - **At-least-once:** replaying twice re-enqueues twice; dedupe lives in the
   consumers (e.g. the settlement worker's idempotency lock), never in this
   script. Always `--dry-run` first in production.
+- **Re-enqueue before delete:** the entry is removed from the DLQ only after
+  the `XADD` to `{prefix}{queue}` succeeds, so a crash mid-run leaves the
+  entry for a second pass instead of losing the job.
+
+Exit codes: `0` success, `1` a runtime failure or one or more entries failed to
+replay, `2` invalid usage or a production run refused for lack of `--yes`. The
+completion log line reports `replayed` / `failed` / `skipped` counters, so a
+wrapper script can alert on a partial replay.
+
+Every safeguard above is enforced by `scripts/replay-dlq.ts` wiring the pure
+helpers in `scripts/replay-dlq.lib.ts` — the CLI imports `parseReplayArgs`,
+`mutationAllowed`, `assertQueueFilter`, `fieldsToRecord`, `isReplayablePayload`,
+and `payloadLogFields`, so none of the rules can be bypassed by editing the
+entrypoint.
 
 Unit tests: `tests/replay-dlq.test.ts`.
 

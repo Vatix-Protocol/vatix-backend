@@ -3,18 +3,35 @@
  * Replay Dead-Letter Queue Admin CLI
  *
  * Reads entries from Redis dead-letter streams and re-enqueues them to their
- * original queues.  After a successful replay the dead-letter entry is removed.
+ * original queues. After a successful replay the dead-letter entry is removed.
+ *
+ * All parsing/gating/redaction rules live in `scripts/replay-dlq.lib.ts` so
+ * they are unit-testable without Redis; this file is the thin I/O shell around
+ * them (#1136).
  *
  * Usage:
- *   pnpm tsx scripts/replay-dlq.ts                                # replay all DLQs
- *   pnpm tsx scripts/replay-dlq.ts --queue settlement             # one queue only
- *   pnpm tsx scripts/replay-dlq.ts --queue settlement --limit 10  # limit entries
- *   pnpm tsx scripts/replay-dlq.ts --dry-run                      # preview only
+ *   pnpm replay:dlq                                  # replay all DLQs
+ *   pnpm replay:dlq --queue settlement               # one queue only
+ *   pnpm replay:dlq --queue settlement --limit 10    # limit entries
+ *   pnpm replay:dlq --dry-run                        # preview only
+ *   pnpm replay:dlq --yes                            # required to mutate in production
+ *
+ * Exit codes: 0 success, 1 runtime failure, 2 invalid usage / refused run.
  *
  * @module scripts/replay-dlq
  */
 
+import { randomUUID } from "crypto";
 import Redis from "ioredis";
+import {
+  UsageError,
+  assertQueueFilter,
+  fieldsToRecord,
+  isReplayablePayload,
+  mutationAllowed,
+  parseReplayArgs,
+  payloadLogFields,
+} from "./replay-dlq.lib.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -23,36 +40,20 @@ import Redis from "ioredis";
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 const KEY_PREFIX = process.env.REDIS_KEY_PREFIX ?? "vatix:";
 const DLQ_PREFIX = `${KEY_PREFIX}dead-letter:`;
+const NODE_ENV = process.env.NODE_ENV ?? "development";
+
+/** Correlates every log line emitted by one invocation. */
+const CORRELATION_ID = randomUUID();
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Logging
 // ---------------------------------------------------------------------------
 
-function parseArgs(): {
-  queueFilter?: string;
-  limit: number;
-  dryRun: boolean;
-} {
-  const args = process.argv.slice(2);
-  let queueFilter: string | undefined;
-  let limit = Infinity;
-  let dryRun = false;
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--queue" && args[i + 1]) {
-      queueFilter = args[++i];
-    } else if (args[i] === "--limit" && args[i + 1]) {
-      limit = parseInt(args[i + 1], 10);
-      if (!Number.isFinite(limit) || limit < 1) limit = Infinity;
-      i++;
-    } else if (args[i] === "--dry-run") {
-      dryRun = true;
-    }
-  }
-
-  return { queueFilter, limit, dryRun };
-}
-
+/**
+ * Structured JSON log line. Carries the invocation's correlationId so an
+ * operator can follow one replay end-to-end, and never the payload itself —
+ * only its type and SHA-256 hash, matching `logDeadLetter()`'s redaction rule.
+ */
 function log(
   level: string,
   message: string,
@@ -63,6 +64,7 @@ function log(
       ts: new Date().toISOString(),
       level,
       component: "replay-dlq",
+      correlationId: CORRELATION_ID,
       message,
       ...meta,
     })
@@ -73,10 +75,19 @@ function log(
 // Discover & helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Finds the dead-letter streams to replay.
+ *
+ * The `--queue` filter is interpolated into a SCAN MATCH pattern, so it is
+ * validated against QUEUE_NAME_PATTERN first: an unvalidated filter could
+ * inject glob metacharacters and sweep unrelated Redis keys (#1136).
+ */
 async function discoverDLQStreams(
   redis: Redis,
   queueFilter?: string
 ): Promise<string[]> {
+  assertQueueFilter(queueFilter);
+
   const pattern = queueFilter
     ? `${DLQ_PREFIX}${queueFilter}`
     : `${DLQ_PREFIX}*`;
@@ -99,35 +110,42 @@ async function discoverDLQStreams(
   return keys.sort();
 }
 
-function fieldsToRecord(fields: string[]): Record<string, unknown> {
-  const record: Record<string, unknown> = {};
-  for (let i = 0; i < fields.length; i += 2) {
-    const key = fields[i];
-    const value = fields[i + 1];
-    if (key === "payload") {
-      try {
-        record[key] = JSON.parse(value);
-      } catch {
-        record[key] = value;
-      }
-    } else {
-      record[key] = value;
-    }
+/** Flattens a dead-letter payload into the `[field, value, ...]` XADD form. */
+function toXaddFields(payload: unknown): string[] {
+  const fields: string[] = [];
+  for (const [key, value] of Object.entries(
+    payload as Record<string, unknown>
+  )) {
+    fields.push(key, String(value));
   }
-  return record;
+  return fields;
 }
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
-  const { queueFilter, limit, dryRun } = parseArgs();
+async function main(): Promise<number> {
+  const { queueFilter, limit, dryRun, yes } = parseReplayArgs(
+    process.argv.slice(2)
+  );
 
   log("info", "DLQ replay started", {
     queueFilter: queueFilter ?? "*",
+    limit: Number.isFinite(limit) ? limit : null,
     dryRun,
+    nodeEnv: NODE_ENV,
   });
+
+  // Production/dev split: a real replay writes to live queues, so it must be
+  // acknowledged with --yes outside a local loop. --dry-run mutates nothing and
+  // is always allowed.
+  if (!mutationAllowed(NODE_ENV, dryRun, yes)) {
+    log("error", "Refusing to replay in production without --yes", {
+      requiredFlag: "--yes",
+    });
+    return 2;
+  }
 
   const redis = new Redis(REDIS_URL, {
     maxRetries: 3,
@@ -136,13 +154,14 @@ async function main(): Promise<void> {
 
   let totalReplayed = 0;
   let totalFailed = 0;
+  let totalSkipped = 0;
 
   try {
     const streamKeys = await discoverDLQStreams(redis, queueFilter);
 
     if (streamKeys.length === 0) {
       log("info", "No dead-letter streams found", { prefix: DLQ_PREFIX });
-      return;
+      return 0;
     }
 
     log("info", "Discovered dead-letter streams", {
@@ -151,7 +170,7 @@ async function main(): Promise<void> {
     });
 
     for (const streamKey of streamKeys) {
-      const queueName = streamKey.replace(DLQ_PREFIX, "");
+      const queueName = streamKey.slice(DLQ_PREFIX.length);
 
       if (totalReplayed >= limit) {
         log("info", "Replay limit reached, stopping", { limit });
@@ -166,7 +185,7 @@ async function main(): Promise<void> {
 
       if (entries.length === 0) continue;
 
-      log("info", `Processing DLQ stream "${streamKey}"`, {
+      log("info", "Processing DLQ stream", {
         queue: queueName,
         entries: entries.length,
       });
@@ -175,19 +194,36 @@ async function main(): Promise<void> {
         if (totalReplayed >= limit) break;
 
         const message = fieldsToRecord(fields);
+        const payloadInfo = payloadLogFields(message.payload);
+
+        // Fail closed on a payload we cannot represent: keep the entry in the
+        // DLQ for a human instead of deleting it without re-enqueueing.
+        if (!isReplayablePayload(message.payload)) {
+          totalSkipped++;
+          log("error", "Skipping entry with a non-replayable payload", {
+            entryId,
+            queue: queueName,
+            ...payloadInfo,
+            hint: "entry left in the DLQ for manual triage",
+          });
+          continue;
+        }
 
         log("info", "Replaying dead-letter entry", {
           entryId,
           queue: queueName,
           originalMessageId: message.messageId,
-          reason: message.reason,
+          errorCode: message.errorCode,
+          classification: message.classification,
+          ...payloadInfo,
         });
 
         if (dryRun) {
           log("info", "[DRY-RUN] Would replay entry", {
             entryId,
             queue: queueName,
-            payload: message.payload,
+            targetStream: `${KEY_PREFIX}${queueName}`,
+            ...payloadInfo,
           });
           totalReplayed++;
           continue;
@@ -195,26 +231,17 @@ async function main(): Promise<void> {
 
         try {
           const targetStream = `${KEY_PREFIX}${queueName}`;
-          const rawPayload =
-            typeof message.payload === "object" && message.payload !== null
-              ? message.payload
-              : {};
 
-          const xaddFields: string[] = [];
-          for (const [key, value] of Object.entries(rawPayload)) {
-            xaddFields.push(key, String(value));
-          }
-
-          if (xaddFields.length > 0) {
-            await redis.xadd(targetStream, "*", ...xaddFields);
-          }
-
+          // Re-enqueue first, then delete: a crash between the two leaves the
+          // entry in the DLQ (at-least-once) rather than losing the job.
+          await redis.xadd(targetStream, "*", ...toXaddFields(message.payload));
           await redis.xdel(streamKey, entryId);
 
           log("info", "Entry replayed and removed from DLQ", {
             entryId,
             queue: queueName,
             targetStream,
+            ...payloadInfo,
           });
 
           totalReplayed++;
@@ -223,6 +250,7 @@ async function main(): Promise<void> {
           log("error", "Failed to replay entry", {
             entryId,
             queue: queueName,
+            ...payloadInfo,
             error: error instanceof Error ? error.message : String(error),
           });
         }
@@ -232,8 +260,13 @@ async function main(): Promise<void> {
     log("info", "DLQ replay completed", {
       replayed: totalReplayed,
       failed: totalFailed,
+      skipped: totalSkipped,
       dryRun,
     });
+
+    // Non-zero exit so an operator's automation / cron wrapper notices a
+    // partial replay instead of treating it as a clean run.
+    return totalFailed > 0 ? 1 : 0;
   } finally {
     await redis.quit();
   }
@@ -243,9 +276,17 @@ async function main(): Promise<void> {
 // Run
 // ---------------------------------------------------------------------------
 
-void main().catch((error) => {
-  log("error", "DLQ replay script failed", {
-    error: error instanceof Error ? error.message : String(error),
+void main()
+  .then((exitCode) => {
+    process.exit(exitCode);
+  })
+  .catch((error) => {
+    if (error instanceof UsageError) {
+      log("error", "Invalid usage", { error: error.message });
+      process.exit(2);
+    }
+    log("error", "DLQ replay script failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exit(1);
   });
-  process.exit(1);
-});
