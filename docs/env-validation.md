@@ -34,11 +34,12 @@ listener binds, worker loop starts, or money-path code runs.
 Every validation failure is reported with a **stable error code** so operators
 and tests can assert on it without parsing free-form messages:
 
-| Code                 | Meaning                                                       |
-| -------------------- | ------------------------------------------------------------- |
-| `ENV_MISSING`        | A required variable is absent or empty.                       |
-| `ENV_INVALID`        | A variable is present but malformed (bad URL, enum, integer). |
-| `ENV_UNSAFE_MAINNET` | Mainnet-affecting config was set without explicit opt-in.     |
+| Code                   | Meaning                                                                   |
+| ---------------------- | ------------------------------------------------------------------------- |
+| `ENV_MISSING`          | A required variable is absent or empty.                                   |
+| `ENV_INVALID`          | A variable is present but malformed (bad URL, enum, integer).             |
+| `ENV_UNSAFE_MAINNET`   | Mainnet-affecting config was set without explicit opt-in.                 |
+| `ENV_NETWORK_MISMATCH` | The passphrase or a Horizon/Soroban URL disagrees with `STELLAR_NETWORK`. |
 
 Failures are logged with the **variable name and error code only** — never the
 value — so secrets cannot leak into logs or crash reports.
@@ -47,6 +48,7 @@ value — so secrets cannot leak into logs or crash reports.
 [env] ENV_MISSING: DATABASE_URL
 [env] ENV_INVALID: NODE_ENV must be one of development | test | production
 [env] ENV_UNSAFE_MAINNET: STELLAR_NETWORK=mainnet requires ALLOW_MAINNET=true
+[env] ENV_NETWORK_MISMATCH: SOROBAN_NETWORK_PASSPHRASE does not match STELLAR_NETWORK="mainnet"
 ```
 
 ### Testnet vs mainnet
@@ -56,6 +58,76 @@ safe to boot. Any mainnet-affecting configuration requires an **explicit
 opt-in** via `ALLOW_MAINNET=true`; without it, boot fails closed with
 `ENV_UNSAFE_MAINNET`. This prevents an accidental mainnet boot from a testnet
 config or a drifted address set.
+
+---
+
+## Network consistency gate (#1133, #1134, #1135)
+
+A deployment declares its target network in several places at once:
+
+| Variable                                       | What it must agree with   |
+| ---------------------------------------------- | ------------------------- |
+| `SOROBAN_NETWORK_PASSPHRASE`                   | `STELLAR_NETWORK` (#1133) |
+| `STELLAR_HORIZON_URL` / `STELLAR_HORIZON_URLS` | `STELLAR_NETWORK` (#1134) |
+| `STELLAR_RPC_URL` / `STELLAR_RPC_URLS`         | `STELLAR_NETWORK` (#1135) |
+
+Before this gate existed each of those was validated on its own, so a
+half-rotated deployment could boot "successfully" while pointing at the wrong
+chain — a testnet passphrase with a mainnet Horizon URL, or a mainnet RPC with
+a testnet passphrase. The indexer would then stamp its ledger cursor with one
+chain's state, and the oracle worker would submit settlement to another.
+
+`packages/shared/src/networkConsistency.ts` is now the single implementation,
+and every service boot path calls it:
+
+| Service                          | Call site                                                                    |
+| -------------------------------- | ---------------------------------------------------------------------------- |
+| API                              | `loadBaseConfig()` — `packages/shared/src/config.ts`                         |
+| Indexer                          | `validateEnv()` — `apps/indexer/src/config.ts`                               |
+| Oracle submission worker         | `resolveOracleStellarConfig()` — `apps/workers/src/oracle/stellar-config.ts` |
+| Oracle / settlement (production) | `validateAndResolveStellarConfig()` — same file                              |
+
+### Invariants
+
+1. **Passphrase (#1133).** `SOROBAN_NETWORK_PASSPHRASE` must equal the
+   passphrase published for `STELLAR_NETWORK` (default `testnet`). Mismatch →
+   `ENV_NETWORK_MISMATCH`.
+2. **Horizon URL (#1134).** A configured `*.stellar.org` Horizon host must be
+   the one published for `STELLAR_NETWORK`
+   (`horizon-testnet.stellar.org` / `horizon.stellar.org`). Mismatch →
+   `ENV_NETWORK_MISMATCH`.
+3. **Soroban RPC URL (#1135).** Same rule for the RPC host; both documented
+   mainnet aliases (`soroban-mainnet.stellar.org`, `soroban.stellar.org`) are
+   accepted for mainnet.
+4. **Custom networks are exempt.** Futurenet and standalone chains have no
+   published passphrase/endpoint list, so nothing is compared. An unknown
+   passphrase still logs a `[env] WARNING` naming the **variable only** (never
+   the value).
+5. **Local and third-party hosts are not rejected.** `localhost`, private IPs,
+   `*.internal`, and non-`stellar.org` provider hosts cannot be attributed to a
+   network from the URL, so they pass. In production each one logs an
+   `[env] WARNING` that its network could not be verified.
+
+Every check is fail-closed: the process refuses to start rather than run
+against an unintended chain. Errors carry the **variable name and stable code
+only** — never a passphrase, credential, or full URL. The
+`ConfigValidationError.code` value is `ENV_NETWORK_MISMATCH`; the indexer
+re-labels it as `EnvValidationError` with the same code so log scraping and
+tests match one string.
+
+### Operator checklist after a network change
+
+When you switch a deployment between testnet and mainnet, change **all** of
+these together or boot will fail closed:
+
+```bash
+STELLAR_NETWORK=mainnet
+SOROBAN_NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
+STELLAR_HORIZON_URL=https://horizon.stellar.org
+STELLAR_RPC_URL=https://soroban-mainnet.stellar.org
+INDEXER_CONTRACT_ID=<mainnet contract>   # see "Contract ID boot validation"
+VATIX_ALLOW_MAINNET=true                  # see "Testnet vs mainnet" above
+```
 
 ---
 
@@ -278,11 +350,12 @@ STELLAR_HORIZON_URL host "horizon-testnet.stellar.org" belongs to Stellar testne
 
 Must be one of a fixed set of string values.
 
-| Variable                 | Accepted values                         | Default       |
-| ------------------------ | --------------------------------------- | ------------- |
-| `NODE_ENV`               | `development` \| `test` \| `production` | `development` |
-| `LOG_LEVEL`              | `debug` \| `info` \| `warn` \| `error`  | `info`        |
-| `ORACLE_LOG_LEVEL`       | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+| Variable           | Accepted values                         | Default       |
+| ------------------ | --------------------------------------- | ------------- |
+| `NODE_ENV`         | `development` \| `test` \| `production` | `development` |
+| `LOG_LEVEL`        | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+| `ORACLE_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+
 ### Enum variables
 
 Must be one of a fixed set of string values.
@@ -305,10 +378,10 @@ NODE_ENV must be one of development | test | production, got: "staging"
 
 Must be a positive integer, optionally within a bounded range.
 
-| Variable                                 | Min  | Max     | Default                           |
+| Variable | Min | Max | Default |
 | ------------------------------------
-| `FINALIZATION_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error`  | `info`        |
-| `INDEXER_LOG_LEVEL`      | `debug` \| `info` \| `warn` \| `error`  | `info`        |
+| `FINALIZATION_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` | `info` |
+| `INDEXER_LOG_LEVEL` | `debug` \| `info` \| `warn` \| `error` | `info` |
 
 **Error example:**
 

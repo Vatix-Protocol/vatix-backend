@@ -32,6 +32,7 @@ describe("loadIndexerConfig", () => {
       .mockImplementation(() => true);
     const cfg = loadIndexerConfig({
       SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+      STELLAR_NETWORK: "mainnet",
       // Mainnet requires the explicit opt-in (see the ENV_UNSAFE_MAINNET test).
       VATIX_ALLOW_MAINNET: "true",
       INDEXER_CONTRACT_ID: CONTRACT_ID,
@@ -43,12 +44,21 @@ describe("loadIndexerConfig", () => {
   it("warns on an unknown passphrase but still returns config", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const cfg = loadIndexerConfig({
+      // A custom/standalone network: STELLAR_NETWORK names it too, so the
+      // consistency gate has no published passphrase to compare against (#1133).
       SOROBAN_NETWORK_PASSPHRASE: "Custom Network ; 2024",
+      STELLAR_NETWORK: "standalone",
       INDEXER_CONTRACT_ID: CONTRACT_ID,
     });
     expect(cfg.sorobanNetworkPassphrase).toBe("Custom Network ; 2024");
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("Unknown Soroban network passphrase")
+      expect.stringContaining(
+        "SOROBAN_NETWORK_PASSPHRASE does not match any known Stellar network"
+      )
+    );
+    // The passphrase value itself must never reach the logs.
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("Custom Network ; 2024")
     );
   });
 
@@ -65,6 +75,7 @@ describe("loadIndexerConfig", () => {
   it("uses STELLAR_HORIZON_URL when provided", () => {
     const cfg = loadIndexerConfig({
       SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+      STELLAR_NETWORK: "mainnet",
       VATIX_ALLOW_MAINNET: "true",
       STELLAR_HORIZON_URL: "https://horizon.stellar.org",
       INDEXER_CONTRACT_ID: CONTRACT_ID,
@@ -92,13 +103,17 @@ describe("loadIndexerConfig", () => {
 
   it("requires explicit opt-in for mainnet-affecting config", () => {
     expect(() =>
-      loadIndexerConfig({ SOROBAN_NETWORK_PASSPHRASE: MAINNET })
+      loadIndexerConfig({
+        SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+        STELLAR_NETWORK: "mainnet",
+      })
     ).toThrow(/ENV_UNSAFE_MAINNET/);
   });
 
   it("allows mainnet when explicitly opted in", () => {
     const cfg = loadIndexerConfig({
       SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+      STELLAR_NETWORK: "mainnet",
       VATIX_ALLOW_MAINNET: "true",
       INDEXER_CONTRACT_ID: CONTRACT_ID,
     });

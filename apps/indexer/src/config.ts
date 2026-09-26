@@ -8,13 +8,21 @@ import {
   loadStellarEndpoints,
   type EndpointConfig,
 } from "../../../packages/shared/src/stellarTransport.js";
+import {
+  KNOWN_NETWORK_PASSPHRASES,
+  StellarNetworkConsistencyError,
+  assertStellarNetworkConsistency,
+  warnUnverifiableStellarEndpoints,
+} from "../../../packages/shared/src/networkConsistency.js";
 
 export type { SharedIndexerConfig };
 
-export const KNOWN_PASSPHRASES = {
-  testnet: "Test SDF Network ; September 2015",
-  mainnet: "Public Global Stellar Network ; September 2015",
-} as const;
+/**
+ * Known Stellar network passphrases keyed by `STELLAR_NETWORK` value.
+ * Re-exported from packages/shared/src/networkConsistency.ts so the indexer,
+ * the API, and the workers all share one list (#1133).
+ */
+export const KNOWN_PASSPHRASES = KNOWN_NETWORK_PASSPHRASES;
 
 type Env = Record<string, string | undefined>;
 
@@ -23,6 +31,8 @@ export const ENV_ERROR_CODES = {
   ENV_MISSING: "ENV_MISSING",
   ENV_INVALID: "ENV_INVALID",
   ENV_UNSAFE_MAINNET: "ENV_UNSAFE_MAINNET",
+  /** Passphrase / Horizon URL / Soroban RPC URL disagree with STELLAR_NETNETWORK. */
+  ENV_NETWORK_MISMATCH: "ENV_NETWORK_MISMATCH",
 } as const;
 
 export type EnvErrorCode =
@@ -109,14 +119,38 @@ export function validateEnv(env: Env = process.env): void {
   }
 
   const known = Object.values(KNOWN_PASSPHRASES) as string[];
+
   if (!known.includes(passphrase)) {
-    // Warn for custom/unknown networks but allow them (futurenet, standalone, etc.)
+    // Warn for custom/unknown networks but allow them (futurenet, standalone,
+    // etc.). The passphrase value is deliberately NOT logged — only the
+    // variable name, per the secret-handling rule in docs/env-validation.md.
     console.warn(
-      `[env] WARNING: Unknown Soroban network passphrase "${passphrase}". ` +
-        `Known networks: ${known.join(", ")}. ` +
-        `Proceeding with custom network configuration.`
+      "[env] WARNING: SOROBAN_NETWORK_PASSPHRASE does not match any known " +
+        `Stellar network. Known networks: ${known.join(", ")}. ` +
+        "Proceeding with custom network configuration."
     );
   }
+
+  // Network consistency gate (#1133 passphrase, #1134 Horizon URL,
+  // #1135 Soroban RPC URL): the passphrase and every configured endpoint must
+  // describe the same chain as STELLAR_NETWORK. Fail closed before the
+  // ingestion loop starts so the indexer can never poll one chain and stamp
+  // its ledger cursor with another chain's state.
+  try {
+    assertStellarNetworkConsistency(env);
+  } catch (err) {
+    if (err instanceof StellarNetworkConsistencyError) {
+      // EnvValidationError prefixes the stable code itself; drop the copy the
+      // shared error already carries so the log line is not doubled.
+      throw new EnvValidationError(
+        ENV_ERROR_CODES.ENV_NETWORK_MISMATCH,
+        err.variable,
+        err.message.replace(/^ENV_NETWORK_MISMATCH:\s*/, "")
+      );
+    }
+    throw err;
+  }
+  warnUnverifiableStellarEndpoints(env, env.NODE_ENV);
 
   // Mainnet-affecting config requires explicit opt-in. Refuse to boot on
   // mainnet unless the operator has acknowledged it via the opt-in flag.
