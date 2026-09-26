@@ -2,11 +2,32 @@ import { createHash } from "crypto";
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import { redis } from "../../../../src/services/redis.js";
-import type { AuditArchiverJobResult, ArchivedEventResult } from "./types.js";
+import type {
+  AuditArchiverJobResult,
+  ArchivedEventResult,
+  RetentionResult,
+} from "./types.js";
+import { planRetentionPurge, type RetentionCandidate } from "./retention.js";
 
 export interface AuditArchiverJobConfig {
   maxRunMs?: number;
   batchSize?: number;
+  /**
+   * Days of archived audit history to keep. `0` (default) disables retention
+   * deletes — the fail-closed default. See `retention.ts`.
+   */
+  retentionDays?: number;
+  /** Max rows a single retention run may delete. */
+  retentionBatchSize?: number;
+  /** Min rows always kept per market so the chain head stays verifiable. */
+  retentionMinPerMarket?: number;
+  /**
+   * How many archived rows to consider per run when planning a purge. Capped so
+   * a large backlog is drained over many polls rather than one huge scan.
+   */
+  retentionScanLimit?: number;
+  /** Injectable clock for deterministic tests. */
+  now?: () => Date;
 }
 
 /**
@@ -18,6 +39,11 @@ export class AuditArchiverJob {
   private readonly batchSize: number;
   private readonly hashAlgorithm = "sha256";
   private readonly keyPrefix: string;
+  private readonly retentionDays: number;
+  private readonly retentionBatchSize: number;
+  private readonly retentionMinPerMarket: number;
+  private readonly retentionScanLimit: number;
+  private readonly now: () => Date;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -27,6 +53,12 @@ export class AuditArchiverJob {
     this.maxRunMs = config.maxRunMs ?? 0;
     this.batchSize = config.batchSize ?? 1000;
     this.keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
+    // Retention defaults to fully disabled — an operator must opt in.
+    this.retentionDays = config.retentionDays ?? 0;
+    this.retentionBatchSize = config.retentionBatchSize ?? 1000;
+    this.retentionMinPerMarket = config.retentionMinPerMarket ?? 1;
+    this.retentionScanLimit = config.retentionScanLimit ?? 10_000;
+    this.now = config.now ?? (() => new Date());
   }
 
   async run(): Promise<AuditArchiverJobResult> {
@@ -71,12 +103,18 @@ export class AuditArchiverJob {
       // Calculate archive lag (time since oldest unarchived entry)
       const archiveLagMs = await this.calculateArchiveLag();
 
+      // Retention runs after archival so a purge can never race the rows this
+      // run just wrote (the window is strictly older, but ordering makes the
+      // invariant obvious to reviewers).
+      const retention = await this.purgeExpired();
+
       this.logger.info("Audit archiver job completed", {
         totalEvents: results.length,
         archivedCount,
         erroredCount,
         skippedCount,
         archiveLagMs,
+        purgedCount: retention.purgedCount,
         durationMs: completedAt.getTime() - startedAt.getTime(),
       });
 
@@ -90,6 +128,7 @@ export class AuditArchiverJob {
         completedAt: completedAt.toISOString(),
         durationMs: completedAt.getTime() - startedAt.getTime(),
         archiveLagMs,
+        retention,
       };
     } catch (error) {
       this.logger.error("Audit archiver job failed", {
@@ -265,6 +304,84 @@ export class AuditArchiverJob {
   private computeHash(payload: string, prevHash: string): string {
     const combined = `${payload}${prevHash}`;
     return createHash(this.hashAlgorithm).update(combined).digest("hex");
+  }
+
+  /**
+   * Delete archived audit rows older than the configured retention window.
+   *
+   * Fail-closed: a disabled policy (`retentionDays <= 0`), a failed candidate
+   * scan, or a failed delete all leave the archive untouched and surface an
+   * error log rather than throwing. Retention is housekeeping — it must never
+   * be able to fail an archival run.
+   *
+   * The plan itself is computed by the pure `planRetentionPurge`, which
+   * guarantees only an oldest *prefix* per market is removed so no retained row
+   * is left with a dangling `prevHash` (which would surface as a `chain_gap`
+   * in `src/services/auditChain.ts`).
+   */
+  private async purgeExpired(): Promise<RetentionResult> {
+    if (this.retentionDays <= 0) {
+      return { purgedCount: 0, disabled: true, marketCount: 0 };
+    }
+
+    try {
+      const candidates = (await this.prisma.tradeAuditEvent.findMany({
+        orderBy: { archivedAt: "asc" },
+        take: this.retentionScanLimit,
+        select: { id: true, marketId: true, archivedAt: true },
+      })) as RetentionCandidate[];
+
+      const plan = planRetentionPurge(candidates, {
+        retentionDays: this.retentionDays,
+        batchSize: this.retentionBatchSize,
+        minRetainPerMarket: this.retentionMinPerMarket,
+        now: this.now(),
+      });
+
+      if (plan.deleteIds.length === 0) {
+        return {
+          purgedCount: 0,
+          disabled: false,
+          marketCount: 0,
+          cutoff: plan.cutoff?.toISOString(),
+        };
+      }
+
+      // Guard against a concurrent run (or an operator) having already removed
+      // rows since the scan: deleteMany returns the count actually deleted.
+      const { count } = await this.prisma.tradeAuditEvent.deleteMany({
+        id: { in: plan.deleteIds },
+      });
+
+      this.logger.info("Audit retention purge complete", {
+        purgedCount: count,
+        requestedCount: plan.deleteIds.length,
+        marketCount: plan.marketCount,
+        retentionDays: this.retentionDays,
+        cutoff: plan.cutoff?.toISOString(),
+      });
+
+      if (count !== plan.deleteIds.length) {
+        this.logger.warn(
+          "Audit retention purged fewer rows than planned (concurrent modification)",
+          { purgedCount: count, requestedCount: plan.deleteIds.length }
+        );
+      }
+
+      return {
+        purgedCount: count,
+        disabled: false,
+        marketCount: plan.marketCount,
+        cutoff: plan.cutoff?.toISOString(),
+      };
+    } catch (error) {
+      // Fail closed: leave the archive intact and keep the run successful.
+      this.logger.error("Audit retention purge failed", {
+        error: error instanceof Error ? error.message : String(error),
+        retentionDays: this.retentionDays,
+      });
+      return { purgedCount: 0, disabled: false, marketCount: 0 };
+    }
   }
 
   /**
