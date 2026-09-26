@@ -94,7 +94,42 @@ describe("GET /ready (workers)", () => {
     expect(res.headers["x-request-id"]).toBe("test-correlation-id");
   });
 
-  it("never includes raw error objects or connection strings in the error field, only messages", async () => {
+  // Issue #1141: the worker probe is unauthenticated, so a driver message that
+  // embeds a DSN would publish credentials to anyone who can reach the port.
+  it("redacts a DSN embedded in a database error from the response body", async () => {
+    mocks.queryRaw.mockRejectedValue(
+      new Error(
+        "Can't reach database server at `postgres://vatix:s3cr3t@db.internal:5432/vatix`"
+      )
+    );
+
+    const server = buildServer();
+    const res = await server.inject({ method: "GET", url: "/ready" });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body).not.toContain("s3cr3t");
+    expect(res.body).not.toContain("db.internal");
+    expect(res.body).not.toContain("postgres://");
+
+    const body = res.json();
+    expect(body.dependencies.database.status).toBe("error");
+    expect(body.dependencies.database.error).toContain("[REDACTED]");
+    expect(body.dependencies.database.code).toBe("DEPENDENCY_UNAVAILABLE");
+  });
+
+  it("redacts a Redis host:port and password from the response body", async () => {
+    mocks.healthCheck.mockRejectedValue(
+      new Error("connect ECONNREFUSED 10.0.0.5:6379")
+    );
+
+    const server = buildServer();
+    const res = await server.inject({ method: "GET", url: "/ready" });
+
+    expect(res.body).not.toContain("10.0.0.5");
+    expect(res.body).not.toContain("6379");
+  });
+
+  it("keeps the raw driver message out of the response and reports a stable code", async () => {
     mocks.queryRaw.mockRejectedValue(
       new Error("connection refused to postgres://user:pass@host:5432/db")
     );
@@ -103,12 +138,11 @@ describe("GET /ready (workers)", () => {
     const res = await server.inject({ method: "GET", url: "/ready" });
     const body = res.json();
 
-    // The route must surface the driver's error message, not attempt to
-    // redact it further here — connection strings with embedded creds must
-    // never reach getPrismaClient()/redis in the first place. This test
-    // guards that the error field stays a message string, not a raw object
-    // that could leak additional context (stack traces, env dumps) if the
-    // driver's Error shape ever changes.
+    // The route publishes a sanitized summary, never the driver's raw message:
+    // a DSN with embedded credentials must not reach an unauthenticated client.
+    // The full message remains available in the server-side request log.
     expect(typeof body.dependencies.database.error).toBe("string");
+    expect(body.dependencies.database.error).not.toContain("pass@");
+    expect(body.dependencies.database.code).toBe("DEPENDENCY_UNAVAILABLE");
   });
 });

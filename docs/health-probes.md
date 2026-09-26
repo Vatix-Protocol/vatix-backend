@@ -47,9 +47,48 @@ worker's, and a wedged worker with a healthy API will never be restarted.
     }
   }
   ```
-- **Action on Failure:** Stop routing traffic/orchestration signals to the worker (remove it from its pool). Do **not** restart the container — a Redis outage is external and restarting won't fix it.
+  On failure each dependency also carries a stable `code` and a
+  **sanitized** `error` summary — see
+  [No-secret invariant for probe errors](#no-secret-invariant-for-probe-errors-1141).
+  - **Action on Failure:** Stop routing traffic/orchestration signals to the worker (remove it from its pool). Do **not** restart the container — a Redis outage is external and restarting won't fix it.
 
-Both routes echo an `x-request-id` response header (from the request header if supplied, otherwise a generated id) so readiness failures can be correlated with worker logs; failures are logged via `request.log.warn` with the request id and dependency error messages only — never connection strings or credentials.
+Both routes echo an `x-request-id` response header (from the request header if supplied, otherwise a generated id) so readiness failures can be correlated with worker logs; failures are logged via `request.log.warn` with the request id, the stable dependency codes, and the **raw** driver messages — the log is server-side, while the HTTP body only ever carries the sanitized summary.
+
+### No-secret invariant for probe errors (#1141)
+
+The API's `/v1/ready` and the workers' `/ready` are unauthenticated by design,
+so a dependency failure must never copy a driver error message verbatim into
+the response. Driver messages embed the values we most need to protect:
+
+```
+Can't reach database server at `postgres://vatix:s3cr3t@db.internal:5432/vatix`
+connect ECONNREFUSED 10.0.0.5:6379
+```
+
+Every probe failure is reduced by `sanitizeProbeMessage`
+(`packages/shared/src/probeErrors.ts`), which redacts DSNs,
+`user:password@host` URLs, bare `host:port` pairs, `api_key=…`/`password=…`
+pairs, JWTs, and Stellar secret seeds, collapses newlines, and truncates to 200
+characters. Benign text such as `connection refused` survives unchanged so
+operators keep the signal.
+
+Each failed dependency reports a stable, secret-free `code`:
+
+| Code                     | Meaning                                                  |
+| ------------------------ | -------------------------------------------------------- |
+| `DEPENDENCY_UNAVAILABLE` | The check threw or the dependency is unreachable.        |
+| `PROBE_TIMEOUT`          | The check exceeded its deadline.                         |
+| `NO_DATA`                | Nothing indexed yet, so freshness cannot be established. |
+| `STALE`                  | The newest indexed data is past the staleness threshold. |
+
+The full unsanitized message is still written to the server-side request log
+for debugging — it is simply never published over HTTP. When adding a new
+probe, route failures through `sanitizeProbeMessage` and emit a `code` from
+`classifyProbeError`; do not add a raw `err.message` to a probe response.
+
+If you believe a secret has leaked through a probe, rotate it immediately —
+treat any value that reached an unauthenticated endpoint as public. See
+[`SECURITY.md`](../SECURITY.md) for the reporting process.
 
 #### Kubernetes example (workers)
 

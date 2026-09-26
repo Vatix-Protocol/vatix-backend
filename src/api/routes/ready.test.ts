@@ -129,4 +129,72 @@ describe("GET /v1/ready", () => {
     expect(body.dependencies.database.status).toBe("error");
     expect(body.dependencies.indexFreshness.status).toBe("error");
   });
+
+  // Issue #1141: /v1/ready is unauthenticated, so a raw driver message that
+  // embeds a DSN would publish credentials to anyone who can reach the port.
+  it("redacts a DSN embedded in a database error from the response body", async () => {
+    const server = buildServer({
+      ...freshDeps,
+      checkDatabase: async () => {
+        throw new Error(
+          "Can't reach database server at `postgres://vatix:s3cr3t@db.internal:5432/vatix`"
+        );
+      },
+    });
+
+    const res = await server.inject({ method: "GET", url: "/v1/ready" });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.body).not.toContain("s3cr3t");
+    expect(res.body).not.toContain("db.internal");
+    expect(res.body).not.toContain("postgres://");
+
+    const body = res.json();
+    expect(body.dependencies.database.status).toBe("error");
+    expect(body.dependencies.database.error).toContain("[REDACTED]");
+  });
+
+  it("redacts a Redis host:port and password from the response body", async () => {
+    const server = buildServer({
+      ...freshDeps,
+      checkRedis: async () => {
+        throw new Error(
+          "connect ECONNREFUSED 10.0.0.5:6379 (redis://:pw@cache)"
+        );
+      },
+    });
+
+    const res = await server.inject({ method: "GET", url: "/v1/ready" });
+
+    expect(res.body).not.toContain("10.0.0.5");
+    expect(res.body).not.toContain(":6379");
+    expect(res.body).not.toContain("redis://");
+  });
+
+  it("exposes a stable code for every failed dependency", async () => {
+    const server = buildServer({
+      ...freshDeps,
+      checkDatabase: async () => {
+        throw Object.assign(new Error("boom"), { code: "ETIMEDOUT" });
+      },
+    });
+
+    const res = await server.inject({ method: "GET", url: "/v1/ready" });
+    const body = res.json();
+
+    expect(body.dependencies.database.code).toBe("PROBE_TIMEOUT");
+  });
+
+  it("classifies a not-yet-indexed index with a stable code", async () => {
+    const server = buildServer({
+      ...freshDeps,
+      getLastIndexedAt: async () => null,
+    });
+
+    const res = await server.inject({ method: "GET", url: "/v1/ready" });
+    const body = res.json();
+
+    expect(body.dependencies.indexFreshness.status).toBe("stale");
+    expect(body.dependencies.indexFreshness.code).toBe("NO_DATA");
+  });
 });

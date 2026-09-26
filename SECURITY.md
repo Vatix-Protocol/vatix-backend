@@ -29,7 +29,12 @@ Instead, report them responsibly by contacting security@vatix.io.
   `RATE_LIMIT_POLICIES` (see `RATE_LIMIT_POLICY.md`). Routes without a policy
   are denied by default.
 - **Probe safety**: Probe endpoints (`/health`, `/ready`) never return
-  connection strings, credentials, hostnames, or internal addresses.
+  connection strings, credentials, hostnames, or internal addresses. Because
+  probes are unauthenticated, every dependency failure is reduced to a
+  sanitized summary plus a stable `code` by `sanitizeProbeMessage` before it
+  reaches the response; the raw driver message is logged server-side only. See
+  [`docs/health-probes.md`](docs/health-probes.md). Treat any value that has
+  reached a probe response as public and rotate it.
 - **Fail-closed dependencies**: If a critical dependency (database, Redis,
   RPC) is unreachable, probes return `503 DEPENDENCY_UNAVAILABLE` and money
   paths reject writes immediately rather than serving stale or degraded state.
