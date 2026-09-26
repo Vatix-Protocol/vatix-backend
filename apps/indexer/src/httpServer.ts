@@ -9,9 +9,7 @@ import { marketsRoutes } from "./routes/markets.js";
  * than free-form messages.
  */
 export type ProbeErrorCode =
-  | "NOT_READY"
-  | "DEPENDENCY_UNAVAILABLE"
-  | "UNAUTHORIZED";
+  "NOT_READY" | "DEPENDENCY_UNAVAILABLE" | "UNAUTHORIZED";
 
 /**
  * Stable error codes for rate-limit responses. Kept as a closed union so
@@ -24,7 +22,8 @@ export type RateLimitErrorCode = "RATE_LIMITED";
  * Stable error codes for indexer authz failures. Kept as a closed union
  * so clients and dashboards can branch on exact strings.
  */
-export type MarketErrorCode = "UNAUTHORIZED" | "MARKET_NOT_FOUND" | "MARKET_QUERY_FAILED";
+export type MarketErrorCode =
+  "UNAUTHORIZED" | "MARKET_NOT_FOUND" | "MARKET_QUERY_FAILED";
 
 /**
  * A single critical dependency check. `check` must resolve when the
@@ -86,6 +85,9 @@ export const RATE_LIMIT_POLICIES: Record<string, RateLimitPolicy> = {
   "/ready": { limit: 30, windowMs: 60_000 },
   "/markets": { limit: 60, windowMs: 60_000 },
   "/markets/:id": { limit: 120, windowMs: 60_000 },
+  // Trade history is the heaviest read: a full page is a 100-row range scan
+  // over indexed_trades, so it gets the tightest budget of the data routes.
+  "/markets/:id/trades": { limit: 30, windowMs: 60_000 },
 };
 
 /**
@@ -104,7 +106,7 @@ export interface RateLimitStore {
  * Redis-backed store so limits are shared across replicas.
  */
 export function createInMemoryRateLimitStore(
-  now: () => number = Date.now,
+  now: () => number = Date.now
 ): RateLimitStore {
   const buckets = new Map<string, { count: number; resetAt: number }>();
   return {
@@ -130,7 +132,7 @@ export function createInMemoryRateLimitStore(
 export function rateLimitKey(
   routePath: string,
   principal: string | undefined,
-  remoteAddress: string | undefined,
+  remoteAddress: string | undefined
 ): string {
   const identity = principal ?? remoteAddress ?? "unknown";
   return `${routePath}:${identity}`;
@@ -144,7 +146,7 @@ export function rateLimitKey(
 export async function runReadinessChecks(
   checks: ReadinessCheck[],
   correlationId: string,
-  logger?: ProbeLogger,
+  logger?: ProbeLogger
 ): Promise<ReadinessResult> {
   const results: Record<string, "ok" | "unavailable"> = {};
   await Promise.all(
@@ -155,7 +157,7 @@ export async function runReadinessChecks(
       } catch {
         results[name] = "unavailable";
       }
-    }),
+    })
   );
 
   const ready = checks.every(({ name }) => results[name] === "ok");
@@ -261,8 +263,7 @@ export async function buildIndexerHttpServer(options?: {
   app.addHook("onRequest", async (request, reply) => {
     const routePath = request.routeOptions?.url ?? request.url.split("?")[0];
     const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ??
-      request.id;
+      (request.headers["x-correlation-id"] as string | undefined) ?? request.id;
 
     // Exempt ops-internal endpoints from rate limiting
     if (RATE_LIMIT_EXEMPT_PATHS.has(routePath)) {
@@ -285,7 +286,7 @@ export async function buildIndexerHttpServer(options?: {
         if (logger) {
           logger.warn(
             { correlationId, routePath },
-            "indexer authz rejected: principal mismatch",
+            "indexer authz rejected: principal mismatch"
           );
         }
         return reply.code(401).send({
@@ -303,7 +304,7 @@ export async function buildIndexerHttpServer(options?: {
         if (logger) {
           logger.warn(
             { correlationId, routePath },
-            "indexer authz rejected: invalid API key",
+            "indexer authz rejected: invalid API key"
           );
         }
         return reply.code(401).send({
@@ -334,7 +335,7 @@ export async function buildIndexerHttpServer(options?: {
       if (logger) {
         logger.warn(
           { correlationId, routePath },
-          "rate limit store unavailable",
+          "rate limit store unavailable"
         );
       }
       return reply.code(503).send({
@@ -367,7 +368,7 @@ export async function buildIndexerHttpServer(options?: {
       if (logger) {
         logger.warn(
           { correlationId, routePath },
-          "unauthorized: missing x-principal",
+          "unauthorized: missing x-principal"
         );
       }
       return reply.code(401).send({
@@ -379,13 +380,9 @@ export async function buildIndexerHttpServer(options?: {
 
   app.get("/health", async (request, reply) => {
     const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ??
-      request.id;
+      (request.headers["x-correlation-id"] as string | undefined) ?? request.id;
     if (logger) {
-      logger.info(
-        { correlationId, route: "/health" },
-        "liveness probe ok",
-      );
+      logger.info({ correlationId, route: "/health" }, "liveness probe ok");
     }
     return reply.code(200).send({
       status: "ok",
@@ -395,18 +392,17 @@ export async function buildIndexerHttpServer(options?: {
 
   app.get("/ready", async (request, reply) => {
     const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ??
-      request.id;
+      (request.headers["x-correlation-id"] as string | undefined) ?? request.id;
     const result = await runReadinessChecks(
       readinessChecks,
       correlationId,
-      logger,
+      logger
     );
     if (logger) {
       const logLevel = result.ready ? "info" : "warn";
       logger[logLevel](
         { correlationId, ready: result.ready, checks: result.checks },
-        result.ready ? "readiness probe ok" : "readiness probe failed",
+        result.ready ? "readiness probe ok" : "readiness probe failed"
       );
     }
     return reply.code(result.ready ? 200 : 503).send(result);

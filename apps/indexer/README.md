@@ -8,32 +8,32 @@ of truth is unreachable.
 ## Startup health
 
 The indexer validates its configuration and critical dependencies before
-binding an HTTP server.  The startup pipeline is:
+binding an HTTP server. The startup pipeline is:
 
 1. **Env validation** (`validateEnv`) — fail-closed on missing or
    invalid `SOROBAN_NETWORK_PASSPHRASE`; mainnet requires explicit
    `VATIX_ALLOW_MAINNET=true` opt-in.
 2. **Config-shape health** (`checkStartupHealth`) — validates cursor,
    networkId, cursorKey, and `DATABASE_URL` before the indexer starts
-   polling.  Returns stable error codes, never values.
+   polling. Returns stable error codes, never values.
 3. **Live dependency probes** (`checkLiveDependencies`) — optional
    real I/O checks (DB, Horizon/RPC) that run in production or when
-   `INDEXER_HTTP_FORCE_LIVE_CHECK=true`.  Retries with backoff to
+   `INDEXER_HTTP_FORCE_LIVE_CHECK=true`. Retries with backoff to
    tolerate startup jitter.
 4. **HTTP server** (`buildIndexerHttpServer`) — starts only after all
-   gates pass.  Binds only when `INDEXER_HTTP_ENABLED=true`.
+   gates pass. Binds only when `INDEXER_HTTP_ENABLED=true`.
 
 ### Error codes
 
-| Code | Meaning |
-| --- | --- |
-| `ENV_MISSING` | Required environment variable not set. |
-| `ENV_INVALID` | Environment variable has an invalid value. |
-| `ENV_UNSAFE_MAINNET` | Mainnet passphrase without `VATIX_ALLOW_MAINNET=true`. |
-| `RATE_LIMITED` | Request exceeds the per-endpoint rate limit. |
-| `DEPENDENCY_UNAVAILABLE` | Critical dependency (DB/Redis/RPC) unreachable. |
-| `PROBE_TIMEOUT` | Dependency probe exceeded its timeout. |
-| `UNAUTHORIZED` | Missing or invalid `x-principal` header on a data route. |
+| Code                     | Meaning                                                  |
+| ------------------------ | -------------------------------------------------------- |
+| `ENV_MISSING`            | Required environment variable not set.                   |
+| `ENV_INVALID`            | Environment variable has an invalid value.               |
+| `ENV_UNSAFE_MAINNET`     | Mainnet passphrase without `VATIX_ALLOW_MAINNET=true`.   |
+| `RATE_LIMITED`           | Request exceeds the per-endpoint rate limit.             |
+| `DEPENDENCY_UNAVAILABLE` | Critical dependency (DB/Redis/RPC) unreachable.          |
+| `PROBE_TIMEOUT`          | Dependency probe exceeded its timeout.                   |
+| `UNAUTHORIZED`           | Missing or invalid `x-principal` header on a data route. |
 
 Every response carries a `correlationId` for log/trace stitching.
 No secrets, connection strings, or credentials are ever surfaced in
@@ -41,13 +41,13 @@ probe responses or error messages.
 
 ### Feature flags
 
-| Variable | Default | Effect |
-| --- | --- | --- |
-| `INDEXER_HTTP_ENABLED` | unset (disabled) | Opt-in to expose the HTTP server. |
-| `INDEXER_HTTP_FORCE_LIVE_CHECK` | unset (false) | Run live dependency probes outside production. |
-| `INDEXER_HTTP_PORT` | `3000` | Port for the HTTP server. |
-| `INDEXER_CURSOR` | unset | Initial cursor for the ingestion loop. |
-| `INDEXER_CURSOR_KEY` | `ingestion` | Cursor key for the indexer. |
+| Variable                        | Default          | Effect                                         |
+| ------------------------------- | ---------------- | ---------------------------------------------- |
+| `INDEXER_HTTP_ENABLED`          | unset (disabled) | Opt-in to expose the HTTP server.              |
+| `INDEXER_HTTP_FORCE_LIVE_CHECK` | unset (false)    | Run live dependency probes outside production. |
+| `INDEXER_HTTP_PORT`             | `3000`           | Port for the HTTP server.                      |
+| `INDEXER_CURSOR`                | unset            | Initial cursor for the ingestion loop.         |
+| `INDEXER_CURSOR_KEY`            | `ingestion`      | Cursor key for the indexer.                    |
 
 ## Stellar Wave contributors
 
@@ -83,11 +83,11 @@ concurrent detection requests are idempotent.
 
 ### Error codes
 
-| Code | Meaning |
-| --- | --- |
+| Code                               | Meaning                                                  |
+| ---------------------------------- | -------------------------------------------------------- |
 | `GAP_DETECTION_SOURCE_UNAVAILABLE` | Source of truth (RPC/DB/Redis) unreachable; fail closed. |
-| `GAP_DETECTION_INVALID_INPUT` | Malformed or adversarial input rejected. |
-| `GAP_DETECTION_UNAUTHORIZED` | Caller lacks the required role. |
+| `GAP_DETECTION_INVALID_INPUT`      | Malformed or adversarial input rejected.                 |
+| `GAP_DETECTION_UNAUTHORIZED`       | Caller lacks the required role.                          |
 
 Every detection result carries a `correlationId` for tracing across the
 indexer and backend logs. Logs and metrics never include secrets or raw
@@ -139,11 +139,11 @@ monotonically.
 
 ### Error codes
 
-| Code | Meaning |
-| --- | --- |
-| `CURSOR_CONFLICT` | Concurrent writer advanced the cursor; batch rolled back. |
-| `CURSOR_STORAGE_CONFIG_ERROR` | Storage path misconfigured; fail fast. |
-| `CURSOR_REGRESSION_REJECTED` | Replayed request would regress the cursor; denied. |
+| Code                          | Meaning                                                   |
+| ----------------------------- | --------------------------------------------------------- |
+| `CURSOR_CONFLICT`             | Concurrent writer advanced the cursor; batch rolled back. |
+| `CURSOR_STORAGE_CONFIG_ERROR` | Storage path misconfigured; fail fast.                    |
+| `CURSOR_REGRESSION_REJECTED`  | Replayed request would regress the cursor; denied.        |
 
 ### Rollback
 
@@ -161,10 +161,63 @@ disabled by default.
 
 ### Endpoints
 
-| Method | Path | Description |
-| ------ | ---- | ----------- |
-| GET | `/markets` | List up to 100 active markets |
-| GET | `/markets/:id` | Fetch a single active market by ID |
+| Method | Path                  | Description                                   |
+| ------ | --------------------- | --------------------------------------------- |
+| GET    | `/markets`            | Paginated list of non-soft-deleted markets    |
+| GET    | `/markets/:id`        | Fetch a single non-soft-deleted market by ID  |
+| GET    | `/markets/:id/trades` | Paginated on-chain trade history for a market |
+
+### Pagination
+
+List endpoints use **keyset (cursor) pagination**, not `OFFSET`:
+
+- `limit` — page size, default `20`, maximum `100`. A larger value is rejected
+  with `400 MARKETS_VALIDATION_FAILED` so a caller cannot force an unbounded
+  scan of `trades`/`indexed_trades`.
+- `cursor` — the `id` of the last row on the previous page, taken verbatim
+  from the previous response's `nextCursor`. Omit it for the first page.
+
+A keyset cursor is used rather than `OFFSET` for two reasons: the indexer
+appends continuously, so an `OFFSET` page can skip or repeat rows when a row
+lands before the current offset between two requests; and `OFFSET n` makes
+Postgres walk and discard `n` rows, so deep pages degrade linearly.
+
+Response envelope (identical for every list route):
+
+```json
+{
+  "items": [ ... ],
+  "markets": [ ... ],
+  "count": 20,
+  "total": 137,
+  "nextCursor": "01J8...Z",
+  "correlationId": "req-1"
+}
+```
+
+`nextCursor` is `null` on the last page. The route reads one row past the page
+(`take: limit + 1`) to decide whether another page exists, so no second count
+query is needed. The `markets`/`trades` keys mirror `items`; new clients should
+read `items`.
+
+Trade history is served from `indexed_trades` (the on-chain event log), not
+the `trades` matching table — the contract remains the source of truth for what
+executed, while the matching table is a local projection that can lag. A
+market that is unknown or soft-deleted returns `404 TRADES_MARKET_NOT_FOUND`
+rather than an empty list, so trade volume cannot be probed for a market that
+is not publicly visible.
+
+### Error codes
+
+| Code                             | HTTP | Meaning                                             |
+| -------------------------------- | ---- | --------------------------------------------------- |
+| `MARKETS_VALIDATION_FAILED`      | 400  | Bad `limit`, `status`, cursor, or market id.        |
+| `MARKETS_NOT_FOUND`              | 404  | No such non-soft-deleted market.                    |
+| `TRADES_MARKET_NOT_FOUND`        | 404  | Market unknown or soft-deleted.                     |
+| `MARKETS_DEPENDENCY_UNAVAILABLE` | 503  | Database unavailable; fail-closed, no partial list. |
+
+Every query is bounded by a 5s abort signal so a slow database cannot pin a
+pooled connection indefinitely.
 
 ### CORS policy
 
@@ -177,20 +230,21 @@ See `docs/cors.md` for the full policy.
 
 The indexer HTTP surface supports two optional authz gates:
 
-| Env var | Header | Effect |
-| ------- | ------ | ------ |
+| Env var                      | Header        | Effect                          |
+| ---------------------------- | ------------- | ------------------------------- |
 | `INDEXER_REQUIRED_PRINCIPAL` | `x-principal` | Must match the configured value |
-| `INDEXER_API_KEY` | `x-api-key` | Must match the configured value |
+| `INDEXER_API_KEY`            | `x-api-key`   | Must match the configured value |
 
 If neither is configured the surface still starts (when enabled) but
 logs a warning — this is a security gap for production deployments.
 
 ### Rate limiting
 
-| Path | Limit | Window |
-| ---- | ----- | ------ |
-| `/markets` | 60 req/min | 60 s |
-| `/markets/:id` | 120 req/min | 60 s |
+| Path                  | Limit       | Window |
+| --------------------- | ----------- | ------ |
+| `/markets`            | 60 req/min  | 60 s   |
+| `/markets/:id`        | 120 req/min | 60 s   |
+| `/markets/:id/trades` | 30 req/min  | 60 s   |
 
 Every response carries a `correlationId` for tracing.
 

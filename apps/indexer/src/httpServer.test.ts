@@ -1,10 +1,10 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { Registry, Counter } from "prom-client";
 import { buildIndexerHttpServer } from "./httpServer.js";
-import { getPrismaClient } from "./services/prisma.js";
+import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client.js";
 
-vi.mock("./services/prisma.js", () => ({
+vi.mock("../../../src/services/prisma.js", () => ({
   getPrismaClient: vi.fn(),
 }));
 
@@ -14,6 +14,28 @@ vi.mock("./services/prisma.js", () => ({
 // This is the check that would have caught the routes/cors modules never
 // being mounted anywhere in apps/indexer/src/main.ts.
 describe("buildIndexerHttpServer", () => {
+  /**
+   * Default Prisma double. The `/markets` routes resolve the client lazily per
+   * request, so a test that exercises them without installing its own mock
+   * would otherwise get `undefined` and a spurious 503. Individual tests that
+   * care about a specific response override this via `mockReturnValue`.
+   */
+  const defaultPrisma = {
+    market: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn().mockResolvedValue(null),
+      count: vi.fn().mockResolvedValue(0),
+    },
+    indexedTrade: {
+      findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(0),
+    },
+  } as unknown as PrismaClient;
+
+  beforeEach(() => {
+    vi.mocked(getPrismaClient).mockReturnValue(defaultPrisma);
+  });
+
   afterEach(() => {
     delete process.env.CORS_ALLOWED_ORIGINS;
     delete process.env.NODE_ENV;
@@ -78,6 +100,7 @@ describe("buildIndexerHttpServer", () => {
     expect(response.statusCode).toBe(200);
     const body = response.json();
     expect(body.status).toBe("ok");
+    expect(typeof body.correlationId).toBe("string");
 
     await app.close();
   });
@@ -104,7 +127,8 @@ describe("buildIndexerHttpServer", () => {
 
     expect(response.statusCode).toBe(503);
     const body = response.json();
-    expect(body.status).toBe("unavailable");
+    // Response contract per README: { ready, code, correlationId, checks }.
+    expect(body.ready).toBe(false);
     expect(body.code).toBe("DEPENDENCY_UNAVAILABLE");
     expect(typeof body.correlationId).toBe("string");
     expect(body.correlationId.length).toBeGreaterThan(0);
@@ -133,7 +157,9 @@ describe("buildIndexerHttpServer", () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.status).toBe("ok");
+    // Response contract per README: { ready, correlationId, checks }.
+    expect(body.ready).toBe(true);
+    expect(body.checks).toMatchObject({ db: "ok", redis: "ok" });
 
     await app.close();
   });
@@ -163,7 +189,7 @@ describe("buildIndexerHttpServer", () => {
     const response = await app.inject({ method: "GET", url: "/ready" });
     expect(response.statusCode).toBe(200);
     const body = response.json();
-    expect(body.status).toBe("ok");
+    expect(body.ready).toBe(true);
 
     await app.close();
   });
@@ -318,6 +344,9 @@ describe("buildIndexerHttpServer", () => {
         url: "/markets",
         headers: {
           "x-api-key": "valid-key",
+          // An API key satisfies the key check; the deny-by-default authz
+          // hook additionally requires a principal on data routes.
+          "x-principal": "test-user",
         },
       });
 
@@ -356,20 +385,23 @@ describe("buildIndexerHttpServer", () => {
       const app = await buildIndexerHttpServer();
       await app.ready();
 
+      // Data routes are deny-by-default (#1097): an authenticated principal is
+      // required, otherwise the request is rejected before the route runs.
       const response = await app.inject({
         method: "GET",
         url: "/markets/non-existent-id",
+        headers: { "x-principal": "test-user" },
       });
 
       // 404 means the route exists and the market was not found.
       // 500 could mean the DB is unreachable (acceptable in test env).
-      expect(
-        response.statusCode === 404 || response.statusCode === 500
-      ).toBe(true);
+      expect(response.statusCode === 404 || response.statusCode === 500).toBe(
+        true
+      );
 
       if (response.statusCode === 404) {
         const body = response.json();
-        expect(body.code).toBe("MARKET_NOT_FOUND");
+        expect(body.code).toBe("MARKETS_NOT_FOUND");
         expect(typeof body.correlationId).toBe("string");
       }
 
@@ -400,7 +432,13 @@ describe("buildIndexerHttpServer", () => {
     const app = await buildIndexerHttpServer();
     await app.ready();
 
-    const response = await app.inject({ method: "GET", url: "/markets" });
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets",
+      // Data routes are deny-by-default (#1097): a principal is
+      // required or the request is rejected before the route runs.
+      headers: { "x-principal": "test-user" },
+    });
 
     expect(response.statusCode).toBe(200);
     const body = response.json();
@@ -408,11 +446,6 @@ describe("buildIndexerHttpServer", () => {
     expect(body.markets).toHaveLength(1);
     expect(body.total).toBe(1);
     expect(body).toHaveProperty("correlationId");
-
-    await app.close();
-  });
-
-  // ── Metrics endpoint (#1096) ────────────────────────────
 
     await app.close();
   });
@@ -480,6 +513,9 @@ describe("buildIndexerHttpServer", () => {
     const response = await app.inject({
       method: "GET",
       url: "/markets/market-1",
+      // Data routes are deny-by-default (#1097): a principal is required or
+      // the request is rejected before the route runs.
+      headers: { "x-principal": "test-user" },
     });
 
     expect(response.statusCode).toBe(200);
@@ -519,6 +555,9 @@ describe("buildIndexerHttpServer", () => {
     const response = await app.inject({
       method: "GET",
       url: "/markets/nonexistent",
+      // Data routes are deny-by-default (#1097): a principal is required or
+      // the request is rejected before the route runs.
+      headers: { "x-principal": "test-user" },
     });
 
     expect(response.statusCode).toBe(404);
@@ -542,7 +581,13 @@ describe("buildIndexerHttpServer", () => {
     const app = await buildIndexerHttpServer();
     await app.ready();
 
-    const response = await app.inject({ method: "GET", url: "/markets" });
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets",
+      // Data routes are deny-by-default (#1097): a principal is
+      // required or the request is rejected before the route runs.
+      headers: { "x-principal": "test-user" },
+    });
 
     expect(response.statusCode).toBe(503);
     const body = response.json();
@@ -571,6 +616,9 @@ describe("buildIndexerHttpServer", () => {
     const response = await app.inject({
       method: "GET",
       url: "/markets/market-1",
+      // Data routes are deny-by-default (#1097): a principal is required or
+      // the request is rejected before the route runs.
+      headers: { "x-principal": "test-user" },
     });
 
     expect(response.statusCode).toBe(503);
