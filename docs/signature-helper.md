@@ -108,6 +108,83 @@ import { verifyResolutionReport } from "../apps/oracle/signature-helper";
 const isValid = verifyResolutionReport(signedReport);
 ```
 
+## Test Vectors (#1148)
+
+`apps/oracle/signature-helper.test.ts` freezes a known-answer vector set so any
+other implementation (contract tests, web client, another service) can be
+checked byte-for-byte against this repository.
+
+Vector keypair — deterministic and **test-only** (Ed25519 seed = 32 bytes of
+`0x07`; never a deployment key):
+
+```
+public key:  GDVEU3DD4KOFECV66VIHWEZOYX4ZKR3WV27L464SIIPOU2IUI3JCZA57
+```
+
+Payload:
+
+```json
+{
+  "marketId": "market-vector-001",
+  "outcome": false,
+  "timestamp": "2026-06-29T00:00:00.000Z"
+}
+```
+
+Frozen message and Base64 signature on **testnet**:
+
+```
+{"domain":"vatix.oracle-resolution.v1","network":"Test SDF Network ; September 2015","payload":{"marketId":"market-vector-001","outcome":false,"timestamp":"2026-06-29T00:00:00.000Z"}}
+```
+
+```
+LQ7YleBIxfi0H6I86dd9I2X5ArPVU6vOmfmGiUDe7jGkJMUfUPCTxzmX6KYtdjeZQNvw5jPnKOw8LohjFQIsDA==
+```
+
+Frozen signature for the same payload on **mainnet**
+(`"network":"Public Global Stellar Network ; September 2015"`):
+
+```
+r393T0RBHVFrvTOrBZKe5CVhNAi03WE+f4x6roXnv6+GZqQWB0IUOeGCIIRokoF6toOblcs8/AJUsKZrUXrHDg==
+```
+
+Frozen **legacy (pre-#978, `version: 1`)** message and signature — kept only so
+the migration window can be verified; production rejects these:
+
+```
+{"domain":"vatix.oracle-resolution.v1","payload":{"marketId":"market-vector-001","outcome":false,"timestamp":"2026-06-29T00:00:00.000Z"}}
+```
+
+```
+d4MvjTpsgNciqDt6CeE7OckYkMLXwp01XK2GlTksu7Nm8+q4Oxi7yZA0tu9lz8qo4ob5lkoptwwceyHX8KcmCw==
+```
+
+Reproducing a vector only needs Ed25519 plus the exported
+`buildResolutionMessage(payload, networkPassphrase)` from
+`apps/oracle/signature-helper.ts` — no access to module internals. A verifier
+must also rebuild the same envelope and may pass the network passphrase
+explicitly:
+
+```typescript
+import {
+  buildResolutionMessage,
+  verifyResolutionReport,
+} from "../apps/oracle/signature-helper";
+
+const message = buildResolutionMessage(
+  payload,
+  "Test SDF Network ; September 2015"
+);
+const isValid = verifyResolutionReport(
+  report,
+  "Test SDF Network ; September 2015"
+);
+```
+
+When a vector fails, the signature contract changed (payload key order, domain
+tag, or network binding). Fix the implementation, do **not** update the vector
+in the same breath — the vector is the contract.
+
 ## Signature Envelope Versioning (#993)
 
 `SignedResolutionReport` carries a `version` field:

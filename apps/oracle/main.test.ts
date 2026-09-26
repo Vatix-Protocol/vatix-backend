@@ -84,6 +84,7 @@ vi.mock("../workers/src/oracle/redis-submission-queue.js", () => ({
 
 import { poll, createOverlapGuardedPoll } from "./main.js";
 import { loadOracleConfig } from "./oracle-config.js";
+import { signResolutionReport } from "./signature-helper.js";
 
 const RESOLVED_RESULT = {
   outcome: true,
@@ -105,6 +106,36 @@ describe("apps/oracle/main poll()", () => {
     });
     mockQueue.initialize.mockResolvedValue(undefined);
     mockQueue.enqueue.mockResolvedValue(true);
+  });
+
+  it("skips signing, report persistence, and enqueue when dry-run is enabled (#1146)", async () => {
+    (loadOracleConfig as ReturnType<typeof vi.fn>).mockReturnValue({
+      pollIntervalMs: 60_000,
+      challengeWindowSeconds: 86_400,
+      logLevel: "info",
+      secretKey: "SECRETKEY",
+      dryRun: true,
+    });
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue(RESOLVED_RESULT);
+
+    await poll();
+
+    // The provider call and confidence gate still run...
+    expect(mockOracleService.resolve).toHaveBeenCalledWith({
+      marketId: "market-1",
+      oracleAddress: "GORACLE1",
+    });
+    // ...but nothing reaches the money path.
+    expect(signResolutionReport).not.toHaveBeenCalled();
+    expect(mockPrisma.oracleReport.create).not.toHaveBeenCalled();
+    expect(mockQueue.enqueue).not.toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("dry-run"),
+      expect.objectContaining({ event: "oracle.dry_run_enabled" })
+    );
   });
 
   it("resolves active markets, persists an OracleReport, and enqueues each result", async () => {

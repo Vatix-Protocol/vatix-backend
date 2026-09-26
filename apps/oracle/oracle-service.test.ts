@@ -9,6 +9,11 @@ import { OracleService } from "./oracle-service.js";
 import { PrimaryAdapter } from "./primary-adapter.js";
 import { FallbackAdapter } from "./fallback-adapter.js";
 import { oracleFailClosedTotal } from "../../src/services/metrics.js";
+import {
+  oracleDryRunEvaluationsTotal,
+  oracleProviderAttemptsTotal,
+} from "../../src/services/metrics.js";
+import type { SubmissionQueue } from "./submission-queue.js";
 import type {
   ProviderAdapter,
   ProviderResult,
@@ -628,5 +633,206 @@ describe("OracleService", () => {
       expect(result.confidence).toBeGreaterThanOrEqual(0.5);
       expect(enqueueCallback).toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * Prometheus counters are process-global, so assertions read the series for an
+ * exact label set (absent series count as 0) rather than assuming a value.
+ */
+async function counterValue(
+  counter: {
+    get: () => Promise<{
+      values: { labels: Record<string, string | number>; value: number }[];
+    }>;
+  },
+  labels: Record<string, string>
+): Promise<number> {
+  const { values } = await counter.get();
+  return values
+    .filter((series) =>
+      Object.entries(labels).every(
+        ([key, val]) => String(series.labels[key]) === val
+      )
+    )
+    .reduce((sum, series) => sum + series.value, 0);
+}
+
+const METRICS_REQUEST: ResolutionRequest = {
+  marketId: "market-metrics-001",
+  oracleAddress: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+};
+
+describe("per-provider failover metrics (#1147)", () => {
+  it("records a primary success", async () => {
+    const before = await counterValue(oracleProviderAttemptsTotal, {
+      provider: "primary",
+      outcome: "success",
+    });
+
+    const service = new OracleService({
+      primaryAdapter: createMockAdapter("primary", false),
+      fallbackAdapter: createMockAdapter("fallback", false),
+      enableFallback: true,
+    });
+    await service.resolve(METRICS_REQUEST);
+
+    expect(
+      await counterValue(oracleProviderAttemptsTotal, {
+        provider: "primary",
+        outcome: "success",
+      })
+    ).toBe(before + 1);
+  });
+
+  it("records the primary failure and the fallback success when failover kicks in", async () => {
+    const primaryFailureBefore = await counterValue(
+      oracleProviderAttemptsTotal,
+      { provider: "primary", outcome: "failure" }
+    );
+    const fallbackSuccessBefore = await counterValue(
+      oracleProviderAttemptsTotal,
+      { provider: "fallback", outcome: "success" }
+    );
+
+    const service = new OracleService({
+      primaryAdapter: createMockAdapter("primary", true),
+      fallbackAdapter: createMockAdapter("fallback", false),
+      enableFallback: true,
+    });
+    const result = await service.resolve(METRICS_REQUEST);
+
+    expect(result.source).toBe("fallback");
+    expect(
+      await counterValue(oracleProviderAttemptsTotal, {
+        provider: "primary",
+        outcome: "failure",
+      })
+    ).toBe(primaryFailureBefore + 1);
+    expect(
+      await counterValue(oracleProviderAttemptsTotal, {
+        provider: "fallback",
+        outcome: "success",
+      })
+    ).toBe(fallbackSuccessBefore + 1);
+  });
+
+  it("records the fallback failure on a total provider outage", async () => {
+    const before = await counterValue(oracleProviderAttemptsTotal, {
+      provider: "fallback",
+      outcome: "failure",
+    });
+
+    const service = new OracleService({
+      primaryAdapter: createMockAdapter("primary", true),
+      fallbackAdapter: createMockAdapter("fallback", true),
+      enableFallback: true,
+    });
+    await expect(service.resolve(METRICS_REQUEST)).rejects.toThrow();
+
+    expect(
+      await counterValue(oracleProviderAttemptsTotal, {
+        provider: "fallback",
+        outcome: "failure",
+      })
+    ).toBe(before + 1);
+  });
+});
+
+/**
+ * A provider that always returns a confidence below the gate.
+ */
+function lowConfidenceAdapter(source: string): ProviderAdapter {
+  return {
+    getSource: () => source,
+    healthCheck: vi.fn().mockResolvedValue(true),
+    resolve: vi.fn().mockResolvedValue({
+      outcome: true,
+      confidence: 0.2,
+      source,
+      timestamp: new Date().toISOString(),
+    } as ProviderResult),
+  };
+}
+
+describe("dry-run mode (#1146)", () => {
+  it("defaults to off so an unconfigured deployment keeps the real path", () => {
+    const service = new OracleService({
+      primaryAdapter: createMockAdapter("primary", false),
+      fallbackAdapter: createMockAdapter("fallback", false),
+      enableFallback: true,
+    });
+
+    expect(service.isDryRun()).toBe(false);
+  });
+
+  it("resolves and scores the market but never invokes the enqueue callback", async () => {
+    const enqueueCallback = vi.fn().mockResolvedValue(undefined);
+    const before = await counterValue(oracleDryRunEvaluationsTotal, {
+      would: "submit",
+    });
+
+    const service = new OracleService({
+      primaryAdapter: createMockAdapter("primary", false),
+      fallbackAdapter: createMockAdapter("fallback", false),
+      enableFallback: true,
+      enqueueCallback,
+      dryRun: true,
+    });
+
+    expect(service.isDryRun()).toBe(true);
+
+    const result = await service.resolve(METRICS_REQUEST);
+
+    expect(result.source).toBe("primary");
+    expect(enqueueCallback).not.toHaveBeenCalled();
+    expect(
+      await counterValue(oracleDryRunEvaluationsTotal, { would: "submit" })
+    ).toBe(before + 1);
+  });
+
+  it("never writes to a submission queue in dry-run", async () => {
+    const submissionQueue = {
+      enqueue: vi.fn(),
+    } as unknown as SubmissionQueue;
+
+    const service = new OracleService({
+      primaryAdapter: createMockAdapter("primary", false),
+      fallbackAdapter: createMockAdapter("fallback", false),
+      enableFallback: true,
+      submissionQueue,
+      dryRun: true,
+    });
+
+    await service.resolve(METRICS_REQUEST);
+
+    expect(submissionQueue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("still fails closed on a low-confidence result and reports it as would-refuse", async () => {
+    const enqueueCallback = vi.fn().mockResolvedValue(undefined);
+    const before = await counterValue(oracleDryRunEvaluationsTotal, {
+      would: "fail_closed",
+    });
+
+    const service = new OracleService({
+      primaryAdapter: lowConfidenceAdapter("primary"),
+      fallbackAdapter: createMockAdapter("fallback", false),
+      enqueueCallback,
+      minConfidenceThreshold: 0.75,
+      // Fallback off: the confidence refusal must propagate rather than being
+      // masked by a healthy fallback provider.
+      enableFallback: false,
+      dryRun: true,
+    });
+
+    await expect(service.resolve(METRICS_REQUEST)).rejects.toThrow(
+      /confidence/i
+    );
+
+    expect(enqueueCallback).not.toHaveBeenCalled();
+    expect(
+      await counterValue(oracleDryRunEvaluationsTotal, { would: "fail_closed" })
+    ).toBe(before + 1);
   });
 });

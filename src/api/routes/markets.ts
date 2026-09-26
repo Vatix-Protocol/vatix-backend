@@ -8,6 +8,8 @@ import {
   ServiceUnavailableError,
 } from "../middleware/errors.js";
 import { db, StatementTimeoutError } from "../../services/database.js";
+import { marketSearchRequestsTotal } from "../../services/metrics.js";
+import type { Prisma } from "../../generated/prisma/client/index.js";
 import type {
   MarketDetailsDto,
   MarketListItemDto,
@@ -18,6 +20,8 @@ import { computeMarketEtag } from "./market.dto.js";
 
 interface GetMarketsQueryParams {
   status?: MarketStatus;
+  /** Free-text search over the market question (#1145). */
+  q?: string;
   sort?: "createdAt" | "endTime";
   direction?: "asc" | "desc";
   limit?: number;
@@ -82,6 +86,11 @@ export async function marketsRoutes(fastify: FastifyInstance) {
               type: "string",
               enum: ["ACTIVE", "RESOLVED", "CANCELLED"],
             },
+            q: {
+              type: "string",
+              minLength: 2,
+              maxLength: 200,
+            },
             sort: {
               type: "string",
               enum: ["createdAt", "endTime"],
@@ -107,15 +116,28 @@ export async function marketsRoutes(fastify: FastifyInstance) {
     ) => {
       const {
         status,
+        q,
         sort = "createdAt",
         direction = "desc",
         limit = 50,
       } = request.query;
 
-      const whereClause = {
+      // Search term (#1145). A whitespace-only term is treated as "no search"
+      // rather than as a filter that matches nothing.
+      const searchTerm = q?.trim() ? q.trim() : undefined;
+
+      // `deletedAt: null` is *always* part of the predicate — search and status
+      // filters narrow the result set, they never widen it back to soft-deleted
+      // markets. Nothing in this route may override that key.
+      const whereClause: Prisma.MarketWhereInput = {
         ...(status ? { status } : {}),
+        ...(searchTerm
+          ? { question: { contains: searchTerm, mode: "insensitive" } }
+          : {}),
         deletedAt: null,
       };
+
+      marketSearchRequestsTotal.labels(searchTerm ? "true" : "false").inc();
 
       const orderBy = {
         [sort]: direction,

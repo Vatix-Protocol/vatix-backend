@@ -64,7 +64,21 @@ export async function poll(): Promise<void> {
     enableFallback: process.env.NODE_ENV !== "production",
     primaryTimeoutMs: config.primaryTimeoutMs,
     fallbackTimeoutMs: config.fallbackTimeoutMs,
+    dryRun: config.dryRun,
   });
+
+  if (config.dryRun) {
+    // One warning per cycle acts as a heartbeat for this money-path-off mode:
+    // operators monitoring logs can always see that the oracle is not
+    // submitting, and a forgotten flag is visible rather than silent (#1146).
+    logger.warn(
+      "Oracle dry-run mode enabled — markets are resolved and scored, but no OracleReport is written and nothing is submitted on-chain",
+      {
+        event: "oracle.dry_run_enabled",
+        pollIntervalMs: config.pollIntervalMs,
+      }
+    );
+  }
 
   if (!globalQueue) {
     globalQueue = new BullMQSubmissionQueue(logger);
@@ -119,6 +133,24 @@ export async function poll(): Promise<void> {
         logger.info("Market no longer resolvable, skipping", {
           marketId: market.id,
         });
+        continue;
+      }
+
+      // #1146 dry-run: stop here before any money-path side effect. The
+      // provider result and confidence gate have already run (OracleService
+      // logs and counts the would-be submission), but we write no OracleReport
+      // and enqueue no submission.
+      if (config.dryRun) {
+        logger.info(
+          "Oracle dry-run: skipping report persistence and submission",
+          {
+            event: "oracle.dry_run_skip_submission",
+            marketId: market.id,
+            outcome: result.outcome,
+            confidence: result.confidence,
+            source: result.source,
+          }
+        );
         continue;
       }
 

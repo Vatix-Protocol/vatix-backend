@@ -109,6 +109,23 @@ function canonicalise(
 }
 
 /**
+ * Build the exact message bytes (UTF-8 string) that a resolution report
+ * signature covers.
+ *
+ * Exported as part of the public signing contract so that external signers and
+ * verifiers — and the frozen known-answer vectors in
+ * `signature-helper.test.ts` (#1148) — can reproduce the signed bytes without
+ * re-implementing the envelope. The returned string is the whole message: it
+ * is **not** pre-hashed by callers; Ed25519 hashes it internally.
+ */
+export function buildResolutionMessage(
+  payload: ResolutionPayload,
+  networkPassphrase: string = resolveSigningNetworkPassphrase()
+): string {
+  return canonicalise(payload, networkPassphrase);
+}
+
+/**
  * Sign a resolution payload with the given Stellar secret key.
  *
  * @param payload - Resolution data to sign
@@ -125,7 +142,10 @@ export function signResolutionReport(
   networkPassphrase: string = resolveSigningNetworkPassphrase()
 ): SignedResolutionReport {
   const keypair = Keypair.fromSecret(secretKey);
-  const message = Buffer.from(canonicalise(payload, networkPassphrase), "utf8");
+  const message = Buffer.from(
+    buildResolutionMessage(payload, networkPassphrase),
+    "utf8"
+  );
   const signature = keypair.sign(message).toString("base64");
 
   return {
@@ -167,7 +187,10 @@ export function verifyResolutionReport(
     }
     console.warn(
       "Verifying legacy v1 oracle signature (no network passphrase binding) — cross-network replay risk",
-      { marketId: report.payload.marketId, event: "oracle.legacy_signature_verified" }
+      {
+        marketId: report.payload.marketId,
+        event: "oracle.legacy_signature_verified",
+      }
     );
     try {
       const message = Buffer.from(legacyCanonicalise(report.payload), "utf8");
@@ -181,7 +204,7 @@ export function verifyResolutionReport(
 
   try {
     const message = Buffer.from(
-      canonicalise(report.payload, networkPassphrase),
+      buildResolutionMessage(report.payload, networkPassphrase),
       "utf8"
     );
     const signatureBuffer = Buffer.from(report.signature, "base64");

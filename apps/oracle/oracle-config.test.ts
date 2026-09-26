@@ -66,4 +66,30 @@ describe("oracle-config", () => {
       ).toThrow();
     });
   });
+
+  describe("dryRun (#1146)", () => {
+    it("defaults to false so an unconfigured oracle submits for real", () => {
+      expect(loadOracleConfig({}).dryRun).toBe(false);
+    });
+
+    it("parses explicit true/1 values", () => {
+      expect(loadOracleConfig({ ORACLE_DRY_RUN: "true" }).dryRun).toBe(true);
+      expect(loadOracleConfig({ ORACLE_DRY_RUN: "TRUE" }).dryRun).toBe(true);
+      expect(loadOracleConfig({ ORACLE_DRY_RUN: "1" }).dryRun).toBe(true);
+    });
+
+    it("parses explicit false/0 values and treats blank as unset", () => {
+      expect(loadOracleConfig({ ORACLE_DRY_RUN: "false" }).dryRun).toBe(false);
+      expect(loadOracleConfig({ ORACLE_DRY_RUN: "0" }).dryRun).toBe(false);
+      expect(loadOracleConfig({ ORACLE_DRY_RUN: "  " }).dryRun).toBe(false);
+    });
+
+    it("throws on a value that is not a boolean", () => {
+      // A typo must never silently resolve to `false` and start submitting
+      // on-chain when the operator believed dry-run was on.
+      expect(() => loadOracleConfig({ ORACLE_DRY_RUN: "yes" })).toThrow(
+        /ORACLE_DRY_RUN/
+      );
+    });
+  });
 });
