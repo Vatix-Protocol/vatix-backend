@@ -1,5 +1,15 @@
 import { loadIndexerContractId } from "../../../../packages/shared/src/config.js";
 import { loadStellarEndpoints } from "../../../../packages/shared/src/stellarTransport.js";
+import {
+  KNOWN_NETWORK_PASSPHRASES,
+  StellarNetworkConsistencyError,
+  assertEndpointMatchesNetwork,
+  assertNetworkPassphraseMatches,
+  assertStellarNetworkConsistency,
+  knownPassphraseForNetwork,
+  normalizeStellarNetwork,
+  warnUnverifiableStellarEndpoints,
+} from "../../../../packages/shared/src/networkConsistency.js";
 
 export interface ResolvedOracleStellarConfig {
   rpcUrl: string;
@@ -11,18 +21,22 @@ export interface ResolvedOracleStellarConfig {
 
 /**
  * Known Stellar network passphrases, keyed by the deployment identifier used
- * in STELLAR_NETWORK. Mirrors apps/indexer/src/config.ts's KNOWN_PASSPHRASES
- * so the oracle worker recognizes the same set of networks.
+ * in STELLAR_NETWORK. Re-exported from
+ * packages/shared/src/networkConsistency.ts so the oracle worker, the indexer,
+ * and the API all recognize the same set of networks (#1133).
  */
-export const KNOWN_STELLAR_PASSPHRASES = {
-  testnet: "Test SDF Network ; September 2015",
-  mainnet: "Public Global Stellar Network ; September 2015",
-} as const;
+export const KNOWN_STELLAR_PASSPHRASES = KNOWN_NETWORK_PASSPHRASES;
 
-/** Thrown when a configured network passphrase doesn't match the deployment. */
-export class StellarNetworkMismatchError extends Error {
+/**
+ * Thrown when a configured network passphrase doesn't match the deployment.
+ * Extends the shared fail-closed error so callers that only know about
+ * packages/shared/src/networkConsistency.ts still catch it, while existing
+ * oracle-worker callers can keep matching on the concrete class.
+ */
+export class StellarNetworkMismatchError extends StellarNetworkConsistencyError {
   constructor(deploymentNetwork: string, expected: string, actual: string) {
     super(
+      "SOROBAN_NETWORK_PASSPHRASE",
       `SOROBAN_NETWORK_PASSPHRASE does not match STELLAR_NETWORK="${deploymentNetwork}": ` +
         `expected "${expected}" but got "${actual}"`
     );
@@ -35,23 +49,47 @@ export class StellarNetworkMismatchError extends Error {
  * passphrase known for deploymentNetwork. Unrecognized deployment networks
  * (e.g. futurenet, a custom standalone network) are skipped rather than
  * rejected, since we have no known-good passphrase to compare against.
+ *
+ * The comparison itself is delegated to the shared
+ * `assertNetworkPassphraseMatches()` (#1133) so the API, indexer, and workers
+ * cannot drift apart on which passphrase belongs to which network; only the
+ * error type is localized here for backward compatibility.
  */
 export function assertPassphraseMatchesDeployment(
   networkPassphrase: string,
   deploymentNetwork: string
 ): void {
-  const normalized = deploymentNetwork.trim().toLowerCase();
-  const expected = (
-    KNOWN_STELLAR_PASSPHRASES as Record<string, string | undefined>
-  )[normalized];
+  try {
+    assertNetworkPassphraseMatches(networkPassphrase, deploymentNetwork);
+  } catch (err) {
+    if (!(err instanceof StellarNetworkConsistencyError)) throw err;
 
-  if (expected && expected !== networkPassphrase) {
+    const normalized = normalizeStellarNetwork(deploymentNetwork);
     throw new StellarNetworkMismatchError(
       normalized,
-      expected,
+      knownPassphraseForNetwork(normalized) ?? "unknown",
       networkPassphrase
     );
   }
+}
+
+/**
+ * #1134 / #1135 — every configured Soroban RPC endpoint must serve the network
+ * named by STELLAR_NETWORK. Throws StellarNetworkConsistencyError on drift.
+ */
+export function assertRpcEndpointsMatchDeployment(
+  env: NodeJS.ProcessEnv
+): void {
+  const network = env.STELLAR_NETWORK ?? "testnet";
+  const raw = env.STELLAR_RPC_URLS?.trim() || env.STELLAR_RPC_URL?.trim() || "";
+
+  for (const url of raw.split(",")) {
+    const candidate = url.trim();
+    if (!candidate) continue;
+    assertEndpointMatchesNetwork(candidate, network, "rpc", "STELLAR_RPC_URL");
+  }
+
+  warnUnverifiableStellarEndpoints(env, env.NODE_ENV);
 }
 
 /**
@@ -99,6 +137,10 @@ export function resolveOracleStellarConfig(
     networkPassphrase,
     env.STELLAR_NETWORK ?? "testnet"
   );
+
+  // #1135 — the RPC endpoints the worker will submit through must serve the
+  // declared network, otherwise settlement signatures go to the wrong chain.
+  assertRpcEndpointsMatchDeployment(env);
 
   return {
     rpcUrl: rpcUrls[0],
@@ -179,6 +221,10 @@ export function validateAndResolveStellarConfig(
     networkPassphrase,
     env.STELLAR_NETWORK ?? "testnet"
   );
+
+  // Production runs the full consistency gate: passphrase (#1133) plus every
+  // configured Horizon/RPC endpoint (#1134, #1135) against STELLAR_NETWORK.
+  assertStellarNetworkConsistency(env);
 
   return {
     rpcUrl: rpcUrls[0],

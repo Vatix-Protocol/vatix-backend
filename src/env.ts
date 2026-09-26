@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  StellarNetworkConsistencyError,
+  assertStellarNetworkConsistency,
+  warnUnverifiableStellarEndpoints,
+} from "../packages/shared/src/networkConsistency.js";
 
 export type ApiNodeEnv = z.infer<typeof apiEnvSchema>["NODE_ENV"];
 
@@ -276,6 +281,21 @@ export function parseApiEnv(env: ApiEnvInput = process.env): ParsedApiEnv {
   }
 
   const parsed = result.data;
+
+  // Network consistency gate (#1133 passphrase, #1134 Horizon URL, #1135
+  // Soroban RPC URL). The API is the process that serves quotes, orders, and
+  // settlement reads, so it refuses to boot when STELLAR_NETWORK and the
+  // configured passphrase/endpoints describe different chains. Fail closed
+  // with the same stable code the indexer and workers use.
+  try {
+    assertStellarNetworkConsistency(env);
+  } catch (err) {
+    if (err instanceof StellarNetworkConsistencyError) {
+      throw new Error(err.message);
+    }
+    throw err;
+  }
+  warnUnverifiableStellarEndpoints(env, parsed.NODE_ENV);
 
   // Production/dev split (#984): the deprecated static ADMIN_TOKEN is a
   // fail-open auth path. Fail fast in production; allow it as a local stub
