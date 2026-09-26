@@ -50,4 +50,35 @@ describe("recent-trades query uses the traded_at index", () => {
     const planJson = JSON.stringify(plan);
     expect(planJson).toContain("trades_traded_at_idx");
   });
+
+  it("plans an index scan on the per-wallet composite index for a wallet history query", async () => {
+    const market = await testUtils.createTestMarket({ status: "ACTIVE" });
+    const buyer = "G" + "B".repeat(55);
+    const rows = Array.from({ length: 20 }, (_, i) => ({
+      tradeId: `idx-wallet-verify-${i}`,
+      marketId: market.id,
+      outcome: "YES",
+      buyerAddress: buyer,
+      sellerAddress: "G" + "S".repeat(55),
+      buyOrderId: `idx-wallet-buy-${i}`,
+      sellOrderId: `idx-wallet-sell-${i}`,
+      price: 0.5,
+      quantity: 1,
+      tradedAt: new Date(Date.now() - i * 1000),
+    }));
+    await prisma.trade.createMany({ data: rows });
+
+    // Mirrors AuditService.getWalletTradeHistory: filter on the address,
+    // order by traded_at DESC. The (buyer_address, traded_at DESC) index
+    // serves both the filter and the ordering.
+    const plan = await prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL enable_seqscan = off`);
+      return tx.$queryRawUnsafe<Array<Record<string, unknown>>>(
+        `EXPLAIN (FORMAT JSON) SELECT * FROM trades WHERE buyer_address = '${buyer}' ORDER BY traded_at DESC LIMIT 20`
+      );
+    });
+
+    const planJson = JSON.stringify(plan);
+    expect(planJson).toContain("trades_buyer_address_traded_at_idx");
+  });
 });
