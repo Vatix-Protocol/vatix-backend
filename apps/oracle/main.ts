@@ -24,10 +24,14 @@ import { FallbackAdapter } from "./fallback-adapter.js";
 import { signResolutionReport } from "./signature-helper.js";
 import { BullMQSubmissionQueue } from "../workers/src/oracle/bullmq-submission-queue.js";
 import type { ResolutionRequest } from "./provider-adapter.js";
-import type {
-  ShutdownHandler,
-  ShutdownSignal,
-} from "../workers/src/finalization/types.js";
+import { createShutdown } from "../../packages/shared/src/shutdown.js";
+
+/**
+ * Hard ceiling on the graceful-shutdown sequence. Exceeding it forces
+ * `process.exit(1)` so a hung provider call or stuck queue can never wedge the
+ * process until the orchestrator SIGKILLs it.
+ */
+export const ORACLE_SHUTDOWN_TIMEOUT_MS = 30_000;
 
 let globalQueue: BullMQSubmissionQueue | null = null;
 
@@ -214,39 +218,94 @@ export async function bootstrap(): Promise<void> {
 
   const runPoll = createOverlapGuardedPoll(poll, logger);
 
-  // Run immediately (unguarded — fail fast on startup misconfiguration,
-  // matching the previous behavior), then on interval with overlap guarding.
-  await poll();
-  const timer = setInterval(() => void runPoll(), config.pollIntervalMs);
+  // Track the in-flight poll so shutdown can drain it. An oracle poll signs
+  // resolutions and enqueues on-chain submissions; abandoning one mid-cycle on
+  // SIGTERM can leave a market resolved in the DB but never submitted, or a
+  // submission enqueued but not yet handed to BullMQ.
+  let activePollPromise: Promise<void> | null = null;
 
-  const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-  let isShuttingDown = false;
-
-  const shutdown: ShutdownHandler = async (signal: ShutdownSignal) => {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-
-    logger.info("Oracle shutdown initiated", { signal });
-    clearInterval(timer);
-
-    try {
-      if (globalQueue) {
-        await globalQueue.close();
-      }
-      await disconnectPrisma();
-      await redis.disconnect();
-      logger.info("Oracle shutdown complete", { signal });
-      process.exit(0);
-    } catch (error) {
-      logger.error("Oracle shutdown failed", {
-        error: error instanceof Error ? error.message : String(error),
+  // Named `runGuardedPoll` rather than `poll` to avoid shadowing the
+  // module-level `poll` referenced above.
+  const runGuardedPoll = async (): Promise<void> => {
+    if (activePollPromise) {
+      logger.warn("Skipping oracle poll because a previous poll is active", {
+        component: "oracle-worker",
+        pollIntervalMs: config.pollIntervalMs,
       });
-      process.exit(1);
+      return;
+    }
+
+    const pollPromise = runPoll();
+    activePollPromise = pollPromise;
+    try {
+      await pollPromise;
+    } finally {
+      activePollPromise = null;
     }
   };
 
+  // Run immediately (unguarded — fail fast on startup misconfiguration,
+  // matching the previous behavior), then on interval with overlap guarding.
+  await runGuardedPoll();
+  const timer = setInterval(() => void runGuardedPoll(), config.pollIntervalMs);
+
+  // Standardized shutdown: validates the signal, guards against duplicate
+  // signals, and force-exits if teardown hangs. The previous hand-rolled
+  // handler had no timeout, so a stuck queue.close() left the process alive
+  // until the orchestrator SIGKILLed it.
+  const shutdown = createShutdown(logger, {
+    timeoutMs: ORACLE_SHUTDOWN_TIMEOUT_MS,
+    component: "oracle-worker",
+    teardown: [
+      // Stop the scheduler first so no new polls start mid-teardown.
+      async () => {
+        clearInterval(timer);
+      },
+      // Drain the in-flight poll before closing the queue and DB, so a
+      // signed resolution is never dropped on the floor.
+      async () => {
+        if (activePollPromise) {
+          logger.info(
+            "Waiting for active oracle poll to complete before shutdown",
+            {
+              component: "oracle-worker",
+            }
+          );
+          // Best-effort drain — the outer createShutdown timeout force-exits
+          // if a provider call stalls past the window.
+          await activePollPromise.catch((err: unknown) => {
+            logger.warn(
+              "In-flight oracle poll failed during graceful shutdown",
+              {
+                component: "oracle-worker",
+                error: err instanceof Error ? err.message : String(err),
+              }
+            );
+          });
+        }
+      },
+      // Close the submission queue so pending jobs are flushed to Redis before
+      // the connection is dropped.
+      async () => {
+        if (globalQueue) {
+          await globalQueue.close();
+        }
+      },
+      async () => {
+        await disconnectPrisma();
+      },
+      async () => {
+        await redis.disconnect();
+      },
+    ],
+  });
+
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  // SIGHUP is accepted so the handler matches every other long-running worker
+  // in the fleet; a config-reload signal must not take the oracle down
+  // mid-resolution.
+  process.on("SIGHUP", () => void shutdown("SIGHUP"));
 }
 
 // Only auto-boot when this file is executed directly (e.g. via `tsx
