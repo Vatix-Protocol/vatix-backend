@@ -47,6 +47,7 @@ function getStore(tier: string): Map<string, WindowEntry> {
 /** Clear all rate limit counters — for use in tests only. */
 export function clearRateLimitStores(): void {
   stores.clear();
+  requestsSinceSweep = 0;
 }
 
 /** Number of tracked IP entries for a tier — for use in tests only. */
@@ -54,9 +55,32 @@ export function getRateLimitStoreSize(tier: string): number {
   return stores.get(tier)?.size ?? 0;
 }
 
-/** Remove all entries whose window has already reset from every tier (legacy, unused). */
-export function sweepExpiredRateLimitEntries(): void {
-  // No longer needed with Redis-backed implementation
+// Every IP that ever hits the server adds an entry that otherwise lives
+// forever — entries are only overwritten, never removed, once their window
+// has passed. On a long-running process behind a proxy (or facing spoofed
+// X-Forwarded-For values) that's an unbounded memory leak. Sweep expired
+// entries opportunistically off request volume instead of a background
+// timer, so there's nothing to schedule or tear down on shutdown.
+const SWEEP_EVERY_N_REQUESTS = 1000;
+let requestsSinceSweep = 0;
+
+/** Remove all entries whose window has already reset from every tier. */
+export function sweepExpiredRateLimitEntries(now: number = Date.now()): void {
+  for (const store of stores.values()) {
+    for (const [key, entry] of store) {
+      if (now >= entry.resetAt) {
+        store.delete(key);
+      }
+    }
+  }
+}
+
+function maybeSweepExpiredEntries(now: number): void {
+  requestsSinceSweep += 1;
+  if (requestsSinceSweep >= SWEEP_EVERY_N_REQUESTS) {
+    requestsSinceSweep = 0;
+    sweepExpiredRateLimitEntries(now);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +181,7 @@ async function applyLimitAsync(
 
     // Fallback to in-memory for non-production
     const store = getStore(tier);
+    maybeSweepExpiredEntries(now);
     const entry = store.get(ipKey);
 
     if (!entry || now >= entry.resetAt) {
