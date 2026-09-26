@@ -79,14 +79,14 @@ The orders API is a money-path surface. Every entrypoint is **deny-by-default** 
 
 ### Stable Error Codes (Orders)
 
-| Code                     | HTTP | Meaning                                                        |
-| ------------------------ | ---- | ------------------------------------------------------------- |
-| `VALIDATION_ERROR`       | 400  | Malformed or out-of-range request payload/params.             |
-| `UNAUTHORIZED`           | 401  | Missing or expired authentication/signature.                  |
-| `FORBIDDEN`              | 403  | Signature valid but signer does not own the order.            |
-| `IDEMPOTENCY_CONFLICT`   | 409  | Same idempotency key reused with a different payload.         |
-| `RATE_LIMITED`           | 429  | Write tier exceeded.                                          |
-| `DEPENDENCY_UNAVAILABLE` | 503  | DB/Redis/RPC outage; write failed closed.                     |
+| Code                     | HTTP | Meaning                                               |
+| ------------------------ | ---- | ----------------------------------------------------- |
+| `VALIDATION_ERROR`       | 400  | Malformed or out-of-range request payload/params.     |
+| `UNAUTHORIZED`           | 401  | Missing or expired authentication/signature.          |
+| `FORBIDDEN`              | 403  | Signature valid but signer does not own the order.    |
+| `IDEMPOTENCY_CONFLICT`   | 409  | Same idempotency key reused with a different payload. |
+| `RATE_LIMITED`           | 429  | Write tier exceeded.                                  |
+| `DEPENDENCY_UNAVAILABLE` | 503  | DB/Redis/RPC outage; write failed closed.             |
 
 ### Kill Switch
 
@@ -102,7 +102,36 @@ All responses include IETF-compliant rate limit headers:
 RateLimit-Limit     — Maximum requests allowed in the current window
 RateLimit-Remaining — Requests remaining in the current window
 RateLimit-Reset     — Unix timestamp (seconds) when the window resets
+Retry-After         — Seconds until the window resets (429 responses only)
 ```
+
+`RateLimit-Remaining` is clamped at `0` and never goes negative, so a client
+can poll it as a simple "am I allowed to send?" check. `Retry-After` is
+**omitted** rather than set to `0` when the window has already elapsed, since
+`Retry-After: 0` would instruct a client to retry immediately.
+
+### Indexer HTTP surface
+
+The indexer's read API (`INDEXER_HTTP_ENABLED=true`) enforces the same
+contract. Its per-route budgets are defined by `RATE_LIMIT_POLICIES` in
+`apps/indexer/src/httpServer.ts`:
+
+| Path                  | Limit       | Window |
+| --------------------- | ----------- | ------ |
+| `/health`, `/ready`   | 30 req/min  | 60 s   |
+| `/markets`            | 60 req/min  | 60 s   |
+| `/markets/:id`        | 120 req/min | 60 s   |
+| `/markets/:id/trades` | 30 req/min  | 60 s   |
+
+Two behaviours are specific to the indexer and are worth calling out:
+
+- **Deny-by-default.** A route with no entry in `RATE_LIMIT_POLICIES` is
+  never served; it is rejected with `429` and a zero quota, so a new route
+  cannot ship without a policy.
+- **Counter-store outage fails closed.** If the counter store is unreachable
+  the request is rejected with `503 DEPENDENCY_UNAVAILABLE` and
+  `RateLimit-Remaining: 0`, so a client that trusts the header stops hammering
+  a broken limiter rather than falling back to unbounded retries.
 
 When a client exceeds the rate limit, the API responds with:
 

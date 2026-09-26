@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { Registry, Counter } from "prom-client";
-import { buildIndexerHttpServer } from "./httpServer.js";
+import {
+  buildIndexerHttpServer,
+  createInMemoryRateLimitStore,
+  setRateLimitHeaders,
+} from "./httpServer.js";
 import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client.js";
 
@@ -642,5 +646,282 @@ describe("buildIndexerHttpServer", () => {
     }
 
     await app.close();
+  });
+});
+
+/**
+ * Rate-limit response headers (#1142).
+ *
+ * RATE_LIMIT_POLICY.md requires `RateLimit-Limit` / `RateLimit-Remaining` /
+ * `RateLimit-Reset` on every response and `Retry-After` on a 429. Without them
+ * a client cannot compute a backoff and degrades into blind retry loops, which
+ * is the exact load the limiter exists to shed — so these are asserted on both
+ * the success and the throttled path.
+ */
+describe("rate limit response headers", () => {
+  /** Deterministic clock so `RateLimit-Reset` and `Retry-After` are exact. */
+  const NOW_MS = 1_700_000_000_000;
+
+  afterEach(() => {
+    delete process.env.INDEXER_REQUIRED_PRINCIPAL;
+  });
+
+  it("emits RateLimit-Limit/Remaining/Reset on a successful response", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitStore: createInMemoryRateLimitStore(() => NOW_MS),
+      now: () => NOW_MS,
+    });
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "test-user" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    // /markets is tiered at 60 req/min.
+    expect(response.headers["ratelimit-limit"]).toBe("60");
+    expect(response.headers["ratelimit-remaining"]).toBe("59");
+    // Reset is reported in Unix *seconds*, per the policy.
+    expect(response.headers["ratelimit-reset"]).toBe(
+      String(Math.ceil((NOW_MS + 60_000) / 1000))
+    );
+
+    await app.close();
+  });
+
+  it("decrements RateLimit-Remaining on each request in the window", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitStore: createInMemoryRateLimitStore(() => NOW_MS),
+      now: () => NOW_MS,
+    });
+    await app.ready();
+
+    const remaining: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets",
+        headers: { "x-principal": "test-user" },
+      });
+      remaining.push(String(response.headers["ratelimit-remaining"]));
+    }
+
+    expect(remaining).toEqual(["59", "58", "57"]);
+
+    await app.close();
+  });
+
+  it("emits Retry-After alongside the quota headers on a 429", async () => {
+    // Tier of 1 so the second request trips the limiter deterministically.
+    const app = await buildIndexerHttpServer({
+      rateLimitStore: createInMemoryRateLimitStore(() => NOW_MS),
+      now: () => NOW_MS,
+      rateLimitPolicies: { "/markets": { limit: 1, windowMs: 60_000 } },
+    });
+    await app.ready();
+
+    const headers = { "x-principal": "test-user" };
+    const first = await app.inject({ method: "GET", url: "/markets", headers });
+    expect(first.statusCode).toBe(200);
+    expect(first.headers["ratelimit-remaining"]).toBe("0");
+
+    const second = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers,
+    });
+
+    expect(second.statusCode).toBe(429);
+    expect(second.json().code).toBe("RATE_LIMITED");
+    expect(second.headers["ratelimit-limit"]).toBe("1");
+    // Remaining is clamped at 0 rather than going negative.
+    expect(second.headers["ratelimit-remaining"]).toBe("0");
+    expect(second.headers["ratelimit-reset"]).toBe(
+      String(Math.ceil((NOW_MS + 60_000) / 1000))
+    );
+    expect(Number(second.headers["retry-after"])).toBeGreaterThan(0);
+    expect(Number(second.headers["retry-after"])).toBeLessThanOrEqual(60);
+
+    await app.close();
+  });
+
+  it("never reports a negative RateLimit-Remaining under sustained load", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitStore: createInMemoryRateLimitStore(() => NOW_MS),
+      now: () => NOW_MS,
+      rateLimitPolicies: { "/markets": { limit: 2, windowMs: 60_000 } },
+    });
+    await app.ready();
+
+    for (let i = 0; i < 10; i++) {
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets",
+        headers: { "x-principal": "test-user" },
+      });
+      const remaining = Number(response.headers["ratelimit-remaining"]);
+      expect(remaining).toBeGreaterThanOrEqual(0);
+    }
+
+    await app.close();
+  });
+
+  it("resets the quota once the window elapses", async () => {
+    let clock = NOW_MS;
+    const app = await buildIndexerHttpServer({
+      rateLimitStore: createInMemoryRateLimitStore(() => clock),
+      rateLimitPolicies: { "/markets": { limit: 1, windowMs: 1_000 } },
+    });
+    await app.ready();
+
+    const headers = { "x-principal": "test-user" };
+    await app.inject({ method: "GET", url: "/markets", headers });
+    expect(
+      (await app.inject({ method: "GET", url: "/markets", headers })).statusCode
+    ).toBe(429);
+
+    // Advance past the window; the counter must roll over, not stay throttled.
+    clock = NOW_MS + 1_001;
+    const afterReset = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers,
+    });
+
+    expect(afterReset.statusCode).toBe(200);
+    expect(afterReset.headers["ratelimit-remaining"]).toBe("0");
+
+    await app.close();
+  });
+
+  it("denies a route with no policy and reports a zero quota", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitPolicies: { "/markets": { limit: 60, windowMs: 60_000 } },
+    });
+    await app.ready();
+
+    // /markets/:id has no policy in this map -> deny-by-default.
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets/some-id",
+      headers: { "x-principal": "test-user" },
+    });
+
+    expect(response.statusCode).toBe(429);
+    expect(response.headers["ratelimit-limit"]).toBe("0");
+    expect(response.headers["ratelimit-remaining"]).toBe("0");
+
+    await app.close();
+  });
+
+  it("fails closed with a zero quota when the counter store is unavailable", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitStore: {
+        increment: async () => {
+          throw new Error("redis down");
+        },
+      },
+    });
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "test-user" },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json().code).toBe("DEPENDENCY_UNAVAILABLE");
+    // A client that trusts the header stops hammering a broken limiter.
+    expect(response.headers["ratelimit-remaining"]).toBe("0");
+    // The store failure must not leak its message.
+    expect(response.body).not.toContain("redis down");
+
+    await app.close();
+  });
+
+  it("keys the quota per principal so one client cannot exhaust another's", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitStore: createInMemoryRateLimitStore(() => NOW_MS),
+      now: () => NOW_MS,
+      rateLimitPolicies: { "/markets": { limit: 1, windowMs: 60_000 } },
+    });
+    await app.ready();
+
+    await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "alice" },
+    });
+    const aliceThrottled = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "alice" },
+    });
+    const bob = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "bob" },
+    });
+
+    expect(aliceThrottled.statusCode).toBe(429);
+    expect(bob.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it("does not rate-limit /metrics and emits no quota headers there", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitStore: createInMemoryRateLimitStore(() => NOW_MS),
+      now: () => NOW_MS,
+    });
+    await app.ready();
+
+    const response = await app.inject({ method: "GET", url: "/metrics" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["ratelimit-limit"]).toBeUndefined();
+
+    await app.close();
+  });
+});
+
+describe("setRateLimitHeaders", () => {
+  const reply = () => {
+    const headers: Record<string, string> = {};
+    return {
+      headers,
+      header(name: string, value: string) {
+        headers[name] = value;
+        return this;
+      },
+    };
+  };
+
+  it("rounds RateLimit-Reset up to the next whole second", () => {
+    const r = reply();
+    setRateLimitHeaders(
+      r as never,
+      { limit: 10, windowMs: 60_000 },
+      { count: 1, resetAtMs: 1_700_000_000_400 }
+    );
+
+    expect(r.headers["RateLimit-Reset"]).toBe("1700000001");
+  });
+
+  it("omits Retry-After when the window has already elapsed", () => {
+    const r = reply();
+    setRateLimitHeaders(
+      r as never,
+      { limit: 10, windowMs: 60_000 },
+      { count: 1, resetAtMs: Date.now() - 5_000 }
+    );
+
+    // A non-positive Retry-After would be meaningless (and Retry-After: 0 tells
+    // a client to retry immediately), so it is omitted instead.
+    expect(r.headers["Retry-After"]).toBeUndefined();
+    expect(r.headers["RateLimit-Remaining"]).toBe("9");
   });
 });

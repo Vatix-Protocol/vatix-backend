@@ -1,4 +1,4 @@
-import fastify, { type FastifyInstance } from "fastify";
+import fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import type { Registry } from "prom-client";
 import { indexerCorsPlugin } from "./middleware/cors.js";
 import { marketsRoutes } from "./routes/markets.js";
@@ -91,13 +91,30 @@ export const RATE_LIMIT_POLICIES: Record<string, RateLimitPolicy> = {
 };
 
 /**
+ * Result of a single rate-limit increment.
+ *
+ * `resetAtMs` is included alongside the count so the HTTP layer can emit the
+ * IETF `RateLimit-*` headers required by RATE_LIMIT_POLICY.md. Keeping the
+ * window metadata on the store result (rather than recomputing it in the
+ * handler) means a Redis-backed store and the in-memory store report the same
+ * reset instant even though only the store knows when the window actually
+ * rolled over.
+ */
+export interface RateLimitCounter {
+  /** Request count for this key within the current window, after this request. */
+  count: number;
+  /** Unix epoch milliseconds at which the current window resets. */
+  resetAtMs: number;
+}
+
+/**
  * Minimal counter store surface. Implementations may be in-memory (single
  * process) or Redis-backed (multi-instance). `increment` must be atomic and
  * return the new count for the key within the current window; it must reject
  * on dependency outage so callers can fail closed.
  */
 export interface RateLimitStore {
-  increment: (key: string, windowMs: number) => Promise<number>;
+  increment: (key: string, windowMs: number) => Promise<RateLimitCounter>;
 }
 
 /**
@@ -114,13 +131,54 @@ export function createInMemoryRateLimitStore(
       const ts = now();
       const existing = buckets.get(key);
       if (!existing || existing.resetAt <= ts) {
-        buckets.set(key, { count: 1, resetAt: ts + windowMs });
-        return 1;
+        const resetAt = ts + windowMs;
+        buckets.set(key, { count: 1, resetAt });
+        return { count: 1, resetAtMs: resetAt };
       }
       existing.count += 1;
-      return existing.count;
+      return { count: existing.count, resetAtMs: existing.resetAt };
     },
   };
+}
+
+/**
+ * Attach the IETF rate-limit headers to a reply.
+ *
+ * RATE_LIMIT_POLICY.md requires every response to carry
+ * `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset`, and a `429`
+ * to additionally carry `Retry-After`. Without them a client cannot tell how
+ * long to back off and is reduced to blind retry loops, which is exactly the
+ * load the limiter exists to shed.
+ *
+ * - `RateLimit-Limit`     — the tier's maximum requests per window
+ * - `RateLimit-Remaining` — requests left in the current window (never negative)
+ * - `RateLimit-Reset`     — Unix timestamp in **seconds** when the window resets
+ * - `Retry-After`         — seconds until reset, on 429 only (HTTP-date form
+ *                           is also permitted, but seconds is unambiguous)
+ */
+export function setRateLimitHeaders(
+  reply: FastifyReply,
+  policy: RateLimitPolicy,
+  counter: RateLimitCounter,
+  now: number = Date.now()
+): void {
+  const resetSeconds = Math.ceil(counter.resetAtMs / 1000);
+  const retryAfterSeconds = Math.max(
+    0,
+    Math.ceil((counter.resetAtMs - now) / 1000)
+  );
+
+  reply
+    .header("RateLimit-Limit", String(policy.limit))
+    .header(
+      "RateLimit-Remaining",
+      String(Math.max(0, policy.limit - counter.count))
+    )
+    .header("RateLimit-Reset", String(resetSeconds));
+
+  if (retryAfterSeconds > 0) {
+    reply.header("Retry-After", String(retryAfterSeconds));
+  }
 }
 
 /**
@@ -247,6 +305,13 @@ export async function buildIndexerHttpServer(options?: {
   logger?: ProbeLogger;
   rateLimitStore?: RateLimitStore;
   rateLimitPolicies?: Record<string, RateLimitPolicy>;
+  /**
+   * Clock used to compute `Retry-After`. Injectable so tests can assert an
+   * exact backoff; defaults to the wall clock. Keep this consistent with the
+   * clock the supplied `rateLimitStore` uses, otherwise the two disagree about
+   * when the window opened.
+   */
+  now?: () => number;
   /** Prometheus registry to serve at GET /metrics. Defaults to a new empty registry. */
   metricsRegistry?: Registry;
 }): Promise<FastifyInstance> {
@@ -256,6 +321,7 @@ export async function buildIndexerHttpServer(options?: {
   const rateLimitStore =
     options?.rateLimitStore ?? createInMemoryRateLimitStore();
   const rateLimitPolicies = options?.rateLimitPolicies ?? RATE_LIMIT_POLICIES;
+  const nowFn = options?.now ?? Date.now;
   const metricsRegistry = options?.metricsRegistry;
 
   await app.register(indexerCorsPlugin);
@@ -318,19 +384,27 @@ export async function buildIndexerHttpServer(options?: {
     const policy = rateLimitPolicies[routePath];
 
     if (!policy) {
-      return reply.code(429).send({
-        code: "RATE_LIMITED" satisfies RateLimitErrorCode,
-        correlationId,
-      });
+      // Deny-by-default: a route with no policy is never served. There is no
+      // meaningful quota to report, so no RateLimit-* headers are emitted
+      // beyond the implicit zero remaining.
+      return reply
+        .code(429)
+        .header("RateLimit-Limit", "0")
+        .header("RateLimit-Remaining", "0")
+        .send({
+          code: "RATE_LIMITED" satisfies RateLimitErrorCode,
+          message: "No rate-limit policy is configured for this route",
+          correlationId,
+        });
     }
 
     const principal =
       (request.headers["x-principal"] as string | undefined) ?? undefined;
     const key = rateLimitKey(routePath, principal, request.ip);
 
-    let count: number;
+    let counter: RateLimitCounter;
     try {
-      count = await rateLimitStore.increment(key, policy.windowMs);
+      counter = await rateLimitStore.increment(key, policy.windowMs);
     } catch {
       if (logger) {
         logger.warn(
@@ -338,16 +412,29 @@ export async function buildIndexerHttpServer(options?: {
           "rate limit store unavailable"
         );
       }
-      return reply.code(503).send({
-        code: "DEPENDENCY_UNAVAILABLE" satisfies ProbeErrorCode,
-        correlationId,
-      });
+      // Fail-closed on a counter-store outage. Remaining is reported as 0 so
+      // a client that trusts the header stops hammering a broken limiter.
+      return reply
+        .code(503)
+        .header("RateLimit-Limit", String(policy.limit))
+        .header("RateLimit-Remaining", "0")
+        .send({
+          code: "DEPENDENCY_UNAVAILABLE" satisfies ProbeErrorCode,
+          correlationId,
+        });
     }
 
-    if (count > policy.limit) {
+    // Quota headers are attached before the limit check so they are present on
+    // the 200 path as well as the 429 path (RATE_LIMIT_POLICY.md: "All
+    // responses include ...").
+    setRateLimitHeaders(reply, policy, counter, nowFn());
+
+    if (counter.count > policy.limit) {
       if (logger) {
         logger.warn({ correlationId, routePath }, "rate limit exceeded");
       }
+      // Retry-After (set by setRateLimitHeaders) tells the client exactly how
+      // long to wait instead of guessing and retry-looping.
       return reply.code(429).send({
         code: "RATE_LIMITED" satisfies RateLimitErrorCode,
         correlationId,
