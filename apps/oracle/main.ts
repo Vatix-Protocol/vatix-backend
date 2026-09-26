@@ -17,12 +17,14 @@ import {
 import { redis } from "../../src/services/redis.js";
 import { RESOLVABLE_MARKET_STATUSES } from "../../packages/shared/src/marketLifecycle.js";
 import { createLogger } from "../indexer/src/logger.js";
-import { loadOracleConfig } from "./oracle-config.js";
+import { loadOracleConfig, describeOracleConfig } from "./oracle-config.js";
+import { startHealthServer } from "./health-server.js";
 import { OracleService } from "./oracle-service.js";
 import { PrimaryAdapter } from "./primary-adapter.js";
 import { FallbackAdapter } from "./fallback-adapter.js";
 import { signResolutionReport } from "./signature-helper.js";
 import { BullMQSubmissionQueue } from "../workers/src/oracle/bullmq-submission-queue.js";
+import { buildSubmissionIdempotencyKey } from "./submission-queue.js";
 import type { ResolutionRequest } from "./provider-adapter.js";
 import type {
   ShutdownHandler,
@@ -145,9 +147,18 @@ export async function poll(): Promise<void> {
         },
       });
 
-      // Enqueue for on-chain submission
+      // Enqueue for on-chain submission.
+      //
+      // The id is the queue's idempotency key, so it must be a pure function
+      // of the resolution — never `Date.now()`. With a timestamped id every
+      // poll cycle produced a *new* key, so a retried/duplicated cycle queued
+      // the same resolution again and could submit it twice on-chain (#1114).
       await queue.enqueue({
-        id: `${market.id}-${Date.now()}`,
+        id: buildSubmissionIdempotencyKey({
+          marketId: market.id,
+          oracleAddress: market.oracleAddress,
+          resolvedAt: result.timestamp,
+        }),
         request,
         result: {
           ...result,
@@ -210,7 +221,24 @@ export async function bootstrap(): Promise<void> {
   const config = loadOracleConfig();
   const logger = createLogger(config.logLevel);
 
-  logger.info("Oracle starting", { pollIntervalMs: config.pollIntervalMs });
+  // Log the redacted summary only — never the secret key itself (#1115).
+  logger.info("Oracle starting", {
+    ...describeOracleConfig(config),
+  });
+
+  // Opt-in probe surface (GET /health, GET /health/ready) — disabled unless
+  // ORACLE_HEALTH_PORT is set (#1116).
+  const healthServer = await startHealthServer({
+    logger: {
+      info: (fields, message) => logger.info(message, fields),
+      warn: (fields, message) => logger.warn(message, fields),
+    },
+  });
+  if (healthServer) {
+    logger.info("Oracle health server listening", {
+      port: process.env.ORACLE_HEALTH_PORT,
+    });
+  }
 
   const runPoll = createOverlapGuardedPoll(poll, logger);
 
@@ -230,6 +258,9 @@ export async function bootstrap(): Promise<void> {
     clearInterval(timer);
 
     try {
+      if (healthServer) {
+        await healthServer.close();
+      }
       if (globalQueue) {
         await globalQueue.close();
       }

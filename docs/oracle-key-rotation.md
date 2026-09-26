@@ -1,5 +1,27 @@
 # Oracle Signing Key Rotation Without Downtime
 
+## Trust anchor: `ORACLE_SIGNER_PUBLIC_KEY`
+
+Resolution reports carry their own `publicKey`, so verification is only
+meaningful against a pinned signer. Set `ORACLE_SIGNER_PUBLIC_KEY` to the
+public `G…` key of the oracle signer **everywhere** the oracle runs (producer
+and submission worker). In `NODE_ENV=production`, verifying a report with no
+pinned signer fails closed with
+`ORACLE_SIGNATURE_TRUSTED_SIGNER_REQUIRED` instead of trusting the report's
+own key.
+
+Rotation therefore has two halves: replace `ORACLE_SECRET_KEY` (the signer)
+**and** `ORACLE_SIGNER_PUBLIC_KEY` (the trust anchor). When both are loaded in
+the same process they must match, otherwise startup fails with
+`ORACLE_CONFIG_SIGNER_MISMATCH` — the guard that catches a deployment still
+pinned to the old key, or one that loaded the wrong network's keypair. Update
+the trust anchor first on verifiers that must keep accepting the old signer,
+then the secret, then drop the old public key once no in-flight report uses it.
+
+The public key is not secret and is safe to log; `describeOracleConfig()`
+(`apps/oracle/oracle-config.ts`) reports it while reducing
+`ORACLE_SECRET_KEY` to a boolean.
+
 ## Overview
 
 This guide explains how to rotate oracle signing keys without interrupting market operations. The strategy maintains continuous signing capability while transitioning to new keys.

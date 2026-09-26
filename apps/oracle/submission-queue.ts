@@ -84,6 +84,13 @@ export const SUBMISSION_QUEUE_ERROR_CODES = {
   SUBMISSION_QUEUE_POISON: "SUBMISSION_QUEUE_POISON",
   /** The in-memory queue is at capacity — shed load, fail closed. */
   SUBMISSION_QUEUE_FULL: "SUBMISSION_QUEUE_FULL",
+  /**
+   * A replayed enqueue reused an existing `id` with a *different* payload.
+   * The queue never overwrites a live entry (no double submission, no
+   * silently-swallowed conflicting resolution); the caller must reconcile.
+   */
+  SUBMISSION_QUEUE_IDEMPOTENCY_CONFLICT:
+    "SUBMISSION_QUEUE_IDEMPOTENCY_CONFLICT",
   /** The referenced item does not exist in the queue. */
   SUBMISSION_QUEUE_NOT_FOUND: "SUBMISSION_QUEUE_NOT_FOUND",
 } as const;
@@ -96,6 +103,72 @@ function newQueueCorrelationId(): string {
   return `sq_${Date.now().toString(36)}_${Math.random()
     .toString(36)
     .slice(2, 10)}`;
+}
+
+/**
+ * Deterministic idempotency key for a submission (#1114).
+ *
+ * The enqueue `id` is the queue's deduplication key, so it must be a pure
+ * function of the resolution being submitted — never of wall-clock time or
+ * randomness. Two producers (or the same producer after a crash/replay) that
+ * resolved the same market to the same outcome at the same instant therefore
+ * derive the same key, and the second enqueue is a no-op instead of a second
+ * on-chain submission.
+ *
+ * Components:
+ *   - `marketId`    : the market being resolved
+ *   - `oracleAddress`: the submitting oracle account (different oracle ⇒
+ *                      different submission, never deduplicated together)
+ *   - `resolvedAt`  : the provider's resolution timestamp, normalised to UTC
+ *                      ISO-8601 so equivalent spellings collapse to one key
+ *
+ * @throws {SubmissionQueueValidationError} when any component is missing or
+ *   `resolvedAt` is not a parseable date.
+ */
+export function buildSubmissionIdempotencyKey(input: {
+  marketId: string;
+  oracleAddress: string;
+  resolvedAt: string;
+}): string {
+  const { marketId, oracleAddress, resolvedAt } = input ?? {};
+
+  if (!marketId || typeof marketId !== "string") {
+    throw new SubmissionQueueValidationError(
+      "idempotency key requires a non-empty marketId"
+    );
+  }
+  if (!oracleAddress || typeof oracleAddress !== "string") {
+    throw new SubmissionQueueValidationError(
+      "idempotency key requires a non-empty oracleAddress"
+    );
+  }
+
+  const resolvedAtMs = Date.parse(resolvedAt ?? "");
+  if (!Number.isFinite(resolvedAtMs)) {
+    throw new SubmissionQueueValidationError(
+      "idempotency key requires resolvedAt to be an ISO-8601 date string"
+    );
+  }
+
+  return `${marketId}:${oracleAddress}:${new Date(resolvedAtMs).toISOString()}`;
+}
+
+/**
+ * True when two items carry the same resolution payload, i.e. a replay of the
+ * same work (#1114). Compares only the resolution facts — never the queue's
+ * mutable bookkeeping (`status`, `attempts`, timestamps).
+ */
+export function isSameSubmissionPayload(
+  a: Pick<SubmissionQueueItem, "request" | "result">,
+  b: Pick<SubmissionQueueItem, "request" | "result">
+): boolean {
+  return (
+    a.request.marketId === b.request.marketId &&
+    a.request.oracleAddress === b.request.oracleAddress &&
+    a.result.outcome === b.result.outcome &&
+    a.result.timestamp === b.result.timestamp &&
+    a.result.source === b.result.source
+  );
 }
 
 /**
@@ -221,6 +294,13 @@ export function validateSubmissionQueueItem(
  *    the process without bound.
  * 3. Idempotently deduplicates re-enqueues of a live item by `id` — a replay
  *    after a crash returns the existing entry rather than double-submitting.
+ *    The `id` must be derived with `buildSubmissionIdempotencyKey()` (a pure
+ *    function of the resolution) so a replay after a crash, a duplicated poll
+ *    cycle, or a second producer collides instead of queueing twice (#1114).
+ *    A replayed id carrying a *different* payload is a conflict, not a
+ *    replay: it raises the non-retryable
+ *    `SUBMISSION_QUEUE_IDEMPOTENCY_CONFLICT` and never overwrites the live
+ *    entry.
  *
  * Every failure path logs a structured message with the item `id`, `marketId`,
  * attempts, and a correlation id, and never with provider payloads or secrets.
@@ -231,6 +311,8 @@ export class SubmissionQueue {
   readonly maxAttemptsBeforeQuarantine: number;
   /** Maximum retained (non-quarantined) items before shedding load (#1150). */
   readonly maxQueueDepth: number;
+  /** Conflict policy for a replayed id carrying a different payload (#1114). */
+  readonly idempotencyConflict: "throw" | "return-existing";
 
   constructor(
     private readonly logger: ILogger,
@@ -248,6 +330,7 @@ export class SubmissionQueue {
         "ORACLE_SUBMISSION_QUEUE_MAX_DEPTH",
         DEFAULT_MAX_QUEUE_DEPTH
       );
+    this.idempotencyConflict = config.idempotencyConflict ?? "throw";
   }
 
   enqueue(item: SubmissionQueueItem): SubmissionQueueItem {
@@ -258,6 +341,37 @@ export class SubmissionQueue {
     // Replayed enqueue of a live item: idempotent no-op (#1150) so a crash
     // between "enqueued" and "acknowledged" never double-submits.
     if (existing && existing.status !== "quarantined") {
+      // Same id but a different resolution is NOT a replay — it is a
+      // conflicting write. Silently keeping the first entry would hide a
+      // genuine disagreement (or a hijacked id), so it is surfaced with a
+      // stable code and the existing entry is left untouched (#1114).
+      if (!isSameSubmissionPayload(existing, item)) {
+        const correlationId = newQueueCorrelationId();
+        this.logger.warn("Oracle submission idempotency conflict", {
+          id: item.id,
+          marketId: item.request.marketId,
+          oracleAddress: item.request.oracleAddress,
+          status: existing.status,
+          enqueuedAt: existing.enqueuedAt,
+          attempts: existing.attempts,
+          correlationId,
+          code: SUBMISSION_QUEUE_ERROR_CODES.SUBMISSION_QUEUE_IDEMPOTENCY_CONFLICT,
+        } satisfies SubmissionQueueLogMeta);
+
+        if (this.idempotencyConflict === "throw") {
+          throw new SubmissionQueueError(
+            SUBMISSION_QUEUE_ERROR_CODES.SUBMISSION_QUEUE_IDEMPOTENCY_CONFLICT,
+            `Submission ${item.id} already exists with a different resolution payload`,
+            {
+              correlationId,
+              itemId: item.id,
+              statusCode: 409,
+              retryable: false,
+            }
+          );
+        }
+      }
+
       this.logger.info("Oracle submission deduplicated", {
         id: item.id,
         marketId: item.request.marketId,
@@ -470,6 +584,18 @@ export interface SubmissionQueueConfig {
    * `ORACLE_SUBMISSION_QUEUE_MAX_DEPTH`, then 10000.
    */
   maxQueueDepth?: number;
+  /**
+   * What `enqueue` does when the same `id` arrives with a *different*
+   * resolution payload (#1114).
+   *
+   * - `"throw"` (default, fail-closed): raises the non-retryable
+   *   `SUBMISSION_QUEUE_IDEMPOTENCY_CONFLICT` (409) and leaves the existing
+   *   entry untouched, so a conflicting write is never silently swallowed.
+   * - `"return-existing"`: logs the conflict and returns the existing entry
+   *   (previous behaviour — the replay is still a no-op, so this never
+   *   double-submits).
+   */
+  idempotencyConflict?: "throw" | "return-existing";
 }
 
 export const DEFAULT_MAX_ATTEMPTS_BEFORE_QUARANTINE = 5;
