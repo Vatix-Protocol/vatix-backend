@@ -317,6 +317,16 @@ model Trade {
   @@index([sellerAddress, tradedAt(sort: Desc)])
   @@index([tradedAt(sort: Desc)])
   @@index([settlementStatus])
+  // Trade-history composite indexes (#1144). The read paths are
+  // `WHERE (buyer_address = $1 OR seller_address = $1) [AND market_id = $2]
+  //  [AND traded_at BETWEEN ..] ORDER BY traded_at DESC`. The two
+  // (address, traded_at) indexes above serve the per-wallet case, but the
+  // market-scoped history had no index whose leading column matched its
+  // filter, so Postgres fell back to a bitmap scan plus an explicit sort.
+  @@index([marketId, tradedAt(sort: Desc)])
+  // Settlement reconciliation scans unsettled trades oldest-first, which the
+  // single-column settlement_status index cannot serve in traded_at order.
+  @@index([settlementStatus, tradedAt(sort: Desc)])
   @@map("trades")
 }
 
@@ -425,16 +435,16 @@ model AdminAction {
 /// Rotatable admin identities replacing the single shared ADMIN_TOKEN.
 /// Each identity is independently revocable, rotatable, and auditable.
 model AdminIdentity {
-  id           String   @id @default(uuid())
-  name         String   @unique @db.VarChar(256) // Human-readable identifier (e.g., "alice", "bob")
-  credentialHash String  @map("credential_hash") @db.VarChar(64) // Hashed credential (bcrypt/scrypt)
+  id             String                  @id @default(uuid())
+  name           String                  @unique @db.VarChar(256) // Human-readable identifier (e.g., "alice", "bob")
+  credentialHash String                  @map("credential_hash") @db.VarChar(64) // Hashed credential (bcrypt/scrypt)
   /// Metadata: { "purpose": "operations", "rotation_deadline": "2026-09-26T...", ...}
-  metadata     Json?    @default("{}")
-  active       Boolean  @default(true)
-  createdAt    DateTime @default(now()) @map("created_at")
-  rotatedAt    DateTime? @map("rotated_at") // Track when last rotated
-  revokedAt    DateTime? @map("revoked_at") // Null when active; set when revoked
-  auditLog     AdminIdentityAuditLog[]
+  metadata       Json?                   @default("{}")
+  active         Boolean                 @default(true)
+  createdAt      DateTime                @default(now()) @map("created_at")
+  rotatedAt      DateTime?               @map("rotated_at") // Track when last rotated
+  revokedAt      DateTime?               @map("revoked_at") // Null when active; set when revoked
+  auditLog       AdminIdentityAuditLog[]
 
   @@index([active])
   @@index([revokedAt])
@@ -450,7 +460,7 @@ model AdminIdentityAuditLog {
   reason     String?  @db.Text
   createdAt  DateTime @default(now()) @map("created_at")
 
-  identity   AdminIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  identity AdminIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
 
   @@index([identityId])
   @@index([action])
