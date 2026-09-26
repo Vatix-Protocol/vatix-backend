@@ -525,12 +525,24 @@ All services in the Vatix backend now implement coordinated graceful shutdown:
 - 30-second hard timeout (via `createShutdown`) forces exit if teardown hangs
 - Structured logging with component identifier
 
-### ✅ Oracle Worker (`apps/workers/src/oracle/main.ts`)
+### ✅ Oracle Worker (`apps/oracle/main.ts`)
 
-- Stops polling timer on SIGTERM/SIGINT
-- Disconnects database and Redis connections
-- 30-second hard timeout
-- Structured logging with component identifier
+- Stops the polling interval first, so no new poll starts against a closing DB
+- **Drains any in-flight poll** before closing dependencies. An oracle poll signs
+  a resolution and enqueues an on-chain submission; abandoning one mid-cycle can
+  leave a market resolved in the DB but never submitted
+- Closes the BullMQ submission queue (flushing pending jobs to Redis), then
+  disconnects Prisma and Redis
+- 30-second hard timeout via `createShutdown` (`ORACLE_SHUTDOWN_TIMEOUT_MS`)
+  forces exit if teardown hangs
+- Handles `SIGINT`, `SIGTERM` and `SIGHUP`, matching every other long-running
+  worker in the fleet
+- Structured logging with `component: "oracle-worker"`
+
+The drain is best-effort: if a provider call stalls past the hard timeout the
+process force-exits. That is the intended trade-off — bounded shutdown beats an
+unbounded hang, and the poll is idempotent on restart (the next cycle re-resolves
+any market whose submission never made it into the queue).
 
 ### ✅ Docker Configuration (`docker-compose.yml`)
 
