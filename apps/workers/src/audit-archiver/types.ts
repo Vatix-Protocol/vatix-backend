@@ -5,6 +5,17 @@ export interface ArchivedEventResult {
   errorMessage?: string;
 }
 
+export interface RetentionResult {
+  /** Rows actually deleted. */
+  purgedCount: number;
+  /** True when retention is disabled (kill-switch off); nothing was deleted. */
+  disabled: boolean;
+  /** Markets that contributed deleted rows. */
+  marketCount: number;
+  /** Cutoff applied, when retention is enabled. */
+  cutoff?: string;
+}
+
 export interface AuditArchiverJobResult {
   totalEvents: number;
   archivedCount: number;
@@ -15,4 +26,6 @@ export interface AuditArchiverJobResult {
   completedAt: string;
   durationMs: number;
   archiveLagMs?: number;
+  /** Retention purge outcome for this run. */
+  retention?: RetentionResult;
 }

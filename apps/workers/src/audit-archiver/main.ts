@@ -15,12 +15,19 @@ async function bootstrap(): Promise<void> {
   const job = new AuditArchiverJob(prisma, logger, {
     maxRunMs: config.maxRunMs,
     batchSize: config.batchSize,
+    retentionDays: config.retentionDays,
+    retentionBatchSize: config.retentionBatchSize,
+    retentionMinPerMarket: config.retentionMinPerMarket,
   });
 
   logger.info("Audit archiver worker started", {
     intervalMs: config.intervalMs,
     maxRunMs: config.maxRunMs,
     batchSize: config.batchSize,
+    // Surfaced at boot so operators can confirm whether the destructive
+    // retention path is armed before it ever runs.
+    retentionDays: config.retentionDays,
+    retentionEnabled: config.retentionDays > 0,
   });
 
   let activePollPromise: Promise<void> | null = null;
@@ -47,6 +54,8 @@ async function bootstrap(): Promise<void> {
           erroredCount: result.erroredCount,
           skippedCount: result.skippedCount,
           archiveLagMs: result.archiveLagMs,
+          purgedCount: result.retention?.purgedCount ?? 0,
+          retentionEnabled: result.retention?.disabled === false,
         });
       } catch (error) {
         logger.error("Audit archiver worker poll failed", {

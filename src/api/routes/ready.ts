@@ -45,6 +45,41 @@ export const INDEX_STALENESS_THRESHOLD_MS = thresholdEnv
   ? parseInt(thresholdEnv, 10)
   : 300_000;
 
+/**
+ * Whether this process is draining for shutdown.
+ *
+ * Set synchronously the moment a shutdown signal arrives, *before* the HTTP
+ * server starts closing. Without it, `/v1/ready` keeps answering 200 while the
+ * listener is tearing down, so the load balancer keeps routing new requests to
+ * an instance that is refusing connections — every one of those requests fails
+ * at the client. Flipping readiness first gives the load balancer a propagation
+ * window to stop sending traffic before in-flight requests are drained.
+ *
+ * Module-level because the signal handler and the readiness route are in
+ * different modules and both need the same value.
+ */
+let draining = false;
+
+export function isDraining(): boolean {
+  return draining;
+}
+
+/**
+ * Mark the process as draining. Idempotent — repeated signals (SIGTERM often
+ * arrives alongside a container stop) must not restart the sequence.
+ */
+export function beginDrain(): void {
+  draining = true;
+}
+
+/**
+ * Reset the drain flag. Test-only: production has one lifecycle per process, so
+ * there is no legitimate path back to serving traffic.
+ */
+export function resetDrainForTests(): void {
+  draining = false;
+}
+
 export type DependencyStatus = "ok" | "error" | "stale";
 
 export interface DependencyResult {
@@ -60,6 +95,11 @@ export interface ReadyResponse {
     redis: DependencyResult;
     indexFreshness: DependencyResult;
   };
+  /**
+   * Present only while the process is draining for shutdown. Lets operators
+   * distinguish a planned rollout from a genuine dependency outage.
+   */
+  reason?: "draining";
 }
 
 /**
@@ -99,9 +139,13 @@ export function readyRoute(deps: ReadyDeps) {
         checkIndexFreshness(deps, now),
       ]);
 
-      // CRITICAL tier: DB and index freshness determine readiness.
-      // Redis is WARNING-only — blips must not remove the pod from rotation.
-      const ready = dbResult.status === "ok" && indexResult.status === "ok";
+      // A draining instance must report NOT ready even when every dependency is
+      // healthy, so the load balancer stops sending new traffic before the
+      // listener closes. The dependency status is still reported so operators
+      // can tell a planned drain from a real outage.
+      const draining = isDraining();
+      const ready =
+        !draining && dbResult.status === "ok" && indexResult.status === "ok";
 
       const body: ReadyResponse = {
         ready,
@@ -110,6 +154,7 @@ export function readyRoute(deps: ReadyDeps) {
           redis: redisResult,
           indexFreshness: indexResult,
         },
+        ...(draining ? { reason: "draining" as const } : {}),
       };
 
       reply.status(ready ? 200 : 503).send(body);

@@ -267,24 +267,36 @@ Get archived audit events for a market with pagination.
 
 ### Retention policy
 
-`trade_audit_events` (Postgres) is the **permanent, append-only** record of
-every trade. It has **no TTL and no retention job** — rows are never deleted in
-normal operation. This is deliberate: the hash chain's guarantee (that no trade
-was silently removed or reordered) only holds if every link survives.
+`trade_audit_events` (Postgres) is the **durable, append-only** record of
+every trade. It is append-only _by default_: an explicit, opt-in retention
+policy (`AUDIT_ARCHIVE_RETENTION_DAYS`, default `0` = disabled) reclaims disk
+by deleting a strict **oldest prefix** of rows per market. Retention is
+disabled unless an operator turns it on — see
+[audit-archiver-retention.md](./audit-archiver-retention.md) for the full
+invariant set and rollback steps.
+
+Because the hash chain's guarantee is that no trade was silently removed or
+reordered, retention only ever removes a contiguous prefix per market and always
+keeps at least `AUDIT_ARCHIVE_RETENTION_MIN_PER_MARKET` rows. Verifying a
+post-retention slice must pass `expectGenesis: false`, because the retained rows
+are anchored to the row before the cut, not to the root hash `"0"`.
 
 - The Redis trade streams (`audit:market:*`, `audit:trades:global`) **do**
   expire via `MAXLEN` (`AUDIT_STREAM_MAXLEN`, default 100 000 per market; the
   global stream keeps 10×). The audit archiver drains each entry to Postgres
   and advances a per-market watermark **before** trimming, so Redis expiry
   never loses data — it only moves it to the durable tier.
-- Do **not** add a retention/purge job for `trade_audit_events` without first
-  running the restore drill below and wiring the restored rows back through the
-  chain. A purge that removes an interior row is now detected
+- A purge that removes an **interior** row is detected
   (`verifyAuditChain` returns `valid: false`, `gapCount > 0`,
-  `vatix_audit_chain_gap_total` increments), but detection is not recovery.
+  `vatix_audit_chain_gap_total` increments), but detection is not recovery. The
+  archiver's retention planner is prefix-only specifically to avoid creating
+  such holes. Do not widen the delete set outside
+  `planRetentionPurge` without rerunning the restore drill below.
 - Postgres point-in-time-recovery backups are the archive's backstop. Retain
   base backups + WAL for at least the longest possible dispute/challenge
-  window plus the regulatory record-keeping period.
+  window plus the regulatory record-keeping period. If you enable retention,
+  set the window to at least that period — a purge cannot be undone except
+  from backup.
 
 ### Restore drill (run quarterly in staging)
 
