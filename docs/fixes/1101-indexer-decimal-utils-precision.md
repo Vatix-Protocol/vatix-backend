@@ -1,6 +1,7 @@
 # Indexer Decimal Utils Precision — Design Note & Invariants
 
 ## References
+
 - `apps/indexer/src/decimalUtils.ts`
 - `apps/indexer/src/decimalUtils.test.ts`
 - `apps/indexer/src/collateralDepositedParser.ts`
@@ -25,7 +26,7 @@ This document specifies the technical design, precision invariants, error handli
    - Enforces `0 <= quantity <= Number.MAX_SAFE_INTEGER`, rejecting negative quantities, non-integer strings, and values exceeding `MAX_SAFE_INTEGER` to prevent silent precision loss or integer overflow.
 
 3. **Fail-Closed Security & Stable Error Codes**:
-   - All conversion functions validate inputs strictly and throw custom subclasses of `DecimalUtilsError` bearing stable error codes (`DECIMAL_VALUE_OUT_OF_RANGE`, `DECIMAL_INVALID_INTEGER_STRING`, `DECIMAL_EXCESS_FRACTIONAL_DIGITS`, `DECIMAL_NEGATIVE_QUANTITY`, `DECIMAL_QUANTITY_EXCEEDS_SAFE_INTEGER`, `DECIMAL_FEATURE_DISABLED`).
+   - All conversion functions validate inputs strictly and throw custom subclasses of `DecimalUtilsError` bearing stable error codes (`DECIMAL_VALUE_OUT_OF_RANGE`, `DECIMAL_INVALID_INTEGER_STRING`, `DECIMAL_INVALID_VALUE`, `DECIMAL_EXCESS_FRACTIONAL_DIGITS`, `DECIMAL_NEGATIVE_QUANTITY`, `DECIMAL_QUANTITY_EXCEEDS_SAFE_INTEGER`, `DECIMAL_FEATURE_DISABLED`).
    - Supports request correlation IDs for end-to-end auditability and log correlation.
 
 4. **Ops-Safe Metrics & Telemetry**:
