@@ -181,7 +181,7 @@ REDIS_TLS_CA_FILE=/etc/ssl/certs/vatix-redis-ca.pem
 
 ### Idempotency
 
-Before processing, the worker atomically claims `settlement:processed:{tradeId}` in Redis via `SETNX`. If the key already exists the job is acknowledged and skipped. The lock is only meant to mark a _fully completed_ job — if the handler throws for any reason (transient RPC error, mid-transaction DB failure, permanent validation error), the lock is released (`DEL`) as part of error handling in `SettlementWorker.process()` before the error is re-thrown. This guarantees a legitimate retry (BullMQ redelivery) or a manual replay (`scripts/replay-dlq.ts`) actually reprocesses the trade instead of silently no-op'ing as "already processed" (#870).
+Before processing, the worker atomically claims `settlement:processed:{tradeId}` in Redis via `SETNX`. If the key already exists the job is acknowledged and skipped. The lock is only meant to mark a _fully completed_ job — if the handler throws for any reason (transient RPC error, mid-transaction DB failure, permanent validation error), the lock is released (`DEL`) as part of error handling in `SettlementWorker.process()` before the error is re-thrown. This guarantees a legitimate retry (BullMQ redelivery) or a manual replay (`pnpm dlq`) actually reprocesses the trade instead of silently no-op'ing as "already processed" (#870).
 
 ### Transactional Settlement Apply (#870)
 
@@ -215,7 +215,7 @@ To safely replay after fixing the root cause (e.g. correcting a bad payload upst
 
 1. Confirm the underlying cause is resolved (check `settlement_error_code`).
 2. Reset the row so the worker will process it again: `UPDATE trades SET settlement_status = 'PENDING', settlement_failure_count = 0, quarantined_at = NULL WHERE trade_id = '<tradeId>';`
-3. Replay the dead-lettered job: `pnpm tsx scripts/replay-dlq.ts --queue settlement --dry-run` first to preview, then without `--dry-run` to re-enqueue.
+3. Replay the failed BullMQ job with `pnpm dlq` (see [Dead Letter Log](dead-letter-log.md#bullmq-dlq-cli-pnpm-dlq)). `pnpm replay:dlq` deliberately does **not** replay `settlement`: settlement is a BullMQ queue with no stream behind it, so the raw-stream CLI skips those entries fail-closed and leaves them in place.
 4. Since quarantine re-triggers after `quarantineThreshold` permanent failures, a replay that hits the same root cause will quarantine again — treat repeated quarantine of the same `tradeId` as a signal to escalate rather than keep replaying.
 
 ### Flow
@@ -270,28 +270,40 @@ and the process finishes in-flight jobs before exiting. See
 
 ### DLQ Replay Examples
 
-Dead-lettered jobs live in Redis streams (`{REDIS_KEY_PREFIX}dead-letter:{queue}`)
-and are replayed with `scripts/replay-dlq.ts`:
+Dead-lettered messages live in Redis streams (`{REDIS_KEY_PREFIX}dead-letter:{queue}`)
+and are replayed with `pnpm replay:dlq`, **but only for stream-backed queues**:
+
+| DLQ queue           | Replay target                          | Tool                                        |
+| ------------------- | -------------------------------------- | ------------------------------------------- |
+| `oracle-submission` | `{REDIS_KEY_PREFIX}oracle:submissions` | `pnpm replay:dlq --queue oracle-submission` |
+| `settlement`        | none — skipped fail-closed             | `pnpm dlq` (BullMQ `failed` set, #953)      |
 
 ```bash
 # Preview every DLQ entry across all queues, without re-enqueuing
-pnpm tsx scripts/replay-dlq.ts --dry-run
+pnpm replay:dlq --dry-run
 
-# Replay only the settlement DLQ
-pnpm tsx scripts/replay-dlq.ts --queue settlement
+# Replay the oracle submission DLQ (the only stream-backed queue today)
+pnpm replay:dlq --queue oracle-submission
 
 # Replay at most 10 entries from the oracle submission DLQ
-pnpm tsx scripts/replay-dlq.ts --queue submission --limit 10
+pnpm replay:dlq --queue oracle-submission --limit 10
 
-# Combine: preview the first 5 settlement entries before replaying for real
-pnpm tsx scripts/replay-dlq.ts --queue settlement --limit 5 --dry-run
+# Combine: preview the first 5 oracle entries before replaying for real
+pnpm replay:dlq --queue oracle-submission --limit 5 --dry-run
 ```
 
-A successful replay re-enqueues the job to its original queue and removes the
-dead-letter entry; a job that fails again is dead-lettered again on its next
-terminal failure. For settlement specifically, reset any `QUARANTINED` trade
-row first — see [Inspecting and Replaying Quarantined Trades](#inspecting-and-replaying-quarantined-trades)
-above.
+A successful replay re-enqueues the message to the live stream its consumer
+reads and removes the dead-letter entry; a message that fails again is
+dead-lettered again on its next terminal failure. `--queue settlement` is
+accepted but **skipped**: settlement is BullMQ-backed, so there is no stream to
+write to, and those entries are left in the DLQ for an operator instead of being
+"replayed" onto an invented key. In `NODE_ENV=production`, add `--yes` to mutate
+(exit code `2` otherwise) and always `--dry-run` first. For settlement
+specifically, reset any `QUARANTINED` trade row first and replay through
+`pnpm dlq` — see
+[Inspecting and Replaying Quarantined Trades](#inspecting-and-replaying-quarantined-trades)
+above. Full operator contract:
+[Dead Letter Log](dead-letter-log.md#raw-stream-replay-cli-pnpm-replaydlq).
 
 ### Health Probes
 

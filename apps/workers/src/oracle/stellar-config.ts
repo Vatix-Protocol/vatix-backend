@@ -81,12 +81,19 @@ export function assertRpcEndpointsMatchDeployment(
   env: NodeJS.ProcessEnv
 ): void {
   const network = env.STELLAR_NETWORK ?? "testnet";
+  // Name the variable the entry was actually read from: a drift reported
+  // against STELLAR_RPC_URL when the operator set STELLAR_RPC_URLS sends them
+  // to the wrong variable (and breaks log scraping on the documented
+  // variable-name-only contract, docs/env-validation.md).
+  const variable = env.STELLAR_RPC_URLS?.trim()
+    ? "STELLAR_RPC_URLS"
+    : "STELLAR_RPC_URL";
   const raw = env.STELLAR_RPC_URLS?.trim() || env.STELLAR_RPC_URL?.trim() || "";
 
   for (const url of raw.split(",")) {
     const candidate = url.trim();
     if (!candidate) continue;
-    assertEndpointMatchesNetwork(candidate, network, "rpc", "STELLAR_RPC_URL");
+    assertEndpointMatchesNetwork(candidate, network, "rpc", variable);
   }
 
   warnUnverifiableStellarEndpoints(env, env.NODE_ENV);
@@ -141,6 +148,17 @@ export function resolveOracleStellarConfig(
   // #1135 — the RPC endpoints the worker will submit through must serve the
   // declared network, otherwise settlement signatures go to the wrong chain.
   assertRpcEndpointsMatchDeployment(env);
+
+  // #1133 / #1134 / #1135 — the full shared gate. The two checks above cover
+  // the passphrase and the RPC list this worker resolves; the gate additionally
+  // validates STELLAR_HORIZON_URL(S) (#1134) and *every* configured endpoint
+  // variable, including the ones loadStellarEndpoints() does not prefer. It
+  // runs in every environment, matching the API, the indexer and the settlement
+  // worker: a half-rotated deployment must not boot an oracle worker that
+  // signs and submits on one chain while the rest of the stack points at
+  // another (docs/env-validation.md). Custom networks and non-Stellar hosts
+  // stay exempt, exactly as documented there.
+  assertStellarNetworkConsistency(env);
 
   return {
     rpcUrl: rpcUrls[0],
