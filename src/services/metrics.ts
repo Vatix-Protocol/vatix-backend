@@ -148,3 +148,17 @@ export const metricsScrapeRejectedTotal = new client.Counter({
   labelNames: ["reason"],
   registers: [metricsRegistry],
 });
+
+/**
+ * POST /v1/orders requests carrying an Idempotency-Key, labelled by outcome
+ * (`created` | `replayed` | `conflict`). A rising `conflict` rate means
+ * clients are reusing keys across different orders; `replayed` counts
+ * retries that were answered without placing a second order. Never labelled
+ * with the key or signer.
+ */
+export const orderIdempotencyTotal = new client.Counter({
+  name: "vatix_order_idempotency_total",
+  help: "Total idempotent order placements, by outcome",
+  labelNames: ["outcome"],
+  registers: [metricsRegistry],
+});

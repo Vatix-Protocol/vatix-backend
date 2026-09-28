@@ -109,6 +109,7 @@ the endpoint is protected at the ingress layer, and expect a boot-time warning.
 | `vatix_orders_shed_total`                              | counter   | Total orders shed by admission control due to settlement lag.                                                                                                   |
 | `vatix_admission_shedding`                             | gauge     | `1` while admission control is shedding order traffic, `0` otherwise.                                                                                           |
 | `vatix_metrics_scrape_rejected_total`                  | counter   | Total `/metrics` scrapes denied by the scrape authz policy, labelled `reason` (#1130). Alert on any non-zero rate.                                              |
+| `vatix_order_idempotency_total`                        | counter   | `POST /v1/orders` requests carrying an `Idempotency-Key`, labelled `outcome` (`created`, `replayed`, `conflict`). A rising `conflict` rate means key reuse.     |
 
 ### Indexer process
 

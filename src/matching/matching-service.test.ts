@@ -7,6 +7,7 @@ import {
   MarketNotFoundError,
   MarketExpiredError,
   OrderConflictError,
+  IdempotencyConflictError,
 } from "../api/middleware/errors.js";
 
 // Mock dependencies
@@ -79,6 +80,9 @@ const mockTx = {
     update: vi.fn(),
     upsert: vi.fn(),
   },
+  orderIdempotencyKey: {
+    create: vi.fn(),
+  },
 };
 
 const mockPrismaClient = {
@@ -99,6 +103,9 @@ const mockPrismaClient = {
   },
   outboxEvent: {
     updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+  },
+  orderIdempotencyKey: {
+    findUnique: vi.fn(),
   },
   $transaction: vi.fn((cb: (tx: any) => Promise<any>) => cb(mockTx)),
 };
@@ -574,6 +581,155 @@ describe("MatchingService", () => {
       await expect(
         matchingService.placeOrder(orderInput)
       ).resolves.toBeDefined();
+    });
+  });
+
+  describe("placeOrder idempotency", () => {
+    const orderInput = {
+      marketId: "market-1",
+      userAddress: "GUSER1234567890123456789012345678901234567890123456",
+      side: "BUY" as const,
+      outcome: "YES" as const,
+      price: 0.5,
+      quantity: 10,
+    };
+    const idempotency = { key: "retry-key-1", requestHash: "a".repeat(64) };
+    const storedResponse = {
+      order: { id: "order-original", status: "OPEN" },
+      trades: [],
+      filledQuantity: 0,
+    };
+
+    beforeEach(() => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: null,
+        endTime: new Date(Date.now() + 60_000),
+      });
+      mockPrismaClient.order.findMany.mockResolvedValue([]);
+      mockPrismaClient.orderIdempotencyKey.findUnique.mockResolvedValue(null);
+      mockTx.order.create.mockImplementation(async ({ data }: any) => data);
+      mockTx.orderIdempotencyKey.create.mockResolvedValue({});
+    });
+
+    it("records the key with the order in the same transaction", async () => {
+      const result = await matchingService.placeOrder(orderInput, idempotency);
+
+      expect(result.replayed).toBeUndefined();
+      expect(mockTx.orderIdempotencyKey.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          userAddress: orderInput.userAddress,
+          idempotencyKey: idempotency.key,
+          requestHash: idempotency.requestHash,
+          orderId: result.order.id,
+          response: expect.objectContaining({
+            order: expect.objectContaining({ id: result.order.id }),
+            trades: [],
+            filledQuantity: result.filledQuantity,
+          }),
+        }),
+      });
+    });
+
+    it("scopes the key lookup to the signer's address", async () => {
+      await matchingService.placeOrder(orderInput, idempotency);
+
+      expect(
+        mockPrismaClient.orderIdempotencyKey.findUnique
+      ).toHaveBeenCalledWith({
+        where: {
+          userAddress_idempotencyKey: {
+            userAddress: orderInput.userAddress,
+            idempotencyKey: idempotency.key,
+          },
+        },
+      });
+    });
+
+    it("does not write an idempotency record without a key", async () => {
+      await matchingService.placeOrder(orderInput);
+
+      expect(
+        mockPrismaClient.orderIdempotencyKey.findUnique
+      ).not.toHaveBeenCalled();
+      expect(mockTx.orderIdempotencyKey.create).not.toHaveBeenCalled();
+    });
+
+    it("replays the stored result without matching again", async () => {
+      mockPrismaClient.orderIdempotencyKey.findUnique.mockResolvedValue({
+        requestHash: idempotency.requestHash,
+        response: storedResponse,
+      });
+
+      const result = await matchingService.placeOrder(orderInput, idempotency);
+
+      expect(result).toEqual({ ...storedResponse, replayed: true });
+      expect(matchOrder).not.toHaveBeenCalled();
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects a reused key with a different payload with a 409", async () => {
+      mockPrismaClient.orderIdempotencyKey.findUnique.mockResolvedValue({
+        requestHash: "b".repeat(64),
+        response: storedResponse,
+      });
+
+      const error = await matchingService
+        .placeOrder(orderInput, idempotency)
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(IdempotencyConflictError);
+      expect(error.statusCode).toBe(409);
+      expect(error.code).toBe("IDEMPOTENCY_CONFLICT");
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("returns the winner's result when a concurrent request commits the key first", async () => {
+      mockPrismaClient.orderIdempotencyKey.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          requestHash: idempotency.requestHash,
+          response: storedResponse,
+        });
+      mockTx.orderIdempotencyKey.create.mockRejectedValue(
+        Object.assign(new Error("Unique constraint failed"), { code: "P2002" })
+      );
+      const invalidateSpy = vi.spyOn(matchingService as any, "invalidateBook");
+
+      const result = await matchingService.placeOrder(orderInput, idempotency);
+
+      expect(result).toEqual({ ...storedResponse, replayed: true });
+      // The losing transaction rolled back, so its in-memory match is dropped.
+      expect(invalidateSpy).toHaveBeenCalledWith("market-1", "YES");
+    });
+
+    it("rejects with a 409 when a concurrent request committed the key with another payload", async () => {
+      mockPrismaClient.orderIdempotencyKey.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          requestHash: "b".repeat(64),
+          response: storedResponse,
+        });
+      mockTx.orderIdempotencyKey.create.mockRejectedValue(
+        Object.assign(new Error("Unique constraint failed"), { code: "P2002" })
+      );
+
+      await expect(
+        matchingService.placeOrder(orderInput, idempotency)
+      ).rejects.toBeInstanceOf(IdempotencyConflictError);
+    });
+
+    it("fails closed when the idempotency lookup is unavailable", async () => {
+      mockPrismaClient.orderIdempotencyKey.findUnique.mockRejectedValue(
+        new Error("connection refused")
+      );
+
+      await expect(
+        matchingService.placeOrder(orderInput, idempotency)
+      ).rejects.toThrow("connection refused");
+      expect(matchOrder).not.toHaveBeenCalled();
+      expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
     });
   });
 

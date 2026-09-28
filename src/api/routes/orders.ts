@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { getPrismaClient } from "../../services/prisma.js";
@@ -49,6 +50,34 @@ const CreateOrderSchema = z.object({
 });
 
 type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
+
+// ---------------------------------------------------------------------------
+// Idempotency-Key handling for POST /orders (see RATE_LIMIT_POLICY.md)
+// ---------------------------------------------------------------------------
+
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/** Returns the optional Idempotency-Key header, rejecting malformed values. */
+function parseIdempotencyKey(request: FastifyRequest): string | undefined {
+  const raw = request.headers["idempotency-key"];
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(raw)) {
+    const message =
+      "Idempotency-Key must be 1-128 characters of A-Z, a-z, 0-9, '_', '-', '.', ':'";
+    throw new ValidationError(message, { "Idempotency-Key": message });
+  }
+  return raw;
+}
+
+/** SHA-256 of the validated order payload, used to detect key reuse. */
+function hashOrderRequest(body: CreateOrderBody): string {
+  const { marketId, userAddress, side, outcome, price, quantity } = body;
+  return createHash("sha256")
+    .update(
+      JSON.stringify({ marketId, userAddress, side, outcome, price, quantity })
+    )
+    .digest("hex");
+}
 
 // ---------------------------------------------------------------------------
 // Cursor pagination helpers for GET /orders/user/:address
@@ -577,7 +606,10 @@ export async function ordersRoutes(fastify: FastifyInstance) {
 
   // POST /orders — create a new order.
   // Zod validates the request body shape and types; assertValidOrder does
-  // domain validation (address format, market state).
+  // domain validation (address format, market state). An optional
+  // Idempotency-Key header makes retries safe: the same key and payload
+  // returns the original 201 body (with Idempotent-Replayed: true), the same
+  // key with a different payload returns 409 IDEMPOTENCY_CONFLICT.
   fastify.post<{ Body: CreateOrderBody }>(
     "/orders",
     {
@@ -661,6 +693,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       },
     },
     async (request: FastifyRequest<{ Body: CreateOrderBody }>, reply) => {
+      const idempotencyKey = parseIdempotencyKey(request);
+
       // Zod parse: produces a typed, validated body or throws with field-level errors
       const parseResult = CreateOrderSchema.safeParse(request.body);
       if (!parseResult.success) {
@@ -684,12 +718,26 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         quantity,
       };
 
+      const idempotency = idempotencyKey
+        ? {
+            key: idempotencyKey,
+            requestHash: hashOrderRequest(parseResult.data),
+          }
+        : undefined;
+
+      // A replay returns the original result even if the market has since
+      // closed, so it is answered before domain validation.
+      const replay =
+        idempotency &&
+        (await matchingService.findIdempotentReplay(userAddress, idempotency));
+
       // Domain validation: address format, market existence and state
-      await assertValidOrder(orderInput);
+      if (!replay) await assertValidOrder(orderInput);
 
-      const { order, trades, filledQuantity } =
-        await matchingService.placeOrder(orderInput);
+      const { order, trades, filledQuantity, replayed } =
+        replay || (await matchingService.placeOrder(orderInput, idempotency));
 
+      if (replayed) reply.header("Idempotent-Replayed", "true");
       reply.status(201).send({ order, trades, filledQuantity });
     }
   );

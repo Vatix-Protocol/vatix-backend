@@ -25,14 +25,30 @@ import {
   MarketNotActiveError,
   MarketExpiredError,
   OrderConflictError,
+  IdempotencyConflictError,
 } from "../api/middleware/errors.js";
-import { orderbookHydratedMarketsGauge } from "../services/metrics.js";
+import {
+  orderbookHydratedMarketsGauge,
+  orderIdempotencyTotal,
+} from "../services/metrics.js";
 import { leaderLease } from "./leader-lease.js";
 
 export interface PlaceOrderResult {
   order: any;
   trades: Trade[];
   filledQuantity: number;
+  /** True when the result is the stored response of an earlier request. */
+  replayed?: boolean;
+}
+
+/** Client Idempotency-Key plus the hash of the payload it was first used with. */
+export interface OrderIdempotency {
+  key: string;
+  requestHash: string;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === "P2002";
 }
 
 /** Number of markets hydrated at startup. Used as a health metric. */
@@ -370,6 +386,36 @@ class MatchingService {
   }
 
   /**
+   * Returns the stored result for a previously used Idempotency-Key, or null
+   * when the key is unused. Keys are scoped to the signer, so one wallet can
+   * neither replay nor probe another wallet's keys.
+   *
+   * @throws {IdempotencyConflictError} The key was used with another payload.
+   */
+  async findIdempotentReplay(
+    userAddress: string,
+    { key, requestHash }: OrderIdempotency
+  ): Promise<PlaceOrderResult | null> {
+    const record = await getPrismaClient().orderIdempotencyKey.findUnique({
+      where: {
+        userAddress_idempotencyKey: { userAddress, idempotencyKey: key },
+      },
+    });
+    if (!record) return null;
+
+    if (record.requestHash !== requestHash) {
+      orderIdempotencyTotal.inc({ outcome: "conflict" });
+      throw new IdempotencyConflictError();
+    }
+
+    orderIdempotencyTotal.inc({ outcome: "replayed" });
+    return {
+      ...(record.response as unknown as PlaceOrderResult),
+      replayed: true,
+    };
+  }
+
+  /**
    * Places (and attempts to match) an order.
    *
    * Rejects with 503 when the matching engine is disabled via
@@ -387,8 +433,16 @@ class MatchingService {
    * inconsistent books and double fills — see src/matching/leader-lease.ts.
    * Checked before acquiring the per-book mutex so a non-leader never even
    * queues behind (or blocks) the leader's in-flight work.
+   *
+   * With `idempotency`, the key is recorded atomically with the order. A
+   * repeat of the same key and payload returns the original result
+   * (`replayed: true`) without matching again; the same key with a different
+   * payload rejects with 409 IDEMPOTENCY_CONFLICT.
    */
-  async placeOrder(input: OrderInput): Promise<PlaceOrderResult> {
+  async placeOrder(
+    input: OrderInput,
+    idempotency?: OrderIdempotency
+  ): Promise<PlaceOrderResult> {
     if (!isMatchingEngineEnabled()) {
       throw new ServiceUnavailableError("Matching engine is disabled");
     }
@@ -418,6 +472,17 @@ class MatchingService {
       }
 
       const prisma = getPrismaClient();
+
+      // Idempotent replay: answered before matching so a retry never touches
+      // the book. Same-book requests are serialized by the mutex; anything
+      // racing past this check is caught by the ledger's primary key below.
+      if (idempotency) {
+        const replay = await this.findIdempotentReplay(
+          input.userAddress,
+          idempotency
+        );
+        if (replay) return replay;
+      }
 
       const market = await prisma.market.findUnique({
         where: { id: input.marketId },
@@ -559,6 +624,26 @@ class MatchingService {
               status: takerStatus,
             },
           });
+
+          // Record the key in the same transaction as the order, so the
+          // order and its idempotency record commit (or roll back) together.
+          if (idempotency) {
+            await tx.orderIdempotencyKey.create({
+              data: {
+                userAddress: input.userAddress,
+                idempotencyKey: idempotency.key,
+                requestHash: idempotency.requestHash,
+                orderId,
+                response: JSON.parse(
+                  JSON.stringify({
+                    order,
+                    trades: matchResult.trades,
+                    filledQuantity: takerFilledQuantity,
+                  })
+                ),
+              },
+            });
+          }
 
           // Update maker orders
           for (const trade of matchResult.trades) {
@@ -715,8 +800,18 @@ class MatchingService {
         });
       } catch (error) {
         this.invalidateBook(input.marketId, input.outcome);
+        // A concurrent request with the same key committed first.
+        if (idempotency && isUniqueViolation(error)) {
+          const replay = await this.findIdempotentReplay(
+            input.userAddress,
+            idempotency
+          );
+          if (replay) return replay;
+        }
         throw error;
       }
+
+      if (idempotency) orderIdempotencyTotal.inc({ outcome: "created" });
 
       // After successful commit:
       // 1. Add remaining order to book if any

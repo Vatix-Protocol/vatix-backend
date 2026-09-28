@@ -3,7 +3,10 @@ import Fastify, { FastifyInstance } from "fastify";
 import { Keypair } from "@stellar/stellar-sdk";
 import { ordersRoutes } from "./orders.js";
 import { errorHandler } from "../middleware/errorHandler.js";
-import { ValidationError } from "../middleware/errors.js";
+import {
+  ValidationError,
+  IdempotencyConflictError,
+} from "../middleware/errors.js";
 import type { PrismaClient } from "../../generated/prisma/client";
 import { clearRateLimitStores } from "../middleware/rateLimiter.js";
 
@@ -26,6 +29,7 @@ const { mockAuditService, mockPrismaClient, mockMatchingService, mockRedis } =
     mockMatchingService: {
       placeOrder: vi.fn(),
       cancelOrder: vi.fn(),
+      findIdempotentReplay: vi.fn(),
     },
     mockRedis: {
       get: vi.fn(),
@@ -1056,6 +1060,172 @@ describe("POST /orders", () => {
     });
 
     expect(response.statusCode).toBe(500);
+  });
+});
+
+describe("POST /orders idempotency", () => {
+  let app: FastifyInstance;
+  const validAddress =
+    "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+  const newOrder = {
+    marketId: "market-1",
+    userAddress: validAddress,
+    side: "BUY" as const,
+    outcome: "YES" as const,
+    price: 0.6,
+    quantity: 100,
+  };
+  const placed = {
+    order: { id: "order-123", status: "OPEN" },
+    trades: [],
+    filledQuantity: 0,
+  };
+
+  const post = (payload: object, idempotencyKey?: string) =>
+    app.inject({
+      method: "POST",
+      url: "/orders",
+      payload,
+      headers: idempotencyKey ? { "idempotency-key": idempotencyKey } : {},
+    });
+
+  beforeEach(async () => {
+    clearRateLimitStores();
+    app = Fastify({ logger: false });
+    app.setErrorHandler(errorHandler);
+    await app.register(ordersRoutes);
+    vi.clearAllMocks();
+
+    (
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      id: "market-1",
+      status: "ACTIVE",
+      endTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      deletedAt: null,
+    });
+    mockMatchingService.findIdempotentReplay.mockResolvedValue(null);
+    mockMatchingService.placeOrder.mockResolvedValue(placed);
+  });
+
+  afterEach(async () => {
+    await app.close();
+    clearRateLimitStores();
+  });
+
+  it("places the order without idempotency when no key is sent", async () => {
+    const response = await post(newOrder);
+
+    expect(response.statusCode).toBe(201);
+    expect(mockMatchingService.findIdempotentReplay).not.toHaveBeenCalled();
+    expect(mockMatchingService.placeOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ userAddress: validAddress }),
+      undefined
+    );
+  });
+
+  it("passes the key and a payload hash scoped to the signer", async () => {
+    const response = await post(newOrder, "order-key-1");
+
+    expect(response.statusCode).toBe(201);
+    expect(response.headers["idempotent-replayed"]).toBeUndefined();
+    expect(mockMatchingService.findIdempotentReplay).toHaveBeenCalledWith(
+      validAddress,
+      {
+        key: "order-key-1",
+        requestHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }
+    );
+    expect(mockMatchingService.placeOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ userAddress: validAddress }),
+      {
+        key: "order-key-1",
+        requestHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }
+    );
+  });
+
+  it("hashes identical payloads identically and different payloads differently", async () => {
+    await post(newOrder, "k1");
+    await post(newOrder, "k1");
+    await post({ ...newOrder, quantity: 101 }, "k1");
+
+    const hashes = mockMatchingService.placeOrder.mock.calls.map(
+      (call) => call[1].requestHash
+    );
+    expect(hashes[0]).toBe(hashes[1]);
+    expect(hashes[2]).not.toBe(hashes[0]);
+  });
+
+  it("returns the original result on replay without placing a new order", async () => {
+    mockMatchingService.findIdempotentReplay.mockResolvedValue({
+      ...placed,
+      replayed: true,
+    });
+    // A replay must still succeed after the market has closed.
+    (
+      mockPrismaClient.market.findUnique as ReturnType<typeof vi.fn>
+    ).mockResolvedValue({
+      id: "market-1",
+      status: "RESOLVED",
+      deletedAt: null,
+    });
+
+    const response = await post(newOrder, "order-key-1");
+
+    expect(response.statusCode).toBe(201);
+    expect(response.headers["idempotent-replayed"]).toBe("true");
+    expect(JSON.parse(response.body)).toEqual(placed);
+    expect(mockMatchingService.placeOrder).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 IDEMPOTENCY_CONFLICT when the key was used with another payload", async () => {
+    mockMatchingService.findIdempotentReplay.mockRejectedValue(
+      new IdempotencyConflictError()
+    );
+
+    const response = await post(newOrder, "order-key-1");
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body)).toMatchObject({
+      code: "IDEMPOTENCY_CONFLICT",
+      statusCode: 409,
+    });
+    expect(mockMatchingService.placeOrder).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 when a concurrent request wins the key with another payload", async () => {
+    mockMatchingService.placeOrder.mockRejectedValue(
+      new IdempotencyConflictError()
+    );
+
+    const response = await post(newOrder, "order-key-1");
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).code).toBe("IDEMPOTENCY_CONFLICT");
+  });
+
+  it.each(["has space", "a".repeat(129), "semi;colon"])(
+    "rejects malformed key %j with 400 before any lookup",
+    async (key) => {
+      const response = await post(newOrder, key);
+
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(response.body).code).toBe("VALIDATION_ERROR");
+      expect(mockMatchingService.findIdempotentReplay).not.toHaveBeenCalled();
+      expect(mockMatchingService.placeOrder).not.toHaveBeenCalled();
+    }
+  );
+
+  it("fails closed when the idempotency store is unavailable", async () => {
+    mockMatchingService.findIdempotentReplay.mockRejectedValue(
+      new Error("connection refused")
+    );
+
+    const response = await post(newOrder, "order-key-1");
+
+    expect(response.statusCode).toBe(500);
+    expect(mockMatchingService.placeOrder).not.toHaveBeenCalled();
   });
 });
 
