@@ -51,6 +51,14 @@ export function isRetryableError(error: unknown): boolean {
     return true;
   }
 
+  // Caller cancellation is a decision, not a transient fault. Retrying an
+  // aborted request (e.g. during shutdown) restarts work the caller already
+  // cancelled, and with back-off it can outlast the very shutdown that
+  // triggered it (#1109/#1111).
+  if (isAbortError(error)) {
+    return false;
+  }
+
   const message = error.message.toLowerCase();
 
   // Non-retryable: 4xx client errors
@@ -66,6 +74,25 @@ export function isRetryableError(error: unknown): boolean {
   }
 
   return true;
+}
+
+/**
+ * True when the error represents a caller cancellation rather than an upstream
+ * fault. Deliberately does *not* cover `TimeoutError`: a deadline overrun is a
+ * transient condition and stays retryable. A cancellation is a decision, so
+ * retrying it restarts work the caller already gave up on.
+ */
+export function isAbortError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === "AbortError") {
+    return true;
+  }
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("abort") ||
+    message.includes("cancelled") ||
+    message.includes("canceled")
+  );
 }
 
 /**

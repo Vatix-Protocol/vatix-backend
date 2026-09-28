@@ -190,4 +190,51 @@ describe("validateTimeout production fail-fast (#992)", () => {
     vi.stubEnv("NODE_ENV", "production");
     expect(validateTimeout(DEFAULT_TIMEOUT_MS)).toBe(DEFAULT_TIMEOUT_MS);
   });
+
+  describe("withTimeout cancellation (#1109)", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("reports a caller abort as an AbortError, not a timeout", async () => {
+      const controller = new AbortController();
+
+      const pending = withTimeout(
+        (signal) =>
+          new Promise<string>((_resolve, reject) => {
+            signal.addEventListener("abort", () =>
+              reject(new Error("aborted"))
+            );
+          }),
+        {
+          timeoutMs: 60_000,
+          errorMessage: "Provider timed out after 60000ms",
+          signal: controller.signal,
+        }
+      );
+
+      controller.abort();
+      const cancelled = await pending;
+
+      // A cancellation must never be classified as a timeout: callers branch on
+      // `timedOut` to decide whether to retry or fail over.
+      expect(cancelled.timedOut).toBe(false);
+      expect(cancelled.error?.name).toBe("AbortError");
+    });
+
+    it("still reports a genuine deadline overrun as timedOut", async () => {
+      vi.useFakeTimers();
+
+      const pending = withTimeout(() => new Promise<string>(() => {}), {
+        timeoutMs: 5_000,
+        errorMessage: "Provider timed out after 5000ms",
+      });
+
+      await vi.advanceTimersByTimeAsync(5_100);
+      const result = await pending;
+
+      expect(result.timedOut).toBe(true);
+      expect(result.error?.message).toBe("Provider timed out after 5000ms");
+    });
+  });
 });

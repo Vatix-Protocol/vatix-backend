@@ -25,6 +25,51 @@ Fallback providers are available in development and test. When
 primary provider failure, so no secondary, stale, or default off-chain value
 can be signed or submitted.
 
+A low-confidence primary result is a **definitive fail-closed gate, not a
+provider fault**: it is never retried and never handed to the fallback chain.
+Failing over there would let a second, lower-trust opinion overrule a primary
+that already answered — exactly the "silently enqueue a weak signal" outcome
+the confidence gate exists to prevent (#991/#1111).
+
+## Fallback provider chain bounds (#1109)
+
+`FallbackAdapter` enforces the following so a misconfiguration cannot widen the
+blast radius on the money path:
+
+- **Per-provider timeout** — `timeoutMs` (default 30s, `ORACLE_FALLBACK_TIMEOUT_MS`).
+- **Whole-chain deadline** — `chainTimeoutMs` (default: per-provider timeout ×
+  `MAX_FALLBACK_PROVIDERS`). The walk stops and fails closed once the budget is
+  spent, so `N` providers × timeout × retries can never occupy a single
+  resolution for minutes.
+- **Chain length** — at most `MAX_FALLBACK_PROVIDERS` (8) entries. A longer
+  `ORACLE_FALLBACK_URLS` is rejected at construction, not silently truncated.
+- **No secret in telemetry** — a provider is identified in errors, logs, and
+  metric labels by its configured `source`, or by a credential-stripped
+  `scheme://host[:port]`. URL userinfo and query strings (which can carry an API
+  key) never reach a message or a label.
+- **Cancellation propagates** — a caller-supplied `signal` aborts the in-flight
+  provider request, and an abort is never retried or failed over.
+
+## Scheduler reliability (#1110)
+
+`apps/oracle/oracle-scheduler.ts` owns the poll loop. `PollScheduler` runs a
+cycle, waits, then schedules the next one — it never uses a fixed `setInterval`,
+so a slow cycle cannot build a backlog of queued ticks.
+
+| Behaviour        | Policy                                                                                                    |
+| ---------------- | --------------------------------------------------------------------------------------------------------- |
+| Base interval    | `ORACLE_POLL_INTERVAL_MS`, integer within `[5000, 3600000]`. Anything else throws at startup.             |
+| Overlap          | A tick that lands while a cycle is running is **skipped**, never run concurrently.                        |
+| Cycle deadline   | `ORACLE_CYCLE_TIMEOUT_MS` (default 300000). A cycle that overruns is abandoned and recorded as a failure. |
+| Failure back-off | Exponential after 3 consecutive failures, clamped to 300000 ms. One success resets the streak.            |
+| Jitter           | Up to +20% of the computed delay, so replicas that failed together do not retry in lockstep.              |
+| Shutdown         | `SIGINT`/`SIGTERM` stop scheduling, then wait for the in-flight cycle (bounded by the cycle deadline).    |
+
+Metrics: `vatix_oracle_poll_cycles_total{outcome}`,
+`vatix_oracle_poll_cycle_duration_ms`, `vatix_oracle_poll_consecutive_failures`.
+A rising `outcome="skipped"` share means the interval is shorter than a real
+cycle — raise `ORACLE_POLL_INTERVAL_MS` or fix the slow dependency.
+
 ## Failover Metrics (#1147)
 
 Failover is only actionable if primary and fallback traffic are separable:

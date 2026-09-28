@@ -112,6 +112,9 @@ export class PrimaryAdapter implements ProviderAdapter {
         {
           timeoutMs,
           errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
+          // Honour caller cancellation (poll-loop shutdown) as well as the
+          // timeout, so a shutdown does not have to wait out a hung primary.
+          signal: request.signal,
         }
       );
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { withRetry, isRetryableError } from "./retry-utils.js";
+import { withRetry, isRetryableError, isAbortError } from "./retry-utils.js";
 
 describe("retry-utils", () => {
   describe("isRetryableError", () => {
@@ -21,6 +21,46 @@ describe("retry-utils", () => {
 
     it("returns true for non-Error objects", () => {
       expect(isRetryableError("Something went wrong")).toBe(true);
+    });
+
+    // #1109/#1111: an abort is a decision, not a transient fault. Retrying it
+    // restarts work the caller cancelled and can outlast the shutdown that
+    // triggered the cancellation.
+    it("returns false for caller cancellation", () => {
+      const abort = new Error("The operation was aborted");
+      abort.name = "AbortError";
+      expect(isRetryableError(abort)).toBe(false);
+
+      expect(
+        isRetryableError(new Error("Price fetch cancelled by caller"))
+      ).toBe(false);
+    });
+  });
+
+  describe("isAbortError", () => {
+    it("recognises an AbortError by name", () => {
+      const abort = new Error("x");
+      abort.name = "AbortError";
+      expect(isAbortError(abort)).toBe(true);
+    });
+
+    it("recognises abort wording regardless of name", () => {
+      expect(isAbortError(new Error("Operation was aborted"))).toBe(true);
+      expect(isAbortError(new Error("request canceled"))).toBe(true);
+    });
+
+    it("does not classify a deadline overrun as a cancellation", () => {
+      // A timeout is transient and must stay retryable; treating it as a
+      // cancellation would silently stop retrying a flaky provider.
+      const timeout = new Error("Provider timed out after 30000ms");
+      timeout.name = "TimeoutError";
+      expect(isAbortError(timeout)).toBe(false);
+      expect(isRetryableError(timeout)).toBe(true);
+    });
+
+    it("does not classify ordinary errors as aborts", () => {
+      expect(isAbortError(new Error("HTTP 503"))).toBe(false);
+      expect(isAbortError("not an error")).toBe(false);
     });
   });
 
@@ -83,6 +123,23 @@ describe("retry-utils", () => {
         })
       ).rejects.toThrow("HTTP 400 Bad Request");
 
+      expect(operation).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not retry an aborted operation", async () => {
+      const abort = new Error("The operation was aborted");
+      abort.name = "AbortError";
+      const operation = vi.fn().mockRejectedValue(abort);
+
+      await expect(
+        withRetry(operation, {
+          maxRetries: 3,
+          initialDelayMs: 1,
+          useJitter: false,
+        })
+      ).rejects.toThrow(abort);
+
+      // Retrying a cancellation restarts work the caller already gave up on.
       expect(operation).toHaveBeenCalledTimes(1);
     });
 

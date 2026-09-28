@@ -99,6 +99,10 @@ the endpoint is protected at the ingress layer, and expect a boot-time warning.
 | `vatix_oracle_provider_attempts_total`                 | counter   | Oracle provider call outcomes by `provider` (`primary`/`fallback`) and `outcome` (`success`/`failure`) — failover visibility (#1147).                           |
 | `vatix_oracle_fallback_chain_attempts_total`           | counter   | Outcomes of each provider tried inside the fallback chain, labelled by `provider` (chain entry `source`) and `outcome` (#1147).                                 |
 | `vatix_oracle_dry_run_evaluations_total`               | counter   | Dry-run oracle evaluations by would-be outcome (`would="submit"` / `would="fail_closed"`); dry-run never submits (#1146).                                       |
+| `vatix_oracle_poll_cycles_total`                       | counter   | Oracle poll cycles by `outcome` (`success`/`failure`/`skipped`); `skipped` means a tick was dropped because the previous cycle was still running (#1110).       |
+| `vatix_oracle_poll_cycle_duration_ms`                  | histogram | Duration of a single oracle poll cycle in milliseconds — size `ORACLE_POLL_INTERVAL_MS` against real cycle cost (#1110).                                        |
+| `vatix_oracle_poll_consecutive_failures`               | gauge     | Consecutive failed oracle poll cycles (reset to 0 on success); drives the scheduler's bounded back-off (#1110).                                                 |
+| `vatix_oracle_price_fetch_attempts_total`              | counter   | Price fetch attempts by `provider` and `outcome` (`success`/`failure`/`timeout`); the `timeout` series separates a hang from an outage (#1112).                 |
 | `vatix_market_search_requests_total`                   | counter   | Market list/search requests labelled by `filtered` (`true` when a `q` term was supplied); soft-deleted markets are excluded for both values (#1145).            |
 | `vatix_oracle_submission_ambiguous_total`              | counter   | Total oracle on-chain submissions left in an ambiguous confirmation state (e.g. NOT_FOUND that may still confirm).                                              |
 | `vatix_oracle_submission_confirmation_latency_ms`      | histogram | Milliseconds from oracle submission broadcast to on-chain confirmation.                                                                                         |
@@ -234,6 +238,29 @@ _would_ have happened (`would="submit"` or `would="fail_closed"`). Use it to
 compare a dry-run's would-be submission rate against the real
 `vatix_oracle_provider_attempts_total` series before flipping the flag off. See
 `docs/oracle-dry-run.md`.
+
+### `vatix_oracle_poll_cycles_total` / `vatix_oracle_poll_consecutive_failures` (#1110)
+
+- **`vatix_oracle_poll_cycles_total{outcome}`** — `success`, `failure` (the
+  cycle threw, including a cycle abandoned for exceeding
+  `ORACLE_CYCLE_TIMEOUT_MS`), or `skipped` (a tick was dropped because the
+  previous cycle was still running). A rising `skipped` share means the
+  configured interval is shorter than a real cycle, so resolution latency grows
+  silently:
+  `sum(rate(vatix_oracle_poll_cycles_total{outcome="skipped"}[15m])) > 0`
+- **`vatix_oracle_poll_consecutive_failures`** — the current failure streak.
+  While it is non-zero the scheduler is backing off rather than retrying at full
+  speed; alert on it staying above 0 for more than a few minutes:
+  `vatix_oracle_poll_consecutive_failures > 0`
+
+### `vatix_oracle_price_fetch_attempts_total` (#1112)
+
+`{provider,outcome}` — `provider` is the configured provider name (never a URL,
+never a key) and `outcome` is `success`, `failure`, or `timeout`. The `timeout`
+series is the actionable one: a provider that always times out is a hang rather
+than an outage, and it is invisible in a plain success/failure ratio.
+`sum(rate(vatix_oracle_price_fetch_attempts_total{outcome="timeout"}[15m])) > 0`
+means a price feed is hanging, not merely erroring.
 
 ### `vatix_market_search_requests_total` (#1145)
 

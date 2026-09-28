@@ -13,7 +13,12 @@ import type {
   ResolutionRequest,
 } from "./provider-adapter.js";
 import { DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
-import { withRetry, RetryConfig, isRetryableError } from "./retry-utils.js";
+import {
+  withRetry,
+  RetryConfig,
+  isRetryableError,
+  isAbortError,
+} from "./retry-utils.js";
 import type { ILogger } from "../../packages/shared/src/logger.js";
 import type { SubmissionQueueItem } from "./submission-queue.js";
 import { SubmissionQueue } from "./submission-queue.js";
@@ -239,6 +244,14 @@ export class OracleService {
 
       return result;
     } catch (primaryError) {
+      // A low-confidence result is a definitive fail-closed gate, not a
+      // provider fault. Falling back here would let a second opinion overrule
+      // a primary that already answered — the exact "silently enqueue a weak
+      // signal" outcome the confidence gate exists to prevent (#991/#1111).
+      if (primaryError instanceof LowConfidenceResultError) {
+        throw primaryError;
+      }
+
       this.metrics.primaryFailureCount++;
       oracleProviderAttemptsTotal.labels("primary", "failure").inc();
       this.logger.error("Primary provider failed", {
@@ -252,6 +265,12 @@ export class OracleService {
 
       // If fallback is disabled, re-throw the error
       if (!this.config.enableFallback) {
+        throw primaryError;
+      }
+
+      // Cancellation is a decision, not a fault: never fail over after the
+      // caller aborted (e.g. shutdown), and never retry it.
+      if (isAbortError(primaryError)) {
         throw primaryError;
       }
 
