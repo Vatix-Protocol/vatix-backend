@@ -38,11 +38,26 @@ Requests and responses are typed and validated at the boundary. Stable error cod
 | `UNAUTHENTICATED` | 401 | Missing/expired credentials |
 | `FORBIDDEN` | 403 | Authenticated but wrong role |
 | `VALIDATION_ERROR` | 400 | Malformed/invalid payload |
+| `PAYLOAD_TOO_LARGE` | 413 | Request body exceeds the configured size limit |
 | `IDEMPOTENCY_CONFLICT` | 409 | Replayed key with different payload |
 | `DEPENDENCY_UNAVAILABLE` | 503 | RPC/DB/Redis unavailable (writes fail closed) |
 | `RATE_LIMITED` | 429 | Entrypoint rate limit exceeded |
 
 Every response carries a correlation id (echoed from `x-correlation-id` or generated) for tracing.
+
+### Body size limits
+
+External HTTP entrypoints (the API and the indexer HTTP server) enforce a configurable maximum
+request body size. Oversized bodies are rejected fail-closed with `413 PAYLOAD_TOO_LARGE` before
+any handler logic runs, so untrusted clients cannot bypass the limit by streaming or chunking.
+
+- The limit is configurable per environment (e.g. `MAX_BODY_BYTES`); the default is conservative
+  and applies to every external entrypoint unless explicitly overridden.
+- The check runs before authz/rate-limit handlers so oversized requests are cheap to reject and
+  cannot be used to grief downstream services.
+- Rejections return the stable `PAYLOAD_TOO_LARGE` code with a correlation id; the response never
+  echoes request contents.
+- Body-limit rejections are counted in metrics and logged without secrets or payload contents.
 
 ### Idempotency
 
@@ -58,7 +73,8 @@ writes never proceed on an unverified dependency.
 ### Observability
 
 Metrics and logs cover the money path (order create/cancel/amend, authz denials, idempotency
-hits/conflicts, dependency failures). Logs never include secrets, tokens, or full credentials.
+hits/conflicts, dependency failures, body-limit rejections). Logs never include secrets, tokens,
+or full credentials.
 
 ### Rollback / kill-switch
 

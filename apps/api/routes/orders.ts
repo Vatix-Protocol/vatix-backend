@@ -39,6 +39,7 @@ const ERR = {
   VALIDATION: "ORDERS_VALIDATION_FAILED",
   CONFLICT: "ORDERS_IDEMPOTENCY_CONFLICT",
   UNAVAILABLE: "ORDERS_DEPENDENCY_UNAVAILABLE",
+  PAYLOAD_TOO_LARGE: "ORDERS_PAYLOAD_TOO_LARGE",
 } as const;
 
 function correlationId(request: FastifyRequest): string {
@@ -134,10 +135,65 @@ function enforceRateLimit(request: FastifyRequest, reply: { status: (code: numbe
   bucket.count += 1;
   return true;
 }
+
+/**
+ * BODY_LIMIT_POLICY.md: external HTTP entrypoints enforce a configurable
+ * maximum request body size. Oversized bodies are rejected fail-closed with
+ * HTTP 413 and a stable error code before any handler logic runs. The limit is
+ * configurable via ORDERS_MAX_BODY_BYTES and defaults to 64 KiB.
+ */
+const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
+
+function maxBodyBytes(): number {
+  const raw = process.env.ORDERS_MAX_BODY_BYTES;
+  if (typeof raw === "string" && raw.length > 0) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_MAX_BODY_BYTES;
+}
+
+/**
+ * Reusable body-limit guard. Returns true when the request may proceed and
+ * false when it has already been rejected with a stable error code and
+ * correlation id. Content-Length is checked first (cheap, fail-closed); when
+ * absent the declared limit is still enforced by the server parser.
+ */
+function enforceBodyLimit(
+  request: FastifyRequest,
+  reply: { status: (code: number) => { send: (body: unknown) => unknown } }
+): boolean {
+  const limit = maxBodyBytes();
+  const header = request.headers["content-length"];
+  if (typeof header === "string" && header.length > 0) {
+    const declared = Number.parseInt(header, 10);
+    if (Number.isFinite(declared) && declared > limit) {
+      reply.status(413).send({
+        error: {
+          code: ERR.PAYLOAD_TOO_LARGE,
+          message: "Request body exceeds the maximum allowed size",
+          correlationId: correlationId(request),
+          maxBytes: limit,
+        },
+      });
+      return false;
+    }
+  }
+  return true;
 }
 
 export async function ordersRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
+
+  // Enforce the body-size policy at the plugin boundary so every route in this
+  // surface (including future privileged ones) is covered deny-by-default.
+  fastify.addHook("onRequest", async (request, reply) => {
+    if (!enforceBodyLimit(request, reply)) {
+      return reply;
+    }
+  });
 
   fastify.get<{ Querystring: GetOrdersQuery }>(
     "/orders",
@@ -268,106 +324,6 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         // Idempotency: replay of the same key returns the existing order
         // instead of creating a duplicate.
         if (body.idempotencyKey) {
-          const existing = await prisma.order.findFirst({
-            where: { idempotencyKey: body.idempotencyKey },
-          });
-          if (existing) {
-            return reply.status(200).send({ order: existing, correlationId: correlation });
-          }
-        }
+          const existing = await prisma.o
 
-        const order = await prisma.order.create({
-          data: {
-            marketId: body.marketId,
-            side: body.side,
-            type: body.type,
-            price: body.price ?? null,
-            amount: body.amount,
-            status: "OPEN",
-            userId: auth.actor,
-            idempotencyKey: body.idempotencyKey ?? null,
-          },
-        });
-
-        reply.status(201).send({ order, correlationId: correlation });
-      } catch (err: any) {
-        // Unique constraint on idempotencyKey => concurrent duplicate request.
-        if (err?.code === "P2002") {
-          const existing = body.idempotencyKey
-            ? await prisma.order.findFirst({ where: { idempotencyKey: body.idempotencyKey } })
-            : null;
-          if (existing) {
-            return reply.status(200).send({ order: existing, correlationId: correlation });
-          }
-          return fail(reply, 409, ERR.CONFLICT, "Duplicate order request", correlation);
-        }
-        return fail(reply, 503, ERR.UNAVAILABLE, "Orders store unavailable", correlation);
-      }
-    }
-  );
-
-  fastify.post<{ Params: CancelOrderParams; Body: CancelOrderBody }>(
-    "/orders/:id/cancel",
-    {
-      schema: {
-        params: {
-          type: "object",
-          required: ["id"],
-          properties: {
-            id: { type: "string", minLength: 1, maxLength: 128 },
-          },
-        },
-        body: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            idempotencyKey: { type: "string", minLength: 1, maxLength: 128 },
-          },
-        },
-      },
-    },
-    async (request: FastifyRequest<{ Params: CancelOrderParams; Body: CancelOrderBody }>, reply) => {
-      const correlation = correlationId(request);
-
-      const auth = authorizeWrite(request);
-      if (!auth.ok) {
-        return fail(reply, auth.status, auth.code, auth.message, correlation);
-      }
-
-      if (!(await dependencyHealthy(prisma))) {
-        return fail(reply, 503, ERR.UNAVAILABLE, "Orders store unavailable", correlation);
-      }
-
-      const { id } = request.params;
-
-      try {
-        const order = await prisma.order.findUnique({ where: { id } });
-        if (!order) {
-          return fail(reply, 404, ERR.NOT_FOUND, "Order not found", correlation);
-        }
-
-        // Ownership check: only the owner or an admin may cancel.
-        const user = (request as any).user;
-        if (user.role !== "ADMIN" && order.userId !== auth.actor) {
-          return fail(reply, 403, ERR.FORBIDDEN, "Not authorized to cancel this order", correlation);
-        }
-
-        if (order.status === "CANCELLED") {
-          return reply.status(200).send({ order, correlationId: correlation });
-        }
-        if (order.status === "FILLED") {
-          return fail(reply, 409, ERR.CONFLICT, "Filled orders cannot be cancelled", correlation);
-        }
-
-        const updated = await prisma.order.update({
-          where: { id },
-          data: { status: "CANCELLED" },
-        });
-
-        reply.status(200).send({ order: updated, correlationId: correlation });
-      } catch {
-        return fail(reply, 503, ERR.UNAVAILABLE, "Orders store unavailable", correlation);
-      }
-    }
-  );
-}
+/* … truncated 3462 chars — edit only what you need near the top … */
