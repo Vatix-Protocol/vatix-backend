@@ -1,20 +1,35 @@
 #!/usr/bin/env tsx
 /**
- * Replay Dead-Letter Queue Admin CLI
+ * Replay Dead-Letter Queue Admin CLI — issue #1136.
  *
  * Reads entries from Redis dead-letter streams and re-enqueues them to their
- * original queues.  After a successful replay the dead-letter entry is removed.
+ * original queues. After a successful replay the dead-letter entry is removed.
  *
  * Usage:
- *   pnpm tsx scripts/replay-dlq.ts                                # replay all DLQs
- *   pnpm tsx scripts/replay-dlq.ts --queue settlement             # one queue only
- *   pnpm tsx scripts/replay-dlq.ts --queue settlement --limit 10  # limit entries
- *   pnpm tsx scripts/replay-dlq.ts --dry-run                      # preview only
+ *   pnpm replay:dlq                                   # replay all DLQs
+ *   pnpm replay:dlq -- --queue settlement              # one queue only
+ *   pnpm replay:dlq -- --queue settlement --limit 10   # limit entries
+ *   pnpm replay:dlq -- --dry-run                       # preview only
+ *   pnpm replay:dlq -- --yes                           # confirm mutation
+ *
+ * In NODE_ENV=production a mutating replay refuses to run without `--yes`
+ * (exit code 2); `--dry-run` previews and never needs it. The replay logic
+ * lives in apps/workers/src/consumers/stream-dlq-replay.ts so it is unit
+ * tested without a Redis server.
+ *
+ * Separate from `pnpm dlq` (scripts/dlq.ts, issue #953), which operates on the
+ * BullMQ `failed` set for retry-exhausted jobs.
  *
  * @module scripts/replay-dlq
  */
 
+import { randomUUID } from "crypto";
 import Redis from "ioredis";
+import {
+  DlqUsageError,
+  assertSafeQueueFilter,
+  replayDeadLetters,
+} from "../apps/workers/src/consumers/stream-dlq-replay.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -24,45 +39,63 @@ const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 const KEY_PREFIX = process.env.REDIS_KEY_PREFIX ?? "vatix:";
 const DLQ_PREFIX = `${KEY_PREFIX}dead-letter:`;
 
+const correlationId = randomUUID();
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function parseArgs(): {
+interface Args {
   queueFilter?: string;
-  limit: number;
+  limit?: number;
   dryRun: boolean;
-} {
-  const args = process.argv.slice(2);
-  let queueFilter: string | undefined;
-  let limit = Infinity;
-  let dryRun = false;
+  yes: boolean;
+}
 
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--queue" && args[i + 1]) {
-      queueFilter = args[++i];
-    } else if (args[i] === "--limit" && args[i + 1]) {
-      limit = parseInt(args[i + 1], 10);
-      if (!Number.isFinite(limit) || limit < 1) limit = Infinity;
-      i++;
-    } else if (args[i] === "--dry-run") {
+function parseArgs(argv: string[]): Args {
+  let queueFilter: string | undefined;
+  let limit: number | undefined;
+  let dryRun = false;
+  let yes = false;
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--queue") {
+      const value = argv[++i];
+      if (value === undefined) {
+        throw new DlqUsageError("--queue requires a value");
+      }
+      queueFilter = value;
+    } else if (arg === "--limit") {
+      const n = parseInt(argv[++i] ?? "", 10);
+      if (!Number.isFinite(n) || n < 1) {
+        throw new DlqUsageError("--limit must be a positive integer");
+      }
+      limit = n;
+    } else if (arg === "--dry-run") {
       dryRun = true;
+    } else if (arg === "--yes" || arg === "-y") {
+      yes = true;
+    } else {
+      throw new DlqUsageError(`Unknown argument: ${arg}`);
     }
   }
 
-  return { queueFilter, limit, dryRun };
+  assertSafeQueueFilter(queueFilter);
+  return { queueFilter, limit, dryRun, yes };
 }
 
 function log(
-  level: string,
+  level: "info" | "warn" | "error",
   message: string,
-  meta?: Record<string, unknown>
+  meta: Record<string, unknown> = {}
 ): void {
   console.log(
     JSON.stringify({
       ts: new Date().toISOString(),
       level,
       component: "replay-dlq",
+      correlationId,
       message,
       ...meta,
     })
@@ -70,63 +103,30 @@ function log(
 }
 
 // ---------------------------------------------------------------------------
-// Discover & helpers
-// ---------------------------------------------------------------------------
-
-async function discoverDLQStreams(
-  redis: Redis,
-  queueFilter?: string
-): Promise<string[]> {
-  const pattern = queueFilter
-    ? `${DLQ_PREFIX}${queueFilter}`
-    : `${DLQ_PREFIX}*`;
-
-  const keys: string[] = [];
-  let cursor = "0";
-
-  do {
-    const [nextCursor, batch] = await redis.scan(
-      cursor,
-      "MATCH",
-      pattern,
-      "COUNT",
-      100
-    );
-    cursor = nextCursor;
-    keys.push(...batch);
-  } while (cursor !== "0");
-
-  return keys.sort();
-}
-
-function fieldsToRecord(fields: string[]): Record<string, unknown> {
-  const record: Record<string, unknown> = {};
-  for (let i = 0; i < fields.length; i += 2) {
-    const key = fields[i];
-    const value = fields[i + 1];
-    if (key === "payload") {
-      try {
-        record[key] = JSON.parse(value);
-      } catch {
-        record[key] = value;
-      }
-    } else {
-      record[key] = value;
-    }
-  }
-  return record;
-}
-
-// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const { queueFilter, limit, dryRun } = parseArgs();
+  const args = parseArgs(process.argv.slice(2));
+  const nodeEnv = process.env.NODE_ENV ?? "development";
+
+  // Production confirmation gate for the state-mutating path (dry-run exempt).
+  if (!args.dryRun && nodeEnv === "production" && !args.yes) {
+    log(
+      "error",
+      "Refusing to replay dead letters in production without --yes",
+      {
+        queueFilter: args.queueFilter ?? "*",
+      }
+    );
+    process.exit(2);
+  }
 
   log("info", "DLQ replay started", {
-    queueFilter: queueFilter ?? "*",
-    dryRun,
+    queueFilter: args.queueFilter ?? "*",
+    limit: args.limit ?? null,
+    dryRun: args.dryRun,
+    nodeEnv,
   });
 
   const redis = new Redis(REDIS_URL, {
@@ -134,106 +134,44 @@ async function main(): Promise<void> {
     retryStrategy: (times) => Math.min(times * 100, 2000),
   });
 
-  let totalReplayed = 0;
-  let totalFailed = 0;
-
   try {
-    const streamKeys = await discoverDLQStreams(redis, queueFilter);
+    const summary = await replayDeadLetters(redis, {
+      dlqPrefix: DLQ_PREFIX,
+      keyPrefix: KEY_PREFIX,
+      queueFilter: args.queueFilter,
+      limit: args.limit,
+      dryRun: args.dryRun,
+    });
 
-    if (streamKeys.length === 0) {
+    if (summary.streams.length === 0) {
       log("info", "No dead-letter streams found", { prefix: DLQ_PREFIX });
       return;
     }
 
-    log("info", "Discovered dead-letter streams", {
-      streams: streamKeys,
-      count: streamKeys.length,
-    });
-
-    for (const streamKey of streamKeys) {
-      const queueName = streamKey.replace(DLQ_PREFIX, "");
-
-      if (totalReplayed >= limit) {
-        log("info", "Replay limit reached, stopping", { limit });
-        break;
-      }
-
-      const entries: Array<[string, string[]]> = await redis.xrange(
-        streamKey,
-        "-",
-        "+"
-      );
-
-      if (entries.length === 0) continue;
-
-      log("info", `Processing DLQ stream "${streamKey}"`, {
-        queue: queueName,
-        entries: entries.length,
+    // Payloads are never logged by the mutating path; only ids and counts, so
+    // settlement payloads never reach operator logs.
+    if (summary.dryRun) {
+      log("info", "[DRY-RUN] Replay preview complete", {
+        streams: summary.streams,
+        wouldReplay: summary.replayed,
+        skipped: summary.skipped,
       });
-
-      for (const [entryId, fields] of entries) {
-        if (totalReplayed >= limit) break;
-
-        const message = fieldsToRecord(fields);
-
-        log("info", "Replaying dead-letter entry", {
-          entryId,
-          queue: queueName,
-          originalMessageId: message.messageId,
-          reason: message.reason,
-        });
-
-        if (dryRun) {
-          log("info", "[DRY-RUN] Would replay entry", {
-            entryId,
-            queue: queueName,
-            payload: message.payload,
-          });
-          totalReplayed++;
-          continue;
-        }
-
-        try {
-          const targetStream = `${KEY_PREFIX}${queueName}`;
-          const rawPayload =
-            typeof message.payload === "object" && message.payload !== null
-              ? message.payload
-              : {};
-
-          const xaddFields: string[] = [];
-          for (const [key, value] of Object.entries(rawPayload)) {
-            xaddFields.push(key, String(value));
-          }
-
-          if (xaddFields.length > 0) {
-            await redis.xadd(targetStream, "*", ...xaddFields);
-          }
-
-          await redis.xdel(streamKey, entryId);
-
-          log("info", "Entry replayed and removed from DLQ", {
-            entryId,
-            queue: queueName,
-            targetStream,
-          });
-
-          totalReplayed++;
-        } catch (error) {
-          totalFailed++;
-          log("error", "Failed to replay entry", {
-            entryId,
-            queue: queueName,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
+    } else {
+      log("info", "DLQ replay completed", {
+        streams: summary.streams.length,
+        scanned: summary.scanned,
+        replayed: summary.replayed,
+        skipped: summary.skipped,
+      });
     }
 
-    log("info", "DLQ replay completed", {
-      replayed: totalReplayed,
-      failed: totalFailed,
-      dryRun,
-    });
+    if (summary.failures.length > 0) {
+      log("error", "DLQ replay had per-entry failures", {
+        failed: summary.failures.length,
+        failures: summary.failures,
+      });
+      process.exitCode = 1;
+    }
   } finally {
     await redis.quit();
   }
@@ -244,6 +182,10 @@ async function main(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 void main().catch((error) => {
+  if (error instanceof DlqUsageError) {
+    log("error", "Usage error", { detail: error.message });
+    process.exit(2);
+  }
   log("error", "DLQ replay script failed", {
     error: error instanceof Error ? error.message : String(error),
   });

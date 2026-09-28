@@ -1,5 +1,9 @@
 import { loadIndexerContractId } from "../../../../packages/shared/src/config.js";
 import { loadStellarEndpoints } from "../../../../packages/shared/src/stellarTransport.js";
+import {
+  StellarNetworkConfigError,
+  validateStellarNetworkConsistency,
+} from "../../../../packages/shared/src/stellarNetwork.js";
 
 export interface ResolvedOracleStellarConfig {
   rpcUrl: string;
@@ -7,6 +11,33 @@ export interface ResolvedOracleStellarConfig {
   contractId: string;
   networkPassphrase: string;
   signerSecret: string;
+}
+
+/**
+ * Resolve the Soroban RPC endpoint list, first asserting the passphrase matches
+ * the declared deployment network and then translating any shared network
+ * consistency failure (#1133/#1134/#1135) into this module's
+ * StellarNetworkMismatchError. Ordering matters: the shared check runs inside
+ * loadStellarEndpoints too, so asserting first keeps a single error type for
+ * every caller of this module.
+ */
+function resolveRpcUrls(
+  env: NodeJS.ProcessEnv,
+  networkPassphrase: string
+): string[] {
+  assertPassphraseMatchesDeployment(
+    networkPassphrase,
+    env.STELLAR_NETWORK ?? "testnet"
+  );
+
+  try {
+    return loadStellarEndpoints(env, networkPassphrase).rpcUrls;
+  } catch (error) {
+    if (error instanceof StellarNetworkConfigError) {
+      throw new StellarNetworkMismatchError(error.variable, error.message);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -35,11 +66,30 @@ export class StellarNetworkMismatchError extends Error {
  * passphrase known for deploymentNetwork. Unrecognized deployment networks
  * (e.g. futurenet, a custom standalone network) are skipped rather than
  * rejected, since we have no known-good passphrase to compare against.
+ *
+ * The shared consistency check (#1133/#1134/#1135) runs first so the worker's
+ * pass also covers the cases its own comparison cannot see: a passphrase that
+ * disagrees with STELLAR_NETWORK, and Horizon/RPC endpoints that serve a
+ * different network than the passphrase names. Its error is re-thrown as
+ * StellarNetworkMismatchError so callers of this module keep a single failure
+ * type.
  */
 export function assertPassphraseMatchesDeployment(
   networkPassphrase: string,
   deploymentNetwork: string
 ): void {
+  try {
+    validateStellarNetworkConsistency({
+      SOROBAN_NETWORK_PASSPHRASE: networkPassphrase,
+      STELLAR_NETWORK: deploymentNetwork,
+    });
+  } catch (error) {
+    if (error instanceof StellarNetworkConfigError) {
+      throw new StellarNetworkMismatchError(error.variable, error.message);
+    }
+    throw error;
+  }
+
   const normalized = deploymentNetwork.trim().toLowerCase();
   const expected = (
     KNOWN_STELLAR_PASSPHRASES as Record<string, string | undefined>
@@ -93,12 +143,7 @@ export function resolveOracleStellarConfig(
     return undefined;
   }
 
-  const { rpcUrls } = loadStellarEndpoints(env, networkPassphrase);
-
-  assertPassphraseMatchesDeployment(
-    networkPassphrase,
-    env.STELLAR_NETWORK ?? "testnet"
-  );
+  const rpcUrls = resolveRpcUrls(env, networkPassphrase);
 
   return {
     rpcUrl: rpcUrls[0],
@@ -173,12 +218,7 @@ export function validateAndResolveStellarConfig(
     throw new IncompleteProductionStellarConfigError(missing);
   }
 
-  const { rpcUrls } = loadStellarEndpoints(env, networkPassphrase);
-
-  assertPassphraseMatchesDeployment(
-    networkPassphrase,
-    env.STELLAR_NETWORK ?? "testnet"
-  );
+  const rpcUrls = resolveRpcUrls(env, networkPassphrase);
 
   return {
     rpcUrl: rpcUrls[0],

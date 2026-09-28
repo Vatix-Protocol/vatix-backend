@@ -90,6 +90,56 @@ Rules:
 [env] ENV_INVALID INDEXER_CONTRACT_ID must be a Stellar contract strkey (C + 55 base32 chars), got: invalid value
 ```
 
+### Network consistency boot gate (#1133, #1134, #1135)
+
+`SOROBAN_NETWORK_PASSPHRASE`, `STELLAR_NETWORK`, `STELLAR_HORIZON_URL(S)` and
+`STELLAR_RPC_URL(S)` are four separate variables that must all describe the same
+network. Nothing in Stellar's SDKs stops a process from pairing the testnet
+passphrase with a mainnet Horizon host: signatures, tx envelopes and ledger
+reads would be built for one chain and submitted to another. The failure is
+silent — reads return plausible data from the wrong chain rather than erroring.
+
+`packages/shared/src/stellarNetwork.ts` owns the invariants, and
+`validateStellarNetworkConsistency(env)` runs them. It is called from three
+choke points so a service cannot bypass it:
+
+| Call site                                                             | Covers                      |
+| --------------------------------------------------------------------- | --------------------------- |
+| `validateEnv()` in `apps/indexer/src/config.ts`                       | Indexer / API boot gate     |
+| `resolveRpcUrls()` in `apps/workers/src/oracle/stellar-config.ts`     | Oracle + settlement workers |
+| `loadStellarEndpoints()` in `packages/shared/src/stellarTransport.ts` | Any other endpoint consumer |
+
+| Invariant                                                | Rule                                                         |
+| -------------------------------------------------------- | ------------------------------------------------------------ |
+| `SOROBAN_NETWORK_PASSPHRASE` ⇄ `STELLAR_NETWORK` (#1133) | Passphrase must equal the one known for the declared network |
+| Horizon URL ⇄ passphrase (#1134)                         | Public Horizon hosts must serve the passphrase's network     |
+| Soroban RPC URL ⇄ passphrase (#1135)                     | Public Soroban hosts must serve the passphrase's network     |
+
+Rules:
+
+- Fail-closed in **every** environment, not just production — a drifted config
+  should never boot anywhere.
+- Every entry of `STELLAR_HORIZON_URLS` / `STELLAR_RPC_URLS` is checked, not
+  just the first: the transport layer fails over across the whole list, so a
+  drifted secondary endpoint is just as dangerous as a drifted primary.
+- Only **public Stellar hosts** are classified. Self-hosted, proxied and
+  `localhost` endpoints carry no network signal and are left alone rather than
+  guessed at — the check is deny-by-default on the _verdict_, not on config the
+  operator legitimately controls.
+- `STELLAR_NETWORK=mainnet` with the mainnet passphrase still requires
+  `VATIX_ALLOW_MAINNET=true` (see above) — the two gates are independent.
+- Failures carry the stable code **`ENV_NETWORK_MISMATCH`** plus the offending
+  **variable name only**, never its value. Each boot gate re-labels this with
+  its own code (`ENV_INVALID` in the indexer) so log lines stay uniform.
+
+```
+[env] ENV_NETWORK_MISMATCH: STELLAR_HORIZON_URL points at the mainnet network but SOROBAN_NETWORK_PASSPHRASE is the testnet passphrase. Reads would be served by the wrong chain.
+```
+
+Unit tests: `packages/shared/src/stellarNetwork.test.ts`, plus wiring coverage
+in `apps/indexer/src/config.test.ts` and
+`apps/workers/src/oracle/stellar-config.test.ts`.
+
 ### Metrics scrape authz boot gate (#1130)
 
 The API refuses to boot in production without a `/metrics` authorization policy

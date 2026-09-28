@@ -126,6 +126,41 @@ pnpm dlq discard   --queue oracle --job <jobId> --yes
 - Unit tests: `apps/workers/src/consumers/bullmq-dlq.test.ts`. Integration
   test (real Redis + worker): `tests/integration/bullmq-dlq.test.ts`.
 
+### Raw-stream DLQ replay CLI (`pnpm replay:dlq`)
+
+`scripts/replay-dlq.ts` drains the raw `vatix:dead-letter:*` streams written by
+`logDeadLetter()`. The replay logic lives in
+`apps/workers/src/consumers/stream-dlq-replay.ts` so it is unit tested without a
+Redis server; the CLI is a thin wrapper over it.
+
+```bash
+pnpm replay:dlq -- --dry-run                      # preview, mutates nothing
+pnpm replay:dlq -- --queue settlement --limit 10  # one queue, bounded
+pnpm replay:dlq -- --yes                          # confirm a production run
+```
+
+- **Fail-closed on write.** Each entry is appended to the live stream _first_
+  and only then deleted from the DLQ. A failure at either step leaves the entry
+  in the DLQ, so a crashed replay never loses a message — a duplicate is the
+  safe direction for a money-path queue. Per-entry failures are collected rather
+  than aborting the batch, and the process exits non-zero if any occurred.
+- **Idempotent.** A re-run only sees entries still in the DLQ; already-replayed
+  ones are gone. Entries whose payload is missing or not an object are
+  **skipped, not deleted**, so an operator can still inspect them.
+- **Deny-by-default on `--queue`.** The filter is matched against
+  `[A-Za-z0-9_.:-]{1,128}` _before_ it is interpolated into a Redis `SCAN`
+  pattern, so a glob value (`*`, `settle?ment`) cannot widen the match to other
+  key namespaces. The same check is re-applied to every discovered stream suffix
+  before it becomes part of a live key name. Unknown args and a non-positive
+  `--limit` exit 2.
+- **Production confirmation.** In `NODE_ENV=production` a mutating replay
+  refuses to run without `--yes` (exit code 2). `--dry-run` previews and never
+  needs it.
+- **No payload leakage.** Every line is structured JSON carrying a
+  `correlationId`; the mutating path logs only entry/queue ids and counts —
+  settlement payloads never reach operator logs.
+- Unit tests: `apps/workers/src/consumers/stream-dlq-replay.test.ts`.
+
 ## Related Documentation
 
 - [Architecture Overview](architecture.md) — How workers fit into the system

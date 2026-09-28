@@ -39,3 +39,15 @@ export {
   resolveSigningNetworkPassphrase,
   buildDomainSeparatedMessage,
 } from "./signingDomain.js";
+
+export type { StellarNetworkName } from "./stellarNetwork.js";
+export {
+  ENV_NETWORK_MISMATCH,
+  KNOWN_STELLAR_NETWORKS,
+  StellarNetworkConfigError,
+  classifyNetworkPassphrase,
+  assertPassphraseMatchesDeployment,
+  assertHorizonMatchesNetwork,
+  assertRpcMatchesNetwork,
+  validateStellarNetworkConsistency,
+} from "./stellarNetwork.js";

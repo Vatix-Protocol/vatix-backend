@@ -5,6 +5,7 @@ import {
   assertPassphraseMatchesDeployment,
   StellarNetworkMismatchError,
   IncompleteProductionStellarConfigError,
+  KNOWN_STELLAR_PASSPHRASES,
 } from "./stellar-config.js";
 
 const BASE_ENV = {
@@ -241,5 +242,48 @@ describe("validateAndResolveStellarConfig", () => {
     ).toThrow(
       /Missing:.*STELLAR_RPC_URL.*contract ID.*SOROBAN_NETWORK_PASSPHRASE/
     );
+  });
+});
+
+describe("network consistency wiring (#1133, #1134, #1135)", () => {
+  const BASE = {
+    STELLAR_NETWORK: "testnet",
+    SOROBAN_NETWORK_PASSPHRASE: KNOWN_STELLAR_PASSPHRASES.testnet,
+    STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
+    INDEXER_CONTRACT_ID: "CTESTCONTRACT",
+    ORACLE_SECRET_KEY: "SKEY",
+  };
+
+  it("resolves a consistent testnet config", () => {
+    const cfg = resolveOracleStellarConfig({ ...BASE });
+    expect(cfg?.rpcUrl).toBe("https://soroban-testnet.stellar.org");
+  });
+
+  it("throws StellarNetworkMismatchError when the passphrase drifts from STELLAR_NETWORK", () => {
+    expect(() =>
+      resolveOracleStellarConfig({
+        ...BASE,
+        STELLAR_NETWORK: "mainnet",
+      })
+    ).toThrow(StellarNetworkMismatchError);
+  });
+
+  it("throws StellarNetworkMismatchError when the RPC URL serves another network", () => {
+    expect(() =>
+      resolveOracleStellarConfig({
+        ...BASE,
+        STELLAR_RPC_URL: "https://soroban.stellar.org",
+      })
+    ).toThrow(/ENV_NETWORK_MISMATCH/);
+  });
+
+  it("throws StellarNetworkMismatchError when a secondary RPC URL drifts", () => {
+    expect(() =>
+      resolveOracleStellarConfig({
+        ...BASE,
+        STELLAR_RPC_URLS:
+          "https://soroban-testnet.stellar.org,https://soroban.stellar.org",
+      })
+    ).toThrow(/STELLAR_RPC_URLS/);
   });
 });

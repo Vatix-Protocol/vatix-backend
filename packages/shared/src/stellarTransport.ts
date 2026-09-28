@@ -1,4 +1,5 @@
 import type { ILogger } from "./logger.js";
+import { validateStellarNetworkConsistency } from "./stellarNetwork.js";
 
 export type CircuitState = "closed" | "open" | "half-open";
 
@@ -292,6 +293,13 @@ export function loadStellarEndpoints(
   env: NodeJS.ProcessEnv,
   defaultPassphrase?: string
 ): EndpointConfig {
+  // Fail-closed network consistency (#1133/#1134/#1135): every configured
+  // Horizon/RPC endpoint must serve the same network the passphrase names.
+  // Throws StellarNetworkConfigError (ENV_NETWORK_MISMATCH) on drift. This is
+  // the choke point every service resolves endpoints through, so the invariant
+  // holds even for callers with no dedicated boot gate.
+  validateStellarNetworkConsistency(env);
+
   const horizonFromList = parseEndpointUrls(env.STELLAR_HORIZON_URLS);
   const horizonUrls =
     horizonFromList.length > 0

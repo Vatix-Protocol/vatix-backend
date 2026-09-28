@@ -182,3 +182,75 @@ describe("contract ID boot gate (#1132)", () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("disagree"));
   });
 });
+
+describe("network consistency boot gate (#1133, #1134, #1135)", () => {
+  it("accepts a consistent testnet config", () => {
+    const cfg = loadIndexerConfig({
+      STELLAR_NETWORK: "testnet",
+      SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+      STELLAR_HORIZON_URL: "https://horizon-testnet.stellar.org",
+      STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
+      INDEXER_CONTRACT_ID: CONTRACT_ID,
+    });
+    expect(cfg.horizonUrl).toBe("https://horizon-testnet.stellar.org");
+  });
+
+  it("rejects a passphrase that disagrees with STELLAR_NETWORK", () => {
+    expect(() =>
+      loadIndexerConfig({
+        STELLAR_NETWORK: "mainnet",
+        SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+        INDEXER_CONTRACT_ID: CONTRACT_ID,
+      })
+    ).toThrow(/ENV_NETWORK_MISMATCH/);
+  });
+
+  it("rejects a mainnet Horizon URL behind the testnet passphrase", () => {
+    expect(() =>
+      loadIndexerConfig({
+        SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+        STELLAR_HORIZON_URL: "https://horizon.stellar.org",
+        INDEXER_CONTRACT_ID: CONTRACT_ID,
+      })
+    ).toThrow(/STELLAR_HORIZON_URL/);
+  });
+
+  it("rejects a testnet Soroban RPC URL behind the mainnet passphrase", () => {
+    expect(() =>
+      loadIndexerConfig({
+        SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+        VATIX_ALLOW_MAINNET: "true",
+        STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
+        INDEXER_CONTRACT_ID: CONTRACT_ID,
+      })
+    ).toThrow(/STELLAR_RPC_URL/);
+  });
+
+  it("labels the failure with the indexer's stable ENV_INVALID code", () => {
+    let caught: unknown;
+    try {
+      loadIndexerConfig({
+        SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+        STELLAR_HORIZON_URL: "https://horizon.stellar.org",
+        INDEXER_CONTRACT_ID: CONTRACT_ID,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as { code?: string }).code).toBe("ENV_INVALID");
+    expect((caught as { variable?: string }).variable).toBe(
+      "STELLAR_HORIZON_URL"
+    );
+  });
+
+  it("still rejects a drifted endpoint when the list variable is used", () => {
+    expect(() =>
+      loadIndexerConfig({
+        SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+        STELLAR_HORIZON_URLS:
+          "https://horizon-testnet.stellar.org,https://horizon.stellar.org",
+        INDEXER_CONTRACT_ID: CONTRACT_ID,
+      })
+    ).toThrow(/STELLAR_HORIZON_URLS/);
+  });
+});

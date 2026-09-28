@@ -8,6 +8,7 @@ import {
   loadStellarEndpoints,
   type EndpointConfig,
 } from "../../../packages/shared/src/stellarTransport.js";
+import { validateStellarNetworkConsistency } from "../../../packages/shared/src/stellarNetwork.js";
 
 export type { SharedIndexerConfig };
 
@@ -129,6 +130,26 @@ export function validateEnv(env: Env = process.env): void {
         "Mainnet passphrase detected without explicit opt-in (set VATIX_ALLOW_MAINNET=true)"
       );
     }
+  }
+
+  // Network consistency across passphrase / STELLAR_NETWORK / Horizon (#1133,
+  // #1134, #1135). Placed after the passphrase presence and mainnet opt-in
+  // checks so a malformed value is reported before cross-variable drift, and
+  // before the contract gate so the network is settled first. Re-labelled with
+  // the indexer's stable codes so log-line and test assertions stay uniform.
+  try {
+    validateStellarNetworkConsistency(env);
+  } catch (err) {
+    if (err instanceof ConfigValidationError) {
+      throw new EnvValidationError(
+        err.code === ENV_ERROR_CODES.ENV_INVALID
+          ? ENV_ERROR_CODES.ENV_INVALID
+          : ENV_ERROR_CODES.ENV_MISSING,
+        err.variable ?? "SOROBAN_NETWORK_PASSPHRASE",
+        err.message
+      );
+    }
+    throw err;
   }
 
   // Contract ID boot gate (#1132). Place after the passphrase checks so the
