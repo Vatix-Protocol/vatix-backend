@@ -80,12 +80,25 @@ chain's state, and the oracle worker would submit settlement to another.
 `packages/shared/src/networkConsistency.ts` is now the single implementation,
 and every service boot path calls it:
 
-| Service                          | Call site                                                                    |
-| -------------------------------- | ---------------------------------------------------------------------------- |
-| API                              | `loadBaseConfig()` — `packages/shared/src/config.ts`                         |
-| Indexer                          | `validateEnv()` — `apps/indexer/src/config.ts`                               |
-| Oracle submission worker         | `resolveOracleStellarConfig()` — `apps/workers/src/oracle/stellar-config.ts` |
-| Oracle / settlement (production) | `validateAndResolveStellarConfig()` — same file                              |
+| Service                  | Call site                                                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| API                      | `parseApiEnv()` — `src/env.ts`                                                                                     |
+| Indexer                  | `validateEnv()` — `apps/indexer/src/config.ts`                                                                     |
+| Oracle submission worker | `validateAndResolveStellarConfig()` / `resolveOracleStellarConfig()` — `apps/workers/src/oracle/stellar-config.ts` |
+| **Settlement worker**    | `validateSettlementStellarConfig()` — `apps/workers/src/settlement/stellar-config.ts`                              |
+
+Every service that constructs a `StellarRpc.Server` is covered: the
+indexer, the oracle submission worker, and the settlement worker (which signs
+and submits on-chain settlements at
+`apps/workers/src/settlement/settlement-worker.ts`). The settlement worker keeps
+its config in a standalone module rather than in `consumer.ts` because that
+entrypoint calls `bootstrap()` at module load and cannot be imported by a test
+— the same split `apps/workers/src/oracle/stellar-config.ts` already uses.
+
+The gate runs in **every** environment, not only production: a settlement
+worker drifted onto the wrong chain is a money-path failure, and dev/test drift
+is how it reaches production. Self-hosted and third-party endpoints remain
+accepted (see invariant 5 below).
 
 ### Invariants
 

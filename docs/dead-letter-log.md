@@ -130,16 +130,33 @@ pnpm dlq discard   --queue oracle --job <jobId> --yes
 
 `scripts/replay-dlq.ts` (pure helpers in `scripts/replay-dlq.lib.ts`) is the
 operator tool for the raw `vatix:dead-letter:*` streams written by
-`logDeadLetter()`. It reads each entry, re-enqueues the payload to
-`{prefix}{queue}`, and removes the entry only after the re-enqueue succeeds.
+`logDeadLetter()`. It reads each entry, re-enqueues it to **the live stream that
+actually consumes that queue** (see the target table below), and removes the
+entry only after the re-enqueue succeeds.
 
 ```bash
-pnpm replay:dlq                                # replay every queue
-pnpm replay:dlq --queue settlement             # one queue only
-pnpm replay:dlq --queue settlement --limit 10  # cap entries per run
-pnpm replay:dlq --dry-run                      # preview, mutates nothing
-pnpm replay:dlq --queue settlement --yes       # confirm a production run
+pnpm replay:dlq                                   # replay every queue
+pnpm replay:dlq --queue oracle-submission          # one queue only
+pnpm replay:dlq --queue oracle-submission --limit 10  # cap entries per run
+pnpm replay:dlq --dry-run                           # preview, mutates nothing
+pnpm replay:dlq --queue oracle-submission --yes     # confirm a production run
 ```
+
+#### Replay targets
+
+The DLQ stream name is **not** the live stream name, so the target is resolved
+explicitly rather than by string-concatenating the queue name onto the key
+prefix.
+
+| DLQ queue (stream suffix) | Written by                        | Replay target                | Consumed by                                                     |
+| ------------------------- | --------------------------------- | ---------------------------- | --------------------------------------------------------------- |
+| `oracle-submission`       | `oracle/submission-worker.ts`     | `{prefix}oracle:submissions` | `RedisSubmissionQueue.dequeue()`                                |
+| `settlement`              | `settlement/settlement-worker.ts` | **none — skipped**           | BullMQ queue `settlement-trades`; use `pnpm dlq` (#953) instead |
+
+A queue with no live stream behind it is **skipped fail-closed**: the entries
+stay in the DLQ for an operator and no bogus stream key is created. This is
+deliberate — writing a settlement dead letter onto a made-up stream key would
+report `replayed: 1` while nothing ever consumed the message.
 
 Production safeguards (#1136):
 
@@ -156,16 +173,23 @@ Production safeguards (#1136):
   `payloadType` and `payloadHash` (SHA-256, the same algorithm as
   `logDeadLetter`), so secrets cannot leak into terminal scrollback or log
   aggregators.
-- **Fail-closed replay:** an entry whose payload cannot be flattened into
-  stream fields (primitive, array, or empty object) is _kept_ in the DLQ and
-  counted as a failure — it is never deleted without a re-enqueue. Any failure
-  during a run makes the script exit `1`.
+- **Lossless payload round-trip:** the re-enqueued entry carries the original
+  payload under a single `payload` field (`JSON.stringify(payload)`), which is
+  exactly the shape the live producer writes and the live consumer reads via
+  `JSON.parse(fields.payload)`. Flattening the payload's inner keys into
+  top-level stream fields produced entries the consumer could not parse at all,
+  and those entries were then deleted from the DLQ — silently losing the
+  message.
+- **Fail-closed replay:** an entry whose payload is not representable
+  (primitive, array, or empty object) is _kept_ in the DLQ and counted as a
+  failure — it is never deleted without a re-enqueue. Any failure during a run
+  makes the script exit `1`.
 - **At-least-once:** replaying twice re-enqueues twice; dedupe lives in the
   consumers (e.g. the settlement worker's idempotency lock), never in this
   script. Always `--dry-run` first in production.
 - **Re-enqueue before delete:** the entry is removed from the DLQ only after
-  the `XADD` to `{prefix}{queue}` succeeds, so a crash mid-run leaves the
-  entry for a second pass instead of losing the job.
+  the `XADD` to the resolved live stream succeeds, so a crash mid-run leaves
+  the entry for a second pass instead of losing the job.
 
 Exit codes: `0` success, `1` a runtime failure or one or more entries failed to
 replay, `2` invalid usage or a production run refused for lack of `--yes`. The

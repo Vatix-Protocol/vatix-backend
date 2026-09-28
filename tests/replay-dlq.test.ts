@@ -13,6 +13,8 @@ import {
   computePayloadHash,
   fieldsToRecord,
   isReplayablePayload,
+  resolveReplayStreamKey,
+  toReplayFields,
   mutationAllowed,
   parseReplayArgs,
   payloadLogFields,
@@ -198,5 +200,72 @@ describe("assertQueueFilter", () => {
 
   it("never echoes the rejected filter into the message", () => {
     expect(() => assertQueueFilter("*")).toThrow(/got: invalid value/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round-trip fidelity (#1136).
+//
+// These are regressions for two defects that made `pnpm replay:dlq` silently
+// destroy messages: it wrote the payload flattened into top-level stream
+// fields and derived the target key as `${KEY_PREFIX}${queue}`, while the live
+// consumer reads `JSON.parse(fields.payload)` off a *differently named* stream.
+// Both were proven against a live Redis before being fixed.
+// ---------------------------------------------------------------------------
+describe("toReplayFields", () => {
+  it("writes the payload under a `payload` field, as the live producer does", () => {
+    const payload = { marketId: "m-1", attempts: 3 };
+    expect(toReplayFields(payload)).toEqual([
+      "payload",
+      JSON.stringify(payload),
+      "payloadHash",
+      computePayloadHash(payload),
+    ]);
+  });
+
+  it("keeps the payload JSON parseable by the consumer's JSON.parse(fields.payload)", () => {
+    const payload = { marketId: "m-1", nested: { a: 1 } };
+    const fields = Object.fromEntries(
+      toReplayFields(payload).reduce<string[][]>((acc, v, i, arr) => {
+        if (i % 2 === 0) acc.push([v]);
+        else acc[acc.length - 1].push(v);
+        return acc;
+      }, [])
+    );
+    expect(() => JSON.parse(fields.payload as string)).not.toThrow();
+    expect(JSON.parse(fields.payload as string)).toEqual(payload);
+  });
+
+  it("no longer flattens payload keys into top-level stream fields", () => {
+    const fields = toReplayFields({ marketId: "m-1" });
+    const keys = fields.filter((_, i) => i % 2 === 0);
+    expect(keys).not.toContain("marketId");
+    expect(keys).toContain("payload");
+  });
+});
+
+describe("resolveReplayStreamKey", () => {
+  it("maps the oracle DLQ stream to the stream the submission queue reads", () => {
+    // logDeadLetter() writes queue "oracle-submission" (submission-worker.ts);
+    // RedisSubmissionQueue consumes `oracle:submissions` (STREAM_BASENAME).
+    expect(resolveReplayStreamKey("oracle-submission", "vatix:")).toBe(
+      "vatix:oracle:submissions"
+    );
+  });
+
+  it("honours a custom key prefix", () => {
+    expect(resolveReplayStreamKey("oracle-submission", "staging:")).toBe(
+      "staging:oracle:submissions"
+    );
+  });
+
+  it("returns undefined for the BullMQ-backed settlement queue", () => {
+    // `settlement` is a BullMQ queue (settlement-trades), not a stream: there
+    // is no stream to write to, and the operator path is `pnpm dlq` (#953).
+    expect(resolveReplayStreamKey("settlement", "vatix:")).toBeUndefined();
+  });
+
+  it("returns undefined for an unknown queue rather than inventing a key", () => {
+    expect(resolveReplayStreamKey("mystery", "vatix:")).toBeUndefined();
   });
 });

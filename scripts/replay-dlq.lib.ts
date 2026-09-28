@@ -176,3 +176,61 @@ export function isReplayablePayload(payload: unknown): boolean {
     Object.keys(payload).length > 0
   );
 }
+
+/**
+ * Re-enqueue fields for a dead-lettered entry (#1136).
+ *
+ * The live consumers do **not** read the payload's inner keys as stream
+ * fields. `RedisSubmissionQueue.dequeue()`
+ * (apps/workers/src/oracle/redis-submission-queue.ts) reads
+ * `JSON.parse(fields.payload)`, and the producer
+ * (`enqueue()`, same file) writes `payload` = `JSON.stringify(item)` alongside
+ * `marketId` / `payloadHash`.
+ *
+ * Flattening the payload into top-level fields therefore produced an entry the
+ * consumer could not read at all: `fields.payload` was `undefined` and
+ * `JSON.parse(undefined)` threw `"undefined" is not valid JSON`. The old
+ * entry was still `XDEL`ed from the DLQ, so the message was silently lost.
+ *
+ * Returning the payload as a single `payload` field — byte-identical to what
+ * the producer writes — makes the round trip lossless.
+ */
+export function toReplayFields(payload: unknown): string[] {
+  return [
+    "payload",
+    JSON.stringify(payload),
+    "payloadHash",
+    computePayloadHash(payload),
+  ];
+}
+
+/**
+ * Maps a dead-letter stream suffix to the live stream that actually consumes
+ * it, or `undefined` when the queue is not stream-backed.
+ *
+ * The DLQ stream name is *not* the live stream name, so deriving the target as
+ * `${KEY_PREFIX}${queue}` (what the CLI used to do) wrote to a key nothing
+ * ever read:
+ *
+ *   - `oracle-submission`  (written by submission-worker.ts's logDeadLetter)
+ *     is consumed from `oracle:submissions` (STREAM_BASENAME in
+ *     redis-submission-queue.ts) — replaying to `vatix:oracle-submission`
+ *     stranded the message.
+ *   - `settlement` is a **BullMQ** queue (`settlement-trades`,
+ *     queue-config.ts), not a Redis stream. There is no stream to write to;
+ *     the BullMQ DLQ (`pnpm dlq`, issue #953) is the correct operator path.
+ *
+ * Returns `undefined` for an unknown/unbacked queue so the caller can skip
+ * fail-closed rather than invent a target key.
+ */
+export function resolveReplayStreamKey(
+  queue: string,
+  keyPrefix: string
+): string | undefined {
+  switch (queue) {
+    case "oracle-submission":
+      return `${keyPrefix}oracle:submissions`;
+    default:
+      return undefined;
+  }
+}

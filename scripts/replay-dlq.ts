@@ -31,6 +31,8 @@ import {
   mutationAllowed,
   parseReplayArgs,
   payloadLogFields,
+  resolveReplayStreamKey,
+  toReplayFields,
 } from "./replay-dlq.lib.js";
 
 // ---------------------------------------------------------------------------
@@ -110,17 +112,6 @@ async function discoverDLQStreams(
   return keys.sort();
 }
 
-/** Flattens a dead-letter payload into the `[field, value, ...]` XADD form. */
-function toXaddFields(payload: unknown): string[] {
-  const fields: string[] = [];
-  for (const [key, value] of Object.entries(
-    payload as Record<string, unknown>
-  )) {
-    fields.push(key, String(value));
-  }
-  return fields;
-}
-
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -185,8 +176,25 @@ async function main(): Promise<number> {
 
       if (entries.length === 0) continue;
 
+      // The DLQ stream suffix is not the live stream name. Resolve the stream
+      // that actually consumes this queue, and skip fail-closed when there is
+      // none (e.g. `settlement`, which is BullMQ-backed, not a stream) rather
+      // than writing to a key nothing reads and deleting the entry (#1136).
+      const targetStream = resolveReplayStreamKey(queueName, KEY_PREFIX);
+      if (targetStream === undefined) {
+        totalSkipped += entries.length;
+        log("error", "No live stream backs this dead-letter queue", {
+          queue: queueName,
+          dlqStream: streamKey,
+          entries: entries.length,
+          hint: "entries left in the DLQ; use the queue's own DLQ tooling",
+        });
+        continue;
+      }
+
       log("info", "Processing DLQ stream", {
         queue: queueName,
+        targetStream,
         entries: entries.length,
       });
 
@@ -212,6 +220,7 @@ async function main(): Promise<number> {
         log("info", "Replaying dead-letter entry", {
           entryId,
           queue: queueName,
+          targetStream,
           originalMessageId: message.messageId,
           errorCode: message.errorCode,
           classification: message.classification,
@@ -222,7 +231,7 @@ async function main(): Promise<number> {
           log("info", "[DRY-RUN] Would replay entry", {
             entryId,
             queue: queueName,
-            targetStream: `${KEY_PREFIX}${queueName}`,
+            targetStream,
             ...payloadInfo,
           });
           totalReplayed++;
@@ -230,11 +239,13 @@ async function main(): Promise<number> {
         }
 
         try {
-          const targetStream = `${KEY_PREFIX}${queueName}`;
-
           // Re-enqueue first, then delete: a crash between the two leaves the
           // entry in the DLQ (at-least-once) rather than losing the job.
-          await redis.xadd(targetStream, "*", ...toXaddFields(message.payload));
+          await redis.xadd(
+            targetStream,
+            "*",
+            ...toReplayFields(message.payload)
+          );
           await redis.xdel(streamKey, entryId);
 
           log("info", "Entry replayed and removed from DLQ", {
