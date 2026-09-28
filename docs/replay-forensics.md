@@ -286,6 +286,42 @@ was silently removed or reordered) only holds if every link survives.
   base backups + WAL for at least the longest possible dispute/challenge
   window plus the regulatory record-keeping period.
 
+### Archiver invariants (`apps/workers/src/audit-archiver/`)
+
+The archiver (`job.ts`) drains each market's Redis stream into
+`trade_audit_events` and advances the per-market watermark. Four invariants
+make that safe to run unattended:
+
+1. **The chain advances only on a durable write.** Each entry's `prevHash` is
+   the previous entry's `entryHash`, threaded in memory across the batch, and
+   the chain is advanced **after** the row is written. A failed write can never
+   leave the next entry linked to a hash that was not persisted. The chain tail
+   is read once per batch (not once per event) and ordered by `streamId desc` —
+   Redis stream IDs are monotonic and define the chain's order, whereas
+   `archivedAt` is a wall-clock write timestamp that two same-millisecond writes
+   (or a replayed entry) can order differently from the chain itself, producing
+   a false `vatix_audit_chain_gap_total` alert.
+2. **The watermark never overtakes an unarchived entry.** The cursor advances
+   only past entries that were archived (or skipped as empty). A failed write
+   aborts that market for the run, leaving the watermark where it was, so the
+   next run retries the entry — at-least-once, never a silent skip. Aborting is
+   also what stops the loop: re-reading the same poisoned entry on every
+   iteration would spin for the lifetime of the process.
+3. **`maxRunMs` is a budget for the whole run, not per market.** It is checked
+   inside the per-market batch loop as well as between markets, so one very
+   busy market cannot starve every other market or overrun its own interval.
+4. **Entries without a `tradeId` are refused.** An unattributable audit row
+   would poison later chain verification, so it is reported as `error` and not
+   written.
+
+Config (`config.ts`) fails closed at boot. Values are parsed strictly — a
+malformed value such as `AUDIT_ARCHIVER_BATCH_SIZE=1000; DROP TABLE trades` is
+rejected rather than silently parsed as `1000` by a numeric-prefix match.
+`batchSize` is capped at `10_000` and `maxRunMs` at `300_000` so a typo cannot
+turn into an availability incident during exactly the backlog the archiver
+exists to drain, and `intervalMs` must be `>= maxRunMs` or the worker would
+never idle.
+
 ### Restore drill (run quarterly in staging)
 
 Proves the archive can be rebuilt from backup and the chain re-verified.

@@ -14,12 +14,14 @@ import type {
   ProviderResult,
   ResolutionRequest,
 } from "./provider-adapter.js";
-import { withTimeout, DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
 import {
-  withRetry,
-  type RetryConfig,
-  DEFAULT_RETRY_CONFIG,
-} from "./retry-utils.js";
+  withTimeout,
+  validateTimeout,
+  DEFAULT_TIMEOUT_MS,
+  PRIMARY_PROVIDER_TIMEOUT_POLICY_MS,
+} from "./timeout-utils.js";
+import { withRetry, type RetryConfig } from "./retry-utils.js";
+import { oraclePrimaryProviderAttemptsTotal } from "../../src/services/metrics.js";
 
 /**
  * Primary provider adapter configuration.
@@ -78,10 +80,18 @@ export class PrimaryAdapter implements ProviderAdapter {
 
   constructor(config: PrimaryAdapterConfig) {
     this.config = {
-      timeoutMs: DEFAULT_TIMEOUT_MS,
+      // Default to the documented per-role policy rather than the generic
+      // constant, so an adapter constructed without an explicit timeout
+      // behaves as `docs/architecture.md` describes instead of merely
+      // happening to share the same number.
+      timeoutMs: PRIMARY_PROVIDER_TIMEOUT_POLICY_MS,
       retryConfig: { maxRetries: 0 },
       ...config,
     };
+    // Fail fast (in production) rather than silently running with a timeout
+    // that does not match the documented primary-provider policy — the same
+    // treatment `FallbackAdapter` gives its own policy constant.
+    this.config.timeoutMs = validateTimeout(this.config.timeoutMs);
     this.fetchFn = config.fetchFn ?? fetch;
   }
 
@@ -97,8 +107,12 @@ export class PrimaryAdapter implements ProviderAdapter {
    * @returns Provider result with source attribution
    */
   async resolve(request: ResolutionRequest): Promise<ProviderResult> {
-    const timeoutMs =
-      request.timeoutMs ?? this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    // Validate the effective timeout the same way the fallback adapter does,
+    // so a caller-supplied out-of-policy `timeoutMs` cannot silently widen (or
+    // collapse) the primary provider's budget.
+    const timeoutMs = validateTimeout(
+      request.timeoutMs ?? this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    );
 
     // Per-request retryConfig overrides adapter-level default
     const effectiveRetryConfig: Partial<RetryConfig> = {
@@ -106,29 +120,42 @@ export class PrimaryAdapter implements ProviderAdapter {
       ...(request.retryConfig ?? {}),
     };
 
-    return withRetry(async () => {
-      const timedResult = await withTimeout<ProviderResult>(
-        async (signal) => this.fetchFromProvider(request, signal),
-        {
-          timeoutMs,
-          errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
-        }
-      );
-
-      if (timedResult.timedOut) {
-        throw new PrimaryProviderError(
-          "TIMEOUT",
-          timedResult.error?.message ?? "Primary provider request timed out",
-          timedResult.error
+    try {
+      return await withRetry(async () => {
+        const timedResult = await withTimeout<ProviderResult>(
+          async (signal) => this.fetchFromProvider(request, signal),
+          {
+            timeoutMs,
+            errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
+          }
         );
-      }
 
-      if (timedResult.error) {
-        throw this.mapProviderError(timedResult.error);
-      }
+        if (timedResult.timedOut) {
+          throw new PrimaryProviderError(
+            "TIMEOUT",
+            timedResult.error?.message ?? "Primary provider request timed out",
+            timedResult.error
+          );
+        }
 
-      return timedResult.value!;
-    }, effectiveRetryConfig);
+        if (timedResult.error) {
+          throw this.mapProviderError(timedResult.error);
+        }
+
+        return timedResult.value!;
+      }, effectiveRetryConfig);
+    } catch (error) {
+      // Counted per *attempt*, on a dedicated counter, because
+      // `oracleProviderAttemptsTotal` is already incremented once per
+      // resolve() by OracleService and reusing it would double-count. This
+      // series is what makes "the primary provider is flapping" visible during
+      // a retry burst, before resolve() as a whole has given up.
+      const mapped = this.mapProviderError(
+        error instanceof Error ? error : new Error(String(error))
+      );
+      oraclePrimaryProviderAttemptsTotal.labels(mapped.type).inc();
+      throw mapped;
+    }
   }
 
   /**
@@ -197,15 +224,22 @@ export class PrimaryAdapter implements ProviderAdapter {
     const payload = (await response.json()) as Partial<PrimaryProviderResponse>;
     if (
       typeof payload.outcome !== "boolean" ||
-      typeof payload.confidence !== "number" ||
-      payload.confidence < 0 ||
-      payload.confidence > 1
+      // `Number.isFinite` rather than `typeof === "number"`: JSON has no NaN
+      // literal, but a provider returning a non-finite value (or `null`, which
+      // `typeof` reports as "object" and would slip past a truthiness check)
+      // must not become a confidence score that silently passes the
+      // `>= 0 && <= 1` range check below and reaches the signing path.
+      !Number.isFinite(payload.confidence) ||
+      payload.confidence! < 0 ||
+      payload.confidence! > 1
     ) {
       throw new PrimaryProviderError(
         "INVALID_RESPONSE",
         "Primary provider response is missing a valid outcome or confidence"
       );
     }
+
+    oraclePrimaryProviderAttemptsTotal.labels("OK").inc();
 
     return {
       outcome: payload.outcome,

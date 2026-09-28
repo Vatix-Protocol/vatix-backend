@@ -1,14 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { store } = vi.hoisted(() => ({ store: new Map<string, string>() }));
+const { store, setImpl, existsImpl, xaddImpl } = vi.hoisted(() => ({
+  store: new Map<string, string>(),
+  setImpl: vi.fn(),
+  existsImpl: vi.fn(),
+  xaddImpl: vi.fn(),
+}));
+
+// Models ioredis semantics: `SET key value EX ttl NX` resolves to "OK" when the
+// key is created and to null when the NX condition blocks the write.
+setImpl.mockImplementation(
+  async (key: string, _value: string, ...args: string[]) => {
+    const nx = args.includes("NX");
+    if (nx && store.has(key)) return null;
+    store.set(key, "1");
+    return "OK";
+  }
+);
+existsImpl.mockImplementation(async (key: string) => store.has(key));
+xaddImpl.mockImplementation(async () => "1-0");
 
 vi.mock("../../../../src/services/redis.js", () => ({
   redis: {
-    exists: vi.fn(async (key: string) => store.has(key)),
-    set: vi.fn(async (key: string, value: string) => {
-      store.set(key, value);
-    }),
-    xadd: vi.fn(async () => "1-0"),
+    exists: existsImpl,
+    set: setImpl,
+    xadd: xaddImpl,
   },
 }));
 
@@ -133,5 +149,95 @@ describe("Dead Letter Log", () => {
 
     expect(onQueueA).toEqual({ duplicate: false });
     expect(onQueueB).toEqual({ duplicate: false });
+  });
+
+  // -------------------------------------------------------------------------
+  // Atomic dedupe (#1106)
+  // -------------------------------------------------------------------------
+
+  it("dedupes via a single atomic SET NX rather than a read-then-write pair", async () => {
+    const mockLogger = createMockLogger();
+    setImpl.mockClear();
+    existsImpl.mockClear();
+
+    await logDeadLetter(mockLogger as any, {
+      id: "msg-atomic",
+      queue: "settlement",
+      payload: { tradeId: "t-atomic" },
+      reason: "Max retries exceeded",
+    });
+
+    // The previous EXISTS-then-SET implementation had a read-then-write race:
+    // two workers dead-lettering the same poison job concurrently both saw
+    // "not a duplicate" and both alerted on one incident.
+    expect(existsImpl).not.toHaveBeenCalled();
+    expect(setImpl).toHaveBeenCalledWith(
+      expect.stringContaining("dead-letter:dedupe:settlement:"),
+      "1",
+      "EX",
+      24 * 60 * 60,
+      "NX"
+    );
+  });
+
+  it("reports a duplicate when the NX write is refused (concurrent writer won)", async () => {
+    const mockLogger = createMockLogger();
+    const message = {
+      id: "msg-race",
+      queue: "settlement",
+      payload: { tradeId: "t-race" },
+      reason: "Max retries exceeded",
+    };
+
+    expect(await logDeadLetter(mockLogger as any, message)).toEqual({
+      duplicate: false,
+    });
+    expect(
+      await logDeadLetter(mockLogger as any, { ...message, id: "msg-race-2" })
+    ).toEqual({
+      duplicate: true,
+    });
+  });
+
+  it("still writes the dead letter when the dedupe check fails soft", async () => {
+    const mockLogger = createMockLogger();
+    setImpl.mockRejectedValueOnce(new Error("READONLY replica"));
+    xaddImpl.mockClear();
+
+    const result = await logDeadLetter(mockLogger as any, {
+      id: "msg-outage",
+      queue: "settlement",
+      payload: { tradeId: "t-outage" },
+      reason: "Max retries exceeded",
+    });
+
+    // Losing the dedupe signal must not cost us the recoverable record.
+    expect(result).toEqual({ duplicate: false });
+    expect(xaddImpl).toHaveBeenCalledTimes(1);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      "Dead letter dedupe check failed",
+      expect.objectContaining({ queue: "settlement" })
+    );
+  });
+
+  it("reports persisted: false when the dead-letter write itself fails", async () => {
+    const mockLogger = createMockLogger();
+    xaddImpl.mockRejectedValueOnce(new Error("OOM command not allowed"));
+
+    await logDeadLetter(mockLogger as any, {
+      id: "msg-nopersist",
+      queue: "settlement",
+      payload: { tradeId: "t-nopersist" },
+      reason: "Max retries exceeded",
+    });
+
+    // Fail *visible*: the message is not in the DLQ, and an operator needs to
+    // see that rather than assume the record is safe.
+    const call = mockLogger.error.mock.calls.at(-1);
+    expect(call?.[1]).toMatchObject({
+      messageId: "msg-nopersist",
+      persisted: false,
+      persistenceError: "OOM command not allowed",
+    });
   });
 });

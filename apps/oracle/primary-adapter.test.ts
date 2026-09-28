@@ -1,5 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 import { PrimaryAdapter, PrimaryProviderError } from "./primary-adapter.js";
+import { metricsRegistry } from "../../src/services/metrics.js";
+
+/** Current value of the primary-provider per-attempt counter for a label. */
+async function counterValue(type: string): Promise<number> {
+  const exposition = await metricsRegistry.getSingleMetricAsString(
+    "vatix_oracle_primary_provider_attempts_total"
+  );
+  return exposition
+    .split("\n")
+    .filter((line) => line.includes(`type="${type}"`))
+    .reduce((sum, line) => sum + Number(line.trim().split(" ")[1] ?? 0), 0);
+}
+
+/** Current value of an arbitrary series in the shared registry. */
+async function metricValue(name: string, labels: string): Promise<number> {
+  const exposition = await metricsRegistry.getSingleMetricAsString(name);
+  return exposition
+    .split("\n")
+    .filter((line) => line.startsWith(name) && line.includes(labels))
+    .reduce((sum, line) => sum + Number(line.trim().split(" ")[1] ?? 0), 0);
+}
 
 describe("PrimaryAdapter", () => {
   it("maps a mocked provider response to a provider result", async () => {
@@ -291,5 +312,171 @@ describe("PrimaryAdapter", () => {
       baseUrl: "https://primary.example.com",
     });
     expect(adapter.getSource()).toBe("primary");
+  });
+
+  // -------------------------------------------------------------------------
+  // Fail-closed response validation and attempt metrics (#1108)
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["null", null],
+    ["a numeric string", "0.9"],
+  ])(
+    "rejects a %s confidence instead of letting it reach the signing path",
+    async (_label, confidence) => {
+      const fetchFn = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ outcome: true, confidence }), {
+          status: 200,
+        })
+      );
+      const adapter = new PrimaryAdapter({
+        baseUrl: "https://primary.example.com",
+        fetchFn,
+      });
+
+      await expect(
+        adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" })
+      ).rejects.toMatchObject({
+        name: "PrimaryProviderError",
+        type: "INVALID_RESPONSE",
+      });
+    }
+  );
+
+  it("rejects a non-boolean outcome", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ outcome: "yes", confidence: 0.9 }), {
+        status: 200,
+      })
+    );
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+    });
+
+    await expect(
+      adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" })
+    ).rejects.toMatchObject({ type: "INVALID_RESPONSE" });
+  });
+
+  it("counts a validated success on the per-attempt metric", async () => {
+    const before = await counterValue("OK");
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ outcome: true, confidence: 0.9 }), {
+        status: 200,
+      })
+    );
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+    });
+
+    await adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" });
+
+    expect(await counterValue("OK")).toBe(before + 1);
+  });
+
+  it("labels the failure metric with the stable PrimaryProviderErrorType", async () => {
+    const before = await counterValue("RATE_LIMIT");
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(new Response("rate limited", { status: 429 }));
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+    });
+
+    await expect(
+      adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" })
+    ).rejects.toMatchObject({ type: "RATE_LIMIT" });
+
+    expect(await counterValue("RATE_LIMIT")).toBe(before + 1);
+  });
+
+  it("does not double-count OracleService's per-resolve provider metric", async () => {
+    const resolveAttemptsBefore = await metricValue(
+      "vatix_oracle_provider_attempts_total",
+      'provider="primary",outcome="success"'
+    );
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ outcome: true, confidence: 0.9 }), {
+        status: 200,
+      })
+    );
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+    });
+
+    await adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" });
+
+    // The adapter uses its own per-attempt series; OracleService owns the
+    // per-resolve one. Reusing it would double-count every primary call.
+    expect(
+      await metricValue(
+        "vatix_oracle_provider_attempts_total",
+        'provider="primary",outcome="success"'
+      )
+    ).toBe(resolveAttemptsBefore);
+  });
+
+  // -------------------------------------------------------------------------
+  // Timeout policy parity with the fallback adapter (#1108)
+  // -------------------------------------------------------------------------
+
+  it("defaults to the documented primary-provider timeout policy", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ outcome: true, confidence: 0.9 }), {
+        status: 200,
+      })
+    );
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+    });
+
+    await adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" });
+
+    const call = fetchFn.mock.calls.at(-1)?.[1] as
+      { signal?: AbortSignal } | undefined;
+    expect(call?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("refuses an out-of-policy timeout in production instead of silently clamping", async () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      expect(
+        () =>
+          new PrimaryAdapter({
+            baseUrl: "https://primary.example.com",
+            timeoutMs: 999_999,
+            fetchFn: vi.fn(),
+          })
+      ).toThrow(/exceeds the maximum/);
+    } finally {
+      if (previous === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previous;
+    }
+  });
+
+  it("clamps an out-of-policy timeout outside production", async () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      expect(
+        () =>
+          new PrimaryAdapter({
+            baseUrl: "https://primary.example.com",
+            timeoutMs: 999_999,
+            fetchFn: vi.fn(),
+          })
+      ).not.toThrow();
+    } finally {
+      if (previous === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previous;
+    }
   });
 });

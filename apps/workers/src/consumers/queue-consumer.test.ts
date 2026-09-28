@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   processJob,
   JobTimeoutError,
+  InvalidQueueConsumerConfigError,
+  assertValidConsumerConfig,
+  assertValidJobAttempts,
+  QUEUE_CONSUMER_CONFIG_CODES,
   type QueueJob,
   type QueueConsumerConfig,
   type JobHandler,
@@ -73,14 +77,14 @@ describe("Queue Consumer — processJob", () => {
     );
   });
 
-  it("should invoke the handler with the job", async () => {
+  it("should invoke the handler with the job and a cancellation signal", async () => {
     const handler: JobHandler = vi.fn().mockResolvedValue(undefined);
     const config = makeConfig();
     const job = makeJob();
 
     await processJob(logger, config, job, handler);
 
-    expect(handler).toHaveBeenCalledWith(job);
+    expect(handler).toHaveBeenCalledWith(job, expect.any(AbortSignal));
   });
 
   it("should log warn and re-throw when attempts remain", async () => {
@@ -259,5 +263,189 @@ describe("Queue Consumer — processJob", () => {
     expect(err.name).toBe("JobTimeoutError");
     expect(err.message).toContain("job-42");
     expect(err.message).toContain("3000");
+  });
+});
+
+describe("Queue Consumer — fail-closed configuration validation (#1105)", () => {
+  it("accepts a well-formed config", () => {
+    expect(() =>
+      assertValidConsumerConfig({
+        queueName: "settlement",
+        maxAttempts: 3,
+        processingTimeoutMs: 5_000,
+      })
+    ).not.toThrow();
+  });
+
+  it.each([
+    ["maxAttempts = 0", { maxAttempts: 0 }, "INVALID_MAX_ATTEMPTS"],
+    ["maxAttempts = -1", { maxAttempts: -1 }, "INVALID_MAX_ATTEMPTS"],
+    ["maxAttempts = NaN", { maxAttempts: NaN }, "INVALID_MAX_ATTEMPTS"],
+    ["maxAttempts = 1.5", { maxAttempts: 1.5 }, "INVALID_MAX_ATTEMPTS"],
+    [
+      "processingTimeoutMs = 0",
+      { processingTimeoutMs: 0 },
+      "INVALID_PROCESSING_TIMEOUT",
+    ],
+    [
+      "processingTimeoutMs = NaN",
+      { processingTimeoutMs: NaN },
+      "INVALID_PROCESSING_TIMEOUT",
+    ],
+    [
+      "processingTimeoutMs = Infinity",
+      { processingTimeoutMs: Infinity },
+      "INVALID_PROCESSING_TIMEOUT",
+    ],
+    ["queueName = ''", { queueName: "" }, "INVALID_QUEUE_NAME"],
+  ] as Array<[string, Partial<QueueConsumerConfig>, string]>)(
+    "rejects %s with a stable code",
+    (_label, overrides, expectedCodeKey) => {
+      let thrown: unknown;
+      try {
+        assertValidConsumerConfig({
+          queueName: "settlement",
+          maxAttempts: 3,
+          processingTimeoutMs: 5_000,
+          ...overrides,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(InvalidQueueConsumerConfigError);
+      expect((thrown as InvalidQueueConsumerConfigError).code).toBe(
+        QUEUE_CONSUMER_CONFIG_CODES[
+          expectedCodeKey as keyof typeof QUEUE_CONSUMER_CONFIG_CODES
+        ]
+      );
+    }
+  );
+
+  it("rejects a queue name carrying control characters (log-forging vector)", () => {
+    expect(() =>
+      assertValidConsumerConfig({
+        queueName: "settlement\nFAKE_LEVEL info",
+        maxAttempts: 3,
+        processingTimeoutMs: 5_000,
+      })
+    ).toThrow(InvalidQueueConsumerConfigError);
+  });
+
+  it("rejects a job whose attempts counter cannot be trusted", () => {
+    for (const attempts of [0, -1, NaN, 1.5]) {
+      expect(() =>
+        assertValidJobAttempts({ id: "job-1", payload: {}, attempts })
+      ).toThrow(InvalidQueueConsumerConfigError);
+    }
+  });
+
+  it("processJob refuses to run the handler on an invalid config (fail-closed)", async () => {
+    const logger = makeLogger();
+    const handler: JobHandler = vi.fn().mockResolvedValue(undefined);
+
+    // maxAttempts: 0 would otherwise dead-letter this job on its first
+    // delivery without ever running the handler.
+    await expect(
+      processJob(
+        logger,
+        { queueName: "settlement", maxAttempts: 0, processingTimeoutMs: 5_000 },
+        makeJob(),
+        handler
+      )
+    ).rejects.toBeInstanceOf(InvalidQueueConsumerConfigError);
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("processJob refuses a job with an untrustworthy attempts counter", async () => {
+    const logger = makeLogger();
+    const handler: JobHandler = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      processJob(logger, makeConfig(), makeJob({ attempts: 0 }), handler)
+    ).rejects.toMatchObject({
+      name: "InvalidQueueConsumerConfigError",
+      code: QUEUE_CONSUMER_CONFIG_CODES.INVALID_JOB_ATTEMPTS,
+    });
+
+    expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+describe("Queue Consumer — correlation id and cancellation (#1105)", () => {
+  it("propagates a producer-supplied correlationId onto every log line", async () => {
+    const logger = makeLogger();
+
+    await processJob(
+      logger,
+      makeConfig(),
+      makeJob({ correlationId: "corr-123" }),
+      vi.fn().mockResolvedValue(undefined)
+    );
+
+    const lines = [
+      ...logger.info.mock.calls,
+      ...logger.warn.mock.calls,
+      ...logger.error.mock.calls,
+    ];
+    expect(lines.length).toBeGreaterThan(0);
+    for (const [, meta] of lines) {
+      expect((meta as Record<string, unknown>).correlationId).toBe("corr-123");
+    }
+  });
+
+  it("falls back to the job id when no correlationId is supplied", async () => {
+    const logger = makeLogger();
+
+    await processJob(
+      logger,
+      makeConfig(),
+      makeJob(),
+      vi.fn().mockResolvedValue(undefined)
+    );
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "Job received from queue",
+      expect.objectContaining({ correlationId: "job-1" })
+    );
+  });
+
+  it("aborts the handler's signal when the processing timeout elapses", async () => {
+    vi.useFakeTimers();
+    try {
+      let observed: AbortSignal | undefined;
+
+      const promise = processJob(
+        makeLogger(),
+        makeConfig({ processingTimeoutMs: 100 }),
+        makeJob(),
+        (_job, signal) => {
+          observed = signal;
+          return new Promise<void>((resolve) => setTimeout(resolve, 10_000));
+        }
+      );
+
+      expect(observed?.aborted).toBe(false);
+      vi.advanceTimersByTime(150);
+      await expect(promise).rejects.toBeInstanceOf(JobTimeoutError);
+
+      // The handler is told it has been abandoned so it can stop burning RPC
+      // quota instead of running to completion in the background.
+      expect(observed?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the handler's signal un-aborted on success", async () => {
+    let observed: AbortSignal | undefined;
+
+    await processJob(makeLogger(), makeConfig(), makeJob(), (_job, signal) => {
+      observed = signal;
+      return Promise.resolve();
+    });
+
+    expect(observed?.aborted).toBe(false);
   });
 });

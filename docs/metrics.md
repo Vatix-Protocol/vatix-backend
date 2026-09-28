@@ -89,30 +89,33 @@ the endpoint is protected at the ingress layer, and expect a boot-time warning.
 
 ### API process
 
-| Metric                                                 | Type      | Description                                                                                                                                                     |
-| ------------------------------------------------------ | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `vatix_process_*`, `vatix_nodejs_*`                    | various   | Default Node.js process/runtime metrics from `prom-client`.                                                                                                     |
-| `vatix_orderbook_hydrated_markets`                     | gauge     | Number of `(market, outcome)` order books currently held in memory by the matching engine (#746).                                                               |
-| `vatix_matching_leader`                                | gauge     | Whether this process currently holds the matching leader lease: `1` while held, `0` otherwise.                                                                  |
-| `vatix_matching_lease_renew_failures_total`            | counter   | Total failed matching leader lease acquire/renew attempts on this process.                                                                                      |
-| `vatix_oracle_fail_closed_total`                       | counter   | Total times the oracle failed closed after all providers were unreachable (no report submitted on-chain).                                                       |
-| `vatix_oracle_provider_attempts_total`                 | counter   | Oracle provider call outcomes by `provider` (`primary`/`fallback`) and `outcome` (`success`/`failure`) — failover visibility (#1147).                           |
-| `vatix_oracle_fallback_chain_attempts_total`           | counter   | Outcomes of each provider tried inside the fallback chain, labelled by `provider` (chain entry `source`) and `outcome` (#1147).                                 |
-| `vatix_oracle_dry_run_evaluations_total`               | counter   | Dry-run oracle evaluations by would-be outcome (`would="submit"` / `would="fail_closed"`); dry-run never submits (#1146).                                       |
-| `vatix_market_search_requests_total`                   | counter   | Market list/search requests labelled by `filtered` (`true` when a `q` term was supplied); soft-deleted markets are excluded for both values (#1145).            |
-| `vatix_oracle_submission_ambiguous_total`              | counter   | Total oracle on-chain submissions left in an ambiguous confirmation state (e.g. NOT_FOUND that may still confirm).                                              |
-| `vatix_oracle_submission_confirmation_latency_ms`      | histogram | Milliseconds from oracle submission broadcast to on-chain confirmation.                                                                                         |
-| `vatix_settlement_outbox_depth`                        | gauge     | Number of settlement outbox rows not yet PUBLISHED (PENDING + FAILED).                                                                                          |
-| `vatix_settlement_outbox_lag_seconds`                  | gauge     | Age in seconds of the oldest unpublished settlement outbox row.                                                                                                 |
-| `vatix_settlement_outbox_publish_failures_total`       | counter   | Total failed attempts to publish an outbox row to the settlement queue.                                                                                         |
-| `vatix_settlement_outbox_orphaned_trades`              | gauge     | Outbox rows that have failed to publish at least `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times (stalled settlement).                                                 |
-| `vatix_settlement_outbox_quarantined_entries`          | gauge     | Number of outbox entries currently in QUARANTINED status.                                                                                                       |
-| `vatix_settlement_outbox_quarantine_transitions_total` | counter   | Total outbox entries moved to QUARANTINED status due to exceeding retry budget.                                                                                 |
-| `vatix_settlement_lag`                                 | histogram | Distribution of settlement lag scores observed by admission control. Buckets: 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000. Use this for alerting (#981). |
-| `vatix_settlement_lag_current`                         | gauge     | Latest instantaneous settlement lag score. Dashboard signal only — alert on the `vatix_settlement_lag` histogram instead (#981).                                |
-| `vatix_orders_shed_total`                              | counter   | Total orders shed by admission control due to settlement lag.                                                                                                   |
-| `vatix_admission_shedding`                             | gauge     | `1` while admission control is shedding order traffic, `0` otherwise.                                                                                           |
-| `vatix_metrics_scrape_rejected_total`                  | counter   | Total `/metrics` scrapes denied by the scrape authz policy, labelled `reason` (#1130). Alert on any non-zero rate.                                              |
+| Metric                                                 | Type      | Description                                                                                                                                                          |
+| ------------------------------------------------------ | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vatix_process_*`, `vatix_nodejs_*`                    | various   | Default Node.js process/runtime metrics from `prom-client`.                                                                                                          |
+| `vatix_orderbook_hydrated_markets`                     | gauge     | Number of `(market, outcome)` order books currently held in memory by the matching engine (#746).                                                                    |
+| `vatix_matching_leader`                                | gauge     | Whether this process currently holds the matching leader lease: `1` while held, `0` otherwise.                                                                       |
+| `vatix_matching_lease_renew_failures_total`            | counter   | Total failed matching leader lease acquire/renew attempts on this process.                                                                                           |
+| `vatix_oracle_fail_closed_total`                       | counter   | Total times the oracle failed closed after all providers were unreachable (no report submitted on-chain).                                                            |
+| `vatix_oracle_provider_attempts_total`                 | counter   | Oracle provider call outcomes by `provider` (`primary`/`fallback`) and `outcome` (`success`/`failure`) — failover visibility (#1147).                                |
+| `vatix_oracle_fallback_chain_attempts_total`           | counter   | Outcomes of each provider tried inside the fallback chain, labelled by `provider` (chain entry `source`) and `outcome` (#1147).                                      |
+| `vatix_oracle_primary_provider_attempts_total`         | counter   | Primary provider outcomes **per HTTP attempt**, labelled by `type` (`OK`/`AUTHENTICATION`/`INVALID_RESPONSE`/`NOT_FOUND`/`RATE_LIMIT`/`TIMEOUT`/`UPSTREAM`) (#1108). |
+| `vatix_queue_job_processed_total`                      | counter   | Queue consumer job outcomes by `queue` and `outcome` (`success`/`retry`/`exhausted`/`timeout`) (#1105).                                                              |
+| `vatix_queue_job_duration_seconds`                     | histogram | Seconds spent inside the queue consumer's handler, by `queue` and `outcome` (#1105).                                                                                 |
+| `vatix_oracle_dry_run_evaluations_total`               | counter   | Dry-run oracle evaluations by would-be outcome (`would="submit"` / `would="fail_closed"`); dry-run never submits (#1146).                                            |
+| `vatix_market_search_requests_total`                   | counter   | Market list/search requests labelled by `filtered` (`true` when a `q` term was supplied); soft-deleted markets are excluded for both values (#1145).                 |
+| `vatix_oracle_submission_ambiguous_total`              | counter   | Total oracle on-chain submissions left in an ambiguous confirmation state (e.g. NOT_FOUND that may still confirm).                                                   |
+| `vatix_oracle_submission_confirmation_latency_ms`      | histogram | Milliseconds from oracle submission broadcast to on-chain confirmation.                                                                                              |
+| `vatix_settlement_outbox_depth`                        | gauge     | Number of settlement outbox rows not yet PUBLISHED (PENDING + FAILED).                                                                                               |
+| `vatix_settlement_outbox_lag_seconds`                  | gauge     | Age in seconds of the oldest unpublished settlement outbox row.                                                                                                      |
+| `vatix_settlement_outbox_publish_failures_total`       | counter   | Total failed attempts to publish an outbox row to the settlement queue.                                                                                              |
+| `vatix_settlement_outbox_orphaned_trades`              | gauge     | Outbox rows that have failed to publish at least `OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD` times (stalled settlement).                                                      |
+| `vatix_settlement_outbox_quarantined_entries`          | gauge     | Number of outbox entries currently in QUARANTINED status.                                                                                                            |
+| `vatix_settlement_outbox_quarantine_transitions_total` | counter   | Total outbox entries moved to QUARANTINED status due to exceeding retry budget.                                                                                      |
+| `vatix_settlement_lag`                                 | histogram | Distribution of settlement lag scores observed by admission control. Buckets: 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000. Use this for alerting (#981).      |
+| `vatix_settlement_lag_current`                         | gauge     | Latest instantaneous settlement lag score. Dashboard signal only — alert on the `vatix_settlement_lag` histogram instead (#981).                                     |
+| `vatix_orders_shed_total`                              | counter   | Total orders shed by admission control due to settlement lag.                                                                                                        |
+| `vatix_admission_shedding`                             | gauge     | `1` while admission control is shedding order traffic, `0` otherwise.                                                                                                |
+| `vatix_metrics_scrape_rejected_total`                  | counter   | Total `/metrics` scrapes denied by the scrape authz policy, labelled `reason` (#1130). Alert on any non-zero rate.                                                   |
 
 ### Indexer process
 
@@ -226,6 +229,54 @@ Failover is only observable if primary and fallback traffic are separable:
 
 Neither metric carries market ids, payloads, provider URLs, or API keys —
 `provider` values come from operator configuration, not from user input.
+
+### `vatix_oracle_primary_provider_attempts_total` (#1108)
+
+Primary provider outcomes **per HTTP attempt**, labelled by `type`:
+`OK`, `AUTHENTICATION`, `INVALID_RESPONSE`, `NOT_FOUND`, `RATE_LIMIT`,
+`TIMEOUT`, `UPSTREAM`.
+
+This is deliberately _not_ the same series as
+`vatix_oracle_provider_attempts_total{provider="primary"}`. That one is
+incremented once per `resolve()` in `OracleService`; this one is incremented once
+per attempt in `PrimaryAdapter`. One `resolve()` fans out into several attempts
+under `retryConfig`, so incrementing the resolve-level counter from the adapter
+would double-count every primary call. The attempt-level series answers the
+question the other one cannot — _why_ is the primary failing, and is it flapping
+inside a retry burst before `resolve()` as a whole gives up?
+
+```promql
+# A credential problem retries will never fix
+sum(rate(vatix_oracle_primary_provider_attempts_total{type="AUTHENTICATION"}[15m])) > 0
+
+# Primary flapping: failures inside the retry budget, resolve still succeeding
+sum(rate(vatix_oracle_primary_provider_attempts_total{type="UPSTREAM"}[5m])) > 0
+  and sum(rate(vatix_oracle_provider_attempts_total{provider="primary",outcome="success"}[5m])) > 0
+```
+
+`type` values are the stable `PrimaryProviderErrorType` union and never contain
+response bodies, market ids, or credentials.
+
+### `vatix_queue_job_*` (#1105)
+
+`vatix_queue_job_processed_total{queue,outcome}` counts every job run through the
+generic queue consumer, and
+`vatix_queue_job_duration_seconds{queue,outcome}` is the matching latency
+histogram. `outcome` is one of `success`, `retry` (failures with attempts
+remaining), `exhausted` (failed on the final attempt — the caller dead-letters
+it), or `timeout` (exceeded `processingTimeoutMs`).
+
+```promql
+# Money path stalling
+rate(vatix_queue_job_processed_total{outcome="exhausted"}[5m]) > 0
+
+# A wedged dependency shows up as timeouts piling up at the deadline
+histogram_quantile(0.95, rate(vatix_queue_job_duration_seconds_bucket{outcome="timeout"}[5m]))
+```
+
+`queue` is the consumer's configured queue name (operator config, bounded
+cardinality) and the labels never carry job payloads, trade ids, or Stellar
+addresses. See `docs/queue-consumer.md`.
 
 ### `vatix_oracle_dry_run_evaluations_total` (#1146)
 

@@ -48,6 +48,57 @@ await processJob(logger, config, job, async (job) => {
 });
 ```
 
+### Fail-closed input validation
+
+`processJob` validates both its configuration and the delivered job **before**
+the handler runs, and throws `InvalidQueueConsumerConfigError` (carrying a
+stable `code`) if either is unusable. This is deliberate: an unvalidated value
+does not crash, it silently disables the guarantees this function exists to
+provide.
+
+| Field                        | Rule                                             | If violated                                                                                                                                                       |
+| ---------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.queueName`           | non-empty, `<= 128` chars, no control characters | `QUEUE_CONSUMER_INVALID_QUEUE_NAME` — a newline in a queue name forges log lines                                                                                  |
+| `config.maxAttempts`         | integer `>= 1`                                   | `QUEUE_CONSUMER_INVALID_MAX_ATTEMPTS` — `0`/`NaN` dead-letters every job on its first delivery                                                                    |
+| `config.processingTimeoutMs` | finite number `>= 1`                             | `QUEUE_CONSUMER_INVALID_PROCESSING_TIMEOUT` — `0`/`NaN` makes every job time out before doing work; a non-finite value removes the deadline entirely              |
+| `job.attempts`               | integer `>= 1`                                   | `QUEUE_CONSUMER_INVALID_JOB_ATTEMPTS` — `0`/`NaN` satisfies `attempts < maxAttempts` forever, so the job is retried without bound and blocks everything behind it |
+
+These are **configuration** errors, not job failures: they are raised outside the
+retry/dead-letter path, so a misconfigured worker fails visibly at the first
+delivery instead of quietly mis-retrying. A control character in `queueName` is
+rejected because that name is interpolated into structured log output.
+
+### Cancellation and correlation
+
+`JobHandler` receives a second argument, an `AbortSignal` that is aborted when
+`processingTimeoutMs` elapses:
+
+```typescript
+await processJob(logger, config, job, async (job, signal) => {
+  // Thread `signal` into Stellar RPC / fetch so an abandoned job stops
+  // consuming quota instead of running to completion in the background.
+});
+```
+
+Handlers that ignore the signal keep their previous behaviour — the timeout still
+rejects `processJob`. Aborting is a courtesy to the handler, never the
+authority: the job is already being retried or dead-lettered by the caller.
+
+`QueueJob.correlationId` is optional. When present it is attached to every log
+line the consumer emits, so a job can be traced from the API request that
+enqueued it through to its terminal outcome. When absent, the job id is used.
+
+### Metrics
+
+| Metric                             | Labels             | Meaning                                          |
+| ---------------------------------- | ------------------ | ------------------------------------------------ |
+| `vatix_queue_job_processed_total`  | `queue`, `outcome` | `success` \| `retry` \| `exhausted` \| `timeout` |
+| `vatix_queue_job_duration_seconds` | `queue`, `outcome` | Wall-clock seconds spent in the handler          |
+
+`outcome` is part of the metric contract. Alert on
+`rate(vatix_queue_job_processed_total{outcome="exhausted"}[5m]) > 0` for a
+stalling money path and on `outcome="timeout"` for a wedged dependency.
+
 ## Log Levels
 
 | Event                          | Level   |

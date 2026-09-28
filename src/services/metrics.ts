@@ -74,6 +74,29 @@ export const oracleFallbackChainAttemptsTotal = new client.Counter({
 });
 
 /**
+ * Per-*attempt* HTTP outcomes observed by `PrimaryAdapter`, labelled by `type`:
+ * `OK` for a validated 2xx resolution, or one of the stable
+ * `PrimaryProviderErrorType` values (`AUTHENTICATION` | `INVALID_RESPONSE` |
+ * `NOT_FOUND` | `RATE_LIMIT` | `TIMEOUT` | `UPSTREAM`).
+ *
+ * Deliberately separate from `oracleProviderAttemptsTotal`, which is
+ * incremented once per `resolve()` in `OracleService`. Reusing that counter
+ * here would double-count every primary call, because one `resolve()` fans out
+ * into several attempts. This series answers the question the other one cannot:
+ * *why* is the primary provider failing, and is it flapping inside a retry burst
+ * before `resolve()` as a whole gives up?
+ *
+ * `type` is part of the metric contract — never rename these values without a
+ * docs + dashboard update.
+ */
+export const oraclePrimaryProviderAttemptsTotal = new client.Counter({
+  name: "vatix_oracle_primary_provider_attempts_total",
+  help: "Primary provider HTTP outcomes per attempt, labelled by type (OK|AUTHENTICATION|INVALID_RESPONSE|NOT_FOUND|RATE_LIMIT|TIMEOUT|UPSTREAM)",
+  labelNames: ["type"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
  * Dry-run oracle evaluations (#1146). `would` is `submit` when the resolution
  * passed every gate and would have been enqueued for on-chain submission, and
  * `fail_closed` when the result would have been refused (below the confidence
@@ -179,6 +202,44 @@ export const oracleSubmissionConfirmationLatency = new client.Histogram({
   help: "Milliseconds from oracle submission broadcast to confirmation",
   registers: [metricsRegistry],
   buckets: [100, 500, 1000, 2500, 5000, 10000, 30000, 60000, 120000],
+});
+
+/**
+ * Outcome of every job run through the generic queue consumer
+ * (`apps/workers/src/consumers/queue-consumer.ts`).
+ *
+ * `queue` is the consumer's logical queue name (e.g. `settlement`) and
+ * `outcome` is one of the stable values in `QUEUE_JOB_OUTCOMES`:
+ * `success` | `retry` | `exhausted` | `timeout`.
+ *
+ * Alerting examples:
+ *   - money path stalling: `rate(vatix_queue_job_processed_total{outcome="exhausted"}[5m]) > 0`
+ *   - a wedged dependency: `rate(vatix_queue_job_processed_total{outcome="timeout"}[5m]) > 0`
+ *   - a draining backlog: `rate(...{outcome="success"}[5m])` flat while
+ *     `...{outcome="retry"}` climbs.
+ *
+ * `outcome` is part of the metric contract — never rename these values without
+ * a docs + dashboard update.
+ */
+export const queueJobProcessedTotal = new client.Counter({
+  name: "vatix_queue_job_processed_total",
+  help: "Queue consumer job outcomes by queue and outcome (success|retry|exhausted|timeout)",
+  labelNames: ["queue", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Wall-clock seconds spent inside the queue consumer's handler, by queue and
+ * terminal outcome. Pairs with `queueJobProcessedTotal`: a rising
+ * `outcome="timeout"` duration at the `processingTimeoutMs` ceiling means the
+ * per-job deadline, not the handler, is setting the pace.
+ */
+export const queueJobDurationSeconds = new client.Histogram({
+  name: "vatix_queue_job_duration_seconds",
+  help: "Seconds spent processing a queue job, by queue and outcome",
+  labelNames: ["queue", "outcome"] as const,
+  registers: [metricsRegistry],
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300],
 });
 
 /**

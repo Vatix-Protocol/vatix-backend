@@ -580,6 +580,29 @@ export class SubmissionWorker {
   }
 
   /**
+   * Write a dead-letter entry, containing any failure so it can never take the
+   * worker down.
+   *
+   * `logDeadLetter` already swallows its own Redis errors, but it is a
+   * best-effort observability side channel: a dead-letter write failing must
+   * not mask the original submission failure that is being recorded here, nor
+   * reject into the worker's event loop as an unhandled rejection. The
+   * `persisted: false` branch inside `logDeadLetter` is the authoritative
+   * signal that the message is not in the DLQ, and it is logged at `error`.
+   */
+  private async recordDeadLetter(message: DeadLetterMessage): Promise<void> {
+    try {
+      await logDeadLetter(this.logger, message);
+    } catch (error) {
+      this.logger.error("Dead-letter write failed", {
+        messageId: message.id,
+        queue: message.queue,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
    * Mark submission as failed in database and emit a dead-letter log entry.
    *
    * Called when max retries are exhausted. Persists the failure state to the
@@ -605,7 +628,11 @@ export class SubmissionWorker {
       },
       reason: errorMessage,
     };
-    logDeadLetter(this.logger, deadLetterMessage);
+    // Awaited (not floated) so a Redis outage during the dead-letter write is
+    // contained here. A floating promise would surface as an unhandled
+    // rejection, which terminates the worker process and takes the live
+    // submission queue down with it.
+    await this.recordDeadLetter(deadLetterMessage);
 
     try {
       await recordFailed(this.prisma, {

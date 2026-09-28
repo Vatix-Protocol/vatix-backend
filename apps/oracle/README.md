@@ -29,16 +29,46 @@ can be signed or submitted.
 
 Failover is only actionable if primary and fallback traffic are separable:
 
-| Metric                                       | Labels                                                               | Meaning                                                                                                                                     |
-| -------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `vatix_oracle_provider_attempts_total`       | `provider`: `primary`/`fallback`, `outcome`: `success`/`failure`     | Outcome of each provider call made by `OracleService`. The confidence gate runs after this counter, so the series reflects provider health. |
-| `vatix_oracle_fallback_chain_attempts_total` | `provider`: the chain entry (`source`, e.g. `fallback-1`), `outcome` | Outcome of each entry tried inside `FallbackAdapter`, so one flapping fallback provider is identifiable.                                    |
-| `vatix_oracle_fail_closed_total`             | —                                                                    | Every provider failed (or the result was refused for low confidence): nothing was submitted.                                                |
+| Metric                                         | Labels                                                                                               | Meaning                                                                                                                                     |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vatix_oracle_provider_attempts_total`         | `provider`: `primary`/`fallback`, `outcome`: `success`/`failure`                                     | Outcome of each provider call made by `OracleService`. The confidence gate runs after this counter, so the series reflects provider health. |
+| `vatix_oracle_fallback_chain_attempts_total`   | `provider`: the chain entry (`source`, e.g. `fallback-1`), `outcome`                                 | Outcome of each entry tried inside `FallbackAdapter`, so one flapping fallback provider is identifiable.                                    |
+| `vatix_oracle_primary_provider_attempts_total` | `type`: `OK`, `AUTHENTICATION`, `INVALID_RESPONSE`, `NOT_FOUND`, `RATE_LIMIT`, `TIMEOUT`, `UPSTREAM` | Outcome of each _attempt_ `PrimaryAdapter` makes, including attempts inside a retry burst.                                                  |
+| `vatix_oracle_fail_closed_total`               | —                                                                                                    | Every provider failed (or the result was refused for low confidence): nothing was submitted.                                                |
+
+The two primary series answer different questions and must not be conflated.
+`vatix_oracle_provider_attempts_total` is incremented **once per `resolve()`**
+by `OracleService`; `vatix_oracle_primary_provider_attempts_total` is incremented
+**once per HTTP attempt** by `PrimaryAdapter`. One `resolve()` fans out into
+several attempts, so reusing the former in the adapter would double-count every
+primary call. Use the attempt-level series to see _why_ the primary is failing
+and whether it is flapping mid-retry; use the resolve-level one for the
+provider's overall availability.
 
 Alert when the fallback success share rises (`provider="fallback"`), when
-primary failures trend up, or when a specific chain entry in
-`vatix_oracle_fallback_chain_attempts_total` stops succeeding. See
+primary failures trend up, when a specific chain entry in
+`vatix_oracle_fallback_chain_attempts_total` stops succeeding, or when
+`vatix_oracle_primary_provider_attempts_total{type="AUTHENTICATION"}` is
+non-zero (a credential problem that retries will never fix). See
 `docs/metrics.md` for PromQL examples.
+
+## Primary Adapter (`primary-adapter.ts`)
+
+`PrimaryAdapter` is the default provider adapter. Two behaviours matter
+operationally:
+
+- **Timeout policy.** It defaults to `PRIMARY_PROVIDER_TIMEOUT_POLICY_MS`
+  (30s) and runs the resolved timeout through `validateTimeout()`, matching
+  `FallbackAdapter`. In `NODE_ENV=production` an out-of-range timeout **throws**
+  at construction rather than being silently clamped — a silently-clamped value
+  is exactly the divergence-from-policy that let a deployment run with a
+  different effective timeout than `docs/architecture.md` describes. Outside
+  production the value is clamped with a warning so local stubs keep working.
+- **Fail-closed response validation.** `outcome` must be a boolean and
+  `confidence` must be a **finite** number in `[0, 1]`. `Number.isFinite` is
+  used deliberately: `typeof null === "object"` and a `typeof`-only check would
+  let a non-finite or wrong-typed confidence past the range comparison and into
+  the signing path. Anything else raises `INVALID_RESPONSE`.
 
 ## Dry-run Mode (#1146)
 
