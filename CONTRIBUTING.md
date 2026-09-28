@@ -9,6 +9,7 @@ Thank you for your interest in contributing to Vatix! This guide will help you g
 - [Development Workflow](#development-workflow)
 - [Code Guidelines](#code-guidelines)
 - [Testing Requirements](#testing-requirements)
+- [CI Required Checks](#ci-required-checks)
 - [Submitting a Pull Request](#submitting-a-pull-request)
 - [Database Changes](#database-changes)
 - [Getting Help](#getting-help)
@@ -220,11 +221,52 @@ pnpm test:coverage
 
 **All tests must pass before submitting a PR.**
 
+## CI Required Checks
+
+Every pull request against `main` or `dev` runs the **CI / Backend** job
+(`.github/workflows/ci.yml`), and it must be green before the PR is merged.
+The job runs the steps below in order and stops at the first failure, so run
+the same commands locally before you push.
+
+| #   | CI step                                | Run locally                                                                                             |
+| --- | -------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| 1   | Verify Node 22 engine enforcement      | `node -v` must print `v22.*` (pinned in `.nvmrc`)                                                       |
+| 2   | Install dependencies                   | `pnpm install`                                                                                          |
+| 3   | Enforce engine parity (Node/pnpm)      | `pnpm engines:check`                                                                                    |
+| 4   | Generate Prisma Client                 | `pnpm prisma:generate`                                                                                  |
+| 5   | Check code formatting                  | `pnpm format:check` (fix with `pnpm format`)                                                            |
+| 6   | Check TypeScript (src)                 | `pnpm tsc --noEmit`                                                                                     |
+| 7   | Check TypeScript (apps + packages)     | `pnpm tsc --noEmit -p apps/tsconfig.json`                                                               |
+| 8   | Check TypeScript (packages)            | `pnpm tsc --noEmit -p packages/tsconfig.json`                                                           |
+| 9   | Validate migrations                    | `pnpm prisma:validate` (needs an empty `SHADOW_DATABASE_URL` database)                                  |
+| 10  | Run migrations                         | `pnpm prisma:deploy`                                                                                    |
+| 11  | Run unit tests (with coverage)         | `pnpm exec vitest run --exclude 'tests/integration/**' --exclude '**/*.integration.test.ts' --coverage` |
+| 12  | Run integration tests (lease disabled) | `MATCHING_LEASE_ENFORCED=false pnpm test:integration`                                                   |
+| 13  | Run integration tests (lease enforced) | `MATCHING_LEASE_ENFORCED=true pnpm test:integration`                                                    |
+| 14  | Build                                  | `pnpm build`                                                                                            |
+
+Steps 9–13 need Postgres and Redis (`docker compose up -d`) and the same
+environment CI sets: `DATABASE_URL`, `REDIS_URL`, `NODE_ENV=test` and
+`ADMIN_TOKEN=test-admin-token`.
+
+Two other workflows run outside the Backend job:
+
+- **Docker image non-root smoke test** (`.github/workflows/docker-smoke.yml`)
+  runs only on PRs touching `Dockerfile`, `src/`, `apps/`, `packages/` or
+  `prisma/schema.prisma`. It builds every image target and fails if a
+  container runs as root. Fix a red run before merging.
+- **Nightly Load Test** (`.github/workflows/nightly-load-test.yml`) runs on a
+  schedule and on demand, never on PRs.
+
+`tests/ci-required-checks.test.ts` fails if a step is added to or renamed in
+the Backend job without updating this table.
+
 ## Submitting a Pull Request
 
 ### Before Submitting
 
 - [ ] All tests pass (`pnpm test`)
+- [ ] The [CI required checks](#ci-required-checks) pass locally
 - [ ] Code follows style guidelines
 - [ ] Added tests for new functionality
 - [ ] Updated documentation if needed
