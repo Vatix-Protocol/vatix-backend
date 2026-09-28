@@ -110,6 +110,57 @@ export const oracleDryRunEvaluationsTotal = new client.Counter({
 });
 
 /**
+ * Oracle poll-cycle outcomes (#1110 scheduler reliability). `outcome` is
+ * `success`, `failure` (the cycle threw), or `skipped` (the previous cycle
+ * was still in flight, so this tick was dropped instead of double-resolving
+ * the same markets). A rising `skipped` share means the configured poll
+ * interval is shorter than a real cycle takes — raise the interval or fix the
+ * slow dependency, otherwise resolution latency silently grows.
+ */
+export const oraclePollCyclesTotal = new client.Counter({
+  name: "vatix_oracle_poll_cycles_total",
+  help: "Total oracle poll cycles by outcome (success/failure/skipped)",
+  labelNames: ["outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Wall-clock duration of a single oracle poll cycle in milliseconds. Used to
+ * size `ORACLE_POLL_INTERVAL_MS` against real cycle cost and to alert when the
+ * scheduler starts backing off after consecutive failures.
+ */
+export const oraclePollCycleDurationMs = new client.Histogram({
+  name: "vatix_oracle_poll_cycle_duration_ms",
+  help: "Duration of a single oracle poll cycle in milliseconds",
+  buckets: [100, 500, 1_000, 5_000, 15_000, 30_000, 60_000, 300_000],
+  registers: [metricsRegistry],
+});
+
+/**
+ * Consecutive failed oracle poll cycles. Reset to 0 by the first successful
+ * cycle. Drives the scheduler's bounded back-off, so a persistent dependency
+ * outage (DB/RPC/provider) cannot be retried at full speed forever.
+ */
+export const oraclePollConsecutiveFailures = new client.Gauge({
+  name: "vatix_oracle_poll_consecutive_failures",
+  help: "Number of consecutive failed oracle poll cycles (reset on success)",
+  registers: [metricsRegistry],
+});
+
+/**
+ * Price-provider outcomes (#1112 price fetcher timeouts). `provider` is the
+ * provider name and `outcome` is `success`, `failure`, or `timeout` — the
+ * `timeout` series is the actionable one: a provider that always times out is
+ * a hang, not an outage, and it is invisible in a plain success/failure ratio.
+ */
+export const oraclePriceFetchAttemptsTotal = new client.Counter({
+  name: "vatix_oracle_price_fetch_attempts_total",
+  help: "Total price fetch attempts by provider name and outcome (success/failure/timeout)",
+  labelNames: ["provider", "outcome"] as const,
+  registers: [metricsRegistry],
+});
+
+/**
  * Market search requests served by GET /markets (#1145). `filtered` is `true`
  * when the caller supplied a text search term. Soft-deleted markets are
  * excluded from every value of `filtered` — the label is telemetry only and

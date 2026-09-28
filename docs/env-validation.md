@@ -100,6 +100,18 @@ worker drifted onto the wrong chain is a money-path failure, and dev/test drift
 is how it reaches production. Self-hosted and third-party endpoints remain
 accepted (see invariant 5 below).
 
+The **oracle submission worker** runs the same gate on its dev/test path too.
+`resolveOracleStellarConfig()` previously only compared the passphrase and the
+RPC list it resolved itself, so a testnet deployment carrying a mainnet
+`STELLAR_HORIZON_URL` — or a mainnet entry hiding in `STELLAR_RPC_URLS` while
+`STELLAR_RPC_URL` looked clean — booted the on-chain signer without
+`ENV_NETWORK_MISMATCH`. It now calls the shared gate for every configured
+endpoint variable, in every environment. Endpoint drift is reported against the
+variable the entry was actually read from, so a log line always names the
+variable the operator has to fix. Incomplete oracle config still short-circuits
+to `undefined` (no signer, nothing submitted); the gate runs whenever the worker
+would actually submit on-chain.
+
 ### Invariants
 
 1. **Passphrase (#1133).** `SOROBAN_NETWORK_PASSPHRASE` must equal the

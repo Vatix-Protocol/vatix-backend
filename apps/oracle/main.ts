@@ -18,6 +18,7 @@ import { redis } from "../../src/services/redis.js";
 import { RESOLVABLE_MARKET_STATUSES } from "../../packages/shared/src/marketLifecycle.js";
 import { createLogger } from "../indexer/src/logger.js";
 import { loadOracleConfig } from "./oracle-config.js";
+import { PollScheduler } from "./oracle-scheduler.js";
 import { OracleService } from "./oracle-service.js";
 import { PrimaryAdapter } from "./primary-adapter.js";
 import { FallbackAdapter } from "./fallback-adapter.js";
@@ -207,12 +208,13 @@ export async function poll(): Promise<void> {
 
 /**
  * Wraps a poll function so overlapping invocations are skipped instead of
- * running concurrently. If a cycle takes longer than the scheduling interval
- * (e.g. a slow provider or many active markets), the next tick logs a
- * warning and returns immediately rather than double-processing the same
- * markets (duplicate provider calls, duplicate OracleReport writes).
- * Errors from `pollFn` are caught and logged, never thrown, so a single bad
- * cycle can't take down the setInterval loop.
+ * running concurrently.
+ *
+ * Retained for callers that drive `poll()` from their own loop; the built-in
+ * bootstrap uses {@link PollScheduler}, which applies the same guard plus a
+ * per-cycle deadline and failure back-off (#1110). Errors from `pollFn` are
+ * caught and logged, never thrown, so a single bad cycle can't take down the
+ * caller.
  */
 export function createOverlapGuardedPoll(
   pollFn: () => Promise<void>,
@@ -242,14 +244,20 @@ export async function bootstrap(): Promise<void> {
   const config = loadOracleConfig();
   const logger = createLogger(config.logLevel);
 
-  logger.info("Oracle starting", { pollIntervalMs: config.pollIntervalMs });
+  logger.info("Oracle starting", {
+    pollIntervalMs: config.pollIntervalMs,
+    cycleTimeoutMs: config.cycleTimeoutMs,
+  });
 
-  const runPoll = createOverlapGuardedPoll(poll, logger);
-
-  // Run immediately (unguarded — fail fast on startup misconfiguration,
-  // matching the previous behavior), then on interval with overlap guarding.
-  await poll();
-  const timer = setInterval(() => void runPoll(), config.pollIntervalMs);
+  // #1110: the scheduler owns overlap protection, the per-cycle deadline, and
+  // bounded back-off after consecutive failures. `poll` itself only knows how
+  // to resolve one batch of markets.
+  const scheduler = new PollScheduler({
+    intervalMs: config.pollIntervalMs,
+    cycleTimeoutMs: config.cycleTimeoutMs,
+    runCycle: poll,
+    logger,
+  });
 
   const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
   let isShuttingDown = false;
@@ -259,7 +267,10 @@ export async function bootstrap(): Promise<void> {
     isShuttingDown = true;
 
     logger.info("Oracle shutdown initiated", { signal });
-    clearInterval(timer);
+    // Stop scheduling first, then let an in-flight cycle finish (it is bounded
+    // by cycleTimeoutMs) so a resolution is never cut off mid-write.
+    scheduler.stop();
+    await scheduler.waitForIdle();
 
     try {
       if (globalQueue) {
@@ -279,6 +290,8 @@ export async function bootstrap(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
+  scheduler.start();
 }
 
 // Only auto-boot when this file is executed directly (e.g. via `tsx

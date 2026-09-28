@@ -2,19 +2,23 @@
 /**
  * Replay Dead-Letter Queue Admin CLI
  *
- * Reads entries from Redis dead-letter streams and re-enqueues them to their
- * original queues. After a successful replay the dead-letter entry is removed.
+ * Reads entries from Redis dead-letter streams and re-enqueues them to the live
+ * stream that actually consumes their queue. After a successful replay the
+ * dead-letter entry is removed. A queue with no stream behind it (e.g.
+ * `settlement`, which is BullMQ-backed) is skipped fail-closed — the entries
+ * stay in the DLQ and the operator is pointed at `pnpm dlq`. See
+ * docs/dead-letter-log.md for the replay target table.
  *
  * All parsing/gating/redaction rules live in `scripts/replay-dlq.lib.ts` so
  * they are unit-testable without Redis; this file is the thin I/O shell around
  * them (#1136).
  *
  * Usage:
- *   pnpm replay:dlq                                  # replay all DLQs
- *   pnpm replay:dlq --queue settlement               # one queue only
- *   pnpm replay:dlq --queue settlement --limit 10    # limit entries
- *   pnpm replay:dlq --dry-run                        # preview only
- *   pnpm replay:dlq --yes                            # required to mutate in production
+ *   pnpm replay:dlq                                     # replay all DLQs
+ *   pnpm replay:dlq --queue oracle-submission           # one queue only
+ *   pnpm replay:dlq --queue oracle-submission --limit 10  # limit entries
+ *   pnpm replay:dlq --dry-run                           # preview only
+ *   pnpm replay:dlq --yes                               # required to mutate in production
  *
  * Exit codes: 0 success, 1 runtime failure, 2 invalid usage / refused run.
  *

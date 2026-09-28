@@ -40,6 +40,12 @@ export interface TimeoutConfig {
   timeoutMs: number;
   /** Optional custom error message */
   errorMessage?: string;
+  /**
+   * Optional caller-owned signal to combine with the timeout, so a shutdown or
+   * an outer deadline can cancel the operation instead of only being bounded by
+   * `timeoutMs`. The operation's signal aborts when either fires.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -183,7 +189,16 @@ export async function withTimeout<T>(
   config: TimeoutConfig
 ): Promise<TimedResult<T>> {
   const startTime = performance.now();
-  const { signal, clear } = createTimeoutSignal(config.timeoutMs);
+  const { signal, clear } = createTimeoutSignal(
+    config.timeoutMs,
+    config.signal
+  );
+
+  // Track which of the two sources fired. Reporting a caller cancellation as a
+  // timeout is not cosmetic: callers branch on `timedOut` to decide whether to
+  // retry or fail over, and a cancellation must never be mistaken for a
+  // transient upstream fault.
+  const cancelledByCaller = () => config.signal?.aborted === true;
 
   try {
     const value = await Promise.race([
@@ -192,6 +207,17 @@ export async function withTimeout<T>(
         signal.addEventListener(
           "abort",
           () => {
+            if (cancelledByCaller()) {
+              const aborted = new Error(
+                config.signal?.reason instanceof Error
+                  ? config.signal.reason.message
+                  : "Operation aborted by caller"
+              );
+              aborted.name = "AbortError";
+              reject(aborted);
+              return;
+            }
+
             reject(
               new Error(
                 config.errorMessage ??
@@ -208,11 +234,36 @@ export async function withTimeout<T>(
     return { value, timedOut: false, durationMs };
   } catch (error) {
     const durationMs = performance.now() - startTime;
-    const isTimeout =
+    const isCancellation =
+      cancelledByCaller() ||
+      (error instanceof Error && error.name === "AbortError");
+
+    // Whichever side of the race rejected first, a caller cancellation must be
+    // *reported* as a cancellation: the operation's own abort handler often
+    // wins the race with a plain `Error`, and mislabelling that as a timeout
+    // would make the caller retry or fail over on a deliberate cancel.
+    let reported = error;
+    if (
+      isCancellation &&
       error instanceof Error &&
-      (error.message.includes("timed out") ||
-        error.message.includes("abort") ||
-        error.message === config.errorMessage);
+      error.name !== "AbortError"
+    ) {
+      const aborted = new Error(
+        config.signal?.reason instanceof Error
+          ? config.signal.reason.message
+          : error.message
+      );
+      aborted.name = "AbortError";
+      aborted.cause = error;
+      reported = aborted;
+    }
+
+    const isTimeout =
+      !isCancellation &&
+      reported instanceof Error &&
+      (reported.message.includes("timed out") ||
+        reported.message.includes("abort") ||
+        reported.message === config.errorMessage);
 
     if (isTimeout) {
       console.warn("Operation timed out", {
@@ -225,7 +276,7 @@ export async function withTimeout<T>(
     return {
       timedOut: isTimeout,
       durationMs,
-      error: error instanceof Error ? error : new Error(String(error)),
+      error: reported instanceof Error ? reported : new Error(String(reported)),
     };
   } finally {
     clear();

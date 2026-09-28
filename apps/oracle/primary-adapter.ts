@@ -120,14 +120,23 @@ export class PrimaryAdapter implements ProviderAdapter {
       ...(request.retryConfig ?? {}),
     };
 
-    try {
-      return await withRetry(async () => {
-        const timedResult = await withTimeout<ProviderResult>(
-          async (signal) => this.fetchFromProvider(request, signal),
-          {
-            timeoutMs,
-            errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
-          }
+    return withRetry(async () => {
+      const timedResult = await withTimeout<ProviderResult>(
+        async (signal) => this.fetchFromProvider(request, signal),
+        {
+          timeoutMs,
+          errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
+          // Honour caller cancellation (poll-loop shutdown) as well as the
+          // timeout, so a shutdown does not have to wait out a hung primary.
+          signal: request.signal,
+        }
+      );
+
+      if (timedResult.timedOut) {
+        throw new PrimaryProviderError(
+          "TIMEOUT",
+          timedResult.error?.message ?? "Primary provider request timed out",
+          timedResult.error
         );
 
         if (timedResult.timedOut) {

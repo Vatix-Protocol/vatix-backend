@@ -6,6 +6,10 @@ import {
   StellarNetworkMismatchError,
   IncompleteProductionStellarConfigError,
 } from "./stellar-config.js";
+import {
+  ENV_NETWORK_MISMATCH,
+  StellarNetworkConsistencyError,
+} from "../../../../packages/shared/src/networkConsistency.js";
 
 const BASE_ENV = {
   STELLAR_RPC_URL: "https://rpc.example.com",
@@ -99,6 +103,88 @@ describe("resolveOracleStellarConfig", () => {
       // short-circuit to undefined before the mismatch check ever runs.
     });
     expect(config).toBeUndefined();
+  });
+});
+
+describe("network consistency gate — every environment (#1133, #1134, #1135)", () => {
+  const COHERENT_TESTNET = {
+    ...BASE_ENV,
+    INDEXER_CONTRACT_ID: "CINDEXER",
+    STELLAR_NETWORK: "testnet",
+    STELLAR_HORIZON_URL: "https://horizon-testnet.stellar.org",
+    STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
+  };
+
+  it("resolves a coherent testnet deployment (no false positive)", () => {
+    const config = resolveOracleStellarConfig(COHERENT_TESTNET);
+    expect(config?.rpcUrl).toBe("https://soroban-testnet.stellar.org");
+  });
+
+  it("rejects a mainnet Horizon URL on a testnet deployment, outside production", () => {
+    // Regression: outside production the worker only ran the passphrase and RPC
+    // checks, so a half-rotated deployment (testnet passphrase, mainnet
+    // Horizon) booted the on-chain signer with ENV_NETWORK_MISMATCH never
+    // raised for STELLAR_HORIZON_URL (#1134).
+    let thrown: unknown;
+    try {
+      resolveOracleStellarConfig({
+        ...COHERENT_TESTNET,
+        STELLAR_HORIZON_URL: "https://horizon.stellar.org",
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(StellarNetworkConsistencyError);
+    expect((thrown as StellarNetworkConsistencyError).code).toBe(
+      ENV_NETWORK_MISMATCH
+    );
+    expect((thrown as StellarNetworkConsistencyError).variable).toBe(
+      "STELLAR_HORIZON_URL"
+    );
+    // Fail-closed messages carry the variable name, never the URL or passphrase.
+    expect((thrown as Error).message).not.toContain("Test SDF Network");
+  });
+
+  it("rejects drift hidden in the endpoint variable the worker does not prefer", () => {
+    expect(() =>
+      resolveOracleStellarConfig({
+        ...COHERENT_TESTNET,
+        STELLAR_RPC_URLS: "https://soroban-mainnet.stellar.org",
+      })
+    ).toThrow(/STELLAR_RPC_URLS/);
+  });
+
+  it("still raises the oracle worker's own error type for passphrase drift", () => {
+    expect(() =>
+      resolveOracleStellarConfig({
+        ...COHERENT_TESTNET,
+        STELLAR_NETWORK: "mainnet",
+      })
+    ).toThrow(StellarNetworkMismatchError);
+  });
+
+  it("exempts custom networks and non-Stellar hosts", () => {
+    const config = resolveOracleStellarConfig({
+      ...COHERENT_TESTNET,
+      STELLAR_NETWORK: "futurenet",
+      SOROBAN_NETWORK_PASSPHRASE: "Test SDF Future Network ; October 2022",
+      STELLAR_HORIZON_URL: "https://horizon-futurenet.stellar.org",
+      STELLAR_RPC_URL: "https://rpc.example.com",
+    });
+    expect(config?.rpcUrl).toBe("https://rpc.example.com");
+  });
+
+  it("gates the dev/test path of validateAndResolveStellarConfig too", () => {
+    expect(() =>
+      validateAndResolveStellarConfig(
+        {
+          ...COHERENT_TESTNET,
+          STELLAR_HORIZON_URL: "https://horizon.stellar.org",
+        },
+        "development"
+      )
+    ).toThrow(/ENV_NETWORK_MISMATCH/);
   });
 });
 

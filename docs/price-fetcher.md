@@ -39,6 +39,38 @@ interface PriceFetchResult {
   in every log line for that fetch, so a single price fetch can be traced
   end-to-end across primary/fallback attempts.
 
+## Timeouts and cancellation (#1112)
+
+`PriceFetcherConfig.timeoutMs` is a **hard per-provider deadline**. It is
+validated through the shared timeout policy (see
+[`docs/architecture.md`](architecture.md) and `apps/oracle/timeout-utils.ts`),
+so a value outside the documented bounds fails fast in
+`NODE_ENV=production` rather than being silently clamped to a different
+effective deadline than the operator configured.
+
+Each attempt:
+
+1. receives an `AbortSignal` (`PriceProviderConfig.fetchFn` may take one), so a
+   provider built on `fetch` releases its socket instead of leaking a hung
+   request;
+2. is raced against the deadline — a provider that ignores the signal is still
+   bounded, it just cannot free the underlying connection;
+3. is validated: a `NaN`, infinite, zero, or negative price is rejected as
+   `INVALID_PRICE` and the fallback provider gets a chance to answer, because
+   such a value would poison every downstream calculation.
+
+`fetchPrice({ signal })` accepts a caller-owned signal (e.g. the poll loop's
+shutdown signal). A caller that has already aborted fails closed without
+dialling a provider at all.
+
+Failures are classified with a stable reason code on `PriceProviderError` —
+`TIMEOUT`, `ABORTED`, `INVALID_PRICE`, or `PROVIDER_ERROR` — each carrying the
+per-fetch correlation `requestId`, and are counted in
+`vatix_oracle_price_fetch_attempts_total{provider,outcome}` where `outcome` is
+`success`, `failure`, or `timeout`. The `timeout` series is the actionable one:
+a provider that always times out is a hang, not an outage, and it is invisible
+in a plain success/failure ratio.
+
 ## Production / Development Split
 
 `PriceFetcher` requires an explicit `primaryProvider` in

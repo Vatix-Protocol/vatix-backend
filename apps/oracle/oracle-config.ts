@@ -10,6 +10,7 @@
 import {
   getOraclePollIntervalMs,
   DEFAULT_POLL_INTERVAL_MS,
+  MAX_POLL_BACKOFF_MS,
 } from "./oracle-scheduler.js";
 import { DEFAULT_TIMEOUT_MS } from "./timeout-utils.js";
 
@@ -52,6 +53,13 @@ export interface OracleConfig {
    * reviewing the fail-closed policy.
    */
   dryRun: boolean;
+  /**
+   * Wall-clock ceiling for a single poll cycle (#1110). A cycle that exceeds
+   * this is abandoned by the scheduler and recorded as a failure, so a hung
+   * database/provider cannot pin the oracle indefinitely. Defaults to
+   * `MAX_POLL_BACKOFF_MS` (5 minutes).
+   */
+  cycleTimeoutMs: number;
 }
 
 const VALID_LOG_LEVELS: ReadonlySet<string> = new Set([
@@ -86,7 +94,7 @@ type Env = Record<string, string | undefined>;
  * @throws {Error} When any present variable fails validation.
  */
 export function loadOracleConfig(env: Env = process.env): OracleConfig {
-  const pollIntervalMs = getOraclePollIntervalMs();
+  const pollIntervalMs = getOraclePollIntervalMs(env);
 
   const challengeWindowSeconds = parseOptionalPositiveInt(
     env["ORACLE_CHALLENGE_WINDOW_SECONDS"],
@@ -120,6 +128,12 @@ export function loadOracleConfig(env: Env = process.env): OracleConfig {
     DEFAULT_DRY_RUN
   );
 
+  const cycleTimeoutMs = parseOptionalPositiveInt(
+    env["ORACLE_CYCLE_TIMEOUT_MS"],
+    "ORACLE_CYCLE_TIMEOUT_MS",
+    MAX_POLL_BACKOFF_MS
+  );
+
   return {
     pollIntervalMs,
     challengeWindowSeconds,
@@ -129,6 +143,7 @@ export function loadOracleConfig(env: Env = process.env): OracleConfig {
     fallbackTimeoutMs,
     minConfidenceThreshold,
     dryRun,
+    cycleTimeoutMs,
   };
 }
 
