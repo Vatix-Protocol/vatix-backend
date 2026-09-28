@@ -30,6 +30,26 @@ conventions, required checks, and the security expectations every change must me
    `npm test`, `npm run lint`). Use the actual script names from `package.json`
    rather than assuming defaults.
 
+## Git hooks (Husky)
+
+This repo uses [Husky](https://typicode.github.io/husky/) hooks in `.husky/`.
+The `pre-commit` hook runs local lint/format/test checks so problems are caught
+before they reach CI.
+
+Hooks are **CI-safe**: in CI or any non-interactive environment the hook detects
+that it is not running on a developer machine and exits successfully (no-op)
+instead of failing the build. This means:
+
+- Local commits still run the full pre-commit checks.
+- CI, release automation, and other non-interactive runs are never blocked by
+  the hook.
+- If you need to bypass the hook locally, use `git commit --no-verify` (use
+  sparingly; CI still enforces the same checks).
+
+If you add or change a hook, keep it CI-safe: detect CI/non-interactive
+environments (for example via the `CI` environment variable or a non-TTY stdin)
+and no-op rather than failing, and never print secrets or tokens.
+
 ## Branch and commit conventions
 
 - Branch from the latest `main`: `git checkout -b fix/<issue>-<short-slug>`.

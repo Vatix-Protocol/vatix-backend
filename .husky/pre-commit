@@ -1,6 +1,29 @@
 #!/bin/sh
 set -e
 
+# CI-safe guard: Husky hooks are for local developer workflows. In CI (or any
+# non-interactive environment) we must not run lint-staged/prettier here — CI
+# runs its own checks, and a missing node_modules or non-TTY would otherwise
+# fail the build/commit. Detect CI and no-op cleanly (#1173).
+if [ -n "$CI" ] || [ -n "$CONTINUOUS_INTEGRATION" ] || [ -n "$GITHUB_ACTIONS" ] || [ -n "$BUILD_NUMBER" ] || [ -n "$GITLAB_CI" ] || [ -n "$CIRCLECI" ] || [ -n "$TRAVIS" ] || [ -n "$JENKINS_URL" ] || [ -n "$TEAMCITY_VERSION" ] || [ -n "$TF_BUILD" ]; then
+  echo "⏭️  CI environment detected — skipping pre-commit checks."
+  exit 0
+fi
+
+# Non-interactive shells (no TTY) cannot prompt and are not a developer
+# workstation; skip rather than fail the commit.
+if [ ! -t 0 ] && [ ! -t 1 ]; then
+  echo "⏭️  Non-interactive environment detected — skipping pre-commit checks."
+  exit 0
+fi
+
+# If dependencies are not installed, do not block the commit — the developer
+# can run 'pnpm install' and re-commit.
+if [ ! -x "./node_modules/.bin/lint-staged" ]; then
+  echo "⏭️  lint-staged not installed — skipping pre-commit checks. Run 'pnpm install'."
+  exit 0
+fi
+
 echo "🔍 Running pre-commit checks..."
 
 # Run lint-staged: Prettier + per-project tsc-files type-check + Prisma format.

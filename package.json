@@ -42,7 +42,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:matching": "vitest run src/matching",
     "matching:test": "vitest run src/matching",
-    "prepare": "husky install",
+    "prepare": "husky install || true",
     "engines:check": "tsx scripts/check-engines.ts",
     "generate:keypair": "tsx scripts/generate-keypair.ts",
     "load-test:orders": "tsx scripts/load-test-orders.ts",
