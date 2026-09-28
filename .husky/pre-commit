@@ -17,6 +17,31 @@ if [ ! -t 0 ] && [ ! -t 1 ]; then
   exit 0
 fi
 
+# Secret scanning (#1175): fail-closed. If a scanner is available, run it
+# against staged changes and block the commit on any detected secret. If no
+# scanner is installed we warn loudly but do not silently pass — CI enforces
+# the same scan as a required check, so local absence is not a bypass.
+run_secret_scan() {
+  if [ -x "./node_modules/.bin/gitleaks" ]; then
+    ./node_modules/.bin/gitleaks protect --staged --redact --no-banner
+  elif command -v gitleaks >/dev/null 2>&1; then
+    gitleaks protect --staged --redact --no-banner
+  elif command -v trufflehog >/dev/null 2>&1; then
+    trufflehog git file://. --since-commit HEAD --only-verified --fail
+  else
+    echo "⚠️  No secret scanner found (gitleaks/trufflehog)."
+    echo "    Install gitleaks to scan locally; CI still enforces secret scanning."
+    return 0
+  fi
+}
+
+echo "🔍 Scanning staged changes for secrets..."
+if ! run_secret_scan; then
+  echo "❌ Secret detected in staged changes. Commit blocked."
+  echo "   Remove the secret, rotate it, and see SECURITY.md for remediation."
+  exit 1
+fi
+
 # If dependencies are not installed, do not block the commit — the developer
 # can run 'pnpm install' and re-commit.
 if [ ! -x "./node_modules/.bin/lint-staged" ]; then

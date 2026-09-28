@@ -5,6 +5,38 @@
 Please do not report security vulnerabilities through public GitHub issues.
 Instead, report them responsibly by contacting security@vatix.io.
 
+## Secret Scanning
+
+Secrets must never be committed to the repository or baked into images. This
+is enforced fail-closed at multiple layers:
+
+- **`.gitignore`**: `.env` and other secret-bearing files (`.env.*`, `*.pem`,
+  `*.key`, etc.) are ignored so they cannot be staged or committed.
+- **`.dockerignore`**: the same secret-bearing paths are excluded so they are
+  never copied into build contexts or baked into images.
+- **CI gate**: a secret-scanning step (gitleaks) runs on every push and pull
+  request. It blocks merges when a secret is detected, exiting non-zero with a
+  stable, documented failure so the check is required and reproducible.
+- **Pre-commit hook**: the same scanner runs locally via the pre-commit hook so
+  contributors catch secrets before pushing.
+
+### Remediation
+
+If a secret is detected (locally or in CI):
+
+1. **Do not** push or merge the change. Remove the secret from the working tree.
+2. **Rotate the credential immediately** — assume any committed secret is
+   compromised, even if the commit was never merged.
+3. If the secret already reached a remote branch, purge it from history
+   (e.g. `git filter-repo`) and force-push the cleaned branch.
+4. Add the offending path/pattern to `.gitignore` and `.dockerignore` if it is
+   not already covered.
+5. Re-run the scanner locally (`pre-commit run --all-files`) and confirm the CI
+   gate passes before re-opening the PR.
+
+Never paste secret values into issues, PRs, logs, or chat. Report suspected
+leaks via security@vatix.io.
+
 ## Privileged Surfaces & Authz Policy
 
 - **Deny-by-default**: Every external entrypoint requires an authenticated
