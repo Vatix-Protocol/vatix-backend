@@ -8,32 +8,32 @@ of truth is unreachable.
 ## Startup health
 
 The indexer validates its configuration and critical dependencies before
-binding an HTTP server.  The startup pipeline is:
+binding an HTTP server. The startup pipeline is:
 
 1. **Env validation** (`validateEnv`) — fail-closed on missing or
    invalid `SOROBAN_NETWORK_PASSPHRASE`; mainnet requires explicit
    `VATIX_ALLOW_MAINNET=true` opt-in.
 2. **Config-shape health** (`checkStartupHealth`) — validates cursor,
    networkId, cursorKey, and `DATABASE_URL` before the indexer starts
-   polling.  Returns stable error codes, never values.
+   polling. Returns stable error codes, never values.
 3. **Live dependency probes** (`checkLiveDependencies`) — optional
    real I/O checks (DB, Horizon/RPC) that run in production or when
-   `INDEXER_HTTP_FORCE_LIVE_CHECK=true`.  Retries with backoff to
+   `INDEXER_HTTP_FORCE_LIVE_CHECK=true`. Retries with backoff to
    tolerate startup jitter.
 4. **HTTP server** (`buildIndexerHttpServer`) — starts only after all
-   gates pass.  Binds only when `INDEXER_HTTP_ENABLED=true`.
+   gates pass. Binds only when `INDEXER_HTTP_ENABLED=true`.
 
 ### Error codes
 
-| Code | Meaning |
-| --- | --- |
-| `ENV_MISSING` | Required environment variable not set. |
-| `ENV_INVALID` | Environment variable has an invalid value. |
-| `ENV_UNSAFE_MAINNET` | Mainnet passphrase without `VATIX_ALLOW_MAINNET=true`. |
-| `RATE_LIMITED` | Request exceeds the per-endpoint rate limit. |
-| `DEPENDENCY_UNAVAILABLE` | Critical dependency (DB/Redis/RPC) unreachable. |
-| `PROBE_TIMEOUT` | Dependency probe exceeded its timeout. |
-| `UNAUTHORIZED` | Missing or invalid `x-principal` header on a data route. |
+| Code                     | Meaning                                                  |
+| ------------------------ | -------------------------------------------------------- |
+| `ENV_MISSING`            | Required environment variable not set.                   |
+| `ENV_INVALID`            | Environment variable has an invalid value.               |
+| `ENV_UNSAFE_MAINNET`     | Mainnet passphrase without `VATIX_ALLOW_MAINNET=true`.   |
+| `RATE_LIMITED`           | Request exceeds the per-endpoint rate limit.             |
+| `DEPENDENCY_UNAVAILABLE` | Critical dependency (DB/Redis/RPC) unreachable.          |
+| `PROBE_TIMEOUT`          | Dependency probe exceeded its timeout.                   |
+| `UNAUTHORIZED`           | Missing or invalid `x-principal` header on a data route. |
 
 Every response carries a `correlationId` for log/trace stitching.
 No secrets, connection strings, or credentials are ever surfaced in
@@ -41,13 +41,13 @@ probe responses or error messages.
 
 ### Feature flags
 
-| Variable | Default | Effect |
-| --- | --- | --- |
-| `INDEXER_HTTP_ENABLED` | unset (disabled) | Opt-in to expose the HTTP server. |
-| `INDEXER_HTTP_FORCE_LIVE_CHECK` | unset (false) | Run live dependency probes outside production. |
-| `INDEXER_HTTP_PORT` | `3000` | Port for the HTTP server. |
-| `INDEXER_CURSOR` | unset | Initial cursor for the ingestion loop. |
-| `INDEXER_CURSOR_KEY` | `ingestion` | Cursor key for the indexer. |
+| Variable                        | Default          | Effect                                         |
+| ------------------------------- | ---------------- | ---------------------------------------------- |
+| `INDEXER_HTTP_ENABLED`          | unset (disabled) | Opt-in to expose the HTTP server.              |
+| `INDEXER_HTTP_FORCE_LIVE_CHECK` | unset (false)    | Run live dependency probes outside production. |
+| `INDEXER_HTTP_PORT`             | `3000`           | Port for the HTTP server.                      |
+| `INDEXER_CURSOR`                | unset            | Initial cursor for the ingestion loop.         |
+| `INDEXER_CURSOR_KEY`            | `ingestion`      | Cursor key for the indexer.                    |
 
 ## Stellar Wave contributors
 
@@ -58,6 +58,19 @@ before landing.
 
 See `docs/runbooks/incident-runbook.md` for operational runbooks and
 `docs/health-probes.md` for probe design details.
+
+## Event fetching
+
+`src/eventFetcher.ts` pages through Soroban RPC `getEvents` for a
+ledger window. The first page is requested by `startLedger`, every
+following page by the RPC cursor only. A window is returned in full or
+not at all: a failed page or a cursor that stops advancing throws an
+`EventFetcherError` with a stable code (`EVENT_FETCH_RETRIES_EXHAUSTED`,
+`EVENT_FETCH_NON_RETRYABLE`, `EVENT_FETCH_CURSOR_STALLED`,
+`EVENT_FETCH_INVALID_WINDOW`) and a per-window `requestId`, so the
+ledger cursor never advances past unfetched events. Events are
+returned at most once per window. See `docs/event-fetcher.md` for the
+pagination invariants, config, and metrics.
 
 ## Gap detection
 
@@ -83,11 +96,11 @@ concurrent detection requests are idempotent.
 
 ### Error codes
 
-| Code | Meaning |
-| --- | --- |
+| Code                               | Meaning                                                  |
+| ---------------------------------- | -------------------------------------------------------- |
 | `GAP_DETECTION_SOURCE_UNAVAILABLE` | Source of truth (RPC/DB/Redis) unreachable; fail closed. |
-| `GAP_DETECTION_INVALID_INPUT` | Malformed or adversarial input rejected. |
-| `GAP_DETECTION_UNAUTHORIZED` | Caller lacks the required role. |
+| `GAP_DETECTION_INVALID_INPUT`      | Malformed or adversarial input rejected.                 |
+| `GAP_DETECTION_UNAUTHORIZED`       | Caller lacks the required role.                          |
 
 Every detection result carries a `correlationId` for tracing across the
 indexer and backend logs. Logs and metrics never include secrets or raw
@@ -139,11 +152,11 @@ monotonically.
 
 ### Error codes
 
-| Code | Meaning |
-| --- | --- |
-| `CURSOR_CONFLICT` | Concurrent writer advanced the cursor; batch rolled back. |
-| `CURSOR_STORAGE_CONFIG_ERROR` | Storage path misconfigured; fail fast. |
-| `CURSOR_REGRESSION_REJECTED` | Replayed request would regress the cursor; denied. |
+| Code                          | Meaning                                                   |
+| ----------------------------- | --------------------------------------------------------- |
+| `CURSOR_CONFLICT`             | Concurrent writer advanced the cursor; batch rolled back. |
+| `CURSOR_STORAGE_CONFIG_ERROR` | Storage path misconfigured; fail fast.                    |
+| `CURSOR_REGRESSION_REJECTED`  | Replayed request would regress the cursor; denied.        |
 
 ### Rollback
 
@@ -161,10 +174,10 @@ disabled by default.
 
 ### Endpoints
 
-| Method | Path | Description |
-| ------ | ---- | ----------- |
-| GET | `/markets` | List up to 100 active markets |
-| GET | `/markets/:id` | Fetch a single active market by ID |
+| Method | Path           | Description                        |
+| ------ | -------------- | ---------------------------------- |
+| GET    | `/markets`     | List up to 100 active markets      |
+| GET    | `/markets/:id` | Fetch a single active market by ID |
 
 ### CORS policy
 
@@ -177,20 +190,20 @@ See `docs/cors.md` for the full policy.
 
 The indexer HTTP surface supports two optional authz gates:
 
-| Env var | Header | Effect |
-| ------- | ------ | ------ |
+| Env var                      | Header        | Effect                          |
+| ---------------------------- | ------------- | ------------------------------- |
 | `INDEXER_REQUIRED_PRINCIPAL` | `x-principal` | Must match the configured value |
-| `INDEXER_API_KEY` | `x-api-key` | Must match the configured value |
+| `INDEXER_API_KEY`            | `x-api-key`   | Must match the configured value |
 
 If neither is configured the surface still starts (when enabled) but
 logs a warning — this is a security gap for production deployments.
 
 ### Rate limiting
 
-| Path | Limit | Window |
-| ---- | ----- | ------ |
-| `/markets` | 60 req/min | 60 s |
-| `/markets/:id` | 120 req/min | 60 s |
+| Path           | Limit       | Window |
+| -------------- | ----------- | ------ |
+| `/markets`     | 60 req/min  | 60 s   |
+| `/markets/:id` | 120 req/min | 60 s   |
 
 Every response carries a `correlationId` for tracing.
 
