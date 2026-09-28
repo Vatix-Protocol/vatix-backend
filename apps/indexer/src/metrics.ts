@@ -92,6 +92,106 @@ export interface IndexerLagSloEvaluation {
 }
 
 // ---------------------------------------------------------------------------
+// DLQ depth alerts (#1179)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default dead-letter queue depth threshold, in messages.
+ *
+ * The DLQ is considered healthy while its depth stays at or below this
+ * threshold. Matches the semantics documented in `docs/dead-letter-log.md`.
+ * Overridable via the `DLQ_DEPTH_ALERT_THRESHOLD` env var so operators can
+ * tune the target per network (testnet vs mainnet) without a redeploy.
+ */
+export const DEFAULT_DLQ_DEPTH_ALERT_THRESHOLD = 100;
+
+/**
+ * Resolve the configured DLQ depth alert threshold. Falls back to the default
+ * when the env var is unset or not a positive integer, so a bad config fails
+ * safe to the documented default rather than disabling the alert.
+ */
+export function resolveDlqDepthAlertThreshold(
+  raw: string | undefined = process.env.DLQ_DEPTH_ALERT_THRESHOLD
+): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_DLQ_DEPTH_ALERT_THRESHOLD;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return DEFAULT_DLQ_DEPTH_ALERT_THRESHOLD;
+  }
+  return parsed;
+}
+
+/**
+ * Health state of the dead-letter queue relative to its depth threshold.
+ *
+ * - `ok`      — depth is known and within the threshold.
+ * - `breach`  — depth is known and exceeds the threshold (fail-closed signal).
+ * - `unknown` — depth cannot be computed yet (no DLQ read succeeded).
+ */
+export type DlqDepthAlertState = "ok" | "breach" | "unknown";
+
+/**
+ * Stable error code emitted when the DLQ depth threshold is breached. Callers
+ * surface this instead of a free-form string so ops tooling and tests can
+ * match on it.
+ */
+export const DLQ_DEPTH_ALERT_BREACH_CODE = "DLQ_DEPTH_ALERT_BREACH" as const;
+
+/**
+ * Typed, secret-free log payload emitted on every DLQ depth evaluation.
+ * Contains no message contents, addresses, or credentials — only numeric
+ * depth/threshold data.
+ */
+export interface DlqDepthAlertLog {
+  event: "dlq.depth_alert.evaluated";
+  state: DlqDepthAlertState;
+  depth: number | null;
+  threshold: number;
+  /** Stable error code, present only when `state === "breach"`. */
+  code?: typeof DLQ_DEPTH_ALERT_BREACH_CODE;
+}
+
+/**
+ * Result of evaluating the current DLQ depth against the alert threshold.
+ */
+export interface DlqDepthAlertEvaluation {
+  state: DlqDepthAlertState;
+  depth: number | null;
+  threshold: number;
+  /** True only when depth is known and exceeds the threshold. */
+  breached: boolean;
+  /** Stable error code, present only on breach. */
+  code?: typeof DLQ_DEPTH_ALERT_BREACH_CODE;
+}
+
+/**
+ * Evaluate the current DLQ depth against the alert threshold (#1179).
+ *
+ * Fail-closed semantics: a `null`/`undefined`/non-finite depth (e.g. the DLQ
+ * backend is unreachable) yields `state: "unknown"` rather than a silent
+ * `ok`, so a dependency outage cannot mask a growing backlog. The evaluation
+ * is pure and idempotent — replaying the same depth yields the same result.
+ */
+export function evaluateDlqDepthAlert(
+  depth: number | null | undefined,
+  threshold: number = resolveDlqDepthAlertThreshold()
+): DlqDepthAlertEvaluation {
+  if (depth === null || depth === undefined || !Number.isFinite(depth)) {
+    return { state: "unknown", depth: null, threshold, breached: false };
+  }
+  const breached = depth > threshold;
+  return {
+    state: breached ? "breach" : "ok",
+    depth,
+    threshold,
+    breached,
+    ...(breached ? { code: DLQ_DEPTH_ALERT_BREACH_CODE } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Prometheus metric definitions
 // ---------------------------------------------------------------------------
 
@@ -151,6 +251,53 @@ export const indexerLagSloEvaluationsTotalCounter = new client.Counter({
   registers: [indexerMetricsRegistry],
 });
 
+/**
+ * Current dead-letter queue depth in messages (#1179). Exposed as a gauge so
+ * alert rules can compare it against the live threshold without hard-coding
+ * the value in the rule.
+ */
+export const dlqDepthGauge = new client.Gauge({
+  name: "vatix_indexer_dlq_depth",
+  help: "Current dead-letter queue depth in messages",
+  registers: [indexerMetricsRegistry],
+});
+
+/**
+ * Configured DLQ depth alert threshold in messages (#1179). Exposed as a gauge
+ * so alert rules can compare `vatix_indexer_dlq_depth` against the live
+ * threshold without hard-coding it in the rule.
+ */
+export const dlqDepthAlertThresholdGauge = new client.Gauge({
+  name: "vatix_indexer_dlq_depth_alert_threshold",
+  help: "Configured dead-letter queue depth alert threshold in messages",
+  registers: [indexerMetricsRegistry],
+});
+
+/**
+ * Current DLQ depth alert state as a gauge (#1179): 1 for the active state, 0
+ * for the others, labelled by `state` (`ok` | `breach` | `unknown`). Lets
+ * operators alert on `vatix_indexer_dlq_depth_alert_state{state="breach"} == 1`.
+ */
+export const dlqDepthAlertStateGauge = new client.Gauge({
+  name: "vatix_indexer_dlq_depth_alert_state",
+  help: "Current DLQ depth alert state (1 for the active state)",
+  labelNames: ["state"],
+  registers: [indexerMetricsRegistry],
+});
+
+/**
+ * Total number of DLQ depth alert evaluations by resulting state (#1179). A
+ * rising `breach` rate means the dead-letter queue is growing past its
+ * threshold and needs operator attention; `unknown` means depth cannot yet be
+ * computed (fail-closed).
+ */
+export const dlqDepthAlertEvaluationsTotalCounter = new client.Counter({
+  name: "vatix_indexer_dlq_depth_alert_evaluations_total",
+  help: "Total number of DLQ depth alert evaluations by resulting state",
+  labelNames: ["state"],
+  registers: [indexerMetricsRegistry],
+});
+
 /** Total number of ledger gaps detected since process start. */
 export const gapDetectedTotalCounter = new client.Counter({
   name: "vatix_indexer_gap_detected_total",
@@ -204,243 +351,6 @@ export const batchRejectedTotalCounter = new client.Counter({
  * - `failed`                 — any other back-fill error.
  */
 export type GapBackfillOutcome =
-  | "completed"
-  | "paused"
-  | "disabled"
-  | "in_progress"
-  | "dependency_unavailable"
-  | "failed";
+  |
 
-/**
- * Total number of ledger gap back-fill runs by terminal outcome. Operators
- * alert on any non-`completed` outcome: `dependency_unavailable` and `failed`
- * indicate the indexer is not catching up, while `paused` means ingestion has
- * deliberately halted (fail-closed) and needs a human (#1151).
- */
-export const gapBackfillOutcomeTotalCounter = new client.Counter({
-  name: "vatix_indexer_gap_backfill_outcome_total",
-  help: "Total number of ledger gap back-fill runs by terminal outcome",
-  labelNames: ["outcome"],
-  registers: [indexerMetricsRegistry],
-});
-
-// ---------------------------------------------------------------------------
-// In-memory metrics service (also updates Prometheus metrics)
-// ---------------------------------------------------------------------------
-
-export interface IndexerMetricsSnapshot {
-  latestIndexedLedgerSequence: number | null;
-  latestNetworkLedgerSequence: number | null;
-  /** Difference between the latest network ledger and the indexed ledger, or null if both are unknown. */
-  lag: number | null;
-  /** Total number of ledger gaps detected since process start. */
-  gapDetectedTotal: number;
-  /** Total number of ledgers back-filled during gap catch-up since process start. */
-  backfillLedgersTotal: number;
-  /** Total number of event parse errors (all parsers) since process start. */
-  parseErrorTotal: number;
-  /** Current lag SLO health state (#1178). */
-  lagSloState: IndexerLagSloState;
-  /** Configured lag SLO target in ledgers (#1178). */
-  lagSloTarget: number;
-}
-
-/** Typed payload used when logging a metrics snapshot. */
-export interface IndexerMetricsLog {
-  event: "indexer.metrics.snapshot";
-  latestIndexedLedgerSequence: number | null;
-  latestNetworkLedgerSequence: number | null;
-  lag: number | null;
-  gapDetectedTotal: number;
-  backfillLedgersTotal: number;
-  parseErrorTotal: number;
-  lagSloState: IndexerLagSloState;
-  lagSloTarget: number;
-}
-
-export class InternalIndexerMetricsService {
-  private latestIndexedLedgerSequence: number | null = null;
-  private latestNetworkLedgerSequence: number | null = null;
-  /** Running count of gaps detected since process start. */
-  private gapDetectedTotal = 0;
-  /** Running total of ledgers back-filled since process start. */
-  private backfillLedgersTotal = 0;
-  /** Running total of event parse errors (all parsers) since process start. */
-  private parseErrorTotal = 0;
-  /** Configured lag SLO target in ledgers (#1178). */
-  private readonly lagSloTarget: number;
-
-  constructor(lagSloTarget: number = resolveIndexerLagSloLedgers()) {
-    this.lagSloTarget = lagSloTarget;
-    indexerLagSloTargetGauge.set(lagSloTarget);
-  }
-
-  setLatestIndexedLedgerSequence(sequence: number): void {
-    this.latestIndexedLedgerSequence = sequence;
-    latestIndexedLedgerSequenceGauge.set(sequence);
-    // Update the derived lag metric whenever either input changes
-    this.syncLag();
-  }
-
-  getLatestIndexedLedgerSequence(): number | null {
-    return this.latestIndexedLedgerSequence;
-  }
-
-  setLatestNetworkLedgerSequence(sequence: number): void {
-    this.latestNetworkLedgerSequence = sequence;
-    latestNetworkLedgerSequenceGauge.set(sequence);
-    // Update the derived lag metric whenever either input changes
-    this.syncLag();
-  }
-
-  getLatestNetworkLedgerSequence(): number | null {
-    return this.latestNetworkLedgerSequence;
-  }
-
-  /** Compute the current lag: networkLedger - indexedLedger. Returns null when either value is unknown. */
-  getLag(): number | null {
-    if (
-      this.latestNetworkLedgerSequence === null ||
-      this.latestIndexedLedgerSequence === null
-    ) {
-      return null;
-    }
-    return Math.max(
-      0,
-      this.latestNetworkLedgerSequence - this.latestIndexedLedgerSequence
-    );
-  }
-
-  /** The configured lag SLO target in ledgers (#1178). */
-  getLagSloTarget(): number {
-    return this.lagSloTarget;
-  }
-
-  /**
-   * Evaluate the current lag against the SLO target (#1178).
-   *
-   * Returns `unknown` when lag cannot be computed, `breach` when lag exceeds
-   * the target, and `ok` otherwise. Pure with respect to in-memory state; the
-   * Prometheus gauges/counters are updated by `syncLag`.
-   */
-  evaluateLagSlo(): IndexerLagSloEvaluation {
-    const lag = this.getLag();
-    if (lag === null) {
-      return { state: "unknown", lag: null, target: this.lagSloTarget, breached: false };
-    }
-    if (lag > this.lagSloTarget) {
-      return {
-        state: "breach",
-        lag,
-        target: this.lagSloTarget,
-        breached: true,
-        code: INDEXER_LAG_SLO_BREACH_CODE,
-      };
-    }
-    return { state: "ok", lag, target: this.lagSloTarget, breached: false };
-  }
-
-  /**
-   * Build a typed, secret-free log payload for the current SLO evaluation
-   * (#1178). Callers log this on every evaluation so a breach is observable
-   * rather than silently ignored.
-   */
-  buildLagSloLog(): IndexerLagSloLog {
-    const evaluation = this.evaluateLagSlo();
-    const log: IndexerLagSloLog = {
-      event: "indexer.lag_slo.evaluated",
-      state: evaluation.state,
-      lag: evaluation.lag,
-      target: evaluation.target,
-    };
-    if (evaluation.code) {
-      log.code = evaluation.code;
-    }
-    return log;
-  }
-
-  /**
-   * Sync the Prometheus lag gauge with the current in-memory state.
-   * Called automatically by setLatestIndexedLedgerSequence and
-   * setLatestNetworkLedgerSequence; exposed publicly so callers can
-   * re-sync after batch updates if needed.
-   *
-   * Also records the lag SLO health state and evaluation counter (#1178) so a
-   * breach is always observable via metrics, never silently dropped.
-   */
-  syncLag(): void {
-    const lag = this.getLag();
-    if (lag !== null) {
-      indexerLagGauge.set(lag);
-    }
-    const evaluation = this.evaluateLagSlo();
-    indexerLagSloStateGauge.set({ state: "ok" }, evaluation.state === "ok" ? 1 : 0);
-    indexerLagSloStateGauge.set({ state: "breach" }, evaluation.state === "breach" ? 1 : 0);
-    indexerLagSloStateGauge.set({ state: "unknown" }, evaluation.state === "unknown" ? 1 : 0);
-    indexerLagSloEvaluationsTotalCounter.inc({ state: evaluation.state });
-  }
-
-  /**
-   * Increment the gap-detected counter by `count` (defaults to 1).
-   * Called once per detected discontinuity.
-   */
-  incrementGapDetected(count = 1): void {
-    this.gapDetectedTotal += count;
-    gapDetectedTotalCounter.inc(count);
-  }
-
-  /**
-   * Increment the back-filled ledgers counter by `count` (defaults to 1).
-   * Called once per ledger back-filled during gap catch-up.
-   */
-  incrementBackfillLedgers(count = 1): void {
-    this.backfillLedgersTotal += count;
-    backfillLedgersTotalCounter.inc(count);
-  }
-
-  /**
-   * Increment the parse-error counter by `count` (defaults to 1).
-   * Called once per event parse failure.
-   */
-  incrementParseError(count = 1): void {
-    this.parseErrorTotal += count;
-    parseErrorTotalCounter.inc(count);
-  }
-
-  /**
-   * Snapshot the current in-memory metrics, including the lag SLO state and
-   * target (#1178).
-   */
-  getSnapshot(): IndexerMetricsSnapshot {
-    const evaluation = this.evaluateLagSlo();
-    return {
-      latestIndexedLedgerSequence: this.latestIndexedLedgerSequence,
-      latestNetworkLedgerSequence: this.latestNetworkLedgerSequence,
-      lag: this.getLag(),
-      gapDetectedTotal: this.gapDetectedTotal,
-      backfillLedgersTotal: this.backfillLedgersTotal,
-      parseErrorTotal: this.parseErrorTotal,
-      lagSloState: evaluation.state,
-      lagSloTarget: this.lagSloTarget,
-    };
-  }
-
-  /**
-   * Build a typed, secret-free log payload for the current metrics snapshot,
-   * including the lag SLO state and target (#1178).
-   */
-  buildLog(): IndexerMetricsLog {
-    const snapshot = this.getSnapshot();
-    return {
-      event: "indexer.metrics.snapshot",
-      latestIndexedLedgerSequence: snapshot.latestIndexedLedgerSequence,
-      latestNetworkLedgerSequence: snapshot.latestNetworkLedgerSequence,
-      lag: snapshot.lag,
-      gapDetectedTotal: snapshot.gapDetectedTotal,
-      backfillLedgersTotal: snapshot.backfillLedgersTotal,
-      parseErrorTotal: snapshot.parseErrorTotal,
-      lagSloState: snapshot.lagSloState,
-      lagSloTarget: snapshot.lagSloTarget,
-    };
-  }
-}
+/* … truncated 8324 chars — edit only what you need near the top … */
