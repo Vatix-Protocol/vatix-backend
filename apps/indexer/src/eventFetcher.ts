@@ -37,12 +37,55 @@ const MAX_CONSECUTIVE_DISCONNECTIONS = 5;
 const DISCONNECTED_BACKOFF_MS = 10_000;
 
 /**
+ * Maximum number of consecutive pages that may return the *same* paging
+ * cursor before the fetch is declared stalled. A stalled cursor means the RPC
+ * node is not making progress; continuing would loop forever and pin the
+ * ingestion loop, so we fail closed instead.
+ */
+const MAX_STALL_ITERATIONS = 3;
+
+/**
  * Stable error codes surfaced by the event fetcher. Callers can branch on
  * `code` without parsing messages, and ops can alert on them.
  */
 export type EventFetcherErrorCode =
-  | "EVENT_FETCH_RETRIES_EXHAUSTED"
-  | "EVENT_FETCH_NON_RETRYABLE";
+  "EVENT_FETCH_RETRIES_EXHAUSTED" | "EVENT_FETCH_NON_RETRYABLE";
+
+/**
+ * Fail-closed error thrown when the fetcher is constructed with an
+ * unusable configuration (missing contract id / RPC endpoint, or a
+ * non-positive page size). Refusing to construct is deliberate: a
+ * misconfigured fetcher that silently defaults would index the wrong
+ * contract, or fetch unbounded pages, on a money path.
+ */
+export class EventFetcherConfigError extends Error {
+  readonly code = "EVENT_FETCHER_CONFIG_INVALID";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "EventFetcherConfigError";
+  }
+}
+
+/**
+ * Fail-closed error thrown when the RPC node keeps handing back the same
+ * paging cursor. Callers must treat this as "no data" rather than retrying
+ * forever.
+ */
+export class CursorStallError extends Error {
+  readonly code = "EVENT_FETCH_CURSOR_STALLED";
+  readonly cursor: string;
+  readonly iterations: number;
+
+  constructor(cursor: string, iterations: number) {
+    super(
+      `Event fetch cursor stalled at ${cursor} after ${iterations} iteration(s)`
+    );
+    this.name = "CursorStallError";
+    this.cursor = cursor;
+    this.iterations = iterations;
+  }
+}
 
 /**
  * Fail-closed error thrown when a page cannot be fetched. We never return
@@ -51,6 +94,13 @@ export type EventFetcherErrorCode =
  */
 export class EventFetcherError extends Error {
   readonly code: EventFetcherErrorCode;
+  /**
+   * Whether retrying the same page could plausibly succeed. Ops and
+   * upstream callers branch on this instead of parsing messages: a
+   * `true` value means the endpoint/chain is unhealthy, a `false` value
+   * means the request itself is wrong and replaying it is futile.
+   */
+  readonly retryable: boolean;
   readonly attempts: number;
   readonly startLedger: number;
   readonly cursor?: string;
@@ -64,11 +114,15 @@ export class EventFetcherError extends Error {
       startLedger: number;
       cursor?: string;
       cause?: unknown;
+      /** Defaults to `true` (transient) — see {@link retryable}. */
+      retryable?: boolean;
     }
   ) {
     super(message);
     this.name = "EventFetcherError";
     this.code = code;
+    this.retryable =
+      details.retryable ?? code === "EVENT_FETCH_RETRIES_EXHAUSTED";
     this.attempts = details.attempts;
     this.startLedger = details.startLedger;
     this.cursor = details.cursor;
@@ -76,9 +130,62 @@ export class EventFetcherError extends Error {
   }
 }
 
+/**
+ * The fetcher configuration after defaults are applied. `rpcUrl` stays
+ * optional at the type level because the caller may omit it, but
+ * {@link assertValidConfig} rejects that before any request is made.
+ */
+type ResolvedEventFetcherConfig = Required<Omit<EventFetcherConfig, "rpcUrl">> &
+  Pick<EventFetcherConfig, "rpcUrl">;
+
+/**
+ * Fail-closed validation of the resolved fetcher configuration. Throws
+ * {@link EventFetcherConfigError} rather than defaulting, so a bad deploy
+ * fails at boot instead of quietly indexing nothing (or the wrong stream).
+ */
+function assertValidConfig(config: ResolvedEventFetcherConfig): void {
+  if (typeof config.contractId !== "string" || config.contractId.length === 0) {
+    throw new EventFetcherConfigError("contractId must be a non-empty string");
+  }
+
+  const endpoints = Array.isArray(config.rpcUrl)
+    ? config.rpcUrl
+    : [config.rpcUrl];
+  if (
+    endpoints.length === 0 ||
+    endpoints.some((url) => typeof url !== "string" || url.trim().length === 0)
+  ) {
+    throw new EventFetcherConfigError(
+      "rpcUrl must resolve to at least one endpoint"
+    );
+  }
+
+  if (!Number.isInteger(config.maxRetries) || config.maxRetries < 0) {
+    throw new EventFetcherConfigError(
+      "maxRetries must be a non-negative integer"
+    );
+  }
+
+  if (!Number.isFinite(config.retryDelayMs) || config.retryDelayMs < 0) {
+    throw new EventFetcherConfigError(
+      "retryDelayMs must be a non-negative number"
+    );
+  }
+
+  if (!Number.isInteger(config.pageLimit) || config.pageLimit < 1) {
+    throw new EventFetcherConfigError("pageLimit must be an integer >= 1");
+  }
+
+  if (!Number.isFinite(config.fetchTimeoutMs) || config.fetchTimeoutMs < 0) {
+    throw new EventFetcherConfigError(
+      "fetchTimeoutMs must be a non-negative number"
+    );
+  }
+}
+
 export class EventFetcher {
   private server: StellarRpc.Server;
-  private readonly config: Required<EventFetcherConfig>;
+  private readonly config: ResolvedEventFetcherConfig;
   private readonly telemetry: Telemetry;
   private readonly transport: StellarTransport;
   /** Tracks consecutive RPC failures to detect sustained disconnect. */
@@ -97,10 +204,18 @@ export class EventFetcher {
     };
     this.telemetry = telemetry;
 
-    // Initialize transport for multi-endpoint failover
-    const horizonUrls = Array.isArray(this.config.rpcUrl)
+    // Fail-closed configuration gate. A fetcher that silently defaults a
+    // missing contract id or a non-positive page size would index the
+    // wrong stream, or ask the RPC for an unbounded page, on a money path
+    // — so refuse to construct instead.
+    assertValidConfig(this.config);
+
+    // Initialize transport for multi-endpoint failover. assertValidConfig()
+    // above has already rejected a missing/blank endpoint, so the resolved
+    // list is guaranteed non-empty here.
+    const horizonUrls: string[] = Array.isArray(this.config.rpcUrl)
       ? this.config.rpcUrl
-      : [this.config.rpcUrl];
+      : [this.config.rpcUrl as string];
 
     const logger = {
       info: (msg: string, ctx?: any) =>
@@ -172,7 +287,11 @@ export class EventFetcher {
     let stallIterations = 0;
 
     do {
-      const page = await this.fetchPageWithRetry(startLedger, requestId, cursor);
+      const page = await this.fetchPageWithRetry(
+        startLedger,
+        requestId,
+        cursor
+      );
       latestLedger = page.latestLedger;
 
       const inWindow = page.events.filter((e) => {
@@ -224,6 +343,12 @@ export class EventFetcher {
    * Fetch a single page, retrying transient RPC failures with the shared
    * jittered-backoff policy in retry.ts (bounded by config.maxRetries).
    * Uses StellarTransport for multi-endpoint failover and circuit breaking.
+   *
+   * Fail-closed: a page that cannot be fetched is never reported as an empty
+   * page. The failure is mapped onto a stable {@link EventFetcherError} whose
+   * `code` and `retryable` flags let callers and alerts branch without
+   * parsing messages. The underlying cause is appended to the message (and
+   * kept on `cause`) so operators still see the socket/DNS/timeout detail.
    */
   private async fetchPageWithRetry(
     startLedger: number,
@@ -233,12 +358,19 @@ export class EventFetcher {
     const { maxRetries, retryDelayMs, pageLimit, contractId, fetchTimeoutMs } =
       this.config;
 
-    let attempt = -1;
+    let attempt = 0;
+    // The last error observed *inside* the retry callback. StellarTransport
+    // aggregates endpoint failures into a generic "All N endpoints exhausted"
+    // Error when it runs out of endpoints, which loses both the original
+    // cause and its transient/permanent classification. Remembering the raw
+    // error here keeps `EventFetcherError.code`/`retryable` honest — a
+    // network blip must not be reported as a non-retryable client error.
+    let lastObservedError: unknown = null;
 
     try {
       return await withRetry(
         async () => {
-          attempt++;
+          attempt += 1;
           try {
             const response = await this.transport.execute(
               async (url: string) => {
@@ -306,6 +438,7 @@ export class EventFetcher {
 
             return response;
           } catch (err) {
+            lastObservedError = err;
             if (isTransientError(err)) {
               this.consecutiveDisconnections++;
               this.telemetry.record("indexer.rpc.disconnection", 1, {
@@ -314,60 +447,49 @@ export class EventFetcher {
             }
             throw err;
           }
-        );
+        },
+        { maxRetries, retryDelayMs }
+      );
+    } catch (err) {
+      // withRetry has already exhausted the budget (or gave up on a fatal
+      // error). Classify once more so the surfaced code stays stable, and
+      // always surface the cause — an operator triaging a stalled indexer
+      // needs the socket/DNS/timeout detail, not just "retries exhausted".
+      const cause = lastObservedError ?? err;
+      const transient = isTransientError(cause);
+      const code: EventFetcherErrorCode = transient
+        ? "EVENT_FETCH_RETRIES_EXHAUSTED"
+        : "EVENT_FETCH_NON_RETRYABLE";
+      const causeMessage =
+        cause instanceof Error ? cause.message : String(cause);
 
-        return response;
-      } catch (err) {
-        const transient = isTransientError(err);
-        const isLast = attempt === maxRetries;
+      this.telemetry.record("indexer.rpc.error", 1, {
+        attempt: String(attempt),
+        transient: String(transient),
+        code,
+      });
 
-        if (isLast || !transient) {
-          const code: EventFetcherErrorCode = transient
-            ? "EVENT_FETCH_RETRIES_EXHAUSTED"
-            : "EVENT_FETCH_NON_RETRYABLE";
-
-          this.telemetry.record("indexer.rpc.error", 1, {
-            attempt: String(attempt),
-            transient: String(transient),
-            code,
-          });
-
-          throw new EventFetcherError(
-            code,
-            transient
-              ? `Event fetch exhausted ${maxRetries + 1} attempts for ledger ${startLedger}`
-              : `Event fetch failed with non-retryable error for ledger ${startLedger}`,
-            { attempts: attempt + 1, startLedger, cursor, cause: err }
-          );
+      throw new EventFetcherError(
+        code,
+        transient
+          ? `Event fetch exhausted ${attempt} attempt(s) for ledger ${startLedger}: ${causeMessage}`
+          : `Event fetch failed with non-retryable error for ledger ${startLedger}: ${causeMessage}`,
+        {
+          attempts: attempt,
+          startLedger,
+          cursor,
+          cause,
+          retryable: transient,
         }
-
-        const delay = retryDelayMs * 2 ** attempt;
-        this.telemetry.record("indexer.rpc.retry", 1, {
-          attempt: String(attempt),
-          delayMs: String(delay),
-        });
-        console.warn(
-          `[EventFetcher] transient error (attempt ${attempt + 1}), retrying in ${delay}ms`,
-          err
-        );
-        await sleep(delay);
-      }
+      );
     }
-
-    // Unreachable — satisfies TypeScript
-    throw new EventFetcherError(
-      "EVENT_FETCH_RETRIES_EXHAUSTED",
-      `Event fetch exhausted retries for ledger ${startLedger}`,
-      { attempts: maxRetries + 1, startLedger, cursor }
-    );
   }
 
   private toRawEvent(e: StellarRpc.Api.EventResponse): RawChainEvent {
     const id = e.id;
     // Event id format: "{ledger(10d)}-{txIndex(10d)}-{eventIndex(10d)}"
     const idParts = id.split("-");
-    const eventIndex =
-      idParts.length === 3 ? parseInt(idParts[2], 10) : 0;
+    const eventIndex = idParts.length === 3 ? parseInt(idParts[2], 10) : 0;
 
     return {
       id,

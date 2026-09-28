@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PollingIngestionLoop } from "./ingestion.js";
 import type { EventFetcher } from "./eventFetcher.js";
 import type { BatchWriter } from "./batchWriter.js";
@@ -153,6 +153,8 @@ describe("PollingIngestionLoop", () => {
       getLag: vi.fn().mockReturnValue(190),
       toLogFields: vi.fn().mockReturnValue({}),
       incrementParseError: vi.fn(),
+      incrementIngestionFailure: vi.fn(),
+      resetIngestionFailures: vi.fn(),
     } as unknown as InternalIndexerMetricsService;
     eventFetcher = {
       fetchByLedgerWindow: vi.fn(),
@@ -422,6 +424,8 @@ describe("PollingIngestionLoop — stale cursor handling", () => {
       getLatestNetworkLedgerSequence: vi.fn().mockReturnValue(100),
       getLag: vi.fn().mockReturnValue(100),
       toLogFields: vi.fn().mockReturnValue({}),
+      incrementIngestionFailure: vi.fn(),
+      resetIngestionFailures: vi.fn(),
     } as unknown as InternalIndexerMetricsService;
     eventFetcher = {
       fetchByLedgerWindow: vi.fn().mockResolvedValue({
@@ -682,6 +686,262 @@ describe("PollingIngestionLoop — stale cursor handling", () => {
           ])
         );
       });
+    });
+  });
+
+  // ===========================================================================
+  // #1127 - ingestion loop resilience
+  // ===========================================================================
+  describe("PollingIngestionLoop - resilience (#1127)", () => {
+    let logger: ILogger;
+    let storage: CursorStorageClient;
+    let metrics: InternalIndexerMetricsService;
+    let eventFetcher: EventFetcher;
+    let batchWriter: BatchWriter;
+
+    beforeEach(() => {
+      vi.useRealTimers();
+      logger = {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        child: vi.fn(),
+      } as unknown as ILogger;
+      storage = {
+        loadCursor: vi.fn().mockResolvedValue("10"),
+        saveCursor: vi.fn().mockResolvedValue(undefined),
+        loadLedgerHash: vi.fn().mockResolvedValue(null),
+        saveLedgerHash: vi.fn().mockResolvedValue(undefined),
+      } as unknown as CursorStorageClient;
+      metrics = {
+        setLatestIndexedLedgerSequence: vi.fn(),
+        getLatestIndexedLedgerSequence: vi.fn().mockReturnValue(10),
+        setLatestNetworkLedgerSequence: vi.fn(),
+        getLatestNetworkLedgerSequence: vi.fn().mockReturnValue(200),
+        getLag: vi.fn().mockReturnValue(190),
+        toLogFields: vi.fn().mockReturnValue({}),
+        incrementParseError: vi.fn(),
+        incrementIngestionFailure: vi.fn(),
+        resetIngestionFailures: vi.fn(),
+      } as unknown as InternalIndexerMetricsService;
+      eventFetcher = {
+        fetchByLedgerWindow: vi
+          .fn()
+          .mockResolvedValue({ events: [], latestLedger: 200 }),
+        getLatestLedgerInfo: vi
+          .fn()
+          .mockResolvedValue({ sequence: 200, hash: "abcd1234" }),
+      } as unknown as EventFetcher;
+      batchWriter = {
+        write: vi
+          .fn()
+          .mockResolvedValue({ written: 0, skipped: 0, errors: [] }),
+        flush: vi.fn().mockResolvedValue(undefined),
+      } as unknown as BatchWriter;
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function createLoop(
+      intervalMs = 1_000,
+      deps: Record<string, unknown> = {}
+    ) {
+      return new PollingIngestionLoop(logger, storage, metrics, intervalMs, 1, {
+        eventFetcher,
+        batchWriter,
+        contractId: "CTEST",
+        ledgerWindowSize: 100,
+        ...deps,
+      });
+    }
+
+    async function tick(loop: PollingIngestionLoop) {
+      await (loop as unknown as { tick(): Promise<void> }).tick();
+    }
+
+    function delayOf(loop: PollingIngestionLoop) {
+      return (
+        loop as unknown as { nextTickDelayMs(): number }
+      ).nextTickDelayMs();
+    }
+
+    it("doubles the retry delay on consecutive failures up to the configured ceiling", async () => {
+      vi.mocked(eventFetcher.fetchByLedgerWindow).mockRejectedValue(
+        new Error("rpc unavailable")
+      );
+      const loop = createLoop(1_000, { tickBackoffMaxMs: 8_000 });
+
+      expect(delayOf(loop)).toBe(1_000);
+      await tick(loop);
+      expect(loop.getConsecutiveTickFailures()).toBe(1);
+      expect(delayOf(loop)).toBe(2_000);
+      await tick(loop);
+      expect(loop.getConsecutiveTickFailures()).toBe(2);
+      expect(delayOf(loop)).toBe(4_000);
+      await tick(loop);
+      expect(loop.getConsecutiveTickFailures()).toBe(3);
+      expect(delayOf(loop)).toBe(8_000);
+      await tick(loop);
+      // Capped: the delay never grows past the configured ceiling.
+      expect(loop.getConsecutiveTickFailures()).toBe(4);
+      expect(delayOf(loop)).toBe(8_000);
+    });
+
+    it("returns to the base interval after a healthy tick", async () => {
+      vi.mocked(eventFetcher.fetchByLedgerWindow)
+        .mockRejectedValueOnce(new Error("rpc unavailable"))
+        .mockResolvedValue({ events: [], latestLedger: 200 });
+      const loop = createLoop(1_000, { tickBackoffMaxMs: 8_000 });
+
+      await tick(loop);
+      expect(loop.getConsecutiveTickFailures()).toBe(1);
+      expect(delayOf(loop)).toBe(2_000);
+
+      await tick(loop);
+      expect(loop.getConsecutiveTickFailures()).toBe(0);
+      expect(delayOf(loop)).toBe(1_000);
+    });
+
+    it("treats tickBackoffMaxMs=0 as the kill-switch and never backs off", async () => {
+      vi.mocked(eventFetcher.fetchByLedgerWindow).mockRejectedValue(
+        new Error("rpc unavailable")
+      );
+      const loop = createLoop(1_000, { tickBackoffMaxMs: 0 });
+
+      await tick(loop);
+      await tick(loop);
+      expect(delayOf(loop)).toBe(1_000);
+    });
+
+    it("exports the failure streak to metrics and clears it on recovery", async () => {
+      vi.mocked(eventFetcher.fetchByLedgerWindow)
+        .mockRejectedValueOnce(new Error("rpc unavailable"))
+        .mockResolvedValue({ events: [], latestLedger: 200 });
+      const loop = createLoop(1_000, { tickBackoffMaxMs: 8_000 });
+
+      await tick(loop);
+      expect(metrics.incrementIngestionFailure).toHaveBeenCalledWith(1);
+      expect(metrics.resetIngestionFailures).not.toHaveBeenCalled();
+
+      await tick(loop);
+      expect(metrics.resetIngestionFailures).toHaveBeenCalled();
+    });
+
+    it("does not advance the cursor when a tick fails", async () => {
+      vi.mocked(eventFetcher.fetchByLedgerWindow).mockRejectedValue(
+        new Error("rpc unavailable")
+      );
+      const loop = createLoop(1_000, { tickBackoffMaxMs: 8_000 });
+      (loop as unknown as { cursor: string | null }).cursor = "10";
+
+      await tick(loop);
+
+      expect((loop as unknown as { cursor: string | null }).cursor).toBe("10");
+      expect(storage.saveCursor).not.toHaveBeenCalled();
+    });
+
+    it("keeps a failing checkpoint out of the failure streak so the next tick retries it", async () => {
+      vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValue({
+        events: [],
+        latestLedger: 200,
+      });
+      vi.mocked(storage.saveCursor).mockRejectedValue(new Error("db down"));
+
+      const loop = createLoop(1_000, { tickBackoffMaxMs: 8_000 });
+      (loop as unknown as { cursor: string | null }).cursor = "10";
+
+      await tick(loop);
+
+      // The batch advanced the in-memory cursor...
+      expect((loop as unknown as { cursor: string | null }).cursor).toBe("110");
+      // ...but persisting it failed, which is logged distinctly and does not
+      // count as a processing failure (the batch itself was written).
+      expect(logger.error).toHaveBeenCalledWith(
+        "Checkpoint flush failed — will retry next tick",
+        expect.objectContaining({
+          event: "indexer.ingestion.checkpoint_failed",
+        })
+      );
+      expect(loop.getConsecutiveTickFailures()).toBe(0);
+    });
+
+    it("ignores a duplicate start() instead of double-scheduling ticks", async () => {
+      vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValue({
+        events: [],
+        latestLedger: 200,
+      });
+      const loop = createLoop(1_000, { tickBackoffMaxMs: 8_000 });
+
+      await loop.start("10");
+      const timerAfterFirstStart = (loop as unknown as { timer: unknown })
+        .timer;
+      await loop.start("10");
+
+      expect(timerAfterFirstStart).not.toBeNull();
+      expect((loop as unknown as { timer: unknown }).timer).toBe(
+        timerAfterFirstStart
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        "Ingestion loop already started — ignoring duplicate start()",
+        expect.objectContaining({ event: "indexer.ingestion.duplicate_start" })
+      );
+
+      await loop.stop();
+    });
+
+    it("makes stop() idempotent so a second shutdown does not re-flush", async () => {
+      vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValue({
+        events: [],
+        latestLedger: 200,
+      });
+      const loop = createLoop(1_000, { tickBackoffMaxMs: 8_000 });
+      (loop as unknown as { cursor: string | null }).cursor = "10";
+
+      await loop.stop();
+      const callsAfterFirstStop = vi.mocked(storage.saveCursor).mock.calls
+        .length;
+      await loop.stop();
+
+      expect(vi.mocked(storage.saveCursor).mock.calls.length).toBe(
+        callsAfterFirstStop
+      );
+    });
+
+    it("does not reject from stop() when the final checkpoint flush fails", async () => {
+      vi.mocked(storage.saveCursor).mockRejectedValue(new Error("db down"));
+      const loop = createLoop(1_000, { tickBackoffMaxMs: 8_000 });
+      (loop as unknown as { cursor: string | null }).cursor = "10";
+
+      await expect(loop.stop()).resolves.toBeUndefined();
+      expect(logger.error).toHaveBeenCalledWith(
+        "Final checkpoint flush failed on shutdown",
+        expect.objectContaining({ phase: "shutdown" })
+      );
+    });
+
+    it("does not leave the shutdown timeout timer pending after a clean drain", async () => {
+      const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+      vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValue({
+        events: [],
+        latestLedger: 200,
+      });
+      const loop = createLoop(1_000, { tickBackoffMaxMs: 8_000 });
+      (loop as unknown as { cursor: string | null }).cursor = "10";
+
+      // Simulate an in-flight tick so stop() takes the timeout-racing path.
+      (
+        loop as unknown as { activeTickPromise: Promise<void> | null }
+      ).activeTickPromise = Promise.resolve();
+
+      await loop.stop();
+
+      // The race installs a timeout; it must be cleared so a fast drain cannot
+      // keep the process alive for the full shutdown budget.
+      expect(clearSpy).toHaveBeenCalled();
+      clearSpy.mockRestore();
     });
   });
 });

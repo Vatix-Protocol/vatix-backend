@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { getPrismaClient } from "../../../../src/services/prisma.js";
-import type { MarketStatus } from "../../../../src/generated/prisma/client.js";
+import type { MarketStatus } from "../../../../src/generated/prisma/client";
 import { NOT_SOFT_DELETED } from "../storage.js";
 
 // Stable error codes for the markets read API surface.

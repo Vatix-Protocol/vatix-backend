@@ -471,4 +471,3 @@ export class GapDetector {
     return { paused: false, backfilledLedgers: backfillSize, written, skipped };
   }
 }
-}

@@ -1,6 +1,10 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { Registry, Counter } from "prom-client";
-import { buildIndexerHttpServer } from "./httpServer.js";
+import {
+  buildIndexerHttpServer,
+  createInMemoryRateLimitStore,
+  resolveCorrelationId,
+} from "./httpServer.js";
 import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client.js";
 
@@ -658,5 +662,231 @@ describe("buildIndexerHttpServer", () => {
     }
 
     await app.close();
+  });
+});
+
+// ===========================================================================
+// #1128 - indexer httpServer hardening
+// ===========================================================================
+describe("buildIndexerHttpServer - hardening (#1128)", () => {
+  afterEach(() => {
+    delete process.env.CORS_ALLOWED_ORIGINS;
+    delete process.env.NODE_ENV;
+    delete process.env.INDEXER_REQUIRED_PRINCIPAL;
+    delete process.env.INDEXER_API_KEY;
+  });
+
+  describe("correlation id validation", () => {
+    it("echoes a well-formed x-correlation-id in the body and the response header", async () => {
+      const app = await buildIndexerHttpServer();
+      await app.ready();
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/markets",
+        headers: {
+          "x-correlation-id": "corr-abc_123.4:5",
+          "x-principal": "u",
+        },
+      });
+
+      expect(response.headers["x-correlation-id"]).toBe("corr-abc_123.4:5");
+      expect(response.json().correlationId).toBe("corr-abc_123.4:5");
+
+      await app.close();
+    });
+
+    // A caller-controlled correlation id is echoed into logs and headers, so
+    // anything carrying a control character or a huge payload is a
+    // log-forging / memory vector and must be replaced, not trusted.
+    it.each([
+      ["a newline", "corr" + String.fromCharCode(10) + "forged"],
+      ["a carriage return", "corr" + String.fromCharCode(13) + "forged"],
+      ["a tab", "corr" + String.fromCharCode(9) + "forged"],
+      ["a NUL byte", "corr" + String.fromCharCode(0) + "forged"],
+      ["an oversized value", "c".repeat(200)],
+      ["an empty value", ""],
+    ])(
+      "replaces %s in x-correlation-id with a generated id",
+      async (_label, value) => {
+        const app = await buildIndexerHttpServer();
+        await app.ready();
+
+        const response = await app.inject({
+          method: "GET",
+          url: "/health",
+          headers: { "x-correlation-id": value },
+        });
+
+        expect(response.statusCode).toBe(200);
+        const echoed = response.headers["x-correlation-id"] as string;
+        expect(echoed).not.toContain(String.fromCharCode(10));
+        expect(echoed).not.toContain(String.fromCharCode(13));
+        expect(echoed.length).toBeGreaterThan(0);
+        expect(response.json().correlationId).toBe(echoed);
+
+        await app.close();
+      }
+    );
+
+    it("resolves a safe fallback when the header is absent", () => {
+      expect(resolveCorrelationId(undefined, "req-1")).toBe("req-1");
+    });
+  });
+
+  describe("deny-by-default 404", () => {
+    it("answers a declared path with an unregistered method using the stable NOT_FOUND code", async () => {
+      const app = await buildIndexerHttpServer();
+      await app.ready();
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/markets",
+        headers: { "x-principal": "test-user", "x-correlation-id": "corr-404" },
+      });
+
+      expect(response.statusCode).toBe(404);
+      const body = response.json();
+      expect(body.code).toBe("NOT_FOUND");
+      expect(body.correlationId).toBe("corr-404");
+
+      // Fastifys default body would echo the raw method/url back.
+      expect(response.body).not.toContain("Route POST:");
+      expect(response.body).not.toContain("/markets");
+
+      await app.close();
+    });
+
+    // A path with no explicit rate-limit policy is denied outright rather
+    // than falling through to a 404 that would confirm it is unrouted.
+    it("denies a wholly unrouted path with RATE_LIMITED before it is routed", async () => {
+      const app = await buildIndexerHttpServer();
+      await app.ready();
+
+      const response = await app.inject({
+        method: "GET",
+        url: "/does-not-exist",
+        headers: { "x-principal": "test-user", "x-correlation-id": "corr-404" },
+      });
+
+      expect(response.statusCode).toBe(429);
+      expect(response.json().code).toBe("RATE_LIMITED");
+      expect(response.json().correlationId).toBe("corr-404");
+      expect(response.body).not.toContain("/does-not-exist");
+
+      await app.close();
+    });
+
+    it("still echoes a correlation id on the 404 path", async () => {
+      const app = await buildIndexerHttpServer();
+      await app.ready();
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/markets",
+        headers: { "x-principal": "test-user" },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(typeof response.headers["x-correlation-id"]).toBe("string");
+
+      await app.close();
+    });
+
+    describe("constant-time credential comparison", () => {
+      it("accepts a matching x-api-key and rejects near-miss values", async () => {
+        process.env.INDEXER_API_KEY = "valid-key-value";
+
+        const app = await buildIndexerHttpServer();
+        await app.ready();
+
+        const ok = await app.inject({
+          method: "GET",
+          url: "/markets",
+          headers: { "x-api-key": "valid-key-value", "x-principal": "u" },
+        });
+        expect(ok.statusCode).not.toBe(401);
+
+        // Same length, one character different - exactly the case a naive
+        // string comparison short-circuits early on.
+        const nearMiss = await app.inject({
+          method: "GET",
+          url: "/markets",
+          headers: { "x-api-key": "valid-key-valuE", "x-principal": "u" },
+        });
+        expect(nearMiss.statusCode).toBe(401);
+
+        const prefix = await app.inject({
+          method: "GET",
+          url: "/markets",
+          headers: { "x-api-key": "valid", "x-principal": "u" },
+        });
+        expect(prefix.statusCode).toBe(401);
+
+        await app.close();
+      });
+
+      it("never logs the credential the caller supplied", async () => {
+        process.env.INDEXER_API_KEY = "super-secret-key";
+        const warn = vi.fn();
+        const app = await buildIndexerHttpServer({
+          logger: { info: vi.fn(), warn },
+        });
+        await app.ready();
+
+        await app.inject({
+          method: "GET",
+          url: "/markets",
+          headers: { "x-api-key": "attacker-supplied", "x-principal": "u" },
+        });
+
+        const logged = JSON.stringify(warn.mock.calls);
+        expect(logged).not.toContain("attacker-supplied");
+        expect(logged).not.toContain("super-secret-key");
+
+        await app.close();
+      });
+    });
+
+    describe("rate-limit store memory bound", () => {
+      it("evicts entries whose window has already reset", async () => {
+        let now = 1_000_000;
+        const store = createInMemoryRateLimitStore(() => now);
+
+        await store.increment("/markets:1.2.3.4", 1000);
+        await store.increment("/markets:5.6.7.8", 1000);
+        expect(store.size).toBe(2);
+
+        store.sweep!(now + 2000);
+        expect(store.size).toBe(0);
+      });
+
+      it("keeps a live window while sweeping", async () => {
+        const store = createInMemoryRateLimitStore(() => 1_000);
+        await store.increment("/markets:a", 10_000);
+
+        store.sweep!(1_000);
+        expect(store.size).toBe(1);
+      });
+    });
+
+    describe("request bounds", () => {
+      it("rejects a body larger than the configured limit instead of buffering it", async () => {
+        const app = await buildIndexerHttpServer();
+        await app.ready();
+
+        const response = await app.inject({
+          method: "POST",
+          url: "/markets",
+          headers: { "x-principal": "u", "content-type": "application/json" },
+          payload: { padding: "x".repeat(64 * 1024) },
+        });
+
+        expect(response.statusCode).toBeGreaterThanOrEqual(400);
+        expect(response.statusCode).toBeLessThan(500);
+
+        await app.close();
+      });
+    });
   });
 });
