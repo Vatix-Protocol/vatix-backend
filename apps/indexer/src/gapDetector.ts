@@ -8,6 +8,12 @@ import { parseResolutionEvents } from "./resolutionParser.js";
 import { parseCollateralDepositedEvents } from "./collateralDepositedParser.js";
 import { parseMarketCreatedEvents } from "./marketCreatedParser.js";
 import { withIdempotencyKey } from "./idempotency.js";
+import {
+  WebhookUrlError,
+  assertWebhookHostIsPublic,
+  validateWebhookUrl,
+  type WebhookUrlPolicyOptions,
+} from "./webhookUrlPolicy.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -24,6 +30,12 @@ export interface GapPagingConfig {
    * before triggering a page (minimum: 1).
    */
   persistenceCyclesBeforePage: number;
+  /**
+   * Allow a webhook host on a loopback/private/link-local network in
+   * production (e.g. an in-cluster Alertmanager). Defaults to `false`:
+   * such hosts are rejected as an SSRF risk (#1160).
+   */
+  allowPrivateNetwork?: boolean;
 }
 
 export interface GapDetectorConfig {
@@ -141,6 +153,9 @@ export class GapBackfillError extends Error {
 }
 
 /** Correlation id for a single back-fill run (#1151). */
+/** Upper bound on a single paging webhook call so a hung receiver can't stall back-fill. */
+export const PAGING_WEBHOOK_TIMEOUT_MS = 5_000;
+
 function newBackfillCorrelationId(): string {
   return `gb_${Date.now().toString(36)}_${Math.random()
     .toString(36)
@@ -225,6 +240,9 @@ export class GapDetector {
   private backfillInFlight = false;
   /** Kill-switch state resolved from config, then env (#1151). */
   private readonly backfillEnabled: boolean;
+  /** Paging webhook, validated once at construction (#1160). */
+  private readonly pagingWebhookUrl?: URL;
+  private readonly pagingWebhookPolicy: WebhookUrlPolicyOptions;
 
   constructor(
     private readonly config: GapDetectorConfig,
@@ -237,6 +255,19 @@ export class GapDetector {
     if (isProd && !config.pagingConfig?.webhookUrl) {
       throw new Error(
         "Production indexer requires INDEXER_GAP_PAGING_WEBHOOK_URL to be configured"
+      );
+    }
+
+    // SSRF guard (#1160): fail fast at startup on a webhook URL that could
+    // reach internal services or leak credentials.
+    this.pagingWebhookPolicy = {
+      nodeEnv: config.nodeEnv,
+      allowPrivateNetwork: config.pagingConfig?.allowPrivateNetwork,
+    };
+    if (config.pagingConfig?.webhookUrl) {
+      this.pagingWebhookUrl = validateWebhookUrl(
+        config.pagingConfig.webhookUrl,
+        this.pagingWebhookPolicy
       );
     }
 
@@ -357,19 +388,26 @@ export class GapDetector {
   /**
    * Sends a page to operators when a persistent gap is detected.
    * Non-blocking: errors are logged but do not throw.
+   *
+   * SSRF hardening (#1160): the host is re-resolved and checked before every
+   * send, redirects are refused, and the call is time-bounded. The URL is
+   * never logged because webhook URLs commonly embed a secret token.
    */
   private async pageOperatorsForPersistentGap(
     gapStartLedger: number,
     gapEndLedger: number,
-    gapSize: number
+    gapSize: number,
+    correlationId: string
   ): Promise<void> {
-    const webhookUrl = this.config.pagingConfig?.webhookUrl;
+    const webhookUrl = this.pagingWebhookUrl;
     if (!webhookUrl) {
       return;
     }
 
     try {
-      const response = await fetch(webhookUrl, {
+      await assertWebhookHostIsPublic(webhookUrl, this.pagingWebhookPolicy);
+
+      const response = await fetch(webhookUrl.href, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -381,18 +419,34 @@ export class GapDetector {
           persistentCycles: this.persistentGapCycles,
           timestamp: new Date().toISOString(),
         }),
+        redirect: "error",
+        signal: AbortSignal.timeout(PAGING_WEBHOOK_TIMEOUT_MS),
       });
 
       if (!response.ok) {
+        this.metrics.incrementGapPagingWebhook("http_error");
         this.logger.warn("Gap paging webhook returned non-2xx status", {
           event: "indexer.gap.paging.webhook_error",
+          correlationId,
           status: response.status,
-          webhookUrl,
         });
+        return;
       }
+      this.metrics.incrementGapPagingWebhook("sent");
     } catch (error) {
+      if (error instanceof WebhookUrlError) {
+        this.metrics.incrementGapPagingWebhook("blocked");
+        this.logger.error("Gap paging webhook blocked by SSRF policy", {
+          event: "indexer.gap.paging.blocked",
+          correlationId,
+          code: error.code,
+        });
+        return;
+      }
+      this.metrics.incrementGapPagingWebhook("failed");
       this.logger.warn("Failed to send gap paging alert", {
         event: "indexer.gap.paging.error",
+        correlationId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -606,7 +660,8 @@ export class GapDetector {
       await this.pageOperatorsForPersistentGap(
         gapStartLedger,
         gapEndLedger,
-        rawGapSize
+        rawGapSize,
+        correlationId
       );
     }
 
