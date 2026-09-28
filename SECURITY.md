@@ -42,6 +42,25 @@ leaks via security@vatix.io.
 - **Deny-by-default**: Every external entrypoint requires an authenticated
   principal unless explicitly marked as a probe. Unauthenticated requests
   to data or money-path routes fail closed with `401 UNAUTHORIZED`.
+- **JWT verification (verify-only)**: When JWT auth is used, tokens are
+  verified only — never trusted from the client. Verification is fail-closed:
+  - **Algorithm allowlist**: only explicitly configured algorithms are
+    accepted; `none` and any unexpected `alg` are rejected
+    (`JWT_ALG_NOT_ALLOWED`, 401).
+  - **Signature**: the signature is always verified against the configured
+    key/secret; verification failure is rejected (`JWT_SIGNATURE_INVALID`,
+    401).
+  - **Claims**: `iss`, `aud`, `exp`, `nbf`, and `iat` (with bounded clock
+    skew) are validated; missing or invalid claims are rejected
+    (`JWT_CLAIM_INVALID`, 401).
+  - **Fail-closed**: missing, malformed, or expired tokens are rejected with
+    stable error codes and a correlation id; no privileged surface is
+    reachable without a verified token.
+  - **Authz**: verified identity is still subject to deny-by-default
+    role/scope checks; a valid token does not by itself grant access
+    (`FORBIDDEN`, 403).
+  - **Observability**: verify outcomes (success and failure reason) are
+    counted and logged without ever emitting tokens, secrets, or PII.
 - **Provider allowlist**: Price feeds are deny-by-default when configured —
   `ORACLE_PRICE_PROVIDER_ALLOWLIST` admits only named providers, enforced at
   construction and before every fetch (`PRICE_PROVIDER_NOT_ALLOWED`, 403).

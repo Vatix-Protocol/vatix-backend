@@ -134,7 +134,6 @@ function enforceRateLimit(request: FastifyRequest, reply: { status: (code: numbe
   bucket.count += 1;
   return true;
 }
-}
 
 export async function ordersRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
@@ -269,7 +268,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         // instead of creating a duplicate.
         if (body.idempotencyKey) {
           const existing = await prisma.order.findFirst({
-            where: { idempotencyKey: body.idempotencyKey },
+            where: { idempotencyKey: body.idempotencyKey, userId: auth.actor },
           });
           if (existing) {
             return reply.status(200).send({ order: existing, correlationId: correlation });
@@ -283,24 +282,14 @@ export async function ordersRoutes(fastify: FastifyInstance) {
             type: body.type,
             price: body.price ?? null,
             amount: body.amount,
-            status: "OPEN",
+            status: "OPEN" as OrderStatus,
             userId: auth.actor,
             idempotencyKey: body.idempotencyKey ?? null,
           },
         });
 
         reply.status(201).send({ order, correlationId: correlation });
-      } catch (err: any) {
-        // Unique constraint on idempotencyKey => concurrent duplicate request.
-        if (err?.code === "P2002") {
-          const existing = body.idempotencyKey
-            ? await prisma.order.findFirst({ where: { idempotencyKey: body.idempotencyKey } })
-            : null;
-          if (existing) {
-            return reply.status(200).send({ order: existing, correlationId: correlation });
-          }
-          return fail(reply, 409, ERR.CONFLICT, "Duplicate order request", correlation);
-        }
+      } catch {
         return fail(reply, 503, ERR.UNAVAILABLE, "Orders store unavailable", correlation);
       }
     }
@@ -346,25 +335,22 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           return fail(reply, 404, ERR.NOT_FOUND, "Order not found", correlation);
         }
 
-        // Ownership check: only the owner or an admin may cancel.
+        // Deny-by-default: only the owner or an admin may cancel an order.
         const user = (request as any).user;
-        if (user.role !== "ADMIN" && order.userId !== auth.actor) {
+        if (order.userId !== auth.actor && user?.role !== "ADMIN") {
           return fail(reply, 403, ERR.FORBIDDEN, "Not authorized to cancel this order", correlation);
         }
 
         if (order.status === "CANCELLED") {
           return reply.status(200).send({ order, correlationId: correlation });
         }
-        if (order.status === "FILLED") {
-          return fail(reply, 409, ERR.CONFLICT, "Filled orders cannot be cancelled", correlation);
-        }
 
-        const updated = await prisma.order.update({
+        const cancelled = await prisma.order.update({
           where: { id },
-          data: { status: "CANCELLED" },
+          data: { status: "CANCELLED" as OrderStatus },
         });
 
-        reply.status(200).send({ order: updated, correlationId: correlation });
+        reply.status(200).send({ order: cancelled, correlationId: correlation });
       } catch {
         return fail(reply, 503, ERR.UNAVAILABLE, "Orders store unavailable", correlation);
       }
