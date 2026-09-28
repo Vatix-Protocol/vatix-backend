@@ -69,3 +69,54 @@ and rollback steps in the PR description.
 
 Addresses and network config are resolved per environment; testnet/mainnet drift is guarded and
 never hard-coded in the orders path.
+
+## Admin API routes matrix
+
+This matrix is the source of truth for admin surfaces. Every admin entrypoint is authenticated
+and authorized before any handler logic runs, and is **deny-by-default**: a route with no explicit
+policy entry is rejected with `403 FORBIDDEN`.
+
+| Route | Method | Required role/scope | Idempotency | Fail-closed behavior |
+| --- | --- | --- | --- | --- |
+| `/admin/orders` | `GET` | `admin:orders:read` | n/a (read) | Reads may degrade; no writes applied |
+| `/admin/orders/:id/cancel` | `POST` | `admin:orders:write` | Required (`Idempotency-Key`) | `DEPENDENCY_UNAVAILABLE` on RPC/DB/Redis outage; no partial cancel |
+| `/admin/orders/:id/amend` | `POST` | `admin:orders:write` | Required (`Idempotency-Key`) | `DEPENDENCY_UNAVAILABLE` on RPC/DB/Redis outage; no partial amend |
+| `/admin/settlement/reconcile` | `POST` | `admin:settlement:write` | Required (`Idempotency-Key`) | `DEPENDENCY_UNAVAILABLE` on RPC/DB/Redis outage; no partial reconcile |
+| `/admin/liquidity/params` | `PUT` | `admin:liquidity:write` | Required (`Idempotency-Key`) | `DEPENDENCY_UNAVAILABLE` on RPC/DB/Redis outage; no partial param update |
+| `/admin/feature-flags` | `PUT` | `admin:flags:write` | Required (`Idempotency-Key`) | `DEPENDENCY_UNAVAILABLE` on DB/Redis outage; no partial flag flip |
+
+### Admin authz (deny-by-default)
+
+- All admin routes require a valid session/JWT; missing or expired credentials fail closed with
+  `401 UNAUTHENTICATED`.
+- The caller must hold the exact role/scope listed above; wrong role fails closed with
+  `403 FORBIDDEN`.
+- Any admin route not present in the matrix above is denied by default until an explicit policy
+  entry is added.
+
+### Admin idempotency
+
+Every admin write route requires an `Idempotency-Key`. Concurrent/replayed requests with the same
+key return the original result; a replay with a different payload returns `IDEMPOTENCY_CONFLICT`.
+
+### Admin fail-closed writes
+
+When a dependency (RPC/DB/Redis) is unavailable, admin writes are rejected with
+`DEPENDENCY_UNAVAILABLE` rather than partially applied. Admin reads may degrade, but admin
+money-path writes never proceed on an unverified dependency.
+
+### Admin observability
+
+Metrics and logs cover admin money paths (cancel/amend, settlement reconcile, liquidity params,
+feature flags), authz denials, idempotency hits/conflicts, and dependency failures. Logs never
+include secrets, tokens, or full credentials.
+
+### Admin rollback / kill-switch
+
+Admin money-path or mainnet-affecting changes land behind a feature flag with a documented
+kill-switch and rollback steps in the PR description.
+
+### Admin testnet vs mainnet
+
+Addresses and network config are resolved per environment; testnet/mainnet drift is guarded and
+never hard-coded in the admin path.
