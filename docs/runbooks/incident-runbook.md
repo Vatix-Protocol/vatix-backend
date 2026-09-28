@@ -1384,6 +1384,9 @@ docker exec -it vatix-postgres psql -U postgres -d vatix -c \
 - [Deployment Runbook](../deployment-runbook.md)
 - [Queue Consumer](../queue-consumer.md)
 - [Dead Letter Log](../dead-letter-log.md)
+- Per-service operations runbooks: [Workers](../../apps/workers/README.md#operations-runbook),
+  [Oracle](../../apps/oracle/README.md#operations-runbook),
+  [Indexer](../../apps/indexer/README.md#operations-runbook)
 
 ---
 
