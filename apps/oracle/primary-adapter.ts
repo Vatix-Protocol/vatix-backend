@@ -120,23 +120,23 @@ export class PrimaryAdapter implements ProviderAdapter {
       ...(request.retryConfig ?? {}),
     };
 
-    return withRetry(async () => {
-      const timedResult = await withTimeout<ProviderResult>(
-        async (signal) => this.fetchFromProvider(request, signal),
-        {
-          timeoutMs,
-          errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
-          // Honour caller cancellation (poll-loop shutdown) as well as the
-          // timeout, so a shutdown does not have to wait out a hung primary.
-          signal: request.signal,
-        }
-      );
-
-      if (timedResult.timedOut) {
-        throw new PrimaryProviderError(
-          "TIMEOUT",
-          timedResult.error?.message ?? "Primary provider request timed out",
-          timedResult.error
+    try {
+      // `await` is load-bearing: `return withRetry(...)` returns a pending
+      // promise, so the `try` block exits immediately and a rejection arriving
+      // later is rethrown to the caller *without* ever running this `catch`.
+      // Every primary failure would then be invisible to
+      // `vatix_oracle_primary_provider_attempts_total`, and a flapping or
+      // rate-limited provider would look healthy on the money path.
+      return await withRetry(async () => {
+        const timedResult = await withTimeout<ProviderResult>(
+          async (signal) => this.fetchFromProvider(request, signal),
+          {
+            timeoutMs,
+            errorMessage: `Primary provider timed out after ${timeoutMs}ms`,
+            // Honour caller cancellation (poll-loop shutdown) as well as the
+            // timeout, so a shutdown does not have to wait out a hung primary.
+            signal: request.signal,
+          }
         );
 
         if (timedResult.timedOut) {
@@ -252,9 +252,12 @@ export class PrimaryAdapter implements ProviderAdapter {
 
     return {
       outcome: payload.outcome,
-      confidence: payload.confidence,
+      // Non-null assertions match the guard above: `Number.isFinite` is not a
+      // TypeScript type predicate, so it does not narrow `number | undefined`
+      // the way the surrounding `typeof` checks do.
+      confidence: payload.confidence!,
       confidenceMetadata: {
-        score: payload.confidence,
+        score: payload.confidence!,
         method: "primary-provider",
       },
       source: this.source,

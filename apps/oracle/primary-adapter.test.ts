@@ -423,6 +423,109 @@ describe("PrimaryAdapter", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Regression guards for resolve()'s control flow (#1108)
+  //
+  // The timeout branch below is a `throw` inside the retry closure. A missing
+  // closing brace there does not fail the branch — it swallows the rest of the
+  // body and leaves the success path returning `undefined`, so a successful
+  // provider response reaches OracleService as no resolution at all. These
+  // tests fail loudly if that ever comes back.
+  // -------------------------------------------------------------------------
+
+  it("returns a fully populated result on the success path", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ outcome: true, confidence: 0.77 }), {
+        status: 200,
+      })
+    );
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+    });
+
+    const result = await adapter.resolve({
+      marketId: "market-1",
+      oracleAddress: "GORACLE",
+    });
+
+    // Every field of ProviderResult is populated — no `undefined` leaking
+    // through as a "successful" resolution.
+    expect(result).toEqual({
+      outcome: true,
+      confidence: 0.77,
+      confidenceMetadata: { score: 0.77, method: "primary-provider" },
+      source: "primary",
+      sourceMetadata: { provider: "primary" },
+      timestamp: expect.any(String),
+      metadata: { provider: "primary", marketId: "market-1" },
+    });
+  });
+
+  it("returns a result on the success path even when retries are configured", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Network error"))
+      .mockResolvedValue(
+        new Response(JSON.stringify({ outcome: false, confidence: 0.5 }), {
+          status: 200,
+        })
+      );
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+      retryConfig: { maxRetries: 2, initialDelayMs: 1, useJitter: false },
+    });
+
+    const result = await adapter.resolve({
+      marketId: "market-1",
+      oracleAddress: "GORACLE",
+    });
+
+    expect(result).toMatchObject({ outcome: false, confidence: 0.5 });
+  });
+
+  // A `return withRetry(...)` inside a `try` hands the caller a *pending*
+  // promise, so the `try` block has already exited by the time a retried
+  // attempt rejects. Without the `await`, the failure metric is silently never
+  // incremented and a flapping primary provider looks healthy.
+  it("records the outcome of a resolve that only fails after exhausting retries", async () => {
+    const before = await counterValue("UPSTREAM");
+    const fetchFn = vi.fn().mockRejectedValue(new Error("Network error"));
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+      retryConfig: { maxRetries: 2, initialDelayMs: 1, useJitter: false },
+    });
+
+    await expect(
+      adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" })
+    ).rejects.toMatchObject({ name: "PrimaryProviderError" });
+
+    expect(await counterValue("UPSTREAM")).toBe(before + 1);
+  });
+
+  it("does not record a failure when a retried attempt eventually succeeds", async () => {
+    const before = await counterValue("UPSTREAM");
+    const fetchFn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Network error"))
+      .mockResolvedValue(
+        new Response(JSON.stringify({ outcome: true, confidence: 0.6 }), {
+          status: 200,
+        })
+      );
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+      retryConfig: { maxRetries: 2, initialDelayMs: 1, useJitter: false },
+    });
+
+    await adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" });
+
+    expect(await counterValue("UPSTREAM")).toBe(before);
+  });
+
+  // -------------------------------------------------------------------------
   // Timeout policy parity with the fallback adapter (#1108)
   // -------------------------------------------------------------------------
 
