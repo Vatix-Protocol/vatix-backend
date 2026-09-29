@@ -12,6 +12,7 @@ and in what format.
 
 ### Added
 
+- Indexer: Gap detector fixture tests in `apps/indexer/src/gap-detection.fixture.test.ts` covering cursor jumps, backfill re-fetching, idempotency, metrics increments, and fail-closed thresholds (#1199).
 - Indexer: `MarketCreated` event parsing in `apps/indexer/src/marketCreatedParser.ts`.
 - Indexer: ingestion pipeline wiring in `apps/indexer/src/ingestion.ts`.
 - Indexer: oracle resolution path in `apps/indexer/src/resolutionParser.ts`.
