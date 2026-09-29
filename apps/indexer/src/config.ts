@@ -3,11 +3,11 @@ import {
   loadIndexerContractId,
   type IndexerConfig as SharedIndexerConfig,
   ConfigValidationError,
-} from "../../../packages/shared/src/config.js";
+} from "@vatix/shared/config.js";
 import {
   loadStellarEndpoints,
   type EndpointConfig,
-} from "../../../packages/shared/src/stellarTransport.js";
+} from "@vatix/shared/stellarTransport.js";
 
 export type { SharedIndexerConfig };
 

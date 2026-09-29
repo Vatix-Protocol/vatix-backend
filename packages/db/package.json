@@ -1,11 +1,9 @@
 {
-  "name": "@vatix/api",
+  "name": "@vatix/db",
   "version": "1.0.0",
-  "description": "HTTP API for Vatix protocol",
+  "description": "Database migrations and Prisma client for Vatix protocol",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
     "test": "vitest",
     "test:run": "vitest run"
   },

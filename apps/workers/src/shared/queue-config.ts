@@ -8,4 +8,4 @@ export {
   settlementQueueName,
   submissionQueueName,
   redisConnectionFromEnv,
-} from "../../../packages/shared/src/queue-config.js";
+} from "@vatix/shared/queue-config.js";

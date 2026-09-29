@@ -12,7 +12,7 @@ import {
   ServiceUnavailableError,
 } from "./errors.js";
 import type { ErrorResponse } from "../../types/errors.js";
-import { createErrorEnvelope } from "../../../packages/shared/src/errors.js";
+import { createErrorEnvelope } from "@vatix/shared/errors.js";
 import { config } from "../../config.js";
 
 function resolveCode(error: Error, statusCode: number): string {

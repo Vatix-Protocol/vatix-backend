@@ -4,4 +4,4 @@ export {
   isChallengeWindowOpen,
 } from "./challengeWindow.js";
 
-export { loadBaseConfig } from "../../packages/shared/src/config.js";
+export { loadBaseConfig } from "@vatix/shared/config.js";

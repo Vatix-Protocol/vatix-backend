@@ -4,7 +4,7 @@ import {
   DEFAULT_JOB_OPTIONS,
   redisConnectionFromEnv,
   settlementQueueName,
-} from "../../packages/shared/src/queue-config.js";
+} from "@vatix/shared/queue-config.js";
 
 export interface SettlementJob {
   tradeId: string;

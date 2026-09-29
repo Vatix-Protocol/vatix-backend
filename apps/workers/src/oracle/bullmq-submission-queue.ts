@@ -9,13 +9,13 @@
  */
 import { createHash } from "crypto";
 import { Queue, Worker, type Job } from "bullmq";
-import type { ILogger } from "../../../../packages/shared/src/logger.js";
+import type { ILogger } from "@vatix/shared/logger.js";
 import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
 import {
   ORACLE_SUBMISSION_JOB_OPTIONS,
   redisConnectionFromEnv,
   submissionQueueName,
-} from "../../../../packages/shared/src/queue-config.js";
+} from "@vatix/shared/queue-config.js";
 
 function payloadHash(item: SubmissionQueueItem): string {
   return createHash("sha256")

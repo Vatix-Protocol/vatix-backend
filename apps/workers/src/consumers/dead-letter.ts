@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import type { ILogger } from "../../../../packages/shared/src/logger.js";
+import type { ILogger } from "@vatix/shared/logger.js";
 import { redis } from "../../../../src/services/redis.js";
 
 export interface DeadLetterMessage {
