@@ -1,0 +1,15 @@
+{
+  "name": "@vatix/api",
+  "version": "1.0.0",
+  "description": "API application for Vatix protocol",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch routes/index.ts",
+    "start": "tsx routes/index.ts",
+    "test": "vitest",
+    "test:run": "vitest run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

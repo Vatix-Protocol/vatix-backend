@@ -63,7 +63,6 @@ export class AuditArchiverJob {
 
   async run(): Promise<AuditArchiverJobResult> {
     const startedAt = new Date();
-    const now = new Date();
 
     this.logger.info("Audit archiver job started");
 
@@ -350,7 +349,7 @@ export class AuditArchiverJob {
       // Guard against a concurrent run (or an operator) having already removed
       // rows since the scan: deleteMany returns the count actually deleted.
       const { count } = await this.prisma.tradeAuditEvent.deleteMany({
-        id: { in: plan.deleteIds },
+        where: { id: { in: plan.deleteIds } },
       });
 
       this.logger.info("Audit retention purge complete", {
