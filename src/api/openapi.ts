@@ -271,6 +271,17 @@ export const openApiSpec = {
               "Single-use nonce obtained from POST /v1/auth/challenge and included in the signed message. Consumed atomically in shared Redis, so a captured request cannot be replayed against another API replica.",
             schema: { type: "string" },
           },
+          {
+            name: "Idempotency-Key",
+            in: "header",
+            required: false,
+            description:
+              "Client-chosen key that makes retries safe, scoped to the signing wallet. Re-sending the same key and order payload (re-signed with a fresh nonce) returns the original 201 response with `Idempotent-Replayed: true` and never places a second order; reusing the key with a different payload returns 409 `IDEMPOTENCY_CONFLICT`.",
+            schema: {
+              type: "string",
+              pattern: "^[A-Za-z0-9_.:-]{1,128}$",
+            },
+          },
         ],
         requestBody: {
           required: true,
@@ -390,10 +401,19 @@ export const openApiSpec = {
           },
           "409": {
             description:
-              "The order could not be accepted against current market state. `order_conflict`: a maker order this request would have matched was concurrently filled or cancelled (optimistic-concurrency conflict on Order.version) — safe and expected to retry. `market_not_active`: the market is RESOLVED or CANCELLED — do not retry. `market_expired` (issue #951): the market's trading window (`endTime`) has closed even though its status is still ACTIVE because the expiry worker has not yet caught up — do not retry.",
+              "The order could not be accepted. `IDEMPOTENCY_CONFLICT`: the Idempotency-Key was already used by this wallet with a different order payload — do not retry with the same key. `order_conflict`: a maker order this request would have matched was concurrently filled or cancelled (optimistic-concurrency conflict on Order.version) — safe and expected to retry. `market_not_active`: the market is RESOLVED or CANCELLED — do not retry. `market_expired` (issue #951): the market's trading window (`endTime`) has closed even though its status is still ACTIVE because the expiry worker has not yet caught up — do not retry.",
             content: {
               "application/json": {
                 examples: {
+                  idempotencyConflict: {
+                    summary: "Idempotency-Key reused with a different payload",
+                    value: {
+                      code: "IDEMPOTENCY_CONFLICT",
+                      message:
+                        "Idempotency-Key was already used with a different request payload",
+                      statusCode: 409,
+                    },
+                  },
                   makerConflict: {
                     summary: "Maker order concurrently modified",
                     value: {

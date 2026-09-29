@@ -118,7 +118,8 @@ model Order {
   version        Int         @default(0)
   createdAt      DateTime    @default(now()) @map("created_at")
 
-  market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  market         Market               @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  idempotencyKey OrderIdempotencyKey?
 
   @@index([marketId])
   @@index([userAddress])
@@ -126,6 +127,28 @@ model Order {
   @@index([status])
   @@index([marketId, outcome, price, createdAt])
   @@map("orders")
+}
+
+/// Idempotency ledger for POST /v1/orders. One row per (signer,
+/// Idempotency-Key), written in the same transaction as the order it created,
+/// so a replayed or concurrent request with the same key can never place a
+/// second order. `requestHash` is the SHA-256 of the canonical order payload;
+/// reusing a key with a different payload is rejected with 409
+/// IDEMPOTENCY_CONFLICT. `response` is the original 201 body, returned
+/// verbatim on replay.
+model OrderIdempotencyKey {
+  userAddress    String   @map("user_address") @db.VarChar(56)
+  idempotencyKey String   @map("idempotency_key") @db.VarChar(128)
+  requestHash    String   @map("request_hash") @db.VarChar(64)
+  orderId        String   @unique @map("order_id")
+  response       Json
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@id([userAddress, idempotencyKey])
+  @@index([createdAt])
+  @@map("order_idempotency_keys")
 }
 
 model OracleReport {

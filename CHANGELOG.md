@@ -1,15 +1,51 @@
 # Changelog
 
-## Unreleased
+All notable changes to the Vatix Protocol monorepo are documented in this
+file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-- Public API routes are canonical under `/v1/*`. Update frontend clients
-  (`apps/web`) and external integrations to use `/v1/health`, `/v1/ready`,
-  `/v1/markets`, `/v1/orders`, `/v1/orders/user/:address`,
-  `/v1/trades/user/:address`, and `/v1/wallets/:wallet/positions`.
-- Legacy root aliases such as `/markets`, `/orders`, and
-  `/positions/user/:address` return `308` with deprecation headers until
-  `2027-01-01T00:00:00Z`, then return `404`.
-- Documented and tested that API versioning is path-based only (no
-  `Accept-Version`/`X-API-Version` header negotiation): requesting an
-  unmounted version prefix (e.g. `/v2/markets`) now has an explicit test
-  asserting a clear `404` JSON error. See `docs/api-versioning.md#unsupported-versions`.
+Changelog discipline is enforced for every PR — see
+[CONTRIBUTING.md](CONTRIBUTING.md#changelog-discipline) for what to log, when,
+and in what format.
+
+## [Unreleased]
+
+### Added
+
+- Indexer: `MarketCreated` event parsing in `apps/indexer/src/marketCreatedParser.ts`.
+- Indexer: ingestion pipeline wiring in `apps/indexer/src/ingestion.ts`.
+- Indexer: oracle resolution path in `apps/indexer/src/resolutionParser.ts`.
+- Indexer: idempotency guard for concurrent/replayed ingestion in `apps/indexer/src/idempotency.ts`.
+- Indexer: ops-safe metrics for money-path events in `apps/indexer/src/metrics.ts`.
+- Backend: distinct liveness (`/health`) and readiness (`/ready`) probes with a
+typed response contract and stable error codes (`OK`,
+`DEPENDENCY_UNAVAILABLE`, `DEPENDENCY_TIMEOUT`).
+
+### Changed
+
+- Readiness now fails **closed** (`503`) when any critical dependency (DB,
+  Redis, RPC) is unreachable, and treats unknown/unconfigured dependencies as
+  unavailable (deny-by-default).
+
+### Fixed
+
+- Probe responses and logs no longer risk leaking connection strings,
+  credentials, hostnames, or internal addresses; only dependency name and a
+  coarse status are emitted.
+
+### Security
+
+- Readiness is deny-by-default so a misconfigured deploy fails closed rather
+  than serving traffic.
+- Probe outcomes are emitted as structured logs/metrics keyed by dependency
+  name and status, with a correlation id for cross-referencing.
+
+## [0.1.0] - 2024-01-01
+
+### Added
+
+- Initial monorepo scaffold for the Vatix Protocol (`vatix-backend` package
+  focus).
+
+[Unreleased]: https://github.com/vatix-protocol/vatix-protocol/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/vatix-protocol/vatix-protocol/releases/tag/v0.1.0

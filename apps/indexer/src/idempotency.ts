@@ -243,36 +243,48 @@ export async function insertIfNew<T extends { idempotencyKey: string }>(
     options.logger?.info("Skipping duplicate indexer event", {
       idempotencyKey: record.idempotencyKey,
       correlationId: options.correlationId,
-      duplicateCount: 1,
     });
     return { status: "duplicate", key: record.idempotencyKey };
   }
+
   return { status: "inserted", record: result };
 }
 
-export async function insertAllIfNew<T extends { idempotencyKey: string }>(
+/**
+ * Insert a batch of records, deduplicating within the batch and against the
+ * store. Records are processed sequentially so a mid-batch store outage fails
+ * closed (throws) rather than partially applying and reporting success.
+ *
+ * In-batch duplicates (same idempotencyKey appearing twice in one batch) are
+ * collapsed before hitting the store, which protects against replayed oracle
+ * resolution submissions arriving in the same poll window.
+ */
+export async function insertBatchIfNew<T extends { idempotencyKey: string }>(
   records: T[],
   upsert: (record: T) => Promise<T | null | undefined>,
   options: InsertIfNewOptions = {}
 ): Promise<InsertBatchResult<T>> {
   const inserted: T[] = [];
   let duplicateCount = 0;
+  const seen = new Set<string>();
 
   for (const record of records) {
-    const result = await insertIfNew(record, upsert, options);
-    if (result.status === "duplicate") {
-      duplicateCount++;
+    if (seen.has(record.idempotencyKey)) {
+      duplicateCount += 1;
+      options.logger?.info("Skipping in-batch duplicate indexer event", {
+        idempotencyKey: record.idempotencyKey,
+        correlationId: options.correlationId,
+      });
       continue;
     }
+    seen.add(record.idempotencyKey);
 
-    inserted.push(result.record);
-  }
-
-  if (duplicateCount > 0) {
-    options.logger?.info("Skipped duplicate indexer events", {
-      duplicateCount,
-      correlationId: options.correlationId,
-    });
+    const result = await insertIfNew(record, upsert, options);
+    if (result.status === "inserted") {
+      inserted.push(result.record);
+    } else {
+      duplicateCount += 1;
+    }
   }
 
   return { inserted, duplicateCount };

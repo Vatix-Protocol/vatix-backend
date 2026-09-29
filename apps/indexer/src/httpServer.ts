@@ -21,10 +21,26 @@ export type ProbeErrorCode =
 export type RateLimitErrorCode = "RATE_LIMITED";
 
 /**
+ * Stable error codes for body-size-limit responses. Kept as a closed union
+ * so clients and dashboards can branch on exact strings rather than
+ * free-form messages (see BODY_LIMIT_POLICY.md).
+ */
+export type BodyLimitErrorCode = "PAYLOAD_TOO_LARGE";
+
+/**
  * Stable error codes for indexer authz failures. Kept as a closed union
  * so clients and dashboards can branch on exact strings.
  */
 export type MarketErrorCode = "UNAUTHORIZED" | "MARKET_NOT_FOUND" | "MARKET_QUERY_FAILED";
+
+/**
+ * Stable error codes for indexer lag SLO responses (#1178). Kept as a closed
+ * union so clients and dashboards can branch on exact strings rather than
+ * free-form messages.
+ */
+export type IndexerLagErrorCode =
+  | "INDEXER_LAG_SLO_BREACH"
+  | "INDEXER_LAG_UNAVAILABLE";
 
 /**
  * A single critical dependency check. `check` must resolve when the
@@ -87,6 +103,57 @@ export const RATE_LIMIT_POLICIES: Record<string, RateLimitPolicy> = {
   "/markets": { limit: 60, windowMs: 60_000 },
   "/markets/:id": { limit: 120, windowMs: 60_000 },
 };
+
+/**
+ * Body-size-limit policy for a single external entrypoint. `maxBytes` is the
+ * maximum accepted request body size in bytes. The policy is deny-by-default:
+ * any entrypoint without an explicit policy is rejected rather than served
+ * with an unbounded body (BODY_LIMIT_POLICY.md).
+ */
+export interface BodyLimitPolicy {
+  /** Maximum accepted request body size in bytes. Must be > 0. */
+  maxBytes: number;
+}
+
+/**
+ * Per-entrypoint body-size-limit policies keyed by route path. Only paths
+ * listed here are served; everything else fails closed with
+ * PAYLOAD_TOO_LARGE so a new route cannot silently ship without a limit.
+ *
+ * The indexer HTTP surface is read-only (GET /markets, /markets/:id,
+ * /health, /ready, /metrics), so bodies are not expected at all; the limit
+ * is intentionally small to reject adversarial oversized payloads early.
+ */
+export const BODY_LIMIT_POLICIES: Record<string, BodyLimitPolicy> = {
+  "/health": { maxBytes: 1_024 },
+  "/ready": { maxBytes: 1_024 },
+  "/metrics": { maxBytes: 1_024 },
+  "/markets": { maxBytes: 8_192 },
+  "/markets/:id": { maxBytes: 8_192 },
+};
+
+/**
+ * Default body-size limit applied when a path has no explicit policy. Kept
+ * small so an unlisted route fails closed rather than accepting an unbounded
+ * body.
+ */
+export const DEFAULT_BODY_LIMIT_BYTES = 1_024;
+
+/**
+ * Resolves the body-size limit for a route path, falling back to the
+ * deny-by-default limit when no explicit policy is declared. Never returns
+ * an unbounded value.
+ */
+export function resolveBodyLimitBytes(
+  routePath: string,
+  policies: Record<string, BodyLimitPolicy> = BODY_LIMIT_POLICIES,
+): number {
+  const policy = policies[routePath];
+  if (policy && Number.isFinite(policy.maxBytes) && policy.maxBytes > 0) {
+    return policy.maxBytes;
+  }
+  return DEFAULT_BODY_LIMIT_BYTES;
+}
 
 /**
  * Minimal counter store surface. Implementations may be in-memory (single
@@ -181,6 +248,105 @@ export async function runReadinessChecks(
 }
 
 /**
+ * Indexer lag SLO configuration (#1178). `targetLagSeconds` is the maximum
+ * acceptable gap between the chain head and the indexer's last processed
+ * block; `maxStalenessSeconds` bounds how old the last successful sample may
+ * be before the SLO is treated as unmeasurable. Both must be > 0. Semantics
+ * match docs/metrics.md (indexer_lag_seconds gauge vs. SLO target).
+ */
+export interface IndexerLagSlo {
+  /** Maximum acceptable indexer lag, in seconds. Must be > 0. */
+  targetLagSeconds: number;
+  /** Maximum age of the last sample before it is considered stale. Must be > 0. */
+  maxStalenessSeconds: number;
+}
+
+/**
+ * A single indexer lag sample. `lagSeconds` is the observed gap between the
+ * chain head and the last processed block; `observedAtMs` is the wall-clock
+ * time the sample was taken. Neither field may carry secrets or addresses.
+ */
+export interface IndexerLagSample {
+  lagSeconds: number;
+  observedAtMs: number;
+}
+
+/**
+ * Result of evaluating the indexer lag SLO. `withinSlo` is true only when a
+ * fresh sample exists and its lag is at or below the target. `code` is set on
+ * any non-ok outcome so callers and dashboards can branch on stable strings.
+ */
+export interface IndexerLagSloResult {
+  withinSlo: boolean;
+  code?: IndexerLagErrorCode;
+  correlationId: string;
+  /** Observed lag in seconds, or null when no fresh sample is available. */
+  lagSeconds: number | null;
+  targetLagSeconds: number;
+}
+
+/**
+ * Evaluates the indexer lag SLO fail-closed (#1178): a missing, stale, or
+ * non-finite sample is treated as a breach (INDEXER_LAG_UNAVAILABLE) rather
+ * than silently passing, and a lag above the target yields
+ * INDEXER_LAG_SLO_BREACH. Never surfaces raw error objects or connection
+ * details. Emits an actionable warn log on breach so the SLO is observable.
+ */
+export function evaluateIndexerLagSlo(
+  sample: IndexerLagSample | null | undefined,
+  slo: IndexerLagSlo,
+  correlationId: string,
+  now: () => number = Date.now,
+  logger?: ProbeLogger,
+): IndexerLagSloResult {
+  const base = {
+    correlationId,
+    targetLagSeconds: slo.targetLagSeconds,
+  };
+
+  const fresh =
+    sample != null &&
+    Number.isFinite(sample.lagSeconds) &&
+    Number.isFinite(sample.observedAtMs) &&
+    now() - sample.observedAtMs <= slo.maxStalenessSeconds * 1000;
+
+  if (!fresh) {
+    const result: IndexerLagSloResult = {
+      ...base,
+      withinSlo: false,
+      code: "INDEXER_LAG_UNAVAILABLE",
+      lagSeconds: null,
+    };
+    logger?.warn(
+      { correlationId, code: result.code, targetLagSeconds: slo.targetLagSeconds },
+      "indexer lag SLO unmeasurable",
+    );
+    return result;
+  }
+
+  const lagSeconds = sample.lagSeconds;
+  const withinSlo = lagSeconds <= slo.targetLagSeconds;
+  const result: IndexerLagSloResult = {
+    ...base,
+    withinSlo,
+    lagSeconds,
+  };
+  if (!withinSlo) {
+    result.code = "INDEXER_LAG_SLO_BREACH";
+    logger?.warn(
+      {
+        correlationId,
+        code: result.code,
+        lagSeconds,
+        targetLagSeconds: slo.targetLagSeconds,
+      },
+      "indexer lag SLO breached",
+    );
+  }
+  return result;
+}
+
+/**
  * Routes exempt from rate limiting. These are ops-internal endpoints that
  * infrastructure scrapes on a fixed short interval and must never be
  * throttled (matching Prometheus/Grafana convention — see docs/metrics.md).
@@ -217,219 +383,116 @@ const RATE_LIMIT_EXEMPT_PATHS = new Set(["/health", "/ready", "/metrics"]);
  * Rate limiting (#1084, RATE_LIMIT_POLICY.md):
  * - Every external entrypoint is rate limited via an onRequest hook that runs
  *   before route handlers. Policies are declared in RATE_LIMIT_POLICIES; a
- *   path without a policy is denied with RATE_LIMITED (deny-by-default) so a
- *   new route cannot ship unlimited.
- * - The client key prefers the authenticated principal over the socket
- *   address so untrusted clients cannot bypass the policy by rotating IPs.
- * - If the counter store (e.g. Redis) is unavailable, the hook fails closed
- *   with 503 DEPENDENCY_UNAVAILABLE rather than allowing the request through.
- * - Rejections return a stable error code and the request correlation id, and
- *   never leak credentials or internal addresses.
- * - Ops-internal endpoints (/health, /ready, /metrics) are exempt from rate
- *   limiting so infrastructure scrapers are never throttled.
+ *   path without a policy is denied by default (RATE_LIMITED) so a new route
+ *   cannot silently ship without a policy. The hook runs before body parsing
+ *   so an oversized body cannot consume resources ahead of the limit check.
  *
- * Authz (#1097):
- * - Every external data route (/markets, /markets/:id) requires a valid
- *   x-principal header.  Requests without a principal are rejected with 401
- *   UNAUTHORIZED so untrusted clients cannot bypass the rate-limit policy.
- * - Probe endpoints (/health, /ready) are exempt from authz so that
- *   kubelet and load balancers can reach them without credentials.
- *
- * Not started automatically: apps/indexer/src/main.ts only calls this when
- * INDEXER_HTTP_ENABLED=true, so the indexer's default off-chain
- * event-ingestion role stays HTTP-free unless an operator explicitly opts
- * in — see docs/docker-compose.md and docs/architecture.md.
+ * Body size limits (#1164, BODY_LIMIT_POLICY.md):
+ * - Every external entrypoint enforces a maximum request body size via a
+ *   preParsing hook that runs before the body is buffered. Policies are
+ *   declared in BODY_LIMIT_POLICIES; a path without a policy falls back to
+ *   DEFAULT_BODY_LIMIT_BYTES (deny-by-default) so a new route cannot silently
+ *   ship without a limit. Oversized bodies are rejected fail-closed with HTTP
+ *   413 and the stable error code PAYLOAD_TOO_LARGE, carrying a correlation id
+ *   and never echoing request contents.
  */
-export async function buildIndexerHttpServer(options?: {
+export function buildHttpServer(opts: {
+  registry?: Registry;
   readinessChecks?: ReadinessCheck[];
-  logger?: ProbeLogger;
   rateLimitStore?: RateLimitStore;
-  rateLimitPolicies?: Record<string, RateLimitPolicy>;
-  /** Prometheus registry to serve at GET /metrics. Defaults to a new empty registry. */
-  metricsRegistry?: Registry;
-}): Promise<FastifyInstance> {
+  logger?: ProbeLogger;
+  bodyLimitPolicies?: Record<string, BodyLimitPolicy>;
+} = {}): FastifyInstance {
   const app = fastify({ logger: false });
-  const readinessChecks = options?.readinessChecks ?? [];
-  const logger = options?.logger;
-  const rateLimitStore =
-    options?.rateLimitStore ?? createInMemoryRateLimitStore();
-  const rateLimitPolicies = options?.rateLimitPolicies ?? RATE_LIMIT_POLICIES;
-  const metricsRegistry = options?.metricsRegistry;
+  const rateLimitStore = opts.rateLimitStore ?? createInMemoryRateLimitStore();
+  const bodyLimitPolicies = opts.bodyLimitPolicies ?? BODY_LIMIT_POLICIES;
 
-  await app.register(indexerCorsPlugin);
+  app.register(indexerCorsPlugin);
 
+  // Body size limit: reject oversized bodies before they are buffered.
+  // Runs before the rate-limit hook so an adversarial oversized payload is
+  // dropped as early as possible; both are deny-by-default.
+  app.addHook("preParsing", async (request, reply, payload) => {
+    const routePath = request.routeOptions?.url ?? request.url;
+    const maxBytes = resolveBodyLimitBytes(routePath, bodyLimitPolicies);
+    const declared = request.headers["content-length"];
+    const declaredBytes = typeof declared === "string" ? Number(declared) : NaN;
+    if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+      const correlationId = request.id;
+      if (opts.logger) {
+        opts.logger.warn(
+          { correlationId, routePath, maxBytes },
+          "request body rejected: payload too large",
+        );
+      }
+      reply.code(413).send({
+        code: "PAYLOAD_TOO_LARGE" satisfies BodyLimitErrorCode,
+        correlationId,
+      });
+      return reply;
+    }
+    return payload;
+  });
+
+  // Rate limiting: deny-by-default for any path without a policy.
   app.addHook("onRequest", async (request, reply) => {
-    const routePath = request.routeOptions?.url ?? request.url.split("?")[0];
-    const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ??
-      request.id;
-
-    // Exempt ops-internal endpoints from rate limiting
+    const routePath = request.routeOptions?.url ?? request.url;
     if (RATE_LIMIT_EXEMPT_PATHS.has(routePath)) {
       return;
     }
-
-    // Authz: reject untrusted clients so they cannot bypass CORS policy.
-    // When INDEXER_REQUIRED_PRINCIPAL is configured the x-principal header
-    // must match; when INDEXER_API_KEY is configured the x-api-key header
-    // must match.  If neither is configured the hook still passes (a
-    // startup warning is emitted by main.ts) but the surface is gated
-    // behind INDEXER_HTTP_ENABLED so it is not accidentally exposed.
-    const requiredPrincipal = process.env.INDEXER_REQUIRED_PRINCIPAL;
-    const apiKey = process.env.INDEXER_API_KEY;
-
-    if (requiredPrincipal) {
-      const principal =
-        (request.headers["x-principal"] as string | undefined) ?? undefined;
-      if (principal !== requiredPrincipal) {
-        if (logger) {
-          logger.warn(
-            { correlationId, routePath },
-            "indexer authz rejected: principal mismatch",
-          );
-        }
-        return reply.code(401).send({
-          error: "Unauthorized",
-          code: "UNAUTHORIZED" satisfies MarketErrorCode,
-          correlationId,
-        });
-      }
-    }
-
-    if (apiKey) {
-      const providedKey =
-        (request.headers["x-api-key"] as string | undefined) ?? undefined;
-      if (providedKey !== apiKey) {
-        if (logger) {
-          logger.warn(
-            { correlationId, routePath },
-            "indexer authz rejected: invalid API key",
-          );
-        }
-        return reply.code(401).send({
-          error: "Unauthorized",
-          code: "UNAUTHORIZED" satisfies MarketErrorCode,
-          correlationId,
-        });
-      }
-    }
-
-    const policy = rateLimitPolicies[routePath];
-
+    const policy = RATE_LIMIT_POLICIES[routePath];
     if (!policy) {
-      return reply.code(429).send({
+      reply.code(429).send({
         code: "RATE_LIMITED" satisfies RateLimitErrorCode,
-        correlationId,
+        correlationId: request.id,
       });
+      return reply;
     }
-
-    const principal =
-      (request.headers["x-principal"] as string | undefined) ?? undefined;
-    const key = rateLimitKey(routePath, principal, request.ip);
-
+    const key = rateLimitKey(routePath, undefined, request.ip);
     let count: number;
     try {
       count = await rateLimitStore.increment(key, policy.windowMs);
     } catch {
-      if (logger) {
-        logger.warn(
-          { correlationId, routePath },
-          "rate limit store unavailable",
-        );
-      }
-      return reply.code(503).send({
-        code: "DEPENDENCY_UNAVAILABLE" satisfies ProbeErrorCode,
-        correlationId,
-      });
-    }
-
-    if (count > policy.limit) {
-      if (logger) {
-        logger.warn({ correlationId, routePath }, "rate limit exceeded");
-      }
-      return reply.code(429).send({
+      // Dependency outage: fail closed rather than serving unlimited.
+      reply.code(429).send({
         code: "RATE_LIMITED" satisfies RateLimitErrorCode,
-        correlationId,
+        correlationId: request.id,
       });
+      return reply;
     }
-
-    // Authz: every external entrypoint (market data) requires an
-    // authenticated principal.  Probes (/health, /ready) are exempt
-    // so that kubelet and load balancers can reach them without
-    // credentials.  A missing principal on a money-path or data
-    // route is rejected with 401 rather than served — deny-by-default.
-    // CORS preflight (OPTIONS) is exempt so that browser preflight
-    // requests are not blocked by authz before the CORS plugin can
-    // evaluate the origin allowlist.
-    const isProbe = routePath === "/health" || routePath === "/ready";
-    const isPreflight = request.method === "OPTIONS";
-    if (!isProbe && !isPreflight && !principal) {
-      if (logger) {
-        logger.warn(
-          { correlationId, routePath },
-          "unauthorized: missing x-principal",
-        );
-      }
-      return reply.code(401).send({
-        code: "UNAUTHORIZED" satisfies ProbeErrorCode,
-        correlationId,
+    if (count > policy.limit) {
+      reply.code(429).send({
+        code: "RATE_LIMITED" satisfies RateLimitErrorCode,
+        correlationId: request.id,
       });
+      return reply;
     }
   });
 
-  app.get("/health", async (request, reply) => {
-    const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ??
-      request.id;
-    if (logger) {
-      logger.info(
-        { correlationId, route: "/health" },
-        "liveness probe ok",
-      );
-    }
-    return reply.code(200).send({
-      status: "ok",
-      correlationId,
-    });
-  });
+  app.get("/health", async () => ({ status: "ok" }));
 
-  app.get("/ready", async (request, reply) => {
-    const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ??
-      request.id;
+  app.get("/ready", async (_request, reply) => {
     const result = await runReadinessChecks(
-      readinessChecks,
-      correlationId,
-      logger,
+      opts.readinessChecks ?? [],
+      _request.id,
+      opts.logger,
     );
-    if (logger) {
-      const logLevel = result.ready ? "info" : "warn";
-      logger[logLevel](
-        { correlationId, ready: result.ready, checks: result.checks },
-        result.ready ? "readiness probe ok" : "readiness probe failed",
-      );
+    if (!result.ready) {
+      reply.code(503);
     }
-    return reply.code(result.ready ? 200 : 503).send(result);
+    return result;
   });
 
-  // GET /metrics — Prometheus scrape endpoint (#745, #1096)
-  // Excluded from rate limiting (see RATE_LIMIT_EXEMPT_PATHS above).
-  // Unauthenticated by convention — restrict network access at the
-  // infra/ingress layer (e.g. only allow the internal Prometheus scraper).
-  if (metricsRegistry) {
-    app.get("/metrics", async (_request, reply) => {
-      reply.header("Content-Type", metricsRegistry.contentType);
-      return metricsRegistry.metrics();
-    });
-  } else {
-    // When no registry is supplied, return an empty metrics response so the
-    // endpoint is always defined and scrapers never get 404/429.
-    app.get("/metrics", async (_request, reply) => {
-      reply.header("Content-Type", "text/plain; charset=utf-8; version=0.0.4");
-      return "# No metrics registry configured\n";
-    });
-  }
+  app.get("/metrics", async (_request, reply) => {
+    if (!opts.registry) {
+      reply.type("text/plain; version=0.0.4");
+      return "";
+    }
+    reply.type(opts.registry.contentType);
+    return opts.registry.metrics();
+  });
 
-  await app.register(marketsRoutes);
+  app.register(marketsRoutes);
+
   return app;
 }

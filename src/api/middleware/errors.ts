@@ -79,6 +79,14 @@ export class OrderConflictError extends AppError {
   }
 }
 
+export class IdempotencyConflictError extends AppError {
+  constructor(
+    message = "Idempotency-Key was already used with a different request payload"
+  ) {
+    super(message, 409, "IDEMPOTENCY_CONFLICT");
+  }
+}
+
 export class MatchingUnavailableError extends AppError {
   constructor(
     message = "This instance does not currently hold the matching leader lease"

@@ -1,315 +1,182 @@
-# Contributing to Vatix Backend
+# Contributing to Vatix Protocol
 
-Thank you for your interest in contributing to Vatix! This guide will help you get started.
+Thanks for contributing — including Stellar Wave contributors. This guide covers
+local setup, branch/PR conventions, required checks, and the security
+expectations every change must meet.
 
-## Table of Contents
+## Table of contents
 
 - [Getting Started](#getting-started)
 - [Finding Issues to Work On](#finding-issues-to-work-on)
 - [Development Workflow](#development-workflow)
 - [Code Guidelines](#code-guidelines)
 - [Testing Requirements](#testing-requirements)
+- [CI Required Checks](#ci-required-checks)
 - [Submitting a Pull Request](#submitting-a-pull-request)
 - [Database Changes](#database-changes)
+- [Changelog discipline](#changelog-discipline)
+- [Security](#security)
 - [Getting Help](#getting-help)
 
-## Getting Started
+## Prerequisites
 
-1. **Fork the repository** on GitHub
-2. **Clone your fork** locally:
+- Node.js 20+ and npm (see `package.json` `engines` if present).
+- Git and a GitHub account with access to the repository.
+- Optional: Docker for running local Postgres/Redis dependencies.
 
-```bash
-   git clone https://github.com/YOUR_USERNAME/vatix-backend.git
+## Local setup
+
+1. Fork and clone the repository, then add the upstream remote:
+   ```bash
+   git clone https://github.com/<you>/vatix-backend.git
    cd vatix-backend
-```
+   git remote add upstream https://github.com/Vatix-Protocol/vatix-backend.git
+   ```
+2. Install dependencies:
+   ```bash
+   npm ci
+   ```
+3. Copy the example environment file and fill in local values. Never commit real
+   secrets — see [SECURITY.md](./SECURITY.md).
+   ```bash
+   cp .env.example .env
+   ```
+4. Run the scripts defined in `package.json` (for example `npm run build`,
+   `npm test`, `npm run lint`). Use the actual script names from `package.json`
+   rather than assuming defaults.
 
-3. **Set up the project** following the [README](README.md)
-4. **Create a branch** for your work:
+## Git hooks (Husky)
 
-```bash
-   git checkout -b feature/your-feature-name
-```
+This repo uses [Husky](https://typicode.github.io/husky/) hooks in `.husky/`.
+The `pre-commit` hook runs local lint/format/test checks so problems are caught
+before they reach CI.
 
-## Finding Issues to Work On
+Hooks are **CI-safe**: in CI or any non-interactive environment the hook detects
+that it is not running on a developer machine and exits successfully (no-op)
+instead of failing the build. This means:
 
-Browse [open issues](https://github.com/vatix-protocol/vatix-backend/issues) and look for:
+- Local commits still run the full pre-commit checks.
+- CI, release automation, and other non-interactive runs are never blocked by
+  the hook.
+- If you need to bypass the hook locally, use `git commit --no-verify` (use
+  sparingly; CI still enforces the same checks).
 
-- **Complexity tags**: Easy, Medium, Hard
-- **Labels**: `good first issue`, `help wanted`, `bug`, `feature`
-- **Dependencies**: Check if the issue depends on others being completed first
+If you add or change a hook, keep it CI-safe: detect CI/non-interactive
+environments (for example via the `CI` environment variable or a non-TTY stdin)
+and no-op rather than failing, and never print secrets or tokens.
 
-**Before starting work:**
+## Branch and commit conventions
 
-1. Comment on the issue saying you'd like to work on it
-2. Wait for a maintainer to assign it to you
-3. Ask questions if anything is unclear
+- Branch from the latest `main`: `git checkout -b fix/<issue>-<short-slug>`.
+- Keep branches focused on a single issue; avoid unrelated refactors.
+- Write clear commit messages, e.g. `fix: <short description> (#<issue>)`.
+- Rebase on `upstream/main` before opening or updating a PR.
 
-## Development Workflow
+## Pull requests
 
-### 1. Set Up Your Environment
+- Reference the issue number in the PR title and description.
+- Describe the change, the invariants it preserves, and any rollback plan.
+- Keep the diff minimal and scoped to the issue.
+- Ensure all required checks pass before requesting review.
 
-```bash
-# Install dependencies
-pnpm install
+## Required checks (CI)
 
-# Start database and Redis
-docker compose up -d
-
-# Generate Prisma Client (if schema exists)
-pnpm prisma:generate
-
-# Run migrations (if migrations exist)
-pnpm prisma:migrate
-
-# Start dev server
-pnpm dev
-```
-
-### 2. Make Your Changes
-
-- Write clean, readable code
-- Follow the existing code structure
-- Add comments for complex logic
-- Keep functions small and focused
-
-### 3. Write Tests
-
-**Every feature must include tests.** Add test files next to your implementation:
-
-```
-src/
-├── services/
-│   ├── database.ts
-│   └── database.test.ts  ← Test file
-```
-
-Run tests frequently:
+CI is defined in `.github/workflows/ci.yml`. At minimum, a PR must pass the
+workflow jobs configured there (typically install, lint, build, and test). Run the
+same commands locally before pushing:
 
 ```bash
-pnpm test
+npm ci
+npm run lint
+npm run build
+npm test
 ```
 
-### 4. Commit Your Changes
+If a check is not yet gated in CI, call it out in the PR description so reviewers
+can verify it manually.
 
-Use clear, descriptive commit messages:
+## Security and authorization expectations
 
-```bash
-# Good commits
-git commit -m "feat: add order validation logic"
-git commit -m "fix: handle null values in position calculation"
-git commit -m "test: add tests for order matching engine"
+- **Deny by default.** New privileged surfaces must be explicitly authorized;
+  untrusted clients must not be able to bypass policy.
+- **Authorize and rate-limit every external entrypoint.** See
+  [RATE_LIMIT_POLICY.md](./RATE_LIMIT_POLICY.md) for the current policy.
+- **No secrets in the repo or logs.** Do not commit credentials, tokens, or keys,
+  and do not log sensitive values. Report vulnerabilities per
+  [SECURITY.md](./SECURITY.md).
+- **Server/contract is the source of truth** for balances, swaps, and admin
+  actions. Clients are never trusted for these values.
+- **Fail closed on writes.** If a dependency (RPC/DB/Redis) is unavailable, reject
+  the write rather than proceeding with stale or partial state.
+- **Idempotency.** Handle concurrent and replayed requests safely; use stable
+  idempotency keys and correlation ids where applicable.
+- **Stable error codes.** Return typed errors with stable codes so callers and
+  ops tooling can react deterministically.
 
-# Bad commits
-git commit -m "update stuff"
-git commit -m "fixes"
-```
+## Money-path changes
 
-**Commit message format:**
+Any change that affects liquidity, trading, or settlement must:
 
-- `feat:` - New feature
-- `fix:` - Bug fix
-- `test:` - Adding tests
-- `docs:` - Documentation changes
-- `refactor:` - Code refactoring
-- `chore:` - Maintenance tasks
+- Be feature-flagged or behind a kill-switch when it could affect mainnet.
+- Document the flag, its default, and the rollback procedure in the PR.
+- Include tests covering the invariants and the failure modes above.
+- Add ops-safe metrics/logs on the money path without leaking secrets.
 
-## Code Guidelines
+## Testnet vs mainnet
 
-### TypeScript
+Be explicit about which network a change targets. Watch for address drift and
+configuration differences between testnet and mainnet, and never enable a
+mainnet-affecting change without the readiness checklist.
 
-- **Use strict typing** - Avoid `any`
-- **Define interfaces** for function parameters and return values
-- **Export types** from `src/types/index.ts` for reuse
+## Documentation
 
-```typescript
-// Good
-interface CreateOrderParams {
-  marketId: string;
-  side: OrderSide;
-  price: number;
-}
+Update `README.md`, runbooks, and cross-links (including `SECURITY.md` and
+`RATE_LIMIT_POLICY.md`) when behavior, configuration, or operational procedures
+change. Remove contradictory copy rather than leaving it in place.
 
-async function createOrder(params: CreateOrderParams): Promise<Order> {
-  // ...
-}
+## Changelog discipline
 
-// Bad
-async function createOrder(marketId: any, side: any, price: any): Promise<any> {
-  // ...
-}
-```
+Every PR that changes behavior, APIs, configuration, or security posture **must**
+update [`CHANGELOG.md`](CHANGELOG.md). This keeps the changelog an accurate,
+reviewable record of the `vatix-backend` package (indexer/api) and the rest of
+the monorepo.
 
-### Code Style
+### What to log
 
-- **Use meaningful variable names**
+- **Added** — new features, endpoints, events, parsers, or metrics.
+- **Changed** — changes to existing behavior, contracts, or defaults.
+- **Fixed** — bug fixes, including fail-closed / correctness fixes.
+- **Security** — authz, rate-limiting, secret-handling, or deny-by-default
+  changes. Never include secrets, tokens, or credentials in an entry.
 
-```typescript
-// Good
-const activeMarkets = await getActiveMarkets();
+### When to log
 
-// Bad
-const x = await getActiveMarkets();
-```
+- Add entries under the `## [Unreleased]` section in the same PR as the change.
+- Do **not** create a new version heading yourself; maintainers cut releases and
+  move `Unreleased` entries into a dated version section.
+- Documentation-only PRs (like this one) still update the changelog when they
+  change contributor-facing guidance.
 
-- **Keep functions small** - One function should do one thing
-- **Avoid deep nesting** - Extract nested logic into separate functions
-- **Add comments for complex logic** - But prefer self-documenting code
+### Format
 
-### File Organization
+- Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
+  [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+- One bullet per change, written in the imperative mood, referencing the
+  affected file or package where useful (e.g. `apps/indexer/src/metrics.ts`).
+- Keep entries concise and free of internal hostnames, addresses, or secrets.
 
-- One main export per file
-- Related functions in the same file
-- Test files next to implementation files
-- Group related functionality in directories
+## Security
 
-```
-src/matching/
-├── engine.ts          # Main matching engine
-├── engine.test.ts     # Engine tests
-├── orderbook.ts       # Order book data structure
-├── orderbook.test.ts  # Order book tests
-└── validation.ts      # Order validation
-```
-
-## Testing Requirements
-
-### What to Test
-
-1. **Happy paths** - Normal, expected behavior
-2. **Edge cases** - Boundary conditions, empty inputs
-3. **Error cases** - Invalid inputs, database errors
-4. **Integration** - Multiple components working together
-
-### Test Structure
-
-```typescript
-import { describe, it, expect, beforeEach } from "vitest";
-
-describe("Order Validation", () => {
-  beforeEach(() => {
-    // Setup before each test
-  });
-
-  it("should accept valid orders", () => {
-    const order = { price: 0.5, quantity: 100 };
-    expect(validateOrder(order)).toBe(true);
-  });
-
-  it("should reject orders with invalid price", () => {
-    const order = { price: 1.5, quantity: 100 };
-    expect(() => validateOrder(order)).toThrow();
-  });
-});
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-pnpm test
-
-# Run specific test file
-pnpm test src/matching/engine.test.ts
-
-# Run with UI
-pnpm test:ui
-
-# Run with coverage
-pnpm test:coverage
-```
-
-**All tests must pass before submitting a PR.**
-
-## Submitting a Pull Request
-
-### Before Submitting
-
-- [ ] All tests pass (`pnpm test`)
-- [ ] Code follows style guidelines
-- [ ] Added tests for new functionality
-- [ ] Updated documentation if needed
-- [ ] No console.logs or debug code
-- [ ] Prisma Client regenerated if schema changed (`pnpm prisma:generate`)
-
-### PR Description Template
-
-```markdown
-## Description
-
-Brief description of what this PR does
-
-## Related Issue
-
-Closes #123
-
-## Changes Made
-
-- Added order validation logic
-- Created validation tests
-- Updated error handling
-
-## Testing
-
-- [ ] Unit tests added
-- [ ] Integration tests added
-- [ ] Manual testing completed
-```
-
-### PR Process
-
-1. **Push your branch** to your fork
-2. **Create a Pull Request** on GitHub
-3. **Link the related issue** in the PR description
-4. **Wait for review** from maintainers
-5. **Address feedback** if requested
-6. **Merge** once approved!
-
-## Database Changes
-
-### Adding/Modifying Models
-
-1. **Edit** `prisma/schema.prisma`:
-
-```prisma
-   model Market {
-     id          String   @id @default(uuid())
-     question    String
-     endTime     DateTime
-     status      MarketStatus
-     // ... other fields
-   }
-```
-
-2. **Create migration**:
-
-```bash
-   pnpm prisma:migrate dev --name add_market_table
-```
-
-3. **Generate Prisma Client**:
-
-```bash
-   pnpm prisma:generate
-```
-
-4. **Test the changes**:
-
-```bash
-   pnpm test
-```
-
-### Migration Best Practices
-
-- Name migrations descriptively: `add_orders_table`, `add_status_index`
-- Never edit existing migrations
-- Test migrations with both `up` and `down`
-- Include migration in your PR
+See [`SECURITY.md`](SECURITY.md) for the deny-by-default policy, rate-limit
+governance, and probe safety invariants.
 
 ## Getting Help
 
 ### Questions?
 
 - **Comment on the issue** you're working on
+- Open a discussion or issue, or reach out to maintainers. For security matters,
+  follow the private disclosure process in [SECURITY.md](./SECURITY.md).
 
 ### Stuck?
 
@@ -336,3 +203,4 @@ Contributors are recognized in:
 - Release notes
 
 Thank you for contributing to Vatix!
+

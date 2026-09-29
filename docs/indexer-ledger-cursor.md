@@ -73,6 +73,10 @@ See `apps/indexer/src/startupHealth.ts` (`checkLiveDependencies`) and its tests 
 | `INDEXER_GAP_PAGING_WEBHOOK_URL`         | Optional | —           | Webhook URL to call when a persistent gap is detected. Required in production. In `production` mode without this, the indexer fails fast at startup. |
 | `INDEXER_GAP_PERSISTENCE_CYCLES`         | Optional | `3`         | Number of consecutive detection cycles before paging operators (minimum: 1).                                                                         |
 
+In production `INDEXER_GAP_PAGING_WEBHOOK_URL` must use https with a public
+host and must not embed credentials; see
+[indexer-gap-paging-webhook.md](indexer-gap-paging-webhook.md).
+
 ## Checkpoint flushing
 
 The cursor is not written to the database on every tick — frequent small writes would create

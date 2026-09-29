@@ -3,6 +3,7 @@ import {
   EventFetcher,
   EventFetcherConfigError,
   CursorStallError,
+  MAX_STALL_ITERATIONS,
 } from "./eventFetcher.js";
 import type { Telemetry } from "./telemetry.js";
 
@@ -136,7 +137,10 @@ describe("EventFetcher", () => {
         .mockRejectedValueOnce(
           Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })
         )
-        .mockResolvedValueOnce({ events: [makeEvent(12, "c")], latestLedger: 100 }),
+        .mockResolvedValueOnce({
+          events: [makeEvent(12, "c")],
+          latestLedger: 100,
+        }),
     };
 
     const fetcher = new EventFetcher(
@@ -385,6 +389,193 @@ describe("EventFetcher", () => {
       expect(fetcher.getConsecutiveDisconnections()).toBe(0);
       (fetcher as any).consecutiveDisconnections = 7;
       expect(fetcher.getConsecutiveDisconnections()).toBe(7);
+    });
+  });
+
+  describe("pagination", () => {
+    function pagedFetcher(mockServer: any, pageLimit = 2) {
+      const fetcher = new EventFetcher(
+        {
+          rpcUrl: "https://rpc.example.com",
+          contractId: "CTEST",
+          pageLimit,
+          retryDelayMs: 0,
+        },
+        telemetry
+      );
+      injectMockRpc(fetcher, mockServer);
+      return fetcher;
+    }
+
+    it("requests follow-up pages by cursor only, never with startLedger", async () => {
+      const server = {
+        getEvents: vi
+          .fn()
+          .mockResolvedValueOnce({
+            events: [makeEvent(10, "a"), makeEvent(11, "b")],
+            cursor: "rpc-cursor-1",
+            latestLedger: 100,
+          })
+          .mockResolvedValueOnce({
+            events: [makeEvent(12, "c")],
+            cursor: "rpc-cursor-2",
+            latestLedger: 100,
+          }),
+      };
+      const fetcher = pagedFetcher(server);
+
+      await fetcher.fetchByLedgerWindow({ startLedger: 10, endLedger: 20 });
+
+      const [first, second] = server.getEvents.mock.calls.map((c) => c[0]);
+      expect(first).toMatchObject({ startLedger: 10, limit: 2 });
+      expect(first).not.toHaveProperty("cursor");
+      expect(second).toMatchObject({ cursor: "rpc-cursor-1", limit: 2 });
+      expect(second).not.toHaveProperty("startLedger");
+    });
+
+    it("stops once a full page reaches past endLedger", async () => {
+      const server = makeMockServer([
+        [makeEvent(10, "a"), makeEvent(25, "b")],
+        [makeEvent(26, "c"), makeEvent(27, "d")],
+      ]);
+      const fetcher = pagedFetcher(server);
+
+      const result = await fetcher.fetchByLedgerWindow({
+        startLedger: 10,
+        endLedger: 20,
+      });
+
+      expect(result.events.map((e) => e.id)).toEqual(["a"]);
+      expect(server.getEvents).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns each event once when pages overlap", async () => {
+      const server = makeMockServer([
+        [makeEvent(10, "a"), makeEvent(11, "b")],
+        [makeEvent(11, "b"), makeEvent(12, "c")],
+        [],
+      ]);
+      const fetcher = pagedFetcher(server);
+
+      const result = await fetcher.fetchByLedgerWindow({
+        startLedger: 10,
+        endLedger: 20,
+      });
+
+      expect(result.events.map((e) => e.id)).toEqual(["a", "b", "c"]);
+      expect(
+        recorded.find((r) => r.metric === "indexer.events.duplicate_skipped")
+          ?.value
+      ).toBe(1);
+    });
+
+    it("fails closed with CursorStallError when the cursor stops advancing", async () => {
+      const server = {
+        getEvents: vi.fn(async () => ({
+          events: [makeEvent(10, "a"), makeEvent(11, "b")],
+          cursor: "stuck",
+          latestLedger: 100,
+        })),
+      };
+      const fetcher = pagedFetcher(server);
+
+      const error = await fetcher
+        .fetchByLedgerWindow({ startLedger: 10, endLedger: 20 })
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(CursorStallError);
+      expect(error).toMatchObject({
+        code: "EVENT_FETCH_CURSOR_STALLED",
+        cursor: "stuck",
+        retryable: true,
+      });
+      // First page + MAX_STALL_ITERATIONS repeats of the stuck cursor.
+      expect(server.getEvents).toHaveBeenCalledTimes(1 + MAX_STALL_ITERATIONS);
+    });
+
+    it("fails closed instead of returning earlier pages when a later page fails", async () => {
+      const server = {
+        getEvents: vi
+          .fn()
+          .mockResolvedValueOnce({
+            events: [makeEvent(10, "a"), makeEvent(11, "b")],
+            latestLedger: 100,
+          })
+          .mockRejectedValue(new Error("bad request")),
+      };
+      const fetcher = pagedFetcher(server);
+
+      await expect(
+        fetcher.fetchByLedgerWindow({ startLedger: 10, endLedger: 20 })
+      ).rejects.toMatchObject({
+        code: "EVENT_FETCH_NON_RETRYABLE",
+        cursor: "token-b",
+      });
+    });
+
+    it("tags every page request of a window with one correlation id", async () => {
+      const server = makeMockServer([
+        [makeEvent(10, "a"), makeEvent(11, "b")],
+        [makeEvent(12, "c")],
+      ]);
+      const fetcher = pagedFetcher(server);
+
+      await fetcher.fetchByLedgerWindow({ startLedger: 10, endLedger: 20 });
+
+      const ids = recorded
+        .filter((r) =>
+          ["indexer.rpc.page_fetched", "indexer.events.fetched"].includes(
+            r.metric
+          )
+        )
+        .map((r) => r.tags?.requestId);
+      expect(ids).toHaveLength(3);
+      expect(new Set(ids).size).toBe(1);
+    });
+
+    it.each([
+      { startLedger: 0, endLedger: 5 },
+      { startLedger: 10, endLedger: 5 },
+      { startLedger: 1.5, endLedger: 5 },
+    ])("rejects invalid window %o without calling the RPC", async (window) => {
+      const server = makeMockServer([[makeEvent(1)]]);
+      const fetcher = pagedFetcher(server);
+
+      await expect(fetcher.fetchByLedgerWindow(window)).rejects.toMatchObject({
+        code: "EVENT_FETCH_INVALID_WINDOW",
+        retryable: false,
+      });
+      expect(server.getEvents).not.toHaveBeenCalled();
+    });
+
+    it.each([0, -1, 1.5, 10_001])(
+      "rejects pageLimit %s at construction",
+      (pageLimit) => {
+        expect(
+          () =>
+            new EventFetcher(
+              {
+                rpcUrl: "https://rpc.example.com",
+                contractId: "CTEST",
+                pageLimit,
+              },
+              telemetry
+            )
+        ).toThrow(EventFetcherConfigError);
+      }
+    );
+
+    it("rejects a missing contractId or rpcUrl at construction", () => {
+      expect(
+        () =>
+          new EventFetcher({
+            rpcUrl: "https://rpc.example.com",
+            contractId: "",
+          })
+      ).toThrow(EventFetcherConfigError);
+      expect(() => new EventFetcher({ contractId: "CTEST" })).toThrow(
+        EventFetcherConfigError
+      );
     });
   });
 

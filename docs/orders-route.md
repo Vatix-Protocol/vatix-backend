@@ -173,6 +173,29 @@ Fields:
 | `price`       | number | yes      | Greater than `0` and less than `1`.      |
 | `quantity`    | number | yes      | Integer greater than or equal to `1`.    |
 
+### Idempotency
+
+Clients may send an optional `Idempotency-Key` header (1–128 characters of
+`A-Z a-z 0-9 _ - . :`) so a retried order can never be placed twice. Keys are
+scoped to the signing wallet: two wallets can use the same key independently,
+and one wallet can neither replay nor probe another wallet's keys.
+
+| Request                               | Result                                                                                  |
+| ------------------------------------- | --------------------------------------------------------------------------------------- |
+| New key                               | Order placed; the key is stored in the same transaction as the order.                   |
+| Same key, same payload                | Original `201` body returned with `Idempotent-Replayed: true`; no new order is matched. |
+| Same key, different payload           | `409 IDEMPOTENCY_CONFLICT`; nothing is placed.                                          |
+| Concurrent requests with the same key | One order is placed; the other request gets the same replay/conflict answer.            |
+| Malformed key                         | `400 VALIDATION_ERROR`.                                                                 |
+
+The payload compared is `marketId`, `userAddress`, `side`, `outcome`, `price`
+and `quantity`. The signature nonce is still single-use, so a retry must be
+re-signed with a fresh nonce from `POST /v1/auth/challenge`; the key, not the
+signature, is what deduplicates it. A replay returns the stored original
+response even if the market has closed since. Requests without the header
+behave exactly as before. If the key store (Postgres) is unavailable the
+request fails without placing an order.
+
 ### Response
 
 Success returns HTTP `201`.
@@ -202,6 +225,7 @@ Common errors:
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `400`  | Missing field, invalid Stellar address, invalid side/outcome, invalid price or quantity, unknown market, closed market, or expired market. |
 | `401`  | Missing or invalid `x-signature`/`x-timestamp`/`x-nonce` headers, expired timestamp, reused or expired nonce, or signature mismatch.       |
+| `409`  | `IDEMPOTENCY_CONFLICT`: the `Idempotency-Key` was already used by this wallet with a different payload.                                    |
 | `500`  | Database write failed.                                                                                                                     |
 
 ## `GET /v1/trades/user/:address`
