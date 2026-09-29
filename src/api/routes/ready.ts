@@ -26,9 +26,9 @@
  *     "code": "OK" | "DEPENDENCY_UNAVAILABLE" | "DEPENDENCY_TIMEOUT",
  *     "correlationId": string,
  *     "dependencies": {
- *       "database":       { "status": "ok" | "error", "error"?: string },
- *       "redis":          { "status": "ok" | "error", "error"?: string },
- *       "indexFreshness": { "status": "ok" | "stale" | "error", "error"?: string }
+ *       "database":       { "status": "ok" | "error", "code"?: string, "error"?: string },
+ *       "redis":          { "status": "ok" | "error", "code"?: string, "error"?: string },
+ *       "indexFreshness": { "status": "ok" | "stale" | "error", "code"?: string, "error"?: string }
  *     }
  *   }
  *
@@ -47,10 +47,18 @@
  *   cannot hang the probe — a check that exceeds its deadline fails closed
  *   and is reported as DEPENDENCY_TIMEOUT.
  *
+ *   Each failed dependency additionally reports a stable, secret-free `code`
+ *   (see `PROBE_ERROR_CODES` in packages/shared/src/probeErrors.ts) so
+ *   dashboards and alerts can match on exact strings instead of parsing prose.
+ *
  * @module src/api/routes/ready
  */
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import {
+  PROBE_ERROR_CODES,
+  classifyProbeError,
+} from "../../../packages/shared/src/probeErrors.js";
 
 /** Maximum age (ms) before the index is considered stale. Default: 5 minutes. */
 const thresholdEnv = process.env.INDEX_STALENESS_THRESHOLD_MS;
@@ -93,7 +101,17 @@ export type DependencyStatus = "ok" | "error" | "stale";
 
 export interface DependencyResult {
   status: DependencyStatus;
+  /**
+   * Coarse, fixed failure reason. Never derived from the underlying error, so
+   * no connection detail can reach an unauthenticated probe response.
+   */
   error?: string;
+  /**
+   * Stable, secret-free classification for dashboards and alerts (#1141).
+   * One of `PROBE_ERROR_CODES` — derived from the error's `code`/`name` only,
+   * so the classification path cannot leak message contents.
+   */
+  code?: string;
 }
 
 export interface ReadyResponse {
@@ -202,6 +220,9 @@ async function runCheck(
     );
     return {
       status: "error",
+      code: timedOut
+        ? PROBE_ERROR_CODES.PROBE_TIMEOUT
+        : classifyProbeError(err),
       error: timedOut ? SAFE_FAILURE.timeout : SAFE_FAILURE[label],
     };
   }
@@ -279,14 +300,20 @@ async function checkIndexFreshness(
 
   if (lastIndexedAt === null) {
     // No events indexed yet — treat as stale
-    return { status: "stale", error: "No indexed events found" };
+    return {
+      status: "stale",
+      code: PROBE_ERROR_CODES.NO_DATA,
+      error: "No indexed events found",
+    };
   }
 
   const ageMs = now - lastIndexedAt;
   if (ageMs > INDEX_STALENESS_THRESHOLD_MS) {
-    // Computed from timestamps only — safe to expose.
     return {
       status: "stale",
+      code: PROBE_ERROR_CODES.STALE,
+      // Only the age and threshold are published — both are configuration,
+      // not secrets.
       error: `Index is ${Math.floor(ageMs / 1000)}s old (threshold: ${INDEX_STALENESS_THRESHOLD_MS / 1000}s)`,
     };
   }
