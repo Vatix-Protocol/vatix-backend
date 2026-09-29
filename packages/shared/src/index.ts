@@ -9,6 +9,13 @@ export {
 export { Logger, LoggerValidationError, LOG_LEVELS } from "./logger.js";
 export type { LogLevel, ILogger } from "./logger.js";
 
+export {
+  PROBE_ERROR_CODES,
+  classifyProbeError,
+  sanitizeProbeMessage,
+} from "./probeErrors.js";
+export type { ProbeErrorCode } from "./probeErrors.js";
+
 export type {
   Env,
   NodeEnv,
