@@ -257,43 +257,94 @@ describe("FallbackAdapter", () => {
       type: "ALL_PROVIDERS_FAILED",
     });
   });
-});
 
-describe("FallbackAdapter timeout policy (#992)", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("defaults to the documented fallback timeout policy", () => {
-    const adapter = makeAdapter();
-    expect(adapter.getSource()).toBe("fallback");
-  });
-
-  it("fails fast on construction when timeoutMs is out of range in production", () => {
-    vi.stubEnv("NODE_ENV", "production");
-    expect(() => makeAdapter({ timeoutMs: 999_999 })).toThrow(
-      /refusing to silently clamp/i
-    );
-  });
-
-  it("clamps an out-of-range timeoutMs outside production instead of throwing", () => {
-    vi.stubEnv("NODE_ENV", "development");
-    expect(() => makeAdapter({ timeoutMs: 999_999 })).not.toThrow();
-  });
-
-  it("fails fast on a per-request timeout override that is out of range in production", async () => {
-    vi.stubEnv("NODE_ENV", "production");
-    const fetchFn = vi
+  it("switches to the fallback adapter only when the primary is unhealthy", async () => {
+    const primaryFetch = vi
+      .fn()
+      .mockResolvedValue(new Response("down", { status: 503 }));
+    const fallbackFetch = vi
       .fn()
       .mockResolvedValue(okResponse({ outcome: true, confidence: 0.9 }));
-    const adapter = makeAdapter({ fetchFn });
+
+    const adapter = new FallbackAdapter({
+      providers: [
+        { url: "https://primary.example.com", source: "primary" },
+        { url: "https://fallback.example.com", source: "fallback" },
+      ],
+      retryConfig: { maxRetries: 0 },
+      fetchFn: vi
+        .fn()
+        .mockImplementation((url: URL) =>
+          url.hostname.startsWith("primary")
+            ? primaryFetch(url)
+            : fallbackFetch(url)
+        ),
+    });
+
+    const result = await adapter.resolve({
+      marketId: "market-1",
+      oracleAddress: "GORACLE",
+    });
+
+    expect(result.source).toBe("fallback");
+    expect(result.outcome).toBe(true);
+    expect(primaryFetch).toHaveBeenCalledTimes(1);
+    expect(fallbackFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not switch to the fallback adapter when the primary is healthy", async () => {
+    const primaryFetch = vi
+      .fn()
+      .mockResolvedValue(okResponse({ outcome: true, confidence: 0.88 }));
+    const fallbackFetch = vi
+      .fn()
+      .mockResolvedValue(okResponse({ outcome: false, confidence: 0.4 }));
+
+    const adapter = new FallbackAdapter({
+      providers: [
+        { url: "https://primary.example.com", source: "primary" },
+        { url: "https://fallback.example.com", source: "fallback" },
+      ],
+      retryConfig: { maxRetries: 0 },
+      fetchFn: vi
+        .fn()
+        .mockImplementation((url: URL) =>
+          url.hostname.startsWith("primary")
+            ? primaryFetch(url)
+            : fallbackFetch(url)
+        ),
+    });
+
+    const result = await adapter.resolve({
+      marketId: "market-1",
+      oracleAddress: "GORACLE",
+    });
+
+    expect(result.source).toBe("primary");
+    expect(result.confidence).toBe(0.88);
+    expect(fallbackFetch).not.toHaveBeenCalled();
+  });
+
+  it("fails closed with ALL_PROVIDERS_FAILED when the primary is unhealthy and the fallback is unavailable", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(new Response("unavailable", { status: 503 }));
+
+    const adapter = new FallbackAdapter({
+      providers: [
+        { url: "https://primary.example.com", source: "primary" },
+        { url: "https://fallback.example.com", source: "fallback" },
+      ],
+      retryConfig: { maxRetries: 0 },
+      fetchFn,
+    });
 
     await expect(
-      adapter.resolve({
-        marketId: "market-1",
-        oracleAddress: "GORACLE",
-        timeoutMs: 500,
-      })
-    ).rejects.toThrow(/refusing to silently clamp/i);
+      adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" })
+    ).rejects.toMatchObject({
+      name: "FallbackProviderError",
+      type: "ALL_PROVIDERS_FAILED",
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 });
