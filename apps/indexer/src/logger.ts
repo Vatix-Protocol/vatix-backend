@@ -25,6 +25,14 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
  */
 const RESERVED_KEYS = ["ts", "level", "message", "component"] as const;
 
+/**
+ * Correlation id is a first-class envelope field so every log line can be
+ * joined to the request/trace that produced it (see docs/metrics-log.md).
+ * It is logger-owned: a caller-supplied `correlationId` in `meta` is moved
+ * under `meta` rather than allowed to overwrite the propagated value.
+ */
+const CORRELATION_ID_KEY = "correlationId";
+
 function splitReservedKeys(
   safeMeta: Record<string, unknown> | undefined
 ): Record<string, unknown> | undefined {
@@ -67,7 +75,10 @@ const LOG_LEVEL_WEIGHT: Record<LogLevel, number> = {
   error: 40,
 };
 
-export function createLogger(level: LogLevel): Logger {
+export function createLogger(
+  level: LogLevel,
+  correlationId?: string
+): Logger {
   const threshold = LOG_LEVEL_WEIGHT[level];
 
   const write = (
@@ -79,7 +90,7 @@ export function createLogger(level: LogLevel): Logger {
       return;
     }
 
-    const base = {
+    const base: Record<string, unknown> = {
       ts: new Date().toISOString(),
       level: logLevel,
       // The message is caller-controlled text that commonly embeds URLs, tokens
@@ -87,8 +98,14 @@ export function createLogger(level: LogLevel): Logger {
       // only `meta` left secrets in the free-text field fully exposed.
       message: redactText(message),
     };
+    // Correlation id is propagated from the logger's construction context so
+    // every line emitted by a request-scoped logger shares the same id.
+    if (correlationId) {
+      base[CORRELATION_ID_KEY] = correlationId;
+    }
     // Redact first, then move any envelope-key collisions under `meta` so
-    // caller data can never forge the timestamp, level, or message.
+    // caller data can never forge the timestamp, level, message, or
+    // correlation id.
     const safeMeta = splitReservedKeys(redactMeta(meta));
     const payload = safeMeta ? { ...base, ...safeMeta } : base;
 
@@ -104,6 +121,7 @@ export function createLogger(level: LogLevel): Logger {
         ts: base.ts,
         level: logLevel,
         message: base.message,
+        ...(correlationId ? { [CORRELATION_ID_KEY]: correlationId } : {}),
         logSerializationError: true,
       });
     }
@@ -121,6 +139,6 @@ export function createLogger(level: LogLevel): Logger {
     info: (message, meta) => write("info", message, meta),
     warn: (message, meta) => write("warn", message, meta),
     error: (message, meta) => write("error", message, meta),
-    child: (_childPrefix: string) => createLogger(level),
+    child: (_childPrefix: string) => createLogger(level, correlationId),
   };
 }

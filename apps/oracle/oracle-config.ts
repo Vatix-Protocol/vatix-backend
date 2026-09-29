@@ -32,6 +32,18 @@ export const ORACLE_CONFIG_ERROR_CODES = {
    * network's keypair was loaded).
    */
   ORACLE_CONFIG_SIGNER_MISMATCH: "ORACLE_CONFIG_SIGNER_MISMATCH",
+  /**
+   * A secret-bearing variable (e.g. `ORACLE_SECRET_KEY`) is present but does
+   * not look like a Stellar secret key. Fail closed rather than sign with an
+   * unvalidated value (#1180).
+   */
+  ORACLE_CONFIG_INVALID_SECRET: "ORACLE_CONFIG_INVALID_SECRET",
+  /**
+   * A secret-bearing variable is required for the current environment but was
+   * not provided. Deny-by-default: privileged signing surfaces never start
+   * without an explicit key (#1180).
+   */
+  ORACLE_CONFIG_MISSING_SECRET: "ORACLE_CONFIG_MISSING_SECRET",
 } as const;
 
 export type OracleConfigErrorCode =
@@ -187,7 +199,7 @@ export function describeOracleConfig(
 /**
  * Read and validate oracle environment variables.
  *
- * Fail-closed rules (#1115):
+ * Fail-closed rules (#1115, #1180):
  *   - Any *present* variable that cannot be parsed, or that falls outside its
  *     bounds, throws `OracleConfigError` — a broken value is never silently
  *     replaced by a default.
@@ -196,6 +208,9 @@ export function describeOracleConfig(
  *     (`G…`) and must equal the public key derived from `ORACLE_SECRET_KEY`
  *     (`ORACLE_CONFIG_SIGNER_MISMATCH`) — this is what catches a deployment
  *     that loaded the wrong network's keypair.
+ *   - When `ORACLE_REQUIRE_SECRET_KEY` is truthy (production / mainnet),
+ *     `ORACLE_SECRET_KEY` is mandatory: a missing key fails closed with
+ *     `ORACLE_CONFIG_MISSING_SECRET` instead of starting an unsigned oracle.
  *
  * @param env - Environment map (defaults to `process.env`).
  * @returns Validated OracleConfig.
@@ -231,21 +246,43 @@ export function loadOracleConfig(env: Env = process.env): OracleConfig {
     correlationId
   );
 
-  const minConfidenceThreshold = parseOptionalUnitInterval(
+  const minConfidenceThreshold = parseBoundedFloat(
     env["ORACLE_MIN_CONFIDENCE_THRESHOLD"],
     "ORACLE_MIN_CONFIDENCE_THRESHOLD",
-    DEFAULT_MIN_CONFIDENCE_THRESHOLD
-  );
-
-  const secretKey = parseOptionalSecretKey(env, correlationId);
-  const signerPublicKey = secretKey
-    ? Keypair.fromSecret(secretKey).publicKey()
-    : undefined;
-  const trustedSignerPublicKey = parseOptionalTrustedSigner(
-    env,
-    signerPublicKey,
+    DEFAULT_MIN_CONFIDENCE_THRESHOLD,
+    1,
     correlationId
   );
+
+  const requireSecretKey = parseBooleanFlag(
+    env["ORACLE_REQUIRE_SECRET_KEY"],
+    "ORACLE_REQUIRE_SECRET_KEY",
+    correlationId
+  );
+
+  const { secretKey, signerPublicKey } = resolveSignerKey(
+    env["ORACLE_SECRET_KEY"],
+    requireSecretKey,
+    correlationId
+  );
+
+  const trustedSignerPublicKey = parseTrustedSigner(
+    env["ORACLE_SIGNER_PUBLIC_KEY"],
+    correlationId
+  );
+
+  if (
+    trustedSignerPublicKey !== undefined &&
+    signerPublicKey !== undefined &&
+    trustedSignerPublicKey !== signerPublicKey
+  ) {
+    throw new OracleConfigError(
+      ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_SIGNER_MISMATCH,
+      "ORACLE_SIGNER_PUBLIC_KEY",
+      "ORACLE_SIGNER_PUBLIC_KEY does not match the public key derived from ORACLE_SECRET_KEY",
+      correlationId
+    );
+  }
 
   return {
     pollIntervalMs,
@@ -261,155 +298,154 @@ export function loadOracleConfig(env: Env = process.env): OracleConfig {
 }
 
 /**
- * Validate `ORACLE_SECRET_KEY` when present. Rejects anything that is not a
- * Stellar secret key so a placeholder or truncated key fails at startup
- * rather than at the first signature (#1115).
+ * Resolve and validate the signing key (#1180).
+ *
+ * Deny-by-default: when `requireSecretKey` is set, a missing key throws
+ * `ORACLE_CONFIG_MISSING_SECRET`. A present key that is not a Stellar secret
+ * key throws `ORACLE_CONFIG_INVALID_SECRET`. The key value is never included
+ * in error messages.
  */
-function parseOptionalSecretKey(
-  env: Env,
+function resolveSignerKey(
+  rawSecretKey: string | undefined,
+  requireSecretKey: boolean,
   correlationId: string
-): string | undefined {
-  const raw = env["ORACLE_SECRET_KEY"];
-  if (raw === undefined || raw === "") {
-    return undefined;
+): { secretKey: string | undefined; signerPublicKey: string | undefined } {
+  if (rawSecretKey === undefined || rawSecretKey === "") {
+    if (requireSecretKey) {
+      throw new OracleConfigError(
+        ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_MISSING_SECRET,
+        "ORACLE_SECRET_KEY",
+        "ORACLE_SECRET_KEY is required (ORACLE_REQUIRE_SECRET_KEY is set) but was not provided",
+        correlationId
+      );
+    }
+    return { secretKey: undefined, signerPublicKey: undefined };
   }
 
-  const secretKey = raw.trim();
-  if (!isStellarSecretKey(secretKey)) {
+  if (!isStellarSecretKey(rawSecretKey)) {
     throw new OracleConfigError(
-      ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_INVALID_VALUE,
+      ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_INVALID_SECRET,
       "ORACLE_SECRET_KEY",
-      "ORACLE_SECRET_KEY must be a Stellar secret key (S...); generate one with `pnpm generate:keypair`",
+      "ORACLE_SECRET_KEY is not a valid Stellar secret key",
       correlationId
     );
   }
 
-  return secretKey;
-}
-
-/**
- * Validate `ORACLE_SIGNER_PUBLIC_KEY` when present and — when the signing
- * secret is also configured — require the two to agree, so testnet/mainnet
- * address drift fails at startup instead of at verification time (#1115).
- */
-function parseOptionalTrustedSigner(
-  env: Env,
-  signerPublicKey: string | undefined,
-  correlationId: string
-): string | undefined {
-  const raw = env["ORACLE_SIGNER_PUBLIC_KEY"]?.trim();
-  if (!raw) {
-    return undefined;
+  let signerPublicKey: string;
+  try {
+    signerPublicKey = Keypair.fromSecret(rawSecretKey).publicKey();
+  } catch {
+    throw new OracleConfigError(
+      ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_INVALID_SECRET,
+      "ORACLE_SECRET_KEY",
+      "ORACLE_SECRET_KEY could not be loaded as a Stellar keypair",
+      correlationId
+    );
   }
 
+  return { secretKey: rawSecretKey, signerPublicKey };
+}
+
+/** Validate the optional pinned trusted signer (#1113). */
+function parseTrustedSigner(
+  raw: string | undefined,
+  correlationId: string
+): string | undefined {
+  if (raw === undefined || raw === "") {
+    return undefined;
+  }
   if (!isStellarPublicKey(raw)) {
     throw new OracleConfigError(
       ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_INVALID_VALUE,
       "ORACLE_SIGNER_PUBLIC_KEY",
-      "ORACLE_SIGNER_PUBLIC_KEY must be a Stellar account id (G...)",
+      "ORACLE_SIGNER_PUBLIC_KEY is not a valid Stellar account id",
       correlationId
     );
   }
-
-  if (signerPublicKey && signerPublicKey !== raw) {
-    throw new OracleConfigError(
-      ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_SIGNER_MISMATCH,
-      "ORACLE_SIGNER_PUBLIC_KEY",
-      `ORACLE_SIGNER_PUBLIC_KEY does not match the public key derived from ORACLE_SECRET_KEY (${signerPublicKey}). Refusing to start: this usually means the wrong network's keypair was loaded.`,
-      correlationId
-    );
-  }
-
   return raw;
 }
 
-/**
- * Parse an optional positive integer that must not exceed `max`. The upper
- * bound catches unit mix-ups (milliseconds where seconds were expected).
- */
+/** Parse a boolean-ish flag; only explicit truthy/falsy strings are accepted. */
+function parseBooleanFlag(
+  raw: string | undefined,
+  variable: string,
+  correlationId: string
+): boolean {
+  if (raw === undefined || raw === "") {
+    return false;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === "true" || normalized === "1") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0") {
+    return false;
+  }
+  throw new OracleConfigError(
+    ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_INVALID_VALUE,
+    variable,
+    `${variable} must be one of: true, false, 1, 0`,
+    correlationId
+  );
+}
+
+/** Parse a bounded integer, failing closed on any present-but-invalid value. */
 function parseBoundedInt(
   raw: string | undefined,
-  name: string,
+  variable: string,
   defaultValue: number,
   max: number,
   correlationId: string
 ): number {
-  const value = parseOptionalPositiveInt(
-    raw,
-    name,
-    defaultValue,
-    correlationId
-  );
-  if (value > max) {
-    throw new OracleConfigError(
-      ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_INVALID_VALUE,
-      name,
-      `${name} must be <= ${max}, got: ${value} (check for a unit mix-up)`
-    );
-  }
-  return value;
-}
-
-/**
- * Parse an optional environment variable that must fall within [0, 1].
- * Used for confidence-threshold style settings.
- */
-function parseOptionalUnitInterval(
-  raw: string | undefined,
-  name: string,
-  defaultValue: number
-): number {
   if (raw === undefined || raw === "") {
     return defaultValue;
   }
-
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0 || value > 1) {
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > max) {
     throw new OracleConfigError(
       ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_INVALID_VALUE,
-      name,
-      `${name} must be a number between 0 and 1, got: ${JSON.stringify(raw)}`
-    );
-  }
-
-  return value;
-}
-
-function parseOptionalPositiveInt(
-  raw: string | undefined,
-  name: string,
-  defaultValue: number,
-  correlationId: string = newConfigCorrelationId()
-): number {
-  if (raw === undefined || raw === "") {
-    return defaultValue;
-  }
-
-  const value = Number(raw);
-  if (!Number.isInteger(value) || value < 1) {
-    throw new OracleConfigError(
-      ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_INVALID_VALUE,
-      name,
-      `${name} must be a positive integer, got: ${JSON.stringify(raw)}`,
+      variable,
+      `${variable} must be an integer in (0, ${max}]`,
       correlationId
     );
   }
-
-  return value;
+  return parsed;
 }
 
-function parseLogLevel(raw: string | undefined, name: string): LogLevel {
+/** Parse a bounded float in (0, max], failing closed on invalid values. */
+function parseBoundedFloat(
+  raw: string | undefined,
+  variable: string,
+  defaultValue: number,
+  max: number,
+  correlationId: string
+): number {
+  if (raw === undefined || raw === "") {
+    return defaultValue;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > max) {
+    throw new OracleConfigError(
+      ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_INVALID_VALUE,
+      variable,
+      `${variable} must be a number in (0, ${max}]`,
+      correlationId
+    );
+  }
+  return parsed;
+}
+
+/** Parse and validate the log level, defaulting when unset. */
+function parseLogLevel(raw: string | undefined, variable: string): LogLevel {
   if (raw === undefined || raw === "") {
     return DEFAULT_LOG_LEVEL;
   }
-
   if (!VALID_LOG_LEVELS.has(raw)) {
     throw new OracleConfigError(
       ORACLE_CONFIG_ERROR_CODES.ORACLE_CONFIG_INVALID_VALUE,
-      name,
-      `${name} must be one of ${[...VALID_LOG_LEVELS].join(" | ")}, got: ${JSON.stringify(raw)}`
+      variable,
+      `${variable} must be one of: debug, info, warn, error`
     );
   }
-
   return raw as LogLevel;
 }

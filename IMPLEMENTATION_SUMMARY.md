@@ -6,6 +6,15 @@ Successfully fixed the "ghost market" vulnerability across the Vatix backend by 
 
 **Status**: ✅ Complete - Ready for testing and deployment
 
+## Invariants
+
+This change preserves the following invariants. Any future edit to the archive/sync or soft-delete paths MUST keep them true:
+
+1. **Server/contract is the source of truth.** Balances, swaps, and admin state are authoritative on the server/contract. Soft-deleted markets are never treated as live by any read or write path; clients cannot resurrect or bypass them.
+2. **Deny-by-default authz.** Every privileged surface (admin, break-glass, audit) rejects requests unless the caller is explicitly authorized. Untrusted clients cannot bypass policy by targeting a soft-deleted market.
+3. **Fail-closed writes on dependency outage.** If the DB/RPC/Redis dependency is unavailable, write paths fail closed (error out) rather than proceeding with partial or stale state.
+4. **Idempotency for concurrent/replayed requests.** Repeated or concurrent requests (e.g. status updates, break-glass actions) are idempotent and safe against replay; a soft-deleted market is rejected consistently regardless of ordering.
+
 ## Implementation Scope
 
 ### Files Modified: 5
@@ -212,7 +221,9 @@ GET /markets/{deleted-id} → 404 Market Not Found
 2. Check audit logs for deleted market operations
 3. Validate no regressions in admin operations
 
-## Monitoring and Alerting
+## Observability
+
+Metrics and logs cover the money paths (admin, break-glass, oracle, indexer) without leaking secrets. Never log tokens, keys, or full request bodies; log only correlation ids, market ids, and outcome codes.
 
 ### Key Metrics
 - `admin.market_not_found`: Rate of 404s on admin endpoints
@@ -223,6 +234,14 @@ GET /markets/{deleted-id} → 404 Market Not Found
 ### Alert Thresholds
 - **Critical**: >10 failed admin operations/min (targeted attack possible)
 - **Warning**: >1 break-glass operation on deleted market/day (unexpected behavior)
+
+## Feature Flag / Kill-Switch & Rollback
+
+Any money-path or mainnet-affecting change in this area must land behind a feature flag or kill-switch and be documented in the PR description.
+
+- **Flag**: gate the new soft-delete enforcement behind a flag so it can be disabled without a redeploy if regressions appear.
+- **Kill-switch**: operators can disable the enforcement path to restore prior behavior during an incident.
+- **Rollback**: revert the code change (or flip the flag off); the `deletedAt` column and index are additive, so no data migration rollback is required.
 
 ## Documentation Locations
 
@@ -247,6 +266,14 @@ GET /markets/{deleted-id} → 404 Market Not Found
 4. **README**: `README.md`
    - Reference to new documentation
 
+## Related Docs (Stellar Wave contributors)
+
+- `SECURITY.md` - security policy and deny-by-default authz expectations
+- `README.md` - repo overview and contributor entry points
+- `RATE_LIMIT_POLICY.md` - rate-limit policy for external entrypoints
+- `apps/indexer/README.md` - indexer archive/sync overview
+- `apps/indexer/src/INDEXER_CONFIG_VALIDATION_HARDENING.md` - indexer config validation hardening
+
 ## Sign-Off
 
 ### Code Review
@@ -257,57 +284,4 @@ GET /markets/{deleted-id} → 404 Market Not Found
 
 ### Test Review
 - [x] Test coverage is comprehensive
-- [x] Tests verify all fixes
-- [x] Tests check edge cases
-- [x] Tests verify production safety
-
-### Documentation Review
-- [x] Runbook is comprehensive
-- [x] Change summary is detailed
-- [x] Before/after samples provided
-- [x] Troubleshooting guide included
-
-## Next Steps
-
-1. **Run Full Test Suite**
-   ```bash
-   npm run test:run
-   npm run test:coverage
-   ```
-
-2. **Code Review**
-   - Team review of all changes
-   - Review of test coverage
-   - Review of documentation
-
-3. **Deployment**
-   - Follow deployment checklist above
-   - Monitor post-deployment
-
-4. **Communication**
-   - Notify operations team
-   - Update runbooks if needed
-   - Brief on-call engineers
-
-## Summary
-
-All 7 gaps in the soft-deleted markets filtering have been identified, fixed, tested, and documented. The implementation:
-
-✅ Eliminates the ghost market vulnerability
-✅ Uses consistent patterns across all components
-✅ Includes comprehensive test coverage
-✅ Provides fail-fast error handling
-✅ Works consistently in all environments
-✅ Has minimal performance impact
-✅ Is fully documented
-
-**Ready for testing and deployment.**
-
----
-
-**Implementation Date**: August 27, 2026
-**Status**: ✅ Complete
-**Test Coverage**: 70+ tests
-**Files Modified**: 5
-**Files Created**: 4
-**Documentation**: Complete
+- [x] Tests
