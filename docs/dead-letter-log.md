@@ -54,13 +54,15 @@ await logDeadLetter(logger, message);
 
 ## Dedupe via Payload Hash
 
-Every dead-lettered message is hashed (`sha256(JSON.stringify(payload))`) before it's persisted. `logDeadLetter` uses that hash to check a Redis key (`{prefix}dead-letter:dedupe:{queue}:{payloadHash}`) with a 24-hour TTL:
+Every dead-lettered message is hashed (`sha256(JSON.stringify(payload))`) before it's persisted. `logDeadLetter` uses that hash to mark a Redis key (`{prefix}dead-letter:dedupe:{queue}:{payloadHash}`) with a 24-hour TTL:
 
-- If the key already exists, the message is a **duplicate** — the same payload was already dead-lettered for that queue within the last 24 hours (e.g. a retried burst of the same failure).
-- The dedupe key is (re)written on every attempt, refreshing the TTL.
+- The mark is a single atomic `SET key 1 EX <ttl> NX`. It returns `null` exactly when a concurrent writer got there first, which is the **duplicate** case — the same payload was already dead-lettered for that queue within the last 24 hours (e.g. a retried burst of the same failure).
+- `NX` also refreshes the TTL on a first sighting, so the key expires 24h after the _last_ occurrence.
 - Both the Redis stream entry and the structured log record `payloadHash` and `duplicate`, so replays can filter out or collapse duplicates when triaging.
 - `logDeadLetter` returns `{ duplicate: boolean }` so callers can react (e.g. suppress alerting on known duplicates) if needed.
-- The dedupe check is best-effort: if Redis is unreachable, the check fails soft (logged via `logger.warn`, treated as non-duplicate) rather than blocking the dead-letter write itself.
+- The dedupe check is best-effort: if Redis is unreachable, the check fails soft (logged via `logger.warn`, treated as non-duplicate) rather than blocking the dead-letter write itself. Losing the dedupe signal must never cost the recoverable record, so the two failure modes are deliberately asymmetric.
+
+> **Why atomic:** the previous implementation called `EXISTS` and then `SET`. That is a read-then-write race: two workers dead-lettering the same poison job concurrently both observe "not a duplicate", so one incident raises two alerts and the dedupe signal is unreliable exactly when a queue is under stress. `SET ... NX` collapses that into a single round trip.
 
 ## When Messages Are Dead-Lettered
 
@@ -118,6 +120,19 @@ pnpm dlq discard   --queue oracle --job <jobId> --yes
 - `retry-all` collects per-job failures instead of aborting the batch and
   exits non-zero if any job could not be retried. `--dry-run` previews and
   mutates nothing.
+- **State is re-verified per job.** `retry-all` calls `getState()` immediately
+  before each `retry()`, even though `getFailed()` already returned only failed
+  jobs. The window between listing and acting is real — a concurrent operator, a
+  reconciliation job, or a redelivery can move a job in between — and
+  `retry("failed")` on a job that has since completed would re-run money-path
+  work that may already have settled. Such a job is reported in `failed` with
+  `job is "<state>", not "failed" — refused to re-queue` and is left alone.
+  `--dry-run` only reports and never re-verifies.
+- **Batches are bounded.** `list` and `retry-all` clamp `--limit` to a
+  maximum of `10_000`. Without a ceiling, `--limit 10000000` asks BullMQ to
+  hydrate every failed job — each with its full payload — into one CLI process,
+  which is a trivially reachable memory-exhaustion lever for anyone who can run
+  the tool. Batch larger than that by looping.
 - **Production/dev split:** in `NODE_ENV=production`, `retry-all` (non-dry-run)
   and `discard` refuse to run without `--yes` (exit code 2). Outside
   production they run unguarded for a frictionless local loop.
@@ -203,13 +218,6 @@ and `payloadLogFields`, so none of the rules can be bypassed by editing the
 entrypoint.
 
 Unit tests: `tests/replay-dlq.test.ts`.
-
-## Related Documentation
-
-- [Architecture Overview](architecture.md) — How workers fit into the system
-- [Graceful Shutdown](graceful-shutdown.md) — Worker shutdown patterns
-- [Logger](logger.md) — Structured logging conventions
-- [Incident Runbook — Incident 6](runbooks/incident-runbook.md#incident-6-queue-backlog-settlement--oracle-submission) — queue backlog response
 
 ## Related Documentation
 

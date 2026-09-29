@@ -43,12 +43,13 @@ export class AuditArchiverJob {
       });
 
       const results: ArchivedEventResult[] = [];
+      // Absolute deadline for the whole run. `maxRunMs: 0` means "no budget"
+      // and is represented as `null` so the checks stay a cheap comparison.
+      const deadline =
+        this.maxRunMs > 0 ? startedAt.getTime() + this.maxRunMs : null;
 
       for (const market of markets) {
-        if (
-          this.maxRunMs > 0 &&
-          Date.now() - startedAt.getTime() >= this.maxRunMs
-        ) {
+        if (deadline !== null && Date.now() >= deadline) {
           this.logger.warn("Audit archiver exceeded maxRunMs, stopping early", {
             maxRunMs: this.maxRunMs,
             processedSoFar: results.length,
@@ -57,7 +58,7 @@ export class AuditArchiverJob {
           break;
         }
 
-        const marketResults = await this.archiveMarket(market);
+        const marketResults = await this.archiveMarket(market, deadline);
         results.push(...marketResults);
       }
 
@@ -125,7 +126,8 @@ export class AuditArchiverJob {
    * Archive all unarchived entries for a market.
    */
   private async archiveMarket(
-    marketId: string
+    marketId: string,
+    deadline: number | null
   ): Promise<ArchivedEventResult[]> {
     const streamKey = `${this.keyPrefix}audit:market:${marketId}`;
     const results: ArchivedEventResult[] = [];
@@ -139,7 +141,14 @@ export class AuditArchiverJob {
       // Query all entries after the watermark
       let cursor = watermark?.marketStreamId ?? "-";
 
-      while (true) {
+      // Hash-chain state for this market, threaded through the batch loop in
+      // memory instead of re-read per event (see `getPrevHash`).
+      let prevHash = await this.getPrevHash(marketId);
+      // Set when an event fails to archive. The run then stops this market
+      // instead of re-reading the same poisoned entry forever.
+      let aborted = false;
+
+      while (!aborted) {
         const entries = await redis.xrange(
           streamKey,
           `(${cursor}`,
@@ -151,26 +160,64 @@ export class AuditArchiverJob {
         if (entries.length === 0) break;
 
         for (const [streamId, fields] of entries) {
+          // `maxRunMs` is a hard budget for the whole job, not per market. A
+          // single busy market can otherwise run for far longer than the
+          // configured budget and starve every other market, because the only
+          // deadline check lived in the per-market loop in `run()`.
+          if (deadline !== null && Date.now() >= deadline) {
+            this.logger.warn(
+              "Audit archiver exceeded maxRunMs mid-market, deferring remainder",
+              {
+                marketId,
+                streamId,
+                processedSoFar: results.length,
+              }
+            );
+            aborted = true;
+            break;
+          }
+
           const parseResult = this.parseStreamFields(fields);
           if (!parseResult) {
+            // Empty field set: nothing to archive, but the entry is consumed
+            // so the cursor can move past it.
             results.push({
               marketId,
               streamId,
               status: "skipped",
             });
+            cursor = streamId;
             continue;
+          }
+
+          // `tradeId` is the audit row's subject. Without it the row is
+          // unattributable, so it is rejected rather than written with a
+          // null/empty subject that would poison later chain verification.
+          const tradeId = parseResult.logData.tradeId;
+          if (typeof tradeId !== "string" || tradeId.length === 0) {
+            this.logger.error("Audit entry missing tradeId, not archiving", {
+              marketId,
+              streamId,
+            });
+            results.push({
+              marketId,
+              streamId,
+              status: "error",
+              errorMessage: "audit entry has no tradeId field",
+            });
+            aborted = true;
+            break;
           }
 
           try {
             const payload = JSON.stringify(parseResult.logData);
-            const prevHash = await this.getPrevHash(marketId);
             const entryHash = this.computeHash(payload, prevHash);
 
             // Archive to Postgres (upsert)
             await this.prisma.tradeAuditEvent.upsert({
               where: { streamId },
               create: {
-                tradeId: parseResult.logData.tradeId,
+                tradeId,
                 marketId,
                 payload,
                 prevHash,
@@ -188,6 +235,10 @@ export class AuditArchiverJob {
               status: "archived",
             });
 
+            // Only advance the chain after the row is durably written, so a
+            // failed write cannot leave the next entry linked to a hash that
+            // was never stored.
+            prevHash = entryHash;
             cursor = streamId;
           } catch (error) {
             this.logger.error("Failed to archive event", {
@@ -202,8 +253,17 @@ export class AuditArchiverJob {
               errorMessage:
                 error instanceof Error ? error.message : String(error),
             });
+            // Stop this market. The cursor was not advanced past the failed
+            // entry, so the watermark is not moved over it and the next run
+            // retries it — at-least-once, never a silent skip. Continuing the
+            // loop would re-read the same entry on every iteration and spin
+            // for the lifetime of the process.
+            aborted = true;
+            break;
           }
         }
+
+        if (aborted) break;
 
         // Update watermark after batch
         if (cursor !== watermark?.marketStreamId) {
@@ -220,6 +280,9 @@ export class AuditArchiverJob {
               lastArchivedAt: new Date(),
             },
           });
+          // The watermark moved, so re-read the chain tail once per batch: a
+          // concurrent archiver may have appended rows since the last read.
+          prevHash = await this.getPrevHash(marketId);
         }
 
         if (entries.length < this.batchSize) break;
@@ -249,11 +312,22 @@ export class AuditArchiverJob {
 
   /**
    * Get the previous hash for hash-chaining.
+   *
+   * Ordered by `streamId desc`, **not** `archivedAt desc`. Redis stream IDs are
+   * monotonically increasing and are what defines the chain's order, whereas
+   * `archivedAt` is a wall-clock write timestamp: two entries archived inside
+   * the same millisecond, or an entry re-archived later by a replay, can order
+   * differently from the chain itself. Linking to the wrong predecessor makes
+   * `verifyChain` report a false gap (`vatix_audit_chain_gap_total`) and breaks
+   * the tamper-evidence property the chain exists to provide.
+   *
+   * Returns `"0"` — the documented chain root — when the market has no
+   * archived entries yet.
    */
   private async getPrevHash(marketId: string): Promise<string> {
     const lastEvent = await this.prisma.tradeAuditEvent.findFirst({
       where: { marketId },
-      orderBy: { archivedAt: "desc" },
+      orderBy: { streamId: "desc" },
       select: { entryHash: true },
     });
     return lastEvent?.entryHash ?? "0";

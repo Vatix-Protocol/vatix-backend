@@ -31,7 +31,15 @@ function dedupeKey(queue: string, payloadHash: string): string {
 
 /**
  * Returns true if a message with this exact payload was already dead-lettered
- * for this queue within the dedupe window, then (re)marks it as seen.
+ * for this queue within the dedupe window.
+ *
+ * Uses a single atomic `SET key 1 EX <ttl> NX` rather than `EXISTS` followed by
+ * `SET`: the two-call version has a read-then-write race, so two workers
+ * dead-lettering the same poison job concurrently both observe "not a
+ * duplicate" and both raise an alert for one incident. The atomic form returns
+ * `null` exactly when a concurrent writer got there first, which is the
+ * duplicate case. The `NX` write also refreshes the TTL on a first sighting,
+ * so the key expires 24h after the *last* occurrence.
  */
 async function checkAndMarkDuplicate(
   logger: ILogger,
@@ -40,10 +48,14 @@ async function checkAndMarkDuplicate(
 ): Promise<boolean> {
   const key = dedupeKey(queue, payloadHash);
   try {
-    const duplicate = await redis.exists(key);
-    await redis.set(key, "1", DEDUPE_TTL_SECONDS);
-    return duplicate;
+    const result = await redis.set(key, "1", "EX", DEDUPE_TTL_SECONDS, "NX");
+    // ioredis resolves to "OK" when the key was created and to null when the
+    // NX condition blocked the write because the key already existed.
+    return result === null;
   } catch (error) {
+    // Fail soft on the *dedupe* path only: losing the duplicate signal must not
+    // cost us the dead-letter write itself, which is what makes the message
+    // recoverable.
     logger.warn("Dead letter dedupe check failed", {
       queue,
       payloadHash,

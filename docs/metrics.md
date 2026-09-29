@@ -231,6 +231,54 @@ Failover is only observable if primary and fallback traffic are separable:
 Neither metric carries market ids, payloads, provider URLs, or API keys —
 `provider` values come from operator configuration, not from user input.
 
+### `vatix_oracle_primary_provider_attempts_total` (#1108)
+
+Primary provider outcomes **per HTTP attempt**, labelled by `type`:
+`OK`, `AUTHENTICATION`, `INVALID_RESPONSE`, `NOT_FOUND`, `RATE_LIMIT`,
+`TIMEOUT`, `UPSTREAM`.
+
+This is deliberately _not_ the same series as
+`vatix_oracle_provider_attempts_total{provider="primary"}`. That one is
+incremented once per `resolve()` in `OracleService`; this one is incremented once
+per attempt in `PrimaryAdapter`. One `resolve()` fans out into several attempts
+under `retryConfig`, so incrementing the resolve-level counter from the adapter
+would double-count every primary call. The attempt-level series answers the
+question the other one cannot — _why_ is the primary failing, and is it flapping
+inside a retry burst before `resolve()` as a whole gives up?
+
+```promql
+# A credential problem retries will never fix
+sum(rate(vatix_oracle_primary_provider_attempts_total{type="AUTHENTICATION"}[15m])) > 0
+
+# Primary flapping: failures inside the retry budget, resolve still succeeding
+sum(rate(vatix_oracle_primary_provider_attempts_total{type="UPSTREAM"}[5m])) > 0
+  and sum(rate(vatix_oracle_provider_attempts_total{provider="primary",outcome="success"}[5m])) > 0
+```
+
+`type` values are the stable `PrimaryProviderErrorType` union and never contain
+response bodies, market ids, or credentials.
+
+### `vatix_queue_job_*` (#1105)
+
+`vatix_queue_job_processed_total{queue,outcome}` counts every job run through the
+generic queue consumer, and
+`vatix_queue_job_duration_seconds{queue,outcome}` is the matching latency
+histogram. `outcome` is one of `success`, `retry` (failures with attempts
+remaining), `exhausted` (failed on the final attempt — the caller dead-letters
+it), or `timeout` (exceeded `processingTimeoutMs`).
+
+```promql
+# Money path stalling
+rate(vatix_queue_job_processed_total{outcome="exhausted"}[5m]) > 0
+
+# A wedged dependency shows up as timeouts piling up at the deadline
+histogram_quantile(0.95, rate(vatix_queue_job_duration_seconds_bucket{outcome="timeout"}[5m]))
+```
+
+`queue` is the consumer's configured queue name (operator config, bounded
+cardinality) and the labels never carry job payloads, trade ids, or Stellar
+addresses. See `docs/queue-consumer.md`.
+
 ### `vatix_oracle_dry_run_evaluations_total` (#1146)
 
 Counts resolutions evaluated while `ORACLE_DRY_RUN=true`, labelled by what

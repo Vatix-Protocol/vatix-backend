@@ -139,4 +139,62 @@ describe("BullmqDlq", () => {
     expect(result.retried).toEqual(["a", "c"]);
     expect(result.failed).toEqual([{ jobId: "b", error: "locked" }]);
   });
+
+  // -------------------------------------------------------------------------
+  // State re-verification and bounded batches (#1106)
+  // -------------------------------------------------------------------------
+
+  it("retryAll refuses to re-queue a job that left the failed set mid-batch", async () => {
+    // getFailed() returned this as failed, but by the time we act on it the job
+    // has been redelivered and completed. Re-queueing would re-run money-path
+    // work that may already have settled.
+    const job = makeJob({ getState: vi.fn().mockResolvedValue("completed") });
+    const dlq = new BullmqDlq(makeQueue([job]));
+
+    const result = await dlq.retryAll();
+
+    expect(job.retry).not.toHaveBeenCalled();
+    expect(result.retried).toEqual([]);
+    expect(result.failed).toEqual([
+      {
+        jobId: "job-1",
+        error: 'job is "completed", not "failed" — refused to re-queue',
+      },
+    ]);
+  });
+
+  it("retryAll re-verifies state in dry-run without rejecting the job", async () => {
+    const job = makeJob({ getState: vi.fn().mockResolvedValue("active") });
+    const dlq = new BullmqDlq(makeQueue([job]));
+
+    // A dry run only reports; it must not turn a transient state change into a
+    // spurious "failure" entry.
+    const result = await dlq.retryAll({ dryRun: true });
+    expect(result.failed).toEqual([]);
+    expect(result.retried).toEqual(["job-1"]);
+  });
+
+  it("caps an oversized --limit instead of hydrating every failed job", async () => {
+    const queue = makeQueue([makeJob()]);
+    const dlq = new BullmqDlq(queue);
+
+    // MAX_LIMIT is 10_000; asking for 10 million previously asked BullMQ to
+    // materialise every failed job (each with its full payload) in-process.
+    await dlq.list({ limit: 10_000_000 });
+    expect(queue.getFailed).toHaveBeenCalledWith(0, 9_999);
+
+    await dlq.retryAll({ limit: 10_000_000, dryRun: true });
+    expect(queue.getFailed).toHaveBeenLastCalledWith(0, 9_999);
+  });
+
+  it("never treats a non-positive limit as an unbounded scan", async () => {
+    const queue = makeQueue([makeJob()]);
+    const dlq = new BullmqDlq(queue);
+
+    await dlq.list({ limit: 0 });
+    expect(queue.getFailed).toHaveBeenCalledWith(0, 0);
+
+    await dlq.list({ limit: -5 });
+    expect(queue.getFailed).toHaveBeenLastCalledWith(0, 0);
+  });
 });

@@ -111,6 +111,17 @@ function errMsg(e: unknown): string {
 
 const DEFAULT_LIMIT = 100;
 
+/**
+ * Hard ceiling on a single `list`/`retryAll` batch.
+ *
+ * Without it, `--limit 10000000` on `pnpm dlq` asks BullMQ to hydrate millions
+ * of job records — each carrying its full payload — into this process, which is
+ * a trivially reachable memory-exhaustion lever for anyone who can run the CLI.
+ * Operators batching more than this should loop, which is the safer
+ * operational pattern anyway.
+ */
+const MAX_LIMIT = 10_000;
+
 export class BullmqDlq {
   constructor(private readonly queue: DlqQueueLike) {}
 
@@ -126,8 +137,9 @@ export class BullmqDlq {
     return { failed: await this.queue.getFailedCount() };
   }
 
+  /** List dead-lettered jobs, newest-last, capped at {@link MAX_LIMIT}. */
   async list(opts: { limit?: number } = {}): Promise<DlqEntry[]> {
-    const limit = Math.max(1, opts.limit ?? DEFAULT_LIMIT);
+    const limit = Math.max(1, Math.min(opts.limit ?? DEFAULT_LIMIT, MAX_LIMIT));
     const jobs = await this.queue.getFailed(0, limit - 1);
     return jobs.map(toEntry);
   }
@@ -156,11 +168,18 @@ export class BullmqDlq {
    * Retry up to `limit` dead-lettered jobs. `dryRun` reports what would be
    * retried without touching anything. Per-job failures are collected, not
    * thrown, so one un-retryable job never blocks the rest of the batch.
+   *
+   * Each job's state is re-checked with `getState()` immediately before
+   * `retry()`, even though `getFailed()` already returned only failed jobs. The
+   * window between listing and acting is real (a concurrent operator, a
+   * reconciliation job, or a redelivery can move a job in between), and calling
+   * `retry("failed")` on a job that has since left the failed set would re-run
+   * money-path work that may already have settled.
    */
   async retryAll(
     opts: { limit?: number; dryRun?: boolean } = {}
   ): Promise<DlqRetryResult> {
-    const limit = Math.max(1, opts.limit ?? DEFAULT_LIMIT);
+    const limit = Math.max(1, Math.min(opts.limit ?? DEFAULT_LIMIT, MAX_LIMIT));
     const dryRun = opts.dryRun ?? false;
     const jobs = await this.queue.getFailed(0, limit - 1);
 
@@ -178,6 +197,14 @@ export class BullmqDlq {
         continue;
       }
       try {
+        const state = await job.getState();
+        if (state !== "failed") {
+          result.failed.push({
+            jobId: id,
+            error: `job is "${state}", not "failed" — refused to re-queue`,
+          });
+          continue;
+        }
         await job.retry("failed");
         result.retried.push(id);
       } catch (e) {

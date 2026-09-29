@@ -82,6 +82,15 @@ and probe configuration.
 - [`docs/signature-helper.md`](docs/signature-helper.md) — oracle report
   signing, the domain/network envelope, and the frozen test vectors.
 - [`docs/architecture.md`](docs/architecture.md) — end-to-end system layout.
+- [`docs/queue-consumer.md`](docs/queue-consumer.md) — worker queue consumer
+  contract: fail-closed config validation, retry/dead-letter flow, cancellation,
+  and the `vatix_queue_job_*` metrics.
+- [`docs/dead-letter-log.md`](docs/dead-letter-log.md) — the two dead-letter
+  stores (raw streams and the BullMQ `failed` set), atomic dedupe, and the
+  `pnpm dlq` / `pnpm replay:dlq` operator tools.
+- [`docs/replay-forensics.md`](docs/replay-forensics.md) — trade-audit archive
+  retention, the audit archiver's chain/watermark invariants, and the restore
+  drill.
 
 ## Security
 
