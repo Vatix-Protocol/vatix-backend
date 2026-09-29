@@ -16,6 +16,12 @@
  *   record cap. Fails closed: nothing is sent to the database.
  * - `BATCH_WRITE_INVALID_INPUT` (#1152) — the caller passed something other
  *   than an array of records. Fails closed: nothing is sent to the database.
+ * - `BATCH_WRITE_DEPENDENCY_UNAVAILABLE` (#1198) — a required dependency
+ *   (DB/Redis/RPC) was unreachable. Fails closed: the write is rejected and
+ *   nothing is committed, so callers can retry safely.
+ * - `BATCH_WRITE_FAILED` (#1198) — the batch could not be committed for any
+ *   other reason. The transaction is rolled back atomically, so no partial
+ *   state is ever persisted.
  */
 export type BatchWriteErrorCode =
   | "BATCH_WRITE_DEPENDENCY_UNAVAILABLE"
