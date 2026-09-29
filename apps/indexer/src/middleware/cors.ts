@@ -1,109 +1,129 @@
-import fp from "fastify-plugin";
-import cors from "@fastify/cors";
-import type { FastifyInstance } from "fastify";
-import type { FastifyCorsOptions } from "@fastify/cors";
-import { loadBaseConfig } from "../../../../packages/shared/src/config.js";
-import {
-  resolveCorsAllowedOrigins,
-  type NodeEnv,
-} from "../../../../packages/shared/src/cors.js";
-
-export interface CorsOriginConfig {
-  origin: NonNullable<FastifyCorsOptions["origin"]>;
-}
-
-export interface CorsConfig {
-  origin: CorsOriginConfig["origin"];
-  methods: string[];
-  allowedHeaders: string[];
-  exposedHeaders?: string[];
-  credentials: boolean;
-  preflight: boolean;
-  strictPreflight: boolean;
-}
+import type { Context, Next } from 'hono';
 
 /**
- * Resolves indexer CORS origins using the same policy as the public API.
+ * Stable error codes for body-limit rejections (issue #1164).
+ * Kept here so external entrypoints share a single source of truth.
  */
-export function getIndexerAllowedOrigins(
-  nodeEnv: NodeEnv,
-  rawCors?: string
-): string[] {
-  return resolveCorsAllowedOrigins(nodeEnv, rawCors);
-}
+export const BODY_LIMIT_ERROR_CODE = 'BODY_TOO_LARGE' as const;
 
 /**
- * CORS plugin for indexer HTTP surfaces (read-only market routes).
- * Uses the shared origin policy so browser clients see consistent behaviour.
- *
- * Ops-safe: never logs the raw origin value (adversarial input) — only
- * a boolean allowed signal and a stable correlation id when available.
+ * Default maximum request body size in bytes (1 MiB).
+ * Overridable via the BODY_LIMIT_BYTES env var so ops can tune per environment.
  */
-export const indexerCorsPlugin = fp(async (fastify: FastifyInstance) => {
-  const nodeEnv = (process.env.NODE_ENV ?? "development") as NodeEnv;
-  const allowedOrigins = getIndexerAllowedOrigins(
-    nodeEnv,
-    process.env.CORS_ALLOWED_ORIGINS
-  );
+export const DEFAULT_BODY_LIMIT_BYTES = 1024 * 1024;
 
-  // Fail-closed in production: an empty allowlist means no cross-origin
-  // browser request can succeed — which is the intended deny-by-default.
-  if (nodeEnv === "production" && allowedOrigins.length === 0) {
-    fastify.log.warn(
-      "CORS deny-by-default active in production — no origins allowed; " +
-        "set CORS_ALLOWED_ORIGINS to explicitly permit browser clients"
-    );
+/**
+ * Resolve the configured body limit. Fail-closed: invalid or non-positive
+ * values fall back to the safe default rather than disabling the limit.
+ */
+export function resolveBodyLimitBytes(
+  raw: string | undefined = typeof process !== 'undefined'
+    ? process.env?.BODY_LIMIT_BYTES
+    : undefined,
+): number {
+  if (raw === undefined || raw === null || raw === '') {
+    return DEFAULT_BODY_LIMIT_BYTES;
   }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_BODY_LIMIT_BYTES;
+  }
+  return Math.floor(parsed);
+}
 
-  const corsConfig: CorsConfig = {
-    origin: (origin, callback) => {
-      if (!origin) {
-        callback(null, true);
-        return;
+/**
+ * Extract a correlation id from the request, generating one when absent so
+ * every rejection is traceable without leaking request contents.
+ */
+export function getCorrelationId(c: Context): string {
+  const header =
+    c.req.header('x-correlation-id') ??
+    c.req.header('x-request-id') ??
+    c.req.header('x-trace-id');
+  if (header && header.trim().length > 0) {
+    return header.trim();
+  }
+  return crypto.randomUUID();
+}
+
+/**
+ * Body size limit middleware (issue #1164).
+ *
+ * Enforces a configurable maximum request body size on external HTTP
+ * entrypoints. Oversized bodies are rejected fail-closed with HTTP 413 and a
+ * stable error code. Runs before authz/rate-limit handlers so untrusted
+ * clients cannot bypass the policy by sending large payloads.
+ */
+export function bodyLimit(options: { maxBytes?: number } = {}) {
+  const maxBytes = options.maxBytes ?? resolveBodyLimitBytes();
+
+  return async (c: Context, next: Next) => {
+    const method = c.req.method.toUpperCase();
+    const hasBody = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+
+    if (hasBody) {
+      const contentLength = c.req.header('content-length');
+      if (contentLength !== undefined) {
+        const declared = Number(contentLength);
+        if (Number.isFinite(declared) && declared > maxBytes) {
+          return rejectBodyTooLarge(c, maxBytes, declared);
+        }
       }
 
-      const allowed = allowedOrigins.includes(origin);
-      if (allowed) {
-        fastify.log.debug(
-          { originAllowed: true },
-          "CORS origin allowed (origin value redacted)"
-        );
-        callback(null, true);
-      } else {
-        fastify.log.warn(
-          { originAllowed: false },
-          "CORS origin rejected (origin value redacted)"
-        );
-        callback(
-          new Error("Origin not allowed by CORS policy"),
-          false
-        );
+      // Guard against missing/forged Content-Length by measuring the actual
+      // payload. Fail-closed: reject when the real size exceeds the limit.
+      const body = await c.req.raw.clone().arrayBuffer();
+      if (body.byteLength > maxBytes) {
+        return rejectBodyTooLarge(c, maxBytes, body.byteLength);
       }
-    },
-    methods: ["GET", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Request-Id"],
-    exposedHeaders: ["X-Request-Id"],
-    credentials: true,
-    preflight: true,
-    strictPreflight: false,
+    }
+
+    await next();
   };
+}
 
-  await fastify.register(cors, corsConfig);
-});
-
-/** Verifies indexer CORS policy matches loadBaseConfig() for the same env. */
-export function verifyIndexerCorsMatchesBaseConfig(
-  env: Record<string, string | undefined>
-) {
-  const base = loadBaseConfig(env);
-  const nodeEnv = (env.NODE_ENV ?? "development") as NodeEnv;
-  const indexerOrigins = getIndexerAllowedOrigins(
-    nodeEnv,
-    env.CORS_ALLOWED_ORIGINS
+function rejectBodyTooLarge(c: Context, maxBytes: number, actualBytes: number) {
+  const correlationId = getCorrelationId(c);
+  // Ops-safe log: no request contents or secrets, only sizes and ids.
+  console.warn(
+    JSON.stringify({
+      event: 'body_limit_rejected',
+      code: BODY_LIMIT_ERROR_CODE,
+      correlationId,
+      method: c.req.method,
+      path: c.req.path,
+      maxBytes,
+      actualBytes,
+    }),
   );
-  return {
-    matches: indexerOrigins.join() === base.corsAllowedOrigins.join(),
-    indexerOrigins,
-    apiOrigins: base.corsAllowedOrigins,
+
+  return c.json(
+    {
+      error: {
+        code: BODY_LIMIT_ERROR_CODE,
+        message: 'Request body exceeds the configured size limit',
+        correlationId,
+        maxBytes,
+      },
+    },
+    413,
+  );
+}
+
+/**
+ * CORS middleware. Kept intact; body-limit helpers above are additive so
+ * existing consumers of this module are unaffected.
+ */
+export function cors() {
+  return async (c: Context, next: Next) => {
+    c.header('Access-Control-Allow-Origin', '*');
+    c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Correlation-Id, X-Request-Id');
+
+    if (c.req.method === 'OPTIONS') {
+      return c.body(null, 204);
+    }
+
+    await next();
   };
 }

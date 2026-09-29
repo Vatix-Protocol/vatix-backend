@@ -13,6 +13,7 @@ import {
   DecimalNegativeQuantityError,
   DecimalQuantityExceedsSafeIntegerError,
   DecimalFeatureDisabledError,
+  DecimalInvalidValueError,
 } from "./decimalUtils.js";
 import type { Telemetry } from "./telemetry.js";
 
@@ -225,5 +226,172 @@ describe("sharesRawToInt", () => {
     expect(() =>
       sharesRawToInt(100n, { featureFlags: { sharesRawToInt: false } })
     ).toThrow(DecimalFeatureDisabledError);
+  });
+});
+
+describe("decimal overflow boundaries", () => {
+  /** Largest raw amount accepted: 999_999_999_999 collateral units. */
+  const MAX_RAW = 9_999_999_999_990_000_000n;
+  const I128_MAX = 2n ** 127n - 1n;
+  const I128_MIN = -(2n ** 127n);
+
+  function codeOf(fn: () => unknown): string | undefined {
+    try {
+      fn();
+    } catch (err) {
+      return err instanceof DecimalUtilsError
+        ? err.code
+        : "NOT_DECIMAL_UTILS_ERROR";
+    }
+    return undefined;
+  }
+
+  function recordingTelemetry() {
+    const records: Array<{ metric: string; tags?: Record<string, string> }> =
+      [];
+    const telemetry: Telemetry = {
+      record(metric, _value, tags) {
+        records.push({ metric, tags });
+      },
+      startSpan: () => ({ end: () => {} }),
+    };
+    return { records, telemetry };
+  }
+
+  describe("amountRawToDecimal", () => {
+    it("accepts the exact positive and negative range limits", () => {
+      expect(amountRawToDecimal(MAX_RAW).toFixed(7)).toBe(
+        "999999999999.0000000"
+      );
+      expect(amountRawToDecimal(-MAX_RAW).toFixed(7)).toBe(
+        "-999999999999.0000000"
+      );
+      expect(amountRawToDecimal(MAX_RAW.toString()).toFixed(7)).toBe(
+        "999999999999.0000000"
+      );
+    });
+
+    it.each([
+      ["one past the limit", MAX_RAW + 1n],
+      ["one past the negative limit", -(MAX_RAW + 1n)],
+      ["i128 max", I128_MAX],
+      ["i128 min", I128_MIN],
+      ["beyond i128", 2n ** 200n],
+    ])("rejects %s as bigint and string", (_label, raw) => {
+      const code = DECIMAL_UTILS_ERROR_CODES.VALUE_OUT_OF_RANGE;
+      expect(codeOf(() => amountRawToDecimal(raw))).toBe(code);
+      expect(codeOf(() => amountRawToDecimal(raw.toString()))).toBe(code);
+    });
+
+    it("rejects an oversized digit string instead of truncating it", () => {
+      expect(codeOf(() => amountRawToDecimal("9".repeat(1_000)))).toBe(
+        DECIMAL_UTILS_ERROR_CODES.VALUE_OUT_OF_RANGE
+      );
+    });
+
+    it("carries the correlation id and records an error metric on overflow", () => {
+      const { records, telemetry } = recordingTelemetry();
+      let caught: unknown;
+      try {
+        amountRawToDecimal(MAX_RAW + 1n, { correlationId: "ovf-1", telemetry });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(DecimalValueOutOfRangeError);
+      expect((caught as DecimalUtilsError).correlationId).toBe("ovf-1");
+      expect(records).toContainEqual({
+        metric: "decimal_utils.amountRawToDecimal.error",
+        tags: { error_code: DECIMAL_UTILS_ERROR_CODES.VALUE_OUT_OF_RANGE },
+      });
+      expect(records.some((r) => r.metric.endsWith(".success"))).toBe(false);
+    });
+  });
+
+  describe("decimalToAmountRaw", () => {
+    it("accepts the exact range limits and round-trips them losslessly", () => {
+      expect(decimalToAmountRaw("999999999999")).toBe(MAX_RAW);
+      expect(decimalToAmountRaw("-999999999999")).toBe(-MAX_RAW);
+      expect(decimalToAmountRaw(amountRawToDecimal(MAX_RAW))).toBe(MAX_RAW);
+      expect(decimalToAmountRaw(amountRawToDecimal(-MAX_RAW))).toBe(-MAX_RAW);
+    });
+
+    it.each([
+      "999999999999.0000001",
+      "-999999999999.0000001",
+      "1000000000000",
+      "1e13",
+      "1e1000000",
+      "-1e9000000000000000",
+    ])("rejects out-of-range value %s", (value) => {
+      expect(codeOf(() => decimalToAmountRaw(value))).toBe(
+        DECIMAL_UTILS_ERROR_CODES.VALUE_OUT_OF_RANGE
+      );
+    });
+
+    it("rejects non-finite numbers as out of range", () => {
+      for (const value of [Infinity, -Infinity, "Infinity", "-Infinity"]) {
+        expect(codeOf(() => decimalToAmountRaw(value))).toBe(
+          DECIMAL_UTILS_ERROR_CODES.VALUE_OUT_OF_RANGE
+        );
+      }
+    });
+
+    it("rejects NaN and malformed input with a stable code, not a raw DecimalError", () => {
+      for (const value of [NaN, "NaN", "abc", "", "1.2.3", " 1"]) {
+        expect(codeOf(() => decimalToAmountRaw(value))).toBe(
+          DECIMAL_UTILS_ERROR_CODES.INVALID_DECIMAL_VALUE
+        );
+      }
+      expect(() => decimalToAmountRaw("abc")).toThrow(DecimalInvalidValueError);
+    });
+
+    it("rejects excess fractional digits hidden beyond Decimal's 20-digit precision", () => {
+      for (const value of [
+        "1.00000000000000000001",
+        "0.00000001",
+        "-0.000000001",
+      ]) {
+        expect(codeOf(() => decimalToAmountRaw(value))).toBe(
+          DECIMAL_UTILS_ERROR_CODES.EXCESS_FRACTIONAL_DIGITS
+        );
+      }
+    });
+
+    it("records an error metric and no success metric on overflow", () => {
+      const { records, telemetry } = recordingTelemetry();
+      expect(() => decimalToAmountRaw("1e1000000", { telemetry })).toThrow(
+        DecimalValueOutOfRangeError
+      );
+      expect(records).toEqual([
+        {
+          metric: "decimal_utils.decimalToAmountRaw.error",
+          tags: { error_code: DECIMAL_UTILS_ERROR_CODES.VALUE_OUT_OF_RANGE },
+        },
+      ]);
+    });
+  });
+
+  describe("sharesRawToInt", () => {
+    it("accepts exactly Number.MAX_SAFE_INTEGER", () => {
+      const max = BigInt(Number.MAX_SAFE_INTEGER);
+      expect(sharesRawToInt(max)).toBe(Number.MAX_SAFE_INTEGER);
+      expect(sharesRawToInt(max.toString())).toBe(Number.MAX_SAFE_INTEGER);
+    });
+
+    it.each([
+      ["MAX_SAFE_INTEGER + 1", BigInt(Number.MAX_SAFE_INTEGER) + 1n],
+      ["2^64", 2n ** 64n],
+      ["i128 max", I128_MAX],
+    ])("rejects %s as bigint and string", (_label, raw) => {
+      const code = DECIMAL_UTILS_ERROR_CODES.QUANTITY_EXCEEDS_SAFE_INTEGER;
+      expect(codeOf(() => sharesRawToInt(raw))).toBe(code);
+      expect(codeOf(() => sharesRawToInt(raw.toString()))).toBe(code);
+    });
+
+    it("rejects i128 min as a negative quantity", () => {
+      expect(codeOf(() => sharesRawToInt(I128_MIN))).toBe(
+        DECIMAL_UTILS_ERROR_CODES.NEGATIVE_QUANTITY
+      );
+    });
   });
 });

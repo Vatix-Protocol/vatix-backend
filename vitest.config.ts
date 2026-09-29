@@ -22,22 +22,20 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html"],
-      exclude: [
-        "node_modules/",
-        "dist/",
-        "**/*.test.ts",
-        "**/*.spec.ts",
-        "tests/",
-        "scripts/",
-        "coverage/",
-      ],
+      // Measure every source file, not just the ones a test happens to import,
+      // so untested modules count against the gate.
+      include: ["src/**/*.ts", "apps/**/*.ts", "packages/**/*.ts"],
+      exclude: ["**/*.test.ts", "**/*.spec.ts", "src/generated/**"],
+      // Fail the run when coverage drops below these floors. Keys must sit
+      // directly under `thresholds`: any other key (e.g. Jest's `global`) is
+      // read as a file glob and silently enforces nothing. This is a ratchet —
+      // raise the floors as coverage improves; never lower them to make CI pass.
+      // See docs/testing.md#coverage-gates.
       thresholds: {
-        global: {
-          branches: 80,
-          functions: 80,
-          lines: 80,
-          statements: 80,
-        },
+        statements: 65,
+        branches: 64,
+        functions: 64,
+        lines: 65,
       },
     },
   },

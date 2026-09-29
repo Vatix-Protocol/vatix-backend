@@ -121,7 +121,7 @@ The test configuration is in `vitest.config.ts`:
 
 - **Environment**: Node.js
 - **Pool**: Forks (for proper process isolation)
-- **Coverage**: V8 provider with 80% thresholds
+- **Coverage**: V8 provider with enforced floors (see [Coverage Gates](#coverage-gates))
 - **Setup**: Global setup file for test utilities
 - **Timeouts**: 30s test timeout, 10s hook timeout
 
@@ -228,33 +228,44 @@ describe("API Endpoint", () => {
 
 ## Coverage
 
-### Coverage Configuration
+### Coverage Gates
 
-Coverage is configured with 80% thresholds for:
+`vitest.config.ts` sets a floor for each metric under `coverage.thresholds`.
+Any run with `--coverage` whose tests all pass fails if coverage drops below a
+floor:
 
-- Branches
-- Functions
-- Lines
-- Statements
+| Metric     | Floor |
+| ---------- | ----- |
+| Statements | 65%   |
+| Branches   | 64%   |
+| Functions  | 64%   |
+| Lines      | 65%   |
 
-### Viewing Coverage Reports
+The floors sit just under the measured baseline, so they catch regressions
+without blocking current work. They are a ratchet: raise them in the same PR
+that raises coverage, and never lower them to get CI green. Metric keys must sit
+directly under `thresholds`. Vitest reads any other key (such as Jest's
+`global`) as a file glob, so a floor nested under one silently enforces
+nothing. `tests/vitest-coverage-config.test.ts` guards against that.
 
-```bash
-# Generate coverage report
-npm run test:coverage
-
-# View HTML report (opens in browser)
-open coverage/index.html
-```
-
-### Coverage Exclusions
-
-The following are excluded from coverage:
+Coverage measures every file matched by `coverage.include` (`src/**/*.ts`,
+`apps/**/*.ts`, `packages/**/*.ts`), not only files a test imports, so an
+untested module counts against the floors. Excluded:
 
 - Test files (`**/*.test.ts`, `**/*.spec.ts`)
-- Test directories (`tests/`)
-- Scripts (`scripts/`)
-- Coverage reports (`coverage/`)
+- The generated Prisma client (`src/generated/**`)
+
+### Checking Coverage Locally
+
+```bash
+# Same command as the CI unit-test step
+pnpm exec vitest run --exclude 'tests/integration/**' --exclude '**/*.integration.test.ts' --coverage
+
+# Open ./coverage/index.html in a browser for the detailed report
+```
+
+A run over only a few test files will fail the floors, because every source
+file is measured. Check coverage on the full unit suite.
 
 ## Test Data Management
 
@@ -337,24 +348,16 @@ Tests run in CI with:
 
 ```yaml
 # From .github/workflows/ci.yml
-- name: Run tests
-  run: pnpm test
-  env:
-    DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
-    REDIS_URL: redis://localhost:6379
-    NODE_ENV: test
-
-- name: Run tests with coverage
-  run: pnpm test:coverage
+- name: Run unit tests (with coverage)
+  run: pnpm exec vitest run --exclude 'tests/integration/**' --exclude '**/*.integration.test.ts' --coverage
   env:
     DATABASE_URL: postgresql://postgres:postgres@localhost:5432/vatix
     REDIS_URL: redis://localhost:6379
     NODE_ENV: test
 ```
 
-### Coverage Upload
-
-Coverage reports are automatically uploaded to Codecov.
+The unit-test step enforces the [coverage gates](#coverage-gates). Coverage
+reports are not uploaded anywhere. They exist only in the job's workspace.
 
 ## Troubleshooting
 
@@ -388,34 +391,6 @@ node --inspect-brk node_modules/.bin/vitest
 # Run specific test with logging
 DEBUG=* npm test -- specific-test.test.ts
 ```
-
-## Coverage Floors
-
-The project enforces minimum code coverage thresholds (configured in `vitest.config.ts`):
-
-- **Lines:** 80%
-- **Functions:** 80%
-- **Branches:** 80%
-- **Statements:** 80%
-
-### Checking Coverage Locally
-
-```bash
-# Generate coverage report
-pnpm test:coverage
-
-# Coverage reports available in ./coverage/
-# Open ./coverage/index.html in a browser for detailed report
-```
-
-### CI Coverage Floor
-
-The CI workflow runs `pnpm exec vitest run --coverage` and enforces the thresholds.
-If coverage drops below the floor, the CI job fails. To adjust the floor:
-
-1. Update `vitest.config.ts` thresholds in the `coverage.thresholds` section
-2. Ensure the change is intentional (increasing thresholds is preferred)
-3. Submit a PR explaining the rationale
 
 ## Matching Lease Enforcement
 

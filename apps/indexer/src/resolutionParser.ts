@@ -16,6 +16,15 @@ import type { Telemetry } from "./telemetry.js";
 const RESOLUTION_EVENT_TOPIC = "market_resolved_event";
 
 /**
+ * Settlement events are emitted by the settlement contract once a resolved
+ * market's positions are settled. They are indexed alongside resolution
+ * events so downstream consumers can reconcile settlement state without
+ * re-deriving it from resolution alone. The topic symbol follows the same
+ * snake_case + "Event" suffix convention as resolution events.
+ */
+const SETTLEMENT_EVENT_TOPIC = "settlement_event";
+
+/**
  * Stable error codes for Resolution parsing. These are part of the parser's
  * public contract: downstream consumers (indexer pipeline, ops dashboards,
  * alerting) key off these codes, so they must not change without a
@@ -32,6 +41,9 @@ export const ResolutionErrorCode = {
   LEGACY_SHAPE_REJECTED: "RESOLUTION_LEGACY_SHAPE_REJECTED",
   MISSING_ORACLE: "RESOLUTION_MISSING_ORACLE",
   BAD_CONFIDENCE: "RESOLUTION_BAD_CONFIDENCE",
+  MISSING_SETTLEMENT_ID: "RESOLUTION_MISSING_SETTLEMENT_ID",
+  BAD_SETTLEMENT_ID_XDR: "RESOLUTION_BAD_SETTLEMENT_ID_XDR",
+  INVALID_SETTLEMENT_AMOUNT: "RESOLUTION_INVALID_SETTLEMENT_AMOUNT",
 } as const;
 
 export type ResolutionErrorCode =
@@ -83,10 +95,49 @@ function toConfidenceScore(value: unknown): number | null {
   return null;
 }
 
+/**
+ * Coerce a settlement amount (i128/u64) to a finite number. Settlement
+ * amounts are money-path values, so anything non-finite or negative is
+ * rejected rather than silently coerced to 0.
+ */
+function toSettlementAmount(value: unknown, eventId: string): number {
+  let asNumber: number;
+  if (typeof value === "number") {
+    asNumber = value;
+  } else if (typeof value === "bigint") {
+    asNumber = Number(value);
+  } else {
+    throw new ResolutionParseError(
+      `Invalid settlement amount: "${String(value)}" — must be a number`,
+      eventId,
+      undefined,
+      ResolutionErrorCode.INVALID_SETTLEMENT_AMOUNT
+    );
+  }
+  if (!Number.isFinite(asNumber) || asNumber < 0) {
+    throw new ResolutionParseError(
+      `Invalid settlement amount: "${String(value)}" — must be finite and non-negative`,
+      eventId,
+      undefined,
+      ResolutionErrorCode.INVALID_SETTLEMENT_AMOUNT
+    );
+  }
+  return asNumber;
+}
+
 function isResolutionEvent(topicsXdr: string[]): boolean {
   if (topicsXdr.length === 0) return false;
   try {
     return decodeScVal(topicsXdr[0]) === RESOLUTION_EVENT_TOPIC;
+  } catch {
+    return false;
+  }
+}
+
+function isSettlementEvent(topicsXdr: string[]): boolean {
+  if (topicsXdr.length === 0) return false;
+  try {
+    return decodeScVal(topicsXdr[0]) === SETTLEMENT_EVENT_TOPIC;
   } catch {
     return false;
   }
@@ -116,6 +167,32 @@ function marketIdFromTopic(topicsXdr: string[], eventId: string): string {
       eventId,
       err,
       ResolutionErrorCode.BAD_MARKET_ID_XDR
+    );
+  }
+}
+
+/**
+ * Settlement events carry the settlement id as topics[1] (mirroring how
+ * resolution events carry market_id), so downstream consumers can key
+ * idempotently on a stable on-chain identifier.
+ */
+function settlementIdFromTopic(topicsXdr: string[], eventId: string): string {
+  if (topicsXdr.length < 2) {
+    throw new ResolutionParseError(
+      "Missing settlement_id topic",
+      eventId,
+      undefined,
+      ResolutionErrorCode.MISSING_SETTLEMENT_ID
+    );
+  }
+  try {
+    return String(decodeScVal(topicsXdr[1]));
+  } catch (err) {
+    throw new ResolutionParseError(
+      "Failed to decode settlement_id topic XDR",
+      eventId,
+      err,
+      ResolutionErrorCode.BAD_SETTLEMENT_ID_XDR
     );
   }
 }
@@ -233,6 +310,90 @@ function parseResolutionPayload(
   };
 }
 
+/**
+ * Settlement payload shape: SettlementEvent { #[topic] settlement_id: u64,
+ * market_id: u32, amount: i128, settled_at: u64 }. settlement_id arrives via
+ * topics[1]; the remaining fields live in the value map. Legacy tuple/map
+ * shapes are rejected in production for the same reason as resolution
+ * payloads — a contract/topic drift must fail the batch, not silently
+ * produce a settlement row with a garbage id.
+ */
+function parseSettlementPayload(
+  decoded: unknown,
+  topicsXdr: string[],
+  eventId: string,
+  nodeEnv: string
+): NormalizedResolution {
+  if (Array.isArray(decoded)) {
+    if (isProductionEnv(nodeEnv)) {
+      throw new ResolutionParseError(
+        "Legacy ScvVec tuple settlement payload is not permitted in production — " +
+          "the contract must emit the canonical SettlementEvent shape " +
+          "(topics[1]=settlement_id, value={market_id, amount, settled_at})",
+        eventId,
+        undefined,
+        ResolutionErrorCode.LEGACY_SHAPE_REJECTED
+      );
+    }
+    if (decoded.length < 3) {
+      throw new ResolutionParseError(
+        "Tuple settlement payload must include settlement_id, market_id and amount",
+        eventId,
+        undefined,
+        ResolutionErrorCode.MISSING_FIELD
+      );
+    }
+    return {
+      marketId: String(decoded[1]),
+      outcome: toResolutionOutcome(decoded[2], eventId),
+      oracleAddress: "",
+      confidenceScore: null,
+    };
+  }
+
+  if (typeof decoded !== "object" || decoded === null) {
+    throw new ResolutionParseError(
+      "Settlement event value is not an ScvMap or tuple",
+      eventId,
+      undefined,
+      ResolutionErrorCode.VALUE_NOT_MAP_OR_TUPLE
+    );
+  }
+
+  const map = decoded as Record<string, unknown>;
+
+  if ("settlement_id" in map) {
+    if (isProductionEnv(nodeEnv)) {
+      throw new ResolutionParseError(
+        "Legacy ScvMap settlement payload is not permitted in production — " +
+          "the contract must emit the canonical SettlementEvent shape " +
+          "(topics[1]=settlement_id, value={market_id, amount, settled_at})",
+        eventId,
+        undefined,
+        ResolutionErrorCode.LEGACY_SHAPE_REJECTED
+      );
+    }
+    return {
+      marketId: String(field(map, "market_id", eventId)),
+      outcome: toResolutionOutcome(field(map, "outcome", eventId), eventId),
+      oracleAddress: "",
+      confidenceScore: null,
+    };
+  }
+
+  // Canonical on-chain shape: settlement_id via topics[1], market_id and
+  // amount in the value map. amount is validated as a money-path value.
+  const amount = toSettlementAmount(field(map, "amount", eventId), eventId);
+  return {
+    marketId: String(field(map, "market_id", eventId)),
+    outcome: toResolutionOutcome(field(map, "outcome", eventId), eventId),
+    oracleAddress: "",
+    confidenceScore: null,
+    settlementId: settlementIdFromTopic(topicsXdr, eventId),
+    settlementAmount: amount,
+  };
+}
+
 export interface ParseResolutionEventOptions {
   telemetry?: Telemetry;
   /** Defaults to `process.env.NODE_ENV`; override in tests only. */
@@ -244,17 +405,33 @@ export interface ParseResolutionEventOptions {
  *
  * @throws ResolutionParseError if the event is not a resolution event, the
  *   payload is malformed, or (in production) the payload uses a legacy
- *   dev-stub shape instead of the canonical on-chain layout.
+ *   shape that the canonical contract no longer emits.
  */
 export function parseResolutionEvent(
   event: RawChainEvent,
-  options?: ParseResolutionEventOptions
+  options: ParseResolutionEventOptions = {}
 ): NormalizedResolution {
-  const nodeEnv = options?.nodeEnv ?? process.env.NODE_ENV ?? "development";
+  const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV ?? "development";
+  const topicsXdr = event.topicsXdr ?? [];
 
-  if (!isResolutionEvent(event.topicsXdr)) {
+  if (isSettlementEvent(topicsXdr)) {
+    let decoded: unknown;
+    try {
+      decoded = decodeScVal(event.valueXdr);
+    } catch (err) {
+      throw new ResolutionParseError(
+        "Failed to decode settlement event value XDR",
+        event.id,
+        err,
+        ResolutionErrorCode.BAD_VALUE_XDR
+      );
+    }
+    return parseSettlementPayload(decoded, topicsXdr, event.id, nodeEnv);
+  }
+
+  if (!isResolutionEvent(topicsXdr)) {
     throw new ResolutionParseError(
-      `Event topic is not "${RESOLUTION_EVENT_TOPIC}"`,
+      `Event is not a resolution event (topic: ${String(topicsXdr[0])})`,
       event.id,
       undefined,
       ResolutionErrorCode.WRONG_TOPIC
@@ -273,26 +450,9 @@ export function parseResolutionEvent(
     );
   }
 
-  let payload: ResolutionPayload;
-  try {
-    payload = parseResolutionPayload(decoded, event.topicsXdr, event.id, nodeEnv);
-  } catch (err) {
-    if (isProductionEnv(nodeEnv)) {
-      options?.telemetry?.record("indexer.parser.legacy_shape_rejected", 1, {
-        parser: "resolution",
-        eventId: event.id,
-        contractId: event.contractId,
-        ledger: String(event.ledger),
-      });
-    }
-    throw err;
-  }
+  const payload = parseResolutionPayload(decoded, topicsXdr, event.id, nodeEnv);
 
   return {
-    eventId: event.id,
-    ledger: event.ledger,
-    ledgerClosedAt: event.ledgerClosedAt,
-    contractId: event.contractId,
     marketId: payload.marketId,
     outcome: payload.outcome,
     oracleAddress: payload.oracleAddress,
@@ -301,46 +461,25 @@ export function parseResolutionEvent(
 }
 
 /**
- * Parse a batch of raw events, skipping non-resolution events silently.
- * Errors are collected per-event so one bad payload never drops the batch.
+ * Parse a batch of RawChainEvents, skipping non-resolution/non-settlement
+ * events. Malformed events that match a known topic still throw so the
+ * caller can fail the batch closed rather than silently dropping a
+ * money-path event.
  */
 export function parseResolutionEvents(
   events: RawChainEvent[],
-  options?: ParseResolutionEventOptions
-): {
-  resolutions: NormalizedResolution[];
-  errors: ResolutionParseError[];
-} {
-  const resolutions: NormalizedResolution[] = [];
-  const errors: ResolutionParseError[] = [];
-  const telemetry = options?.telemetry;
-  const nodeEnv = options?.nodeEnv ?? process.env.NODE_ENV ?? "development";
+  options: ParseResolutionEventOptions = {}
+): NormalizedResolution[] {
+  const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV ?? "development";
+  const results: NormalizedResolution[] = [];
 
   for (const event of events) {
-    if (!isResolutionEvent(event.topicsXdr)) {
-      telemetry?.record("indexer.parser.unknown_topics", 1, {
-        parser: "resolution",
-        eventId: event.id,
-        contractId: event.contractId,
-        ledger: String(event.ledger),
-      });
+    const topicsXdr = event.topicsXdr ?? [];
+    if (!isResolutionEvent(topicsXdr) && !isSettlementEvent(topicsXdr)) {
       continue;
     }
-    try {
-      resolutions.push(parseResolutionEvent(event, { telemetry, nodeEnv }));
-    } catch (err) {
-      errors.push(
-        err instanceof ResolutionParseError
-          ? err
-          : new ResolutionParseError(
-              String(err),
-              event.id,
-              err,
-              ResolutionErrorCode.BAD_VALUE_XDR
-            )
-      );
-    }
+    results.push(parseResolutionEvent(event, { ...options, nodeEnv }));
   }
 
-  return { resolutions, errors };
+  return results;
 }

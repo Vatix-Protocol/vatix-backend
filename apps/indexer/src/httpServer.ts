@@ -21,6 +21,13 @@ export type ProbeErrorCode =
 export type RateLimitErrorCode = "RATE_LIMITED";
 
 /**
+ * Stable error codes for body-size-limit responses. Kept as a closed union
+ * so clients and dashboards can branch on exact strings rather than
+ * free-form messages (see BODY_LIMIT_POLICY.md).
+ */
+export type BodyLimitErrorCode = "PAYLOAD_TOO_LARGE";
+
+/**
  * Stable error codes for indexer authz failures. Kept as a closed union
  * so clients and dashboards can branch on exact strings.
  */
@@ -96,6 +103,57 @@ export const RATE_LIMIT_POLICIES: Record<string, RateLimitPolicy> = {
   "/markets": { limit: 60, windowMs: 60_000 },
   "/markets/:id": { limit: 120, windowMs: 60_000 },
 };
+
+/**
+ * Body-size-limit policy for a single external entrypoint. `maxBytes` is the
+ * maximum accepted request body size in bytes. The policy is deny-by-default:
+ * any entrypoint without an explicit policy is rejected rather than served
+ * with an unbounded body (BODY_LIMIT_POLICY.md).
+ */
+export interface BodyLimitPolicy {
+  /** Maximum accepted request body size in bytes. Must be > 0. */
+  maxBytes: number;
+}
+
+/**
+ * Per-entrypoint body-size-limit policies keyed by route path. Only paths
+ * listed here are served; everything else fails closed with
+ * PAYLOAD_TOO_LARGE so a new route cannot silently ship without a limit.
+ *
+ * The indexer HTTP surface is read-only (GET /markets, /markets/:id,
+ * /health, /ready, /metrics), so bodies are not expected at all; the limit
+ * is intentionally small to reject adversarial oversized payloads early.
+ */
+export const BODY_LIMIT_POLICIES: Record<string, BodyLimitPolicy> = {
+  "/health": { maxBytes: 1_024 },
+  "/ready": { maxBytes: 1_024 },
+  "/metrics": { maxBytes: 1_024 },
+  "/markets": { maxBytes: 8_192 },
+  "/markets/:id": { maxBytes: 8_192 },
+};
+
+/**
+ * Default body-size limit applied when a path has no explicit policy. Kept
+ * small so an unlisted route fails closed rather than accepting an unbounded
+ * body.
+ */
+export const DEFAULT_BODY_LIMIT_BYTES = 1_024;
+
+/**
+ * Resolves the body-size limit for a route path, falling back to the
+ * deny-by-default limit when no explicit policy is declared. Never returns
+ * an unbounded value.
+ */
+export function resolveBodyLimitBytes(
+  routePath: string,
+  policies: Record<string, BodyLimitPolicy> = BODY_LIMIT_POLICIES,
+): number {
+  const policy = policies[routePath];
+  if (policy && Number.isFinite(policy.maxBytes) && policy.maxBytes > 0) {
+    return policy.maxBytes;
+  }
+  return DEFAULT_BODY_LIMIT_BYTES;
+}
 
 /**
  * Minimal counter store surface. Implementations may be in-memory (single
@@ -325,6 +383,116 @@ const RATE_LIMIT_EXEMPT_PATHS = new Set(["/health", "/ready", "/metrics"]);
  * Rate limiting (#1084, RATE_LIMIT_POLICY.md):
  * - Every external entrypoint is rate limited via an onRequest hook that runs
  *   before route handlers. Policies are declared in RATE_LIMIT_POLICIES; a
- *   path without a policy is denied 
+ *   path without a policy is denied by default (RATE_LIMITED) so a new route
+ *   cannot silently ship without a policy. The hook runs before body parsing
+ *   so an oversized body cannot consume resources ahead of the limit check.
+ *
+ * Body size limits (#1164, BODY_LIMIT_POLICY.md):
+ * - Every external entrypoint enforces a maximum request body size via a
+ *   preParsing hook that runs before the body is buffered. Policies are
+ *   declared in BODY_LIMIT_POLICIES; a path without a policy falls back to
+ *   DEFAULT_BODY_LIMIT_BYTES (deny-by-default) so a new route cannot silently
+ *   ship without a limit. Oversized bodies are rejected fail-closed with HTTP
+ *   413 and the stable error code PAYLOAD_TOO_LARGE, carrying a correlation id
+ *   and never echoing request contents.
+ */
+export function buildHttpServer(opts: {
+  registry?: Registry;
+  readinessChecks?: ReadinessCheck[];
+  rateLimitStore?: RateLimitStore;
+  logger?: ProbeLogger;
+  bodyLimitPolicies?: Record<string, BodyLimitPolicy>;
+} = {}): FastifyInstance {
+  const app = fastify({ logger: false });
+  const rateLimitStore = opts.rateLimitStore ?? createInMemoryRateLimitStore();
+  const bodyLimitPolicies = opts.bodyLimitPolicies ?? BODY_LIMIT_POLICIES;
 
-/* … truncated 7874 chars — edit only what you need near the top … */
+  app.register(indexerCorsPlugin);
+
+  // Body size limit: reject oversized bodies before they are buffered.
+  // Runs before the rate-limit hook so an adversarial oversized payload is
+  // dropped as early as possible; both are deny-by-default.
+  app.addHook("preParsing", async (request, reply, payload) => {
+    const routePath = request.routeOptions?.url ?? request.url;
+    const maxBytes = resolveBodyLimitBytes(routePath, bodyLimitPolicies);
+    const declared = request.headers["content-length"];
+    const declaredBytes = typeof declared === "string" ? Number(declared) : NaN;
+    if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+      const correlationId = request.id;
+      if (opts.logger) {
+        opts.logger.warn(
+          { correlationId, routePath, maxBytes },
+          "request body rejected: payload too large",
+        );
+      }
+      reply.code(413).send({
+        code: "PAYLOAD_TOO_LARGE" satisfies BodyLimitErrorCode,
+        correlationId,
+      });
+      return reply;
+    }
+    return payload;
+  });
+
+  // Rate limiting: deny-by-default for any path without a policy.
+  app.addHook("onRequest", async (request, reply) => {
+    const routePath = request.routeOptions?.url ?? request.url;
+    if (RATE_LIMIT_EXEMPT_PATHS.has(routePath)) {
+      return;
+    }
+    const policy = RATE_LIMIT_POLICIES[routePath];
+    if (!policy) {
+      reply.code(429).send({
+        code: "RATE_LIMITED" satisfies RateLimitErrorCode,
+        correlationId: request.id,
+      });
+      return reply;
+    }
+    const key = rateLimitKey(routePath, undefined, request.ip);
+    let count: number;
+    try {
+      count = await rateLimitStore.increment(key, policy.windowMs);
+    } catch {
+      // Dependency outage: fail closed rather than serving unlimited.
+      reply.code(429).send({
+        code: "RATE_LIMITED" satisfies RateLimitErrorCode,
+        correlationId: request.id,
+      });
+      return reply;
+    }
+    if (count > policy.limit) {
+      reply.code(429).send({
+        code: "RATE_LIMITED" satisfies RateLimitErrorCode,
+        correlationId: request.id,
+      });
+      return reply;
+    }
+  });
+
+  app.get("/health", async () => ({ status: "ok" }));
+
+  app.get("/ready", async (_request, reply) => {
+    const result = await runReadinessChecks(
+      opts.readinessChecks ?? [],
+      _request.id,
+      opts.logger,
+    );
+    if (!result.ready) {
+      reply.code(503);
+    }
+    return result;
+  });
+
+  app.get("/metrics", async (_request, reply) => {
+    if (!opts.registry) {
+      reply.type("text/plain; version=0.0.4");
+      return "";
+    }
+    reply.type(opts.registry.contentType);
+    return opts.registry.metrics();
+  });
+
+  app.register(marketsRoutes);
+
+  return app;
+}

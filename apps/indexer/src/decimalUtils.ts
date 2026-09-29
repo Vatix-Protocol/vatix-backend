@@ -14,6 +14,10 @@ const COLLATERAL_DIVISOR = 10n ** COLLATERAL_SCALE; // 10_000_000n
 
 /** Maximum raw value that fits in Decimal(20, 8) with 7 fractional digits. */
 const MAX_RAW = 9_999_999_999_990_000_000n;
+/** `MAX_RAW` in collateral units, for range-checking before any bigint expansion. */
+const MAX_AMOUNT = new Decimal(MAX_RAW.toString()).div(
+  COLLATERAL_DIVISOR.toString()
+);
 
 /** Largest bigint that survives a bigint -> Number conversion without silent precision loss. */
 const MAX_SAFE_SHARE_QUANTITY = BigInt(Number.MAX_SAFE_INTEGER);
@@ -27,6 +31,8 @@ export const DECIMAL_UTILS_ERROR_CODES = {
   VALUE_OUT_OF_RANGE: "DECIMAL_VALUE_OUT_OF_RANGE",
   /** Input string is not a valid integer. */
   INVALID_INTEGER_STRING: "DECIMAL_INVALID_INTEGER_STRING",
+  /** Input is not a parseable decimal number (malformed string or NaN). */
+  INVALID_DECIMAL_VALUE: "DECIMAL_INVALID_VALUE",
   /** Decimal has more than 7 fractional digits (would truncate on-chain). */
   EXCESS_FRACTIONAL_DIGITS: "DECIMAL_EXCESS_FRACTIONAL_DIGITS",
   /** Share quantity is negative. */
@@ -60,7 +66,10 @@ export class DecimalUtilsError extends Error {
  * Error thrown when a value exceeds the Decimal(20, 8) column range.
  */
 export class DecimalValueOutOfRangeError extends DecimalUtilsError {
-  constructor(value: bigint | string | Decimal, correlationId?: string) {
+  constructor(
+    value: bigint | string | number | Decimal,
+    correlationId?: string
+  ) {
     const msg = typeof value === "bigint" || typeof value === "string"
       ? `value ${value} exceeds Decimal(20,8) column range`
       : `value ${value.toString()} exceeds Decimal(20,8) column range`;
@@ -80,6 +89,20 @@ export class DecimalInvalidIntegerStringError extends DecimalUtilsError {
       correlationId
     );
     this.name = "DecimalInvalidIntegerStringError";
+  }
+}
+
+/**
+ * Error thrown when input is not a parseable decimal number.
+ */
+export class DecimalInvalidValueError extends DecimalUtilsError {
+  constructor(input: string | number, correlationId?: string) {
+    super(
+      DECIMAL_UTILS_ERROR_CODES.INVALID_DECIMAL_VALUE,
+      `invalid decimal value "${input}"`,
+      correlationId
+    );
+    this.name = "DecimalInvalidValueError";
   }
 }
 
@@ -291,8 +314,9 @@ export function amountRawToDecimal(
  *
  * @param value - Decimal, string, or number to convert
  * @param options - Optional correlation ID, telemetry, and feature flags
+ * @throws DecimalInvalidValueError when value is NaN or not a parseable decimal
+ * @throws DecimalValueOutOfRangeError when value is non-finite or exceeds Decimal(20, 8) range
  * @throws DecimalExcessFractionalDigitsError when value has > 7 fractional digits
- * @throws DecimalValueOutOfRangeError when value exceeds Decimal(20, 8) range
  * @throws DecimalFeatureDisabledError when feature flag is disabled
  */
 export function decimalToAmountRaw(
@@ -305,26 +329,39 @@ export function decimalToAmountRaw(
 
   checkFeatureFlag("decimalToAmountRaw", flags, correlationId);
 
-  const decimal = value instanceof Decimal ? value : new Decimal(value);
-  const scaled = decimal.mul(COLLATERAL_DIVISOR.toString());
-
-  if (!scaled.isInteger()) {
-    const error = new DecimalExcessFractionalDigitsError(value, correlationId);
+  const fail = (error: DecimalUtilsError): never => {
     recordMetric(telemetry, "decimal_utils.decimalToAmountRaw.error", 1, {
       error_code: error.code,
     });
     throw error;
+  };
+
+  let decimal: Decimal;
+  try {
+    decimal = value instanceof Decimal ? value : new Decimal(value);
+  } catch {
+    return fail(new DecimalInvalidValueError(String(value), correlationId));
   }
 
-  const raw = BigInt(scaled.toFixed(0));
-  const absRaw = raw < 0n ? -raw : raw;
-  if (absRaw > MAX_RAW) {
-    const error = new DecimalValueOutOfRangeError(value, correlationId);
-    recordMetric(telemetry, "decimal_utils.decimalToAmountRaw.error", 1, {
-      error_code: error.code,
-    });
-    throw error;
+  if (decimal.isNaN()) {
+    return fail(new DecimalInvalidValueError(String(value), correlationId));
   }
+
+  // Range-check before scaling: an exponent-form input such as "1e1000000"
+  // must be rejected here, not expanded into a million-digit bigint first.
+  if (!decimal.isFinite() || decimal.abs().gt(MAX_AMOUNT)) {
+    return fail(new DecimalValueOutOfRangeError(value, correlationId));
+  }
+
+  // Count fractional digits on the input itself: checking `scaled.isInteger()`
+  // instead would let Decimal's 20-significant-digit rounding in `mul` hide
+  // excess digits (e.g. "1.00000000000000000001" silently becoming 1.0).
+  if (decimal.decimalPlaces() > Number(COLLATERAL_SCALE)) {
+    return fail(new DecimalExcessFractionalDigitsError(value, correlationId));
+  }
+
+  // Exact: at most 12 integer + 7 fractional digits fit in Decimal's precision.
+  const raw = BigInt(decimal.mul(COLLATERAL_DIVISOR.toString()).toFixed(0));
 
   recordMetric(telemetry, "decimal_utils.decimalToAmountRaw.success", 1, {
     has_correlation_id: correlationId ? "true" : "false",

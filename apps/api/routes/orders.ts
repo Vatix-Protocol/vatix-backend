@@ -39,6 +39,7 @@ const ERR = {
   VALIDATION: "ORDERS_VALIDATION_FAILED",
   CONFLICT: "ORDERS_IDEMPOTENCY_CONFLICT",
   UNAVAILABLE: "ORDERS_DEPENDENCY_UNAVAILABLE",
+  PAYLOAD_TOO_LARGE: "ORDERS_PAYLOAD_TOO_LARGE",
 } as const;
 
 function correlationId(request: FastifyRequest): string {
@@ -134,7 +135,6 @@ function enforceRateLimit(request: FastifyRequest, reply: { status: (code: numbe
   bucket.count += 1;
   return true;
 }
-
 /**
  * Admin routes matrix (issue #1177).
  *
@@ -175,8 +175,82 @@ function authorizeAdmin(
   return { ok: true, actor: user.id };
 }
 
+/**
+ * BODY_LIMIT_POLICY.md: external HTTP entrypoints enforce a configurable
+ * maximum request body size. Oversized bodies are rejected fail-closed with
+ * HTTP 413 and a stable error code before any handler logic runs. The limit is
+ * configurable via ORDERS_MAX_BODY_BYTES and defaults to 64 KiB.
+ */
+const DEFAULT_MAX_BODY_BYTES = 64 * 1024;
+
+function maxBodyBytes(): number {
+  const raw = process.env.ORDERS_MAX_BODY_BYTES;
+  if (typeof raw === "string" && raw.length > 0) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_MAX_BODY_BYTES;
+}
+
+/**
+ * Reusable body-limit guard. Returns true when the request may proceed and
+ * false when it has already been rejected with a stable error code and
+ * correlation id. Content-Length is checked first (cheap, fail-closed); when
+ * absent the declared limit is still enforced by the server parser.
+ */
+function enforceBodyLimit(
+  request: FastifyRequest,
+  reply: { status: (code: number) => { send: (body: unknown) => unknown } }
+): boolean {
+  const limit = maxBodyBytes();
+  const header = request.headers["content-length"];
+  if (typeof header === "string" && header.length > 0) {
+    const declared = Number.parseInt(header, 10);
+    if (Number.isFinite(declared) && declared > limit) {
+      reply.status(413).send({
+        error: {
+          code: ERR.PAYLOAD_TOO_LARGE,
+          message: "Request body exceeds the maximum allowed size",
+          correlationId: correlationId(request),
+          maxBytes: limit,
+        },
+      });
+      return false;
+    }
+  }
+  return true;
+}
+
+
 export async function ordersRoutes(fastify: FastifyInstance) {
   const prisma = getPrismaClient();
+
+  // Enforce the body-size policy at the plugin boundary so every route in this
+  // surface (including future privileged ones) is covered deny-by-default.
+  fastify.addHook("onRequest", async (request, reply) => {
+    if (!enforceBodyLimit(request, reply)) {
+      return reply;
+    }
+  });
+
+  fastify.get<{ Querystring: GetOrdersQuery }>(
+    "/orders",
+    {
+      schema: {
+        querystring:
+
+export async function ordersRoutes(fastify: FastifyInstance) {
+  const prisma = getPrismaClient();
+
+  // Enforce the body-size policy at the plugin boundary so every route in this
+  // surface (including future privileged ones) is covered deny-by-default.
+  fastify.addHook("onRequest", async (request, reply) => {
+    if (!enforceBodyLimit(request, reply)) {
+      return reply;
+    }
+  });
 
   fastify.get<{ Querystring: GetOrdersQuery }>(
     "/orders",
@@ -308,7 +382,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         // instead of creating a duplicate.
         if (body.idempotencyKey) {
           const existing = await prisma.order.findFirst({
-            where: { idempotencyKey: body.idempotencyKey },
+            where: { idempotencyKey: body.idempotencyKey, userId: auth.actor },
           });
           if (existing) {
             return reply.status(200).send({ order: existing, correlationId: correlation });
@@ -322,7 +396,8 @@ export async function ordersRoutes(fastify: FastifyInstance) {
             type: body.type,
             price: body.price ?? null,
             amount: body.amount,
-            status: "OPEN",
+            status: "OPEN" as OrderStatus,
+            userId: auth.actor,
             idempotencyKey: body.idempotencyKey ?? null,
           },
         });
@@ -374,17 +449,23 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           return fail(reply, 404, ERR.NOT_FOUND, "Order not found", correlation);
         }
 
+        // Deny-by-default: only the owner or an admin may cancel an order.
+        const user = (request as any).user;
+        if (order.userId !== auth.actor && user?.role !== "ADMIN") {
+          return fail(reply, 403, ERR.FORBIDDEN, "Not authorized to cancel this order", correlation);
+        }
+
         // Idempotent cancel: already-cancelled orders return the current state.
         if (order.status === "CANCELLED") {
           return reply.status(200).send({ order, correlationId: correlation });
         }
 
-        const updated = await prisma.order.update({
+        const cancelled = await prisma.order.update({
           where: { id },
-          data: { status: "CANCELLED" },
+          data: { status: "CANCELLED" as OrderStatus },
         });
 
-        reply.status(200).send({ order: updated, correlationId: correlation });
+        reply.status(200).send({ order: cancelled, correlationId: correlation });
       } catch {
         return fail(reply, 503, ERR.UNAVAILABLE, "Orders store unavailable", correlation);
       }
