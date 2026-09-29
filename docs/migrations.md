@@ -136,6 +136,30 @@ prisma/migrations/
 3. **Use `migrate deploy`** (not `migrate dev`) in production
 4. **Monitor migration logs** for errors
 
+### Indexes on large tables
+
+Adding an index to a table that is already large takes an `ACCESS EXCLUSIVE`
+lock for the duration of the build, which blocks reads and writes. On a
+live table, create the index with `CREATE INDEX CONCURRENTLY` instead:
+
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "trades_market_id_traded_at_idx"
+  ON "trades"("market_id", "traded_at" DESC);
+```
+
+`CONCURRENTLY` cannot run inside a transaction block, so such a migration
+must be a single statement per index and **cannot** be applied through
+`prisma migrate deploy`. Run it with `psql` against the target database and
+record it in the `_prisma_migrations` table (or mark it applied with
+`prisma migrate resolve --applied`) so the migration history stays consistent.
+
+An interrupted `CONCURRENTLY` build leaves an `INVALID` index, which Postgres
+will not use — so a failed run is a performance issue, never a correctness
+one, and re-running is safe when the statement uses `IF NOT EXISTS`.
+
+See [`docs/schema.md`](schema.md) for the trade-history indexes (#1144) and
+their rollback.
+
 ## CI/CD Integration
 
 The CI pipeline includes migration checks:

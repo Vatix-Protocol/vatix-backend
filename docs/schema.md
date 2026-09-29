@@ -171,18 +171,61 @@ for an `EXPLAIN`-based assertion that this index is used.
 Trade history is read through three shapes, each backed by its own index so a
 single query never degrades into a sequential scan:
 
-| Query shape                                                      | Index                                | Caller                               |
-| ---------------------------------------------------------------- | ------------------------------------ | ------------------------------------ |
-| Recent trades, no filter — `ORDER BY traded_at DESC`             | `trades_traded_at_idx`               | `AuditService.getTradeHistory`       |
-| Per-wallet trades — `buyer_address = $1` / `seller_address = $1` | `trades_buyer_address_traded_at_idx` | `AuditService.getWalletTradeHistory` |
-| / `trades_seller_address_traded_at_idx`                          |                                      |                                      |
-| Settlement sweep — `settlement_status = $1`                      | `trades_settlement_status_idx`       | `apps/workers/src/settlement`        |
-| Per-market order-book / trade lookups — `market_id = $1`         | `trades_market_id_idx`               | markets read API                     |
+| Query shape                                                        | Index                                            | Caller                               |
+| ------------------------------------------------------------------ | ------------------------------------------------ | ------------------------------------ |
+| Recent trades, no filter — `ORDER BY traded_at DESC`               | `trades_traded_at_idx`                           | `AuditService.getTradeHistory`       |
+| Per-wallet trades — `buyer_address = $1` / `seller_address = $1`   | `trades_buyer_address_traded_at_idx`             | `AuditService.getWalletTradeHistory` |
+| / `trades_seller_address_traded_at_idx`                            |                                                  |                                      |
+| Settlement sweep — `settlement_status = $1`                        | `trades_settlement_status_idx`                   | `apps/workers/src/settlement`        |
+| Per-market order-book / trade lookups — `market_id = $1`           | `trades_market_id_idx`                           | markets read API                     |
+| Market-scoped history — `market_id = $1` `ORDER BY traded_at DESC` | `trades_market_id_traded_at_idx` (#1144)         | `AuditService.getMarketTradeHistory` |
+| Unsettled trades, oldest-first                                     | `trades_settlement_status_traded_at_idx` (#1144) | `apps/workers/src/settlement`        |
 
 The composite `(address, traded_at DESC)` indexes are deliberately ordered
 address-first: every per-wallet history query filters on the address and sorts
 on `traded_at`, so this single index serves both the filter and the ordering
 without an extra sort node.
+
+#### Why the #1144 composite indexes exist
+
+An index only avoids a sort if it can return rows _in the requested order_, and
+every trade-history shape ends in `ORDER BY traded_at DESC`.
+
+- **Per-wallet history** was already covered. `buyer_address, traded_at DESC`
+  and `seller_address, traded_at DESC` each match one branch of the
+  `(buyer = $1 OR seller = $1)` predicate and return rows in order, so Postgres
+  does a `BitmapOr` and no sort.
+- **Market-scoped history** was not. The only index with `market_id` leading was
+  the single-column `trades_market_id_idx`, which Postgres can use to _find_ the
+  rows but which carries no ordering — so every request additionally sorted the
+  market's entire history before applying `LIMIT`, degrading linearly with
+  history depth. `trades_market_id_traded_at_idx` turns it into a range scan
+  that stops after `LIMIT` rows. This is the read path behind
+  `getMarketTradeHistory`.
+- **Settlement reconciliation** scans unsettled trades oldest-first. The
+  single-column `settlement_status` index finds the rows but returns them in
+  arbitrary order, so the queue sorted before taking a batch.
+  `trades_settlement_status_traded_at_idx` serves the scan in order.
+
+#### Operational notes (#1144)
+
+Both indexes are created with `CREATE INDEX CONCURRENTLY`, so the build does not
+take an `ACCESS EXCLUSIVE` lock on a live `trades` table. `CONCURRENTLY` cannot
+run inside a transaction block, which is why
+`prisma/migrations/20260926120000_add_trades_history_indexes/migration.sql` is a
+single statement per index and must be run with `psql` rather than
+`prisma migrate deploy` on any environment with live traffic — then record it
+with `prisma migrate resolve --applied`. See
+[docs/migrations.md](migrations.md#indexes-on-large-tables).
+
+`CREATE INDEX CONCURRENTLY` can leave an `INVALID` index behind if interrupted.
+Postgres will not use an invalid index, so a failed run is performance-only and
+never a correctness problem; re-running is safe because the statements use
+`IF NOT EXISTS`.
+
+**Rollback** (also `psql`-only) is `DROP INDEX CONCURRENTLY IF EXISTS` for each
+index. Dropping an index is always safe for correctness — it only reintroduces
+the sorts described above.
 
 ### `IndexedTrade`
 
