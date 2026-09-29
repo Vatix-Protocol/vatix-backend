@@ -16,11 +16,18 @@ just the data layer (for host-run development) or the fully containerized stack.
 | `redis`               | _(default)_                             | `vatix-redis`               | Redis 7 — caching + job queues                     |
 | `api`                 | `app`, `api`                            | `vatix-backend`             | Fastify HTTP API, port 3000                        |
 | `indexer`             | `app`, `indexer`                        | `vatix-indexer`             | Stellar event indexer                              |
+| `oracle`              | `app`, `oracle`                         | `vatix-oracle`              | Oracle poll loop — sources off-chain prices        |
 | `finalization-worker` | `app`, `workers`, `finalization-worker` | `vatix-finalization-worker` | Resolution finalization loop                       |
 | `oracle-worker`       | `app`, `workers`, `oracle-worker`       | `vatix-oracle-worker`       | Oracle submission queue consumer                   |
 | `settlement-worker`   | `app`, `workers`, `settlement-worker`   | `vatix-settlement-worker`   | Trade settlement queue consumer                    |
 | `migrate`             | `tools`, `migrate`                      | `vatix-migrate`             | One-off `prisma migrate deploy` job                |
 | `load-test`           | `tools`, `load-test`                    | `vatix-load-test`           | One-off local order-placement load test (~100 rps) |
+
+`oracle` is the poll loop (`apps/oracle/main.ts`); `oracle-worker` is the queue
+consumer that submits what the poll loop produced (`apps/workers/src/oracle/`).
+They are separate processes and separate profiles — `oracle` has no `workers`
+profile because it does not consume the settlement queue, and a
+`--profile workers` run therefore does not poll for prices.
 
 `finalization-worker`, `oracle-worker`, and `settlement-worker` have no HTTP
 port to probe, so each declares a `healthcheck:` that greps `/proc/1/cmdline`
@@ -45,6 +52,25 @@ All application images (`api`, `indexer`, `finalization-worker`,
 consistent across all processes. The `api` target additionally confirms
 `postgres`/`redis` healthchecks pass with the stack up.
 
+### Image hardening
+
+- **Ownership at copy time.** The runtime stage sets `--chown=vatix:vatix` on
+  every `COPY` instead of running a trailing `chown -R`. A recursive `chown`
+  writes a second full copy of the tree into a new layer, leaving root-owned
+  originals in the image history.
+- **No init shim.** PID 1 is the entrypoint itself. The worker healthchecks
+  identify liveness by grepping `/proc/1/cmdline` for the entrypoint path, so
+  putting tini/dumb-init in front would report every worker unhealthy.
+- **api liveness probe.** The `api` target declares a `HEALTHCHECK` against
+  `/v1/health` (liveness), never `/v1/ready` — readiness tracks dependency
+  health, so probing it would restart a healthy API during a Postgres blip. It
+  uses node's own `fetch`, since the slim base image ships neither curl nor
+  wget, and fails closed on any non-2xx, connection error, or timeout. The
+  other targets have no HTTP surface and keep their compose-level healthchecks.
+- **Pinned pnpm.** `corepack prepare pnpm@10 --activate` pins the package
+  manager to the major `engines` declares (and CI uses), so two builds of the
+  same commit cannot silently install different pnpm releases.
+
 ## Option A — Data layer only (host-run development)
 
 This is the original workflow: run infra in containers, run the app processes
@@ -53,7 +79,7 @@ on the host with `tsx`.
 1. **Clone the repository and install dependencies:**
 
    ```bash
-   git clone https://github.com/vatix-protocol/vatix-backend.git
+   git clone https://github.com/Vatix-Protocol/vatix-backend.git
    cd vatix-backend
    pnpm install
    ```
@@ -116,13 +142,14 @@ root, which defines one build `--target` per process.
    docker compose --profile app up -d --build
    ```
 
-   This builds and starts `postgres`, `redis`, `api`, `indexer`,
+   This builds and starts `postgres`, `redis`, `api`, `indexer`, `oracle`,
    `finalization-worker`, `oracle-worker`, and `settlement-worker`.
 
    To run a subset, use the matching profile instead of `app`, e.g.:
 
    ```bash
    docker compose --profile api up -d --build              # postgres + redis + api only
+   docker compose --profile oracle up -d --build           # price polling only
    docker compose --profile workers up -d --build          # postgres + redis + all workers
    docker compose --profile settlement-worker up -d --build # settlement consumer only
    ```

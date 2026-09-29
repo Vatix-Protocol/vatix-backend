@@ -21,10 +21,16 @@ ARG NODE_VERSION=22-bookworm-slim
 
 # ---------------------------------------------------------------------------
 # base — shared OS layer with pnpm enabled via corepack
+#
+# pnpm is pinned to the major the repo declares in `engines` (>=10) rather than
+# floating to whatever corepack last saw. Without a pin, two builds of the same
+# commit can install different pnpm releases and produce different images,
+# which makes a supply-chain diff impossible to reason about. CI uses
+# pnpm/action-setup with `version: 10`, so this keeps the image and CI aligned.
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION} AS base
 WORKDIR /app
-RUN corepack enable
+RUN corepack enable && corepack prepare pnpm@10 --activate
 
 # ---------------------------------------------------------------------------
 # deps — full install (including devDependencies) so the Prisma CLI is
@@ -38,11 +44,24 @@ RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
 # ---------------------------------------------------------------------------
 # prod-deps — production-only install for the runtime image. Keeps tooling
 # (vitest, prettier, husky, the prisma CLI, etc.) out of shipped images.
+#
+# `prepare: husky install` runs on every install and fails here because husky is
+# a devDependency that `--prod` deliberately omits — the build died with
+# "husky: not found" before ever reaching the runtime stages. `HUSKY=0` does not
+# help: husky's own guard never executes, because the shell cannot find the
+# binary in the first place.
+#
+# So the install skips scripts and then rebuilds only the packages whose
+# install scripts produce native binaries. `--ignore-scripts` on its own would
+# ship a Prisma query engine and esbuild binary that were never fetched; the
+# targeted `pnpm rebuild` keeps those working while leaving husky (and every
+# other dev-only hook) out of the image.
 # ---------------------------------------------------------------------------
 FROM base AS prod-deps
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile --prod
+    pnpm install --frozen-lockfile --prod --ignore-scripts \
+    && pnpm rebuild @prisma/engines @prisma/client prisma esbuild
 
 # ---------------------------------------------------------------------------
 # build — generate the Prisma client against the full source tree.
@@ -72,21 +91,31 @@ FROM base AS runtime
 ENV NODE_ENV=production
 RUN groupadd --system --gid 1001 vatix \
     && useradd --system --uid 1001 --gid vatix --no-create-home vatix
-COPY --from=prod-deps /app/node_modules ./node_modules
-COPY --from=build /app/package.json ./package.json
-COPY --from=build /app/tsconfig.json ./tsconfig.json
-COPY --from=build /app/src ./src
-COPY --from=build /app/packages ./packages
+# Every COPY is --chown'd rather than fixing ownership afterwards with a
+# recursive `chown`: a trailing `chown -R` writes a second full copy of the tree
+# into a new layer, so the root-owned originals stay in the image history and
+# the layer is twice the size. Copying with ownership set keeps a single layer
+# and leaves no root-owned copy of the source or node_modules behind.
+COPY --from=prod-deps --chown=vatix:vatix /app/node_modules ./node_modules
+COPY --from=build --chown=vatix:vatix /app/package.json ./package.json
+COPY --from=build --chown=vatix:vatix /app/tsconfig.json ./tsconfig.json
+COPY --from=build --chown=vatix:vatix /app/src ./src
+COPY --from=build --chown=vatix:vatix /app/packages ./packages
 # Copy apps source but exclude the tsconfig (CI-only, not needed at runtime).
 # We copy individual subdirectories so apps/tsconfig.json is never included.
-COPY --from=build /app/apps/indexer ./apps/indexer
-COPY --from=build /app/apps/oracle ./apps/oracle
-COPY --from=build /app/apps/workers ./apps/workers
-COPY --from=build /app/apps/api ./apps/api
-RUN chown -R vatix:vatix /app
+COPY --from=build --chown=vatix:vatix /app/apps/indexer ./apps/indexer
+COPY --from=build --chown=vatix:vatix /app/apps/oracle ./apps/oracle
+COPY --from=build --chown=vatix:vatix /app/apps/workers ./apps/workers
+COPY --from=build --chown=vatix:vatix /app/apps/api ./apps/api
 USER vatix
 # Docker/Kubernetes send SIGTERM to PID 1 on stop; entrypoints in every
 # process register SIGTERM/SIGINT handlers (see docs/graceful-shutdown.md).
+#
+# PID 1 is deliberately the entrypoint itself and not a tini/dumb-init wrapper:
+# the worker healthchecks in docker-compose.yml identify liveness by grepping
+# /proc/1/cmdline for the entrypoint path, so an init shim in front of it would
+# report every worker unhealthy. Node reaps its own children here, and the
+# shutdown path relies on PID 1 receiving SIGTERM directly.
 STOPSIGNAL SIGTERM
 
 # ---------------------------------------------------------------------------
@@ -94,6 +123,15 @@ STOPSIGNAL SIGTERM
 # ---------------------------------------------------------------------------
 FROM runtime AS api
 EXPOSE 3000
+# Liveness for the one target with an HTTP surface. Probes the *liveness*
+# route (/v1/health), never /v1/ready: readiness reflects dependency health,
+# so failing this check on a Postgres blip would restart an otherwise healthy
+# API and turn a degraded dependency into an outage.
+#
+# Uses node's own fetch rather than curl/wget, which the slim base image does
+# not ship. Fails closed on any non-2xx, connection error, or timeout.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["node", "-e", "const u='http://127.0.0.1:'+(process.env.PORT||3000)+'/v1/health';const c=new AbortController();const t=setTimeout(()=>c.abort(),4000);fetch(u,{signal:c.signal}).then(r=>{clearTimeout(t);process.exit(r.ok?0:1)}).catch(()=>{clearTimeout(t);process.exit(1)})"]
 CMD ["node_modules/.bin/tsx", "src/index.ts"]
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,39 @@ Provider retries use the shared `src/services/providerRetry.ts` budget. The
 oracle `maxRetries` setting counts retries after the initial call and defaults
 to `0`.
 
+### Retry configuration is validated before use (#1117)
+
+`apps/oracle/retry-utils.ts` validates every retry budget up front and fails
+closed with `RetryConfigError` (stable `code: "RETRY_CONFIG_INVALID"`, plus the
+offending `field`). Validation happens _before_ the first provider call, so a bad
+budget rejects without ever touching the provider.
+
+| Field            | Constraint                                        |
+| ---------------- | ------------------------------------------------- |
+| `maxRetries`     | Integer in `[0, 10]` (`MAX_RETRIES_LIMIT`)        |
+| `initialDelayMs` | Integer in `[0, 600000]` (`MAX_DELAY_MS_LIMIT`)   |
+| `maxDelayMs`     | Integer in `[0, 600000]`, and `>= initialDelayMs` |
+| `factor`         | Finite number, `>= 1`                             |
+| `useJitter`      | Boolean (defaults to `true`)                      |
+
+The rejections that matter most:
+
+- **`maxRetries` above the ceiling** is a misconfiguration, not a request for
+  more work. Honoured literally it becomes an unbounded wait on the money path.
+- **`factor < 1`** shrinks each successive delay, so the backoff collapses
+  toward zero and stops backing off — a tight retry loop against a provider that
+  is already failing.
+- **`maxDelayMs < initialDelayMs`** silently truncates every delay to the
+  ceiling, making the effective budget different from the configured one.
+
+`isRetryableError` classifies a **structured HTTP status** (`status`,
+`statusCode`, or `response.status`) ahead of message text when one is present.
+`408` and `429` are retryable — both are explicit "try again" signals, not a
+verdict on the request. Other `4xx` are permanent. Message matching remains as
+the fallback for errors that carry no status. Caller cancellation still wins
+over both, and a `TimeoutError` stays retryable: a deadline overrun is transient,
+whereas a cancellation is a decision.
+
 Fallback providers are available in development and test. When
 `NODE_ENV=production`, the oracle disables fallback and fails closed on any
 primary provider failure, so no secondary, stale, or default off-chain value

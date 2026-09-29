@@ -1,5 +1,22 @@
 # Resolutions Table Migration - Testing & Verification Guide
 
+> **These steps are automated.** Every acceptance criterion below is executed
+> against a real migrated Postgres by
+> [`tests/integration/resolutions-migration.test.ts`](tests/integration/resolutions-migration.test.ts).
+> Run them with:
+>
+> ```bash
+> docker compose up -d postgres redis
+> pnpm test:integration
+> ```
+>
+> The SQL is kept below as the reference the test implements; it is still useful
+> for poking at a database by hand. If you change the migration, re-run the
+> integration suite — the test asserts the partial unique index, the cascade
+> delete, the FK, every listed index, and the `ResolutionStatus` enum values, so
+> a migration that silently drops any of them fails CI rather than production
+> (#1118).
+
 ## Overview
 
 This migration adds the `resolutions` table to support finalized market resolutions. The table includes:
