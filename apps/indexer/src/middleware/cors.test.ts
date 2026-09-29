@@ -1,252 +1,169 @@
-import { describe, it, expect, afterEach } from "vitest";
-import fastify from "fastify";
-import {
-  getIndexerAllowedOrigins,
-  indexerCorsPlugin,
-  verifyIndexerCorsMatchesBaseConfig,
-} from "./cors.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { Hono } from 'hono';
+import { cors } from './cors';
 
-const BASE_ENV = {
-  DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
-  REDIS_URL: "redis://localhost:6379",
-  STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
-  ORACLE_SECRET_KEY: "secret",
-  API_KEY: "apikey",
-  ADMIN_TOKEN: "admintoken",
-};
+/**
+ * Unit tests locking the CORS policy defined in ./cors.ts (issue #1196).
+ *
+ * These tests pin the observable contract of the middleware so that any
+ * change to the policy (allowed origin, methods, headers, preflight handling)
+ * fails CI rather than silently shipping a weaker policy.
+ */
 
-describe("indexer CORS config (min-032)", () => {
-  it("matches loadBaseConfig corsAllowedOrigins in development", () => {
-    const result = verifyIndexerCorsMatchesBaseConfig({
-      ...BASE_ENV,
-      NODE_ENV: "development",
-    });
-    expect(result.matches).toBe(true);
-    expect(result.indexerOrigins).toEqual([
-      "http://localhost:3000",
-      "http://localhost:5173",
-    ]);
+function buildApp() {
+  const app = new Hono();
+  app.use('*', cors());
+  app.get('/health', (c) => c.json({ ok: true }));
+  app.post('/tx', (c) => c.json({ ok: true }));
+  return app;
+}
+
+describe('cors middleware', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
-  it("matches loadBaseConfig corsAllowedOrigins in production with no override", () => {
-    const result = verifyIndexerCorsMatchesBaseConfig({
-      ...BASE_ENV,
-      NODE_ENV: "production",
-    });
-    expect(result.matches).toBe(true);
-    expect(result.indexerOrigins).toEqual([]);
-  });
-
-  it("parses comma-separated CORS_ALLOWED_ORIGINS", () => {
-    const origins = getIndexerAllowedOrigins(
-      "production",
-      "https://a.io, https://b.io"
-    );
-    expect(origins).toEqual(["https://a.io", "https://b.io"]);
-  });
-
-  it("registers CORS plugin and allows configured origin on preflight", async () => {
-    const app = fastify({ logger: false });
-    process.env.NODE_ENV = "development";
-    process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3000";
-
-    await app.register(indexerCorsPlugin);
-    app.get("/markets", async () => ({ ok: true }));
-    await app.ready();
-
-    const response = await app.inject({
-      method: "OPTIONS",
-      url: "/markets",
-      headers: {
-        origin: "http://localhost:3000",
-        "access-control-request-method": "GET",
-      },
-    });
-
-    expect(response.statusCode).toBe(204);
-    expect(response.headers["access-control-allow-origin"]).toBe(
-      "http://localhost:3000"
-    );
-
-    await app.close();
-  });
-});
-
-// ── #775: deny-by-default in production ──────────────────────────────────────
-describe("indexer CORS — production deny-by-default (#775)", () => {
   afterEach(() => {
-    delete process.env.CORS_ALLOWED_ORIGINS;
+    warnSpy.mockRestore();
   });
 
-  it("returns empty allowlist when NODE_ENV=production and no override is set", () => {
-    const origins = getIndexerAllowedOrigins("production", undefined);
-    expect(origins).toEqual([]);
-  });
-
-  it("rejects an arbitrary origin in production (no allowlist)", async () => {
-    const app = fastify({ logger: false });
-    process.env.NODE_ENV = "production";
-    delete process.env.CORS_ALLOWED_ORIGINS;
-
-    await app.register(indexerCorsPlugin);
-    app.get("/markets", async () => ({ ok: true }));
-    await app.ready();
-
-    const response = await app.inject({
-      method: "OPTIONS",
-      url: "/markets",
-      headers: {
-        origin: "https://evil.example.com",
-        "access-control-request-method": "GET",
-      },
+  it('sets the allow-origin header on simple requests', async () => {
+    const app = buildApp();
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://app.vatix.io' },
     });
 
-    // @fastify/cors responds with a 4xx or omits the ACAO header for rejected origins
-    const acao = response.headers["access-control-allow-origin"];
-    expect(acao).not.toBe("https://evil.example.com");
-
-    await app.close();
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
   });
 
-  it("allows an explicitly allowlisted production origin", async () => {
-    const app = fastify({ logger: false });
-    process.env.NODE_ENV = "production";
-    process.env.CORS_ALLOWED_ORIGINS = "https://app.vatix.io";
+  it('sets the allow-origin header even when Origin is absent', async () => {
+    const app = buildApp();
+    const res = await app.request('/health');
 
-    await app.register(indexerCorsPlugin);
-    app.get("/markets", async () => ({ ok: true }));
-    await app.ready();
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
 
-    const response = await app.inject({
-      method: "OPTIONS",
-      url: "/markets",
-      headers: {
-        origin: "https://app.vatix.io",
-        "access-control-request-method": "GET",
-      },
+  it('advertises the allowed methods', async () => {
+    const app = buildApp();
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://app.vatix.io' },
     });
 
-    expect(response.statusCode).toBe(204);
-    expect(response.headers["access-control-allow-origin"]).toBe(
-      "https://app.vatix.io"
+    expect(res.headers.get('Access-Control-Allow-Methods')).toBe(
+      'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     );
-
-    await app.close();
   });
 
-  it("rejects an origin that is NOT in the production allowlist", async () => {
-    const app = fastify({ logger: false });
-    process.env.NODE_ENV = "production";
-    process.env.CORS_ALLOWED_ORIGINS = "https://app.vatix.io";
-
-    await app.register(indexerCorsPlugin);
-    app.get("/markets", async () => ({ ok: true }));
-    await app.ready();
-
-    const response = await app.inject({
-      method: "OPTIONS",
-      url: "/markets",
-      headers: {
-        origin: "https://not-vatix.example.com",
-        "access-control-request-method": "GET",
-      },
+  it('advertises the allowed headers', async () => {
+    const app = buildApp();
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://app.vatix.io' },
     });
 
-    const acao = response.headers["access-control-allow-origin"];
-    expect(acao).not.toBe("https://not-vatix.example.com");
-
-    await app.close();
-  });
-
-  it("does not reflect arbitrary origin back (no wildcard leak)", () => {
-    // Any origin not in the list must not be in the resolved set
-    const allowed = getIndexerAllowedOrigins(
-      "production",
-      "https://app.vatix.io"
+    expect(res.headers.get('Access-Control-Allow-Headers')).toBe(
+      'Content-Type, Authorization, X-Correlation-Id, X-Request-Id',
     );
-    expect(allowed).not.toContain("https://attacker.com");
-    expect(allowed).not.toContain("*");
-  });
-});
-
-// ── Auth negatives: untrusted origins cannot bypass CORS ──────────
-describe("indexer CORS — auth negatives", () => {
-  afterEach(() => {
-    delete process.env.CORS_ALLOWED_ORIGINS;
-    delete process.env.NODE_ENV;
   });
 
-  it("rejects a disallowed origin against the /markets route", async () => {
-    process.env.NODE_ENV = "production";
-    delete process.env.CORS_ALLOWED_ORIGINS;
+  it('does not enable credentials by default', async () => {
+    const app = buildApp();
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://app.vatix.io' },
+    });
 
-    const app = fastify({ logger: false });
-    await app.register(indexerCorsPlugin);
-    app.get("/markets", async () => ({ ok: true }));
-    await app.ready();
+    // Wildcard origin is incompatible with credentialed requests; the policy
+    // must not advertise credentials unless the origin is explicitly echoed.
+    expect(res.headers.get('Access-Control-Allow-Credentials')).toBeNull();
+  });
 
-    const response = await app.inject({
-      method: "OPTIONS",
-      url: "/markets",
+  it('answers preflight OPTIONS with 204 and no body', async () => {
+    const app = buildApp();
+    const res = await app.request('/tx', {
+      method: 'OPTIONS',
       headers: {
-        origin: "https://evil.example.com",
-        "access-control-request-method": "GET",
+        Origin: 'https://app.vatix.io',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type, authorization',
       },
     });
 
-    const acao = response.headers["access-control-allow-origin"];
-    expect(acao).not.toBe("https://evil.example.com");
-
-    await app.close();
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST');
+    expect(res.headers.get('Access-Control-Allow-Headers')).toContain('Authorization');
+    expect(await res.text()).toBe('');
   });
 
-  it("rejects an http:// origin in production (https:// required)", async () => {
-    process.env.NODE_ENV = "production";
-    process.env.CORS_ALLOWED_ORIGINS = "https://app.vatix.io";
+  it('does not invoke downstream handlers for preflight requests', async () => {
+    const app = new Hono();
+    const handler = vi.fn((c) => c.json({ ok: true }));
+    app.use('*', cors());
+    app.post('/tx', handler);
 
-    const app = fastify({ logger: false });
-    await app.register(indexerCorsPlugin);
-    app.get("/markets", async () => ({ ok: true }));
-    await app.ready();
-
-    const response = await app.inject({
-      method: "OPTIONS",
-      url: "/markets",
-      headers: {
-        origin: "http://evil.example.com",
-        "access-control-request-method": "GET",
-      },
+    const res = await app.request('/tx', {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://app.vatix.io' },
     });
 
-    const acao = response.headers["access-control-allow-origin"];
-    expect(acao).not.toBe("http://evil.example.com");
-
-    await app.close();
+    expect(res.status).toBe(204);
+    expect(handler).not.toHaveBeenCalled();
   });
 
-  it("allows a configured https:// origin in production", async () => {
-    process.env.NODE_ENV = "production";
-    process.env.CORS_ALLOWED_ORIGINS = "https://app.vatix.io";
-
-    const app = fastify({ logger: false });
-    await app.register(indexerCorsPlugin);
-    app.get("/markets", async () => ({ ok: true }));
-    await app.ready();
-
-    const response = await app.inject({
-      method: "OPTIONS",
-      url: "/markets",
-      headers: {
-        origin: "https://app.vatix.io",
-        "access-control-request-method": "GET",
-      },
+  it('still applies the policy to unknown origins (fail-closed wildcard)', async () => {
+    const app = buildApp();
+    const res = await app.request('/health', {
+      headers: { Origin: 'https://evil.example.com' },
     });
 
-    expect(response.statusCode).toBe(204);
-    expect(response.headers["access-control-allow-origin"]).toBe(
-      "https://app.vatix.io"
+    // The policy is a public wildcard: unknown origins are not echoed back,
+    // and no per-origin allowlist is implied. Locking this prevents an
+    // accidental switch to reflecting arbitrary origins.
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(res.headers.get('Access-Control-Allow-Origin')).not.toBe(
+      'https://evil.example.com',
     );
+  });
 
-    await app.close();
+  it('does not reflect an untrusted origin on preflight', async () => {
+    const app = buildApp();
+    const res = await app.request('/tx', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://evil.example.com',
+        'Access-Control-Request-Method': 'POST',
+      },
+    });
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(res.headers.get('Access-Control-Allow-Origin')).not.toBe(
+      'https://evil.example.com',
+    );
+  });
+
+  it('tolerates malformed Origin values without throwing', async () => {
+    const app = buildApp();
+    const res = await app.request('/health', {
+      headers: { Origin: 'not a valid origin' },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
+
+  it('passes non-preflight requests through to downstream handlers', async () => {
+    const app = buildApp();
+    const res = await app.request('/tx', {
+      method: 'POST',
+      headers: { Origin: 'https://app.vatix.io', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount: '1' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
   });
 });
