@@ -63,7 +63,8 @@ INDEXER_GAP_BACKFILL_ENABLED=false
 ```
 
 Existing knobs (`INDEXER_GAP_PAUSE_THRESHOLD`, `INDEXER_GAP_BACKFILL_MAX_LEDGERS`,
-`INDEXER_GAP_PAGING_WEBHOOK_URL`) are unchanged.
+`INDEXER_GAP_PAGING_WEBHOOK_URL`) are unchanged. The paging webhook's SSRF
+policy is described in [indexer-gap-paging-webhook.md](indexer-gap-paging-webhook.md).
 
 ## Tests
 

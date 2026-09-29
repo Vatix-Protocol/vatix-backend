@@ -227,10 +227,32 @@ JS-value conversion instead of call sites hand-rolling scale math:
 | `decimalToAmountRaw` | `Decimal(20,8)` → raw i128 (bigint)              | × 10^7, inverse of the above                                                                       |
 | `sharesRawToInt`     | raw i128 (bigint/string) → validated JS `number` | none — on-chain share quantities are already whole integers (see the `quantity` field table above) |
 
-All three throw `RangeError` on out-of-range/malformed input rather than
-silently truncating or losing precision (e.g. `sharesRawToInt` rejects a
-quantity past `Number.MAX_SAFE_INTEGER` instead of letting a bare
-`Number(bigint)` round it).
+All three throw a `DecimalUtilsError` subclass carrying a stable `code` on
+out-of-range/malformed input rather than silently truncating or losing
+precision (e.g. `sharesRawToInt` rejects a quantity past
+`Number.MAX_SAFE_INTEGER` instead of letting a bare `Number(bigint)` round it).
+
+### Overflow bounds (#1154)
+
+| Function             | Accepted range (inclusive)                                  | Rejected with                                                                                                                  |
+| -------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `amountRawToDecimal` | `±9_999_999_999_990_000_000` raw (`±999_999_999_999` units) | `DECIMAL_VALUE_OUT_OF_RANGE` (includes full `i128` range and larger)                                                           |
+| `decimalToAmountRaw` | `±999_999_999_999` units, at most 7 fractional digits       | `DECIMAL_VALUE_OUT_OF_RANGE` (also `±Infinity`), `DECIMAL_EXCESS_FRACTIONAL_DIGITS`, `DECIMAL_INVALID_VALUE` (`NaN`/malformed) |
+| `sharesRawToInt`     | `0 … Number.MAX_SAFE_INTEGER`                               | `DECIMAL_QUANTITY_EXCEEDS_SAFE_INTEGER`, `DECIMAL_NEGATIVE_QUANTITY`                                                           |
+
+Invariants pinned by the "decimal overflow boundaries" suite in
+`decimalUtils.test.ts`:
+
+- Each limit is accepted exactly and rejected one unit past it, for both
+  `bigint` and string input.
+- `decimalToAmountRaw` range-checks before scaling, so exponent-form input such
+  as `"1e1000000"` is rejected without being expanded into a huge bigint.
+- `decimalToAmountRaw` counts fractional digits on the input, so digits beyond
+  `Decimal`'s 20-significant-digit precision (`"1.00000000000000000001"`) are
+  rejected instead of being rounded away.
+- Every rejection increments `decimal_utils.<fn>.error{error_code}`, emits no
+  success metric, and carries the caller's `correlationId`. The
+  `DecimalUtilsFeatureFlags` kill-switches still apply before any parsing.
 
 **On contract test vectors (#948):** `vatix-contract/test-vectors/share-math.json`
 — the on-chain contract's own share-math fixtures — is not vendored into

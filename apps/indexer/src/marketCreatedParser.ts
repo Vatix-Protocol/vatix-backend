@@ -244,23 +244,39 @@ export function parseMarketCreatedEvents(
       continue;
     }
 
-    const dedupeKey = `${event.ledger}:${event.eventIndex}`;
-    if (seen.has(dedupeKey)) continue;
+    const dedupeKey = `${event.ledger}:${event.id}`;
+    if (seen.has(dedupeKey)) {
+      telemetry?.record("indexer.parser.replayed_event", 1, {
+        parser: "market_created",
+        eventId: event.id,
+        contractId: event.contractId,
+        ledger: String(event.ledger),
+      });
+      continue;
+    }
     seen.add(dedupeKey);
 
     try {
       markets.push(parseMarketCreatedChainEvent(event));
     } catch (err) {
-      errors.push(
-        err instanceof MarketCreatedParseError
-          ? err
-          : new MarketCreatedParseError(
-              String(err),
-              event.id,
-              err,
-              MarketCreatedErrorCode.BAD_VALUE_XDR
-            )
-      );
+      if (err instanceof MarketCreatedParseError) {
+        errors.push(err);
+        telemetry?.record("indexer.parser.parse_error", 1, {
+          parser: "market_created",
+          code: err.code ?? "UNKNOWN",
+          eventId: event.id,
+          contractId: event.contractId,
+          ledger: String(event.ledger),
+        });
+      } else {
+        errors.push(
+          new MarketCreatedParseError(
+            err instanceof Error ? err.message : String(err),
+            event.id,
+            err
+          )
+        );
+      }
     }
   }
 

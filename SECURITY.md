@@ -76,6 +76,13 @@ leaks via security@vatix.io.
   (`INDEXER_GAP_BACKFILL_ENABLED`). See
   [`docs/indexer-batch-writer-limits.md`](docs/indexer-batch-writer-limits.md)
   and [`docs/indexer-gap-backfill.md`](docs/indexer-gap-backfill.md).
+- **Outbound webhook SSRF guard**: The indexer's only outbound request to a
+  configurable URL is the gap-paging webhook. No route accepts client-supplied
+  webhook or callback URLs. The webhook URL is validated at startup (no
+  embedded credentials; https and a public host in production) and its host is
+  re-resolved and checked before every send. Redirects are refused, the call is
+  time-bounded, and the URL is never logged (`WEBHOOK_URL_*` codes). See
+  [`docs/indexer-gap-paging-webhook.md`](docs/indexer-gap-paging-webhook.md).
 - **Rate limiting**: Every external route is governed by an explicit policy in
   `RATE_LIMIT_POLICIES` (see `RATE_LIMIT_POLICY.md`). Routes without a policy
   are denied by default.

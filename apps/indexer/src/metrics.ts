@@ -116,6 +116,28 @@ export const gapBackfillOutcomeTotalCounter = new client.Counter({
   registers: [indexerMetricsRegistry],
 });
 
+/**
+ * Outcome of a persistent-gap paging webhook call (#1160).
+ *
+ * - `sent`       — receiver answered 2xx.
+ * - `http_error` — receiver answered non-2xx.
+ * - `blocked`    — host is (or resolves to) a private address; nothing sent.
+ * - `failed`     — network error, timeout, or refused redirect.
+ */
+export type GapPagingWebhookOutcome =
+  "sent" | "http_error" | "blocked" | "failed";
+
+/**
+ * Total number of paging webhook calls by outcome. Any non-`sent` outcome
+ * means operators were not paged for a persistent ledger gap (#1160).
+ */
+export const gapPagingWebhookTotalCounter = new client.Counter({
+  name: "vatix_indexer_gap_paging_webhook_total",
+  help: "Total number of persistent-gap paging webhook calls by outcome",
+  labelNames: ["outcome"],
+  registers: [indexerMetricsRegistry],
+});
+
 // ---------------------------------------------------------------------------
 // In-memory metrics service (also updates Prometheus metrics)
 // ---------------------------------------------------------------------------
@@ -255,6 +277,14 @@ export class InternalIndexerMetricsService {
    */
   incrementGapBackfillOutcome(outcome: GapBackfillOutcome, count = 1): void {
     gapBackfillOutcomeTotalCounter.inc({ outcome }, count);
+  }
+
+  /**
+   * Record the outcome of a persistent-gap paging webhook call (#1160).
+   * Counter-only — see `incrementBatchRejected`.
+   */
+  incrementGapPagingWebhook(outcome: GapPagingWebhookOutcome, count = 1): void {
+    gapPagingWebhookTotalCounter.inc({ outcome }, count);
   }
 
   getSnapshot(): IndexerMetricsSnapshot {
