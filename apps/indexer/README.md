@@ -220,8 +220,61 @@ disabled by default.
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET | `/markets` | List up to 100 active markets |
-| GET | `/markets/:id` | Fetch a single active market by ID |
+| GET    | `/markets`            | Paginated list of non-soft-deleted markets    |
+| GET    | `/markets/:id`        | Fetch a single non-soft-deleted market by ID  |
+| GET    | `/markets/:id/trades` | Paginated on-chain trade history for a market |
+
+### Pagination
+
+List endpoints use **keyset (cursor) pagination**, not `OFFSET`:
+
+- `limit` — page size, default `20`, maximum `100`. A larger value is rejected
+  with `400 MARKETS_VALIDATION_FAILED` so a caller cannot force an unbounded
+  scan of `trades`/`indexed_trades`.
+- `cursor` — the `id` of the last row on the previous page, taken verbatim
+  from the previous response's `nextCursor`. Omit it for the first page.
+
+A keyset cursor is used rather than `OFFSET` for two reasons: the indexer
+appends continuously, so an `OFFSET` page can skip or repeat rows when a row
+lands before the current offset between two requests; and `OFFSET n` makes
+Postgres walk and discard `n` rows, so deep pages degrade linearly.
+
+Response envelope (identical for every list route):
+
+```json
+{
+  "items": [ ... ],
+  "markets": [ ... ],
+  "count": 20,
+  "total": 137,
+  "nextCursor": "01J8...Z",
+  "correlationId": "req-1"
+}
+```
+
+`nextCursor` is `null` on the last page. The route reads one row past the page
+(`take: limit + 1`) to decide whether another page exists, so no second count
+query is needed. The `markets`/`trades` keys mirror `items`; new clients should
+read `items`.
+
+Trade history is served from `indexed_trades` (the on-chain event log), not
+the `trades` matching table — the contract remains the source of truth for what
+executed, while the matching table is a local projection that can lag. A
+market that is unknown or soft-deleted returns `404 TRADES_MARKET_NOT_FOUND`
+rather than an empty list, so trade volume cannot be probed for a market that
+is not publicly visible.
+
+### Error codes
+
+| Code                             | HTTP | Meaning                                             |
+| -------------------------------- | ---- | --------------------------------------------------- |
+| `MARKETS_VALIDATION_FAILED`      | 400  | Bad `limit`, `status`, cursor, or market id.        |
+| `MARKETS_NOT_FOUND`              | 404  | No such non-soft-deleted market.                    |
+| `TRADES_MARKET_NOT_FOUND`        | 404  | Market unknown or soft-deleted.                     |
+| `MARKETS_DEPENDENCY_UNAVAILABLE` | 503  | Database unavailable; fail-closed, no partial list. |
+
+Every query is bounded by a 5s abort signal so a slow database cannot pin a
+pooled connection indefinitely.
 
 ### CORS policy
 
@@ -244,10 +297,11 @@ logs a warning — this is a security gap for production deployments.
 
 ### Rate limiting
 
-| Path | Limit | Window |
-| ---- | ----- | ------ |
-| `/markets` | 60 req/min | 60 s |
-| `/markets/:id` | 120 req/min | 60 s |
+| Path                  | Limit       | Window |
+| --------------------- | ----------- | ------ |
+| `/markets`            | 60 req/min  | 60 s   |
+| `/markets/:id`        | 120 req/min | 60 s   |
+| `/markets/:id/trades` | 30 req/min  | 60 s   |
 
 Every response carries a `correlationId` for tracing.
 

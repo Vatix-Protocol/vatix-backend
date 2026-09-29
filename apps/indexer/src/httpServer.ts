@@ -176,6 +176,9 @@ export const RATE_LIMIT_POLICIES: Record<string, RateLimitPolicy> = {
   "/ready": { limit: 30, windowMs: 60_000 },
   "/markets": { limit: 60, windowMs: 60_000 },
   "/markets/:id": { limit: 120, windowMs: 60_000 },
+  // Trade history is the heaviest read: a full page is a 100-row range scan
+  // over indexed_trades, so it gets the tightest budget of the data routes.
+  "/markets/:id/trades": { limit: 30, windowMs: 60_000 },
 };
 
 /**
