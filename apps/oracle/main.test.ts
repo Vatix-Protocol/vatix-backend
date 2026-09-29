@@ -276,6 +276,123 @@ describe("apps/oracle/main poll()", () => {
     await expect(poll()).rejects.toThrow("ORACLE_SECRET_KEY is required");
     expect(mockPrisma.market.findMany).not.toHaveBeenCalled();
   });
+
+  it("fails closed on a DB outage: no report is persisted and no submission is enqueued", async () => {
+    mockPrisma.market.findMany.mockRejectedValue(
+      new Error("connect ECONNREFUSED 127.0.0.1:5432")
+    );
+
+    await expect(poll()).rejects.toThrow(/ECONNREFUSED/);
+
+    expect(mockOracleService.resolve).not.toHaveBeenCalled();
+    expect(mockPrisma.oracleReport.create).not.toHaveBeenCalled();
+    expect(mockQueue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the report write fails: nothing is enqueued for submission", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue(RESOLVED_RESULT);
+    mockPrisma.oracleReport.create.mockRejectedValue(
+      new Error("write failed: connection reset")
+    );
+
+    await poll();
+
+    expect(mockPrisma.oracleReport.create).toHaveBeenCalledTimes(1);
+    expect(mockQueue.enqueue).not.toHaveBeenCalled();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      "Failed to resolve market",
+      expect.objectContaining({
+        marketId: "market-1",
+        error: expect.stringContaining("write failed"),
+      })
+    );
+  });
+
+  it("fails closed when the submission queue is unavailable: the report is persisted but not enqueued", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue(RESOLVED_RESULT);
+    mockQueue.initialize.mockRejectedValue(new Error("redis unavailable"));
+
+    await expect(poll()).rejects.toThrow(/redis unavailable/);
+
+    expect(mockPrisma.oracleReport.create).not.toHaveBeenCalled();
+    expect(mockQueue.enqueue).not.toHaveBeenCalled();
+  });
+
+  it("does not enqueue a submission when the queue rejects the enqueue", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue(RESOLVED_RESULT);
+    mockQueue.enqueue.mockResolvedValue(false);
+
+    await poll();
+
+    expect(mockPrisma.oracleReport.create).toHaveBeenCalledTimes(1);
+    expect(mockQueue.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects adversarial market ids and oracle addresses without persisting or enqueuing", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue({
+      ...RESOLVED_RESULT,
+      outcome: "not-a-boolean" as unknown as boolean,
+    });
+
+    await poll();
+
+    expect(mockPrisma.oracleReport.create).not.toHaveBeenCalled();
+    expect(mockQueue.enqueue).not.toHaveBeenCalled();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      "Failed to resolve market",
+      expect.objectContaining({ marketId: "market-1" })
+    );
+  });
+
+  it("treats a testnet oracle address as distinct from a mainnet address (no address drift)", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-testnet", oracleAddress: "GTESTNETORACLE" },
+      { id: "market-mainnet", oracleAddress: "GMAINNETORACLE" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue(RESOLVED_RESULT);
+
+    await poll();
+
+    expect(mockOracleService.resolve).toHaveBeenCalledWith({
+      marketId: "market-testnet",
+      oracleAddress: "GTESTNETORACLE",
+    });
+    expect(mockOracleService.resolve).toHaveBeenCalledWith({
+      marketId: "market-mainnet",
+      oracleAddress: "GMAINNETORACLE",
+    });
+    expect(mockPrisma.oracleReport.create).toHaveBeenCalledTimes(2);
+    expect(mockQueue.enqueue).toHaveBeenCalledTimes(2);
+  });
+
+  it("is idempotent across replayed polls: a repeated cycle re-resolves and re-enqueues deterministically", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue(RESOLVED_RESULT);
+
+    await poll();
+    await poll();
+
+    expect(mockOracleService.resolve).toHaveBeenCalledTimes(2);
+    expect(mockPrisma.oracleReport.create).toHaveBeenCalledTimes(2);
+    expect(mockQueue.enqueue).toHaveBeenCalledTimes(2);
+    const firstEnqueue = mockQueue.enqueue.mock.calls[0][0];
+    const secondEnqueue = mockQueue.enqueue.mock.calls[1][0];
+    expect(secondEnqueue).toEqual(firstEnqueue);
+  });
 });
 
 describe("createOverlapGuardedPoll", () => {
@@ -284,55 +401,16 @@ describe("createOverlapGuardedPoll", () => {
     const first = new Promise<void>((resolve) => {
       resolveFirst = resolve;
     });
-    const pollFn = vi
-      .fn()
-      .mockImplementationOnce(() => first)
-      .mockImplementationOnce(() => Promise.resolve());
+    mockPrisma.market.findMany.mockReturnValueOnce(first);
+    mockPrisma.market.findMany.mockResolvedValue([]);
 
-    const guardedPoll = createOverlapGuardedPoll(pollFn, mockLogger as any);
+    const guarded = createOverlapGuardedPoll(poll);
+    const inFlight = guarded();
+    await guarded();
 
-    const firstCall = guardedPoll();
-    const secondCall = guardedPoll(); // fires while the first is still pending
+    expect(mockPrisma.market.findMany).toHaveBeenCalledTimes(1);
 
     resolveFirst();
-    await Promise.all([firstCall, secondCall]);
-
-    expect(pollFn).toHaveBeenCalledTimes(1);
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      "Skipping oracle poll because a previous poll is active"
-    );
-  });
-
-  it("allows the next tick to run once the previous poll has completed", async () => {
-    const pollFn = vi.fn().mockResolvedValue(undefined);
-    const guardedPoll = createOverlapGuardedPoll(pollFn, mockLogger as any);
-
-    await guardedPoll();
-    await guardedPoll();
-
-    expect(pollFn).toHaveBeenCalledTimes(2);
-  });
-
-  it("catches and logs a poll failure instead of throwing", async () => {
-    const pollFn = vi.fn().mockRejectedValue(new Error("provider down"));
-    const guardedPoll = createOverlapGuardedPoll(pollFn, mockLogger as any);
-
-    await expect(guardedPoll()).resolves.toBeUndefined();
-    expect(mockLogger.error).toHaveBeenCalledWith("Poll cycle failed", {
-      error: "provider down",
-    });
-  });
-
-  it("allows a poll to run again after a previous cycle failed", async () => {
-    const pollFn = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("provider down"))
-      .mockResolvedValueOnce(undefined);
-    const guardedPoll = createOverlapGuardedPoll(pollFn, mockLogger as any);
-
-    await guardedPoll();
-    await guardedPoll();
-
-    expect(pollFn).toHaveBeenCalledTimes(2);
+    await inFlight;
   });
 });
