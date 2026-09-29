@@ -252,12 +252,13 @@ export async function insertIfNew<T extends { idempotencyKey: string }>(
 
 /**
  * Insert a batch of records, deduplicating within the batch and against the
- * store. Records are processed sequentially so a mid-batch store outage fails
- * closed (throws) rather than partially applying and reporting success.
+ * store. Records are processed sequentially so that a duplicate key observed
+ * earlier in the same batch is not re-applied, and so that a store outage
+ * fails the whole batch closed rather than partially applying it.
  *
- * In-batch duplicates (same idempotencyKey appearing twice in one batch) are
- * collapsed before hitting the store, which protects against replayed oracle
- * resolution submissions arriving in the same poll window.
+ * Duplicate keys are handled deterministically: the first occurrence wins and
+ * every subsequent occurrence (in-batch or already persisted) is counted as a
+ * duplicate.
  */
 export async function insertBatchIfNew<T extends { idempotencyKey: string }>(
   records: T[],
@@ -265,13 +266,13 @@ export async function insertBatchIfNew<T extends { idempotencyKey: string }>(
   options: InsertIfNewOptions = {}
 ): Promise<InsertBatchResult<T>> {
   const inserted: T[] = [];
-  let duplicateCount = 0;
   const seen = new Set<string>();
+  let duplicateCount = 0;
 
   for (const record of records) {
     if (seen.has(record.idempotencyKey)) {
       duplicateCount += 1;
-      options.logger?.info("Skipping in-batch duplicate indexer event", {
+      options.logger?.info("Skipping duplicate indexer event", {
         idempotencyKey: record.idempotencyKey,
         correlationId: options.correlationId,
       });
