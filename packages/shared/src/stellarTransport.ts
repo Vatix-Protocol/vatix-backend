@@ -110,6 +110,12 @@ export class StellarTransport {
     operationName: string = "operation"
   ): Promise<T> {
     const maxAttempts = this.endpoints.length;
+    // Remember the last underlying failure. When every endpoint is exhausted
+    // we must surface *that* error rather than a generic aggregate string:
+    // callers classify the error to decide whether a retry can help, and an
+    // opaque "all endpoints exhausted" Error looks permanent even when the
+    // real cause was a transient socket reset.
+    let lastError: unknown = null;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const endpoint = this.endpoints[this.currentIndex];
@@ -160,6 +166,7 @@ export class StellarTransport {
 
         return result;
       } catch (error) {
+        lastError = error;
         const latency = metrics.lastAttemptAt
           ? Date.now() - metrics.lastAttemptAt.getTime()
           : 0;
@@ -199,6 +206,10 @@ export class StellarTransport {
           throw error;
         }
       }
+    }
+
+    if (lastError !== null) {
+      throw lastError;
     }
 
     throw new Error(

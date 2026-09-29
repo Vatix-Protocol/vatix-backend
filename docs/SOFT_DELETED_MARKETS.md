@@ -67,6 +67,7 @@ closed if a projection ever omits the column).
 | Matching validation + placement  | `src/matching/validation.ts`, `src/matching/matching-service.ts` | logic-level |
 | Oracle poll loop                 | `apps/oracle/main.ts`                                            | both        |
 | Indexer market routes            | `apps/indexer/src/**`                                            | both        |
+| Order write path (#1126)         | `apps/api/routes/orders.ts` (`POST /orders`)                     | logic-level |
 
 ## Market search (`GET /markets?q=…`) — #1145
 
@@ -93,6 +94,38 @@ Contract:
 - The query runs inside the shared statement-timeout wrapper (#983); a slow
   scan sheds the request (`ServiceUnavailableError`) instead of pinning a pool
   connection.
+
+## Order write path (`apps/api/routes/orders.ts`) — #1126
+
+`POST /orders` is a money-path write, so it applies **pattern 2** before it
+touches the orders table:
+
+```typescript
+const market = await prisma.market.findUnique({ where: { id: marketId } });
+if (!market || market.deletedAt !== null) {
+  return fail(
+    reply,
+    404,
+    "ORDERS_MARKET_NOT_FOUND",
+    "Market not found",
+    correlationId
+  );
+}
+```
+
+- A soft-deleted market is answered `404 ORDERS_MARKET_NOT_FOUND` — the same
+  answer as a market that never existed, so the endpoint cannot be used to
+  confirm that a retired market is still around.
+- `market.deletedAt !== null` treats `undefined` as deleted, so a projection
+  that ever omits the column fails closed instead of letting the order through.
+- The guard sits **after** the idempotency check. A replay of an
+  already-accepted order returns `200` with the original order and never
+  re-enters the market check, so a later soft delete does not orphan a request
+  the trader already had accepted.
+- Historical orders remain readable by their owner for audit
+  (`GET /orders`, `GET /orders/:id`). The invariant being enforced is that a
+  retired market cannot be _traded_; the audit trail of trades that happened
+  while it was live is deliberately preserved. See `apps/api/README.md`.
 
 ## Observability
 
@@ -147,6 +180,9 @@ why. There is no automatic restore path and no break-glass shortcut.
 - `tests/deleted-markets-ghost-gap.test.ts`,
   `tests/deleted-markets-fixes.test.ts` — the original ghost-market regression
   suite.
+- `apps/api/routes/orders.test.ts` — the order write path: a soft-deleted
+  market, a missing market, and an unresolvable `deletedAt` are all rejected
+  with `ORDERS_MARKET_NOT_FOUND` and no `order.create` is issued.
 
 ## Rollback
 

@@ -1,4 +1,5 @@
 import fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import { timingSafeEqual } from "node:crypto";
 import type { Registry } from "prom-client";
 import { indexerCorsPlugin } from "./middleware/cors.js";
 import { marketsRoutes } from "./routes/markets.js";
@@ -10,6 +11,14 @@ import { marketsRoutes } from "./routes/markets.js";
  */
 export type ProbeErrorCode =
   "NOT_READY" | "DEPENDENCY_UNAVAILABLE" | "UNAUTHORIZED";
+
+/**
+ * Stable error code for an unrouted path. Deny-by-default: an entrypoint
+ * that nobody registered must answer with a stable code and a correlation
+ * id, never Fastify's default body (which echoes the raw method/url and so
+ * hands an untrusted caller a free route enumeration signal).
+ */
+export type NotFoundErrorCode = "NOT_FOUND";
 
 /**
  * Stable error codes for rate-limit responses. Kept as a closed union so
@@ -61,6 +70,55 @@ export interface ProbeLogger {
 /** Current epoch milliseconds. Indirection keeps the clock swappable in tests. */
 function nowMs(): number {
   return Date.now();
+}
+
+/** Longest caller-supplied correlation id we are willing to echo. */
+const MAX_CORRELATION_ID_LENGTH = 128;
+
+/**
+ * Correlation ids are echoed verbatim into JSON bodies, log lines and the
+ * `x-correlation-id` response header, so a caller-supplied value is a
+ * log-forging / header-injection vector. Accept only short, printable,
+ * space-free ASCII; anything else is replaced with Fastify's generated id
+ * so tracing still works but the attacker cannot inject structure.
+ */
+const SAFE_CORRELATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/**
+ * Resolves the correlation id for a request: echoes `x-correlation-id` when
+ * it is well formed, otherwise generates one. Never throws and never returns
+ * an unvalidated caller-controlled string.
+ */
+export function resolveCorrelationId(
+  header: string | string[] | undefined,
+  fallback: string
+): string {
+  if (typeof header === "string" && SAFE_CORRELATION_ID.test(header)) {
+    return header;
+  }
+  return fallback;
+}
+
+/**
+ * Length-safe, constant-time secret comparison.
+ *
+ * `a === b` on a credential lets an attacker recover the expected value one
+ * character at a time by timing the 401. Comparing digests keeps the work
+ * independent of the secret length and the position of the first difference.
+ */
+function secretsMatch(provided: string | undefined, expected: string): boolean {
+  if (typeof provided !== "string") {
+    return false;
+  }
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) {
+    // Still burn a comparison so a length mismatch is not measurably faster
+    // than a value mismatch of the same length.
+    timingSafeEqual(b, b);
+    return false;
+  }
+  return timingSafeEqual(a, b);
 }
 
 /**
@@ -128,6 +186,15 @@ export const RATE_LIMIT_POLICIES: Record<string, RateLimitPolicy> = {
  */
 export interface RateLimitStore {
   increment: (key: string, windowMs: number) => Promise<number>;
+  /**
+   * Optional: evict entries whose window has reset. Implementations that
+   * never forget a key (the in-memory default) must implement this, otherwise
+   * a long-running process accumulates one entry per client identity ever
+   * seen — trivially inducible by rotating source addresses.
+   */
+  sweep?(now: number): void;
+  /** Optional: number of tracked keys, for tests and memory-pressure alerts. */
+  readonly size?: number;
 }
 
 /**
@@ -149,6 +216,17 @@ export function createInMemoryRateLimitStore(
       }
       existing.count += 1;
       return existing.count;
+    },
+    /** Test/ops hook: drops every window whose quota has already reset. */
+    sweep(ts = now()): void {
+      for (const [bucketKey, bucket] of buckets) {
+        if (ts >= bucket.resetAt) {
+          buckets.delete(bucketKey);
+        }
+      }
+    },
+    get size(): number {
+      return buckets.size;
     },
   };
 }
@@ -219,6 +297,18 @@ export async function runReadinessChecks(
  */
 const RATE_LIMIT_EXEMPT_PATHS = new Set(["/health", "/ready", "/metrics"]);
 
+/** The indexer serves no request bodies; anything larger is rejected. */
+const BODY_LIMIT_BYTES = 16 * 1024;
+
+/** Longest accepted path parameter (`/markets/:id`). */
+const MAX_PARAM_LENGTH = 256;
+
+/** Hard bound on how long a single request may occupy the server. */
+const REQUEST_TIMEOUT_MS = 15_000;
+
+/** Bound on how long an idle connection is kept open. */
+const CONNECTION_TIMEOUT_MS = 10_000;
+
 /**
  * Builds the indexer's read-only HTTP surface (GET /markets, /markets/:id,
  * GET /metrics) plus liveness (/health) and readiness (/ready) probes.
@@ -266,6 +356,27 @@ const RATE_LIMIT_EXEMPT_PATHS = new Set(["/health", "/ready", "/metrics"]);
  *   UNAUTHORIZED so untrusted clients cannot bypass the rate-limit policy.
  * - Probe endpoints (/health, /ready) are exempt from authz so that
  *   kubelet and load balancers can reach them without credentials.
+ * - When INDEXER_REQUIRED_PRINCIPAL / INDEXER_API_KEY are configured the
+ *   supplied credential is compared in constant time (#1128). A plain `===`
+ *   on a shared secret leaks the expected value one character at a time to
+ *   anyone who can time the 401. The denied value is never logged.
+ *
+ * Hardening (#1128):
+ * - The caller-supplied `x-correlation-id` is validated (short, printable,
+ *   space-free ASCII) before it is echoed into bodies, logs and the
+ *   `x-correlation-id` response header, so it cannot be used to forge log
+ *   lines or inject header structure. The resolved id is echoed on every
+ *   response, including denials and 404s.
+ * - The in-memory rate-limit store evicts windows that have already reset.
+ *   Without that, one entry per client identity ever seen is retained for the
+ *   lifetime of the process — an unbounded leak trivially inducible by
+ *   rotating source addresses.
+ * - Unrouted paths answer 404 with the stable NOT_FOUND code and a
+ *   correlation id instead of Fastify's default body, which echoes the raw
+ *   method/url and is a free route-enumeration signal.
+ * - The server bounds body size, path-parameter length, request lifetime and
+ *   connection lifetime, and keeps `trustProxy` off so `request.ip` — the
+ *   rate-limit identity — cannot be spoofed with X-Forwarded-For.
  *
  * Not started automatically: apps/indexer/src/main.ts only calls this when
  * INDEXER_HTTP_ENABLED=true, so the indexer's default off-chain
@@ -280,7 +391,21 @@ export async function buildIndexerHttpServer(options?: {
   /** Prometheus registry to serve at GET /metrics. Defaults to a new empty registry. */
   metricsRegistry?: Registry;
 }): Promise<FastifyInstance> {
-  const app = fastify({ logger: false });
+  // The indexer HTTP surface is read-only, so every request is a GET/HEAD
+  // with no body. Bounding the body, the header/URL parser and the request
+  // lifetime means a hostile client cannot pin a socket or stream an
+  // unbounded payload; a parameter this long can never be a real market id.
+  const app = fastify({
+    logger: false,
+    // trustProxy stays off: `request.ip` is the rate-limit identity, and
+    // honouring X-Forwarded-For without a trusted proxy in front would let a
+    // client mint an unlimited number of identities.
+    trustProxy: false,
+    bodyLimit: BODY_LIMIT_BYTES,
+    maxParamLength: MAX_PARAM_LENGTH,
+    requestTimeout: REQUEST_TIMEOUT_MS,
+    connectionTimeout: CONNECTION_TIMEOUT_MS,
+  });
   const readinessChecks = options?.readinessChecks ?? [];
   const logger = options?.logger;
   const rateLimitStore =
@@ -290,10 +415,15 @@ export async function buildIndexerHttpServer(options?: {
 
   await app.register(indexerCorsPlugin);
 
+  // Echo the resolved correlation id on every response (including the ones
+  // short-circuited below) so a client can always tie its own id to our logs.
   app.addHook("onRequest", async (request, reply) => {
     const routePath = request.routeOptions?.url ?? request.url.split("?")[0];
-    const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ?? request.id;
+    const correlationId = resolveCorrelationId(
+      request.headers["x-correlation-id"],
+      request.id
+    );
+    reply.header("x-correlation-id", correlationId);
 
     // Exempt ops-internal endpoints from rate limiting
     if (RATE_LIMIT_EXEMPT_PATHS.has(routePath)) {
@@ -312,10 +442,16 @@ export async function buildIndexerHttpServer(options?: {
     if (requiredPrincipal) {
       const principal =
         (request.headers["x-principal"] as string | undefined) ?? undefined;
-      if (principal !== requiredPrincipal) {
+      if (!secretsMatch(principal, requiredPrincipal)) {
         if (logger) {
+          // Never log the provided value — it is attacker-controlled.
           logger.warn(
-            { correlationId, routePath },
+            {
+              event: "indexer.authz.denied",
+              reason: "principal_mismatch",
+              correlationId,
+              routePath,
+            },
             "indexer authz rejected: principal mismatch"
           );
         }
@@ -330,10 +466,15 @@ export async function buildIndexerHttpServer(options?: {
     if (apiKey) {
       const providedKey =
         (request.headers["x-api-key"] as string | undefined) ?? undefined;
-      if (providedKey !== apiKey) {
+      if (!secretsMatch(providedKey, apiKey)) {
         if (logger) {
           logger.warn(
-            { correlationId, routePath },
+            {
+              event: "indexer.authz.denied",
+              reason: "api_key_mismatch",
+              correlationId,
+              routePath,
+            },
             "indexer authz rejected: invalid API key"
           );
         }
@@ -371,7 +512,7 @@ export async function buildIndexerHttpServer(options?: {
     } catch {
       if (logger) {
         logger.warn(
-          { correlationId, routePath },
+          { event: "indexer.ratelimit.unavailable", correlationId, routePath },
           "rate limit store unavailable"
         );
       }
@@ -383,7 +524,10 @@ export async function buildIndexerHttpServer(options?: {
 
     if (count > policy.limit) {
       if (logger) {
-        logger.warn({ correlationId, routePath }, "rate limit exceeded");
+        logger.warn(
+          { event: "indexer.ratelimit.exceeded", correlationId, routePath },
+          "rate limit exceeded"
+        );
       }
       setQuotaHeaders(reply, policy, Math.max(0, policy.limit - count));
       return reply
@@ -412,7 +556,12 @@ export async function buildIndexerHttpServer(options?: {
     if (!isProbe && !isPreflight && !principal) {
       if (logger) {
         logger.warn(
-          { correlationId, routePath },
+          {
+            event: "indexer.authz.denied",
+            reason: "missing_principal",
+            correlationId,
+            routePath,
+          },
           "unauthorized: missing x-principal"
         );
       }
@@ -424,8 +573,10 @@ export async function buildIndexerHttpServer(options?: {
   });
 
   app.get("/health", async (request, reply) => {
-    const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ?? request.id;
+    const correlationId = resolveCorrelationId(
+      request.headers["x-correlation-id"],
+      request.id
+    );
     if (logger) {
       logger.info({ correlationId, route: "/health" }, "liveness probe ok");
     }
@@ -436,8 +587,10 @@ export async function buildIndexerHttpServer(options?: {
   });
 
   app.get("/ready", async (request, reply) => {
-    const correlationId =
-      (request.headers["x-correlation-id"] as string | undefined) ?? request.id;
+    const correlationId = resolveCorrelationId(
+      request.headers["x-correlation-id"],
+      request.id
+    );
     const result = await runReadinessChecks(
       readinessChecks,
       correlationId,
@@ -470,6 +623,58 @@ export async function buildIndexerHttpServer(options?: {
       return "# No metrics registry configured\n";
     });
   }
+
+  // Deny-by-default for unrouted paths. Fastify's default 404 body echoes
+  // the method and url, which is a free route-enumeration signal and carries
+  // no correlation id. Answer with a stable code instead, and apply the same
+  // rate limit as every other entrypoint so a scanner cannot hammer it for
+  // free.
+  app.setNotFoundHandler(async (request, reply) => {
+    const correlationId = resolveCorrelationId(
+      request.headers["x-correlation-id"],
+      request.id
+    );
+    reply.header("x-correlation-id", correlationId);
+
+    const routePath = request.url.split("?")[0];
+    const policy = rateLimitPolicies[routePath];
+    if (policy) {
+      const principal =
+        (request.headers["x-principal"] as string | undefined) ?? undefined;
+      const key = rateLimitKey(routePath, principal, request.ip);
+      try {
+        const count = await rateLimitStore.increment(key, policy.windowMs);
+        setQuotaHeaders(reply, policy, Math.max(0, policy.limit - count));
+      } catch {
+        if (logger) {
+          logger.warn(
+            {
+              event: "indexer.ratelimit.unavailable",
+              correlationId,
+              routePath,
+            },
+            "rate limit store unavailable"
+          );
+        }
+        return reply.code(503).send({
+          code: "DEPENDENCY_UNAVAILABLE" satisfies ProbeErrorCode,
+          correlationId,
+        });
+      }
+    }
+
+    if (logger) {
+      logger.warn(
+        { event: "indexer.route.not_found", correlationId, routePath },
+        "no route matched request"
+      );
+    }
+
+    return reply.code(404).send({
+      code: "NOT_FOUND" satisfies NotFoundErrorCode,
+      correlationId,
+    });
+  });
 
   await app.register(marketsRoutes);
   return app;

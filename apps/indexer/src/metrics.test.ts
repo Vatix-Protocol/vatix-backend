@@ -80,6 +80,8 @@ describe("InternalIndexerMetricsService", () => {
       gapDetectedTotal: 0,
       backfillLedgersTotal: 0,
       parseErrorTotal: 0,
+      ingestionFailureTotal: 0,
+      consecutiveIngestionFailures: 0,
     });
   });
 
@@ -97,7 +99,44 @@ describe("InternalIndexerMetricsService", () => {
       gapDetectedTotal: 0,
       backfillLedgersTotal: 0,
       parseErrorTotal: 0,
+      ingestionFailureTotal: 0,
+      consecutiveIngestionFailures: 0,
     });
+  });
+
+  // ── Ingestion failure counter tests (#1127) ─────────────────────────────
+
+  it("ingestion failures start at 0", () => {
+    const service = new InternalIndexerMetricsService();
+    expect(service.getIngestionFailureTotal()).toBe(0);
+    expect(service.getConsecutiveIngestionFailures()).toBe(0);
+  });
+
+  it("incrementIngestionFailure accumulates the total and tracks the streak", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementIngestionFailure(1);
+    service.incrementIngestionFailure(2);
+
+    expect(service.getIngestionFailureTotal()).toBe(2);
+    expect(service.getConsecutiveIngestionFailures()).toBe(2);
+  });
+
+  it("resetIngestionFailures clears only the streak, not the total", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementIngestionFailure(4);
+    service.resetIngestionFailures();
+
+    expect(service.getConsecutiveIngestionFailures()).toBe(0);
+    expect(service.getIngestionFailureTotal()).toBe(1);
+  });
+
+  it("surfaces the failure counters in the snapshot and log fields", () => {
+    const service = new InternalIndexerMetricsService();
+    service.incrementIngestionFailure(3);
+
+    expect(service.getSnapshot().consecutiveIngestionFailures).toBe(3);
+    expect(service.toLogFields().consecutiveIngestionFailures).toBe(3);
+    expect(service.toLogFields().ingestionFailureTotal).toBe(1);
   });
 
   // ── Gap counter tests ────────────────────────────────────────────────────

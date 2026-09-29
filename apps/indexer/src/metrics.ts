@@ -64,6 +64,29 @@ export const parseErrorTotalCounter = new client.Counter({
   registers: [indexerMetricsRegistry],
 });
 
+/**
+ * Total number of ingestion ticks that failed (RPC fetch, parse, batch write
+ * or checkpoint flush). This is the alerting signal for a stalled indexer:
+ * a rising counter with a flat `vatix_indexer_lag` means the loop is alive
+ * but not making progress.
+ */
+export const ingestionFailureTotalCounter = new client.Counter({
+  name: "vatix_indexer_ingestion_failures_total",
+  help: "Total number of failed ingestion ticks since process start",
+  registers: [indexerMetricsRegistry],
+});
+
+/**
+ * Number of consecutive failed ingestion ticks. Stays at 0 while the loop is
+ * healthy; drives the loop's backoff schedule. Alert on this being > 0 for
+ * longer than the RPC/client timeout budget.
+ */
+export const consecutiveIngestionFailuresGauge = new client.Gauge({
+  name: "vatix_indexer_consecutive_ingestion_failures",
+  help: "Number of consecutive failed ingestion ticks (0 while healthy)",
+  registers: [indexerMetricsRegistry],
+});
+
 // ---------------------------------------------------------------------------
 // In-memory metrics service (also updates Prometheus metrics)
 // ---------------------------------------------------------------------------
@@ -79,6 +102,10 @@ export interface IndexerMetricsSnapshot {
   backfillLedgersTotal: number;
   /** Total number of event parse errors (all parsers) since process start. */
   parseErrorTotal: number;
+  /** Total number of failed ingestion ticks since process start. */
+  ingestionFailureTotal: number;
+  /** Consecutive failed ingestion ticks (0 while healthy). */
+  consecutiveIngestionFailures: number;
 }
 
 /** Typed payload used when logging a metrics snapshot. */
@@ -90,6 +117,8 @@ export interface IndexerMetricsLog {
   gapDetectedTotal: number;
   backfillLedgersTotal: number;
   parseErrorTotal: number;
+  ingestionFailureTotal: number;
+  consecutiveIngestionFailures: number;
 }
 
 export class InternalIndexerMetricsService {
@@ -101,6 +130,10 @@ export class InternalIndexerMetricsService {
   private backfillLedgersTotal = 0;
   /** Running total of event parse errors (all parsers) since process start. */
   private parseErrorTotal = 0;
+  /** Running total of failed ingestion ticks since process start. */
+  private ingestionFailureTotal = 0;
+  /** Consecutive failed ingestion ticks; reset on the first healthy tick. */
+  private consecutiveIngestionFailures = 0;
 
   setLatestIndexedLedgerSequence(sequence: number): void {
     this.latestIndexedLedgerSequence = sequence;
@@ -187,6 +220,32 @@ export class InternalIndexerMetricsService {
     return this.parseErrorTotal;
   }
 
+  /**
+   * Record a failed ingestion tick. `consecutive` is the running streak
+   * length; passing 0 (or calling {@link resetIngestionFailures}) means the
+   * loop recovered and the gauge must be cleared.
+   */
+  incrementIngestionFailure(consecutive = 1): void {
+    this.ingestionFailureTotal += 1;
+    this.consecutiveIngestionFailures = consecutive;
+    ingestionFailureTotalCounter.inc();
+    consecutiveIngestionFailuresGauge.set(consecutive);
+  }
+
+  /** Clear the consecutive-failure streak after a healthy tick. */
+  resetIngestionFailures(): void {
+    this.consecutiveIngestionFailures = 0;
+    consecutiveIngestionFailuresGauge.set(0);
+  }
+
+  getConsecutiveIngestionFailures(): number {
+    return this.consecutiveIngestionFailures;
+  }
+
+  getIngestionFailureTotal(): number {
+    return this.ingestionFailureTotal;
+  }
+
   getSnapshot(): IndexerMetricsSnapshot {
     return {
       latestIndexedLedgerSequence: this.latestIndexedLedgerSequence,
@@ -195,6 +254,8 @@ export class InternalIndexerMetricsService {
       gapDetectedTotal: this.gapDetectedTotal,
       backfillLedgersTotal: this.backfillLedgersTotal,
       parseErrorTotal: this.parseErrorTotal,
+      ingestionFailureTotal: this.ingestionFailureTotal,
+      consecutiveIngestionFailures: this.consecutiveIngestionFailures,
     };
   }
 
@@ -207,6 +268,8 @@ export class InternalIndexerMetricsService {
       gapDetectedTotal: this.gapDetectedTotal,
       backfillLedgersTotal: this.backfillLedgersTotal,
       parseErrorTotal: this.parseErrorTotal,
+      ingestionFailureTotal: this.ingestionFailureTotal,
+      consecutiveIngestionFailures: this.consecutiveIngestionFailures,
     };
   }
 }

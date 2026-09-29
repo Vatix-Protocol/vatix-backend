@@ -59,6 +59,63 @@ before landing.
 See `docs/runbooks/incident-runbook.md` for operational runbooks and
 `docs/health-probes.md` for probe design details.
 
+## Ingestion loop resilience (#1127)
+
+`src/ingestion.ts` runs the polling loop. It is designed so a dependency
+outage degrades the *loop*, never the data:
+
+- **Failure backoff.** The loop self-schedules a single-shot timer rather
+  than using `setInterval`, so the delay between ticks can grow with the
+  number of consecutive failures (doubling each time) up to
+  `tickBackoffMaxMs` (default 60 s). A downed RPC or database is retried
+  gently instead of at full rate for the whole outage, and the first
+  healthy tick restores the base `intervalMs` immediately. Set
+  `tickBackoffMaxMs: 0` to disable backoff entirely (kill-switch: restores
+  the previous fixed-interval behaviour with no code change).
+- **Typed, honest failures.** `StellarTransport.execute` rethrows the last
+  underlying error when every endpoint is exhausted, so the fetcher's
+  `EventFetcherError.code` / `retryable` reflect the real cause instead of
+  an opaque "all endpoints exhausted" string that reads as permanent.
+- **Cursor durability is separate from processing.** A failed checkpoint
+  flush is logged as `indexer.ingestion.checkpoint_failed` and retried on
+  the next tick; it does *not* count as a processing failure, because the
+  batch itself was already written and is re-ingested idempotently.
+- **Bounded, idempotent shutdown.** `stop()` clears its timeout handle (a
+  leaked timer would keep the process alive for the full 30 s budget after a
+  fast drain), never rejects when the final checkpoint flush fails, and is
+  a no-op on a second call. A duplicate `start()` is ignored rather than
+  double-scheduling ticks against the same cursor.
+
+### Metrics
+
+| Metric | Meaning |
+| --- | --- |
+| `vatix_indexer_ingestion_failures_total` | Failed ingestion ticks since process start. |
+| `vatix_indexer_consecutive_ingestion_failures` | Consecutive failed ticks (0 while healthy); drives the backoff. |
+
+Alert on a rising `..._failures_total` with a flat `vatix_indexer_lag` (the
+loop is alive but not making progress) and on
+`vatix_indexer_consecutive_ingestion_failures` staying above 0 for longer
+than the RPC/client timeout budget.
+
+## HTTP server hardening (#1128)
+
+- Caller-supplied `x-correlation-id` values are validated (short, printable,
+  space-free ASCII) before being echoed into bodies, logs and the
+  `x-correlation-id` response header. The resolved id is echoed on every
+  response, including authz denials and 404s.
+- `INDEXER_REQUIRED_PRINCIPAL` / `INDEXER_API_KEY` are compared in constant
+  time. A plain string comparison on a shared secret leaks the expected
+  value one character at a time to anyone who can time the `401`. The denied
+  value is never logged.
+- The in-memory rate-limit store evicts windows that have already reset, so
+  the process does not retain one entry per client identity ever seen.
+- Unrouted paths answer with a stable `NOT_FOUND` code and a correlation id
+  instead of Fastify's default body, which echoes the raw method/url.
+- The server bounds body size, path-parameter length, request lifetime and
+  connection lifetime, and keeps `trustProxy` off so `request.ip` - the
+  rate-limit identity - cannot be spoofed with `X-Forwarded-For`.
+
 ## Gap detection
 
 `src/gapDetector.ts` detects missing ledger ranges in the ingested event

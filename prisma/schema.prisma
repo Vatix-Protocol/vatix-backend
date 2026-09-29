@@ -116,6 +116,12 @@ model Order {
   /// increments this; writers condition their UPDATE on the version they
   /// read so a cancel racing a match (or vice versa) can never both "win".
   version        Int         @default(0)
+  /// Caller-supplied replay key for money-path writes (apps/api orders
+  /// surface). Unique and nullable: concurrent retries of the same request
+  /// resolve to one row, and rows written before this column existed (and any
+  /// request that omits the key) stay `NULL` — Postgres permits many NULLs in
+  /// a unique index, so the constraint never blocks ordinary traffic.
+  idempotencyKey String?     @unique @map("idempotency_key") @db.VarChar(64)
   createdAt      DateTime    @default(now()) @map("created_at")
 
   market Market @relation(fields: [marketId], references: [id], onDelete: Cascade)

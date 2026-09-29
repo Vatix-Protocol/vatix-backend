@@ -43,6 +43,18 @@ export interface IngestionDependencies {
   gapPagingConfig?: GapPagingConfig;
   /** @see GapDetectorConfig.nodeEnv */
   nodeEnv?: string;
+  /**
+   * Upper bound (ms) for the failure backoff applied between ingestion ticks.
+   *
+   * The loop doubles its delay on every consecutive failure up to this
+   * ceiling, so a downed RPC/DB is retried gently instead of at full
+   * `intervalMs` forever, and recovers to `intervalMs` on the first healthy
+   * tick. Set to 0 to disable backoff entirely (kill-switch: restores the
+   * previous fixed-interval behaviour without a code change).
+   */
+  tickBackoffMaxMs?: number;
+  /** Maximum time (ms) to wait for an in-flight tick during shutdown. */
+  shutdownTimeoutMs?: number;
   telemetry?: Telemetry;
 }
 
@@ -54,11 +66,28 @@ interface IngestionBatchResult {
 
 const HEARTBEAT_INTERVAL_MS = 60_000;
 
+/** Default ceiling for the consecutive-failure backoff between ticks. */
+const DEFAULT_TICK_BACKOFF_MAX_MS = 60_000;
+
+/** Default bound on how long shutdown waits for an in-flight tick. */
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
+
 export class PollingIngestionLoop implements IngestionLoop {
+  /**
+   * Self-rescheduling single-shot timer. A `setInterval` cannot express a
+   * per-tick backoff, and a fixed interval hammers a downed RPC/DB at full
+   * rate for the entire outage.
+   */
   private timer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private isTickInProgress = false;
   private activeTickPromise: Promise<void> | null = null;
+  /** Consecutive failed ticks; drives the backoff and the ops gauge. */
+  private consecutiveTickFailures = 0;
+  /** True once {@link stop} has run; blocks any further scheduling. */
+  private isStopped = false;
+  /** True once {@link start} has run; makes a double start a no-op. */
+  private isStarted = false;
   private cursor: string | null = null;
   private successfulBatchesSinceLastCheckpoint = 0;
   private batchesSinceLastHeartbeat = 0;
@@ -107,6 +136,18 @@ export class PollingIngestionLoop implements IngestionLoop {
   }
 
   async start(initialCursor: string | null): Promise<void> {
+    // A second start() would leave the first loop's timer running and double
+    // the ingestion rate against the same cursor. Refuse instead.
+    if (this.isStarted && !this.isStopped) {
+      this.logger.warn(
+        "Ingestion loop already started — ignoring duplicate start()",
+        {
+          event: "indexer.ingestion.duplicate_start",
+        }
+      );
+      return;
+    }
+
     this.cursor = initialCursor;
     const initialLedger = initialCursor ? Number(initialCursor) : null;
     if (initialLedger !== null && Number.isFinite(initialLedger)) {
@@ -134,19 +175,111 @@ export class PollingIngestionLoop implements IngestionLoop {
         : null,
       gapPauseThreshold: this.deps.gapPauseThreshold ?? 1000,
       backfillMaxLedgers: this.deps.backfillMaxLedgers ?? 500,
+      tickBackoffMaxMs:
+        this.deps.tickBackoffMaxMs ?? DEFAULT_TICK_BACKOFF_MAX_MS,
     });
 
-    await this.tick();
-    this.timer = setInterval(() => void this.tick(), this.intervalMs);
+    this.isStarted = true;
+    this.isStopped = false;
     this.heartbeatTimer = setInterval(
       () => this.emitHeartbeat(),
       HEARTBEAT_INTERVAL_MS
     );
+
+    // Run the first tick inline so start() resolves only once the loop has
+    // made its first (possibly failing) attempt, then hand over to the
+    // self-rescheduling timer.
+    await this.tick();
+    this.scheduleNextTick(this.intervalMs);
+  }
+
+  /**
+   * Schedules the next tick after `delayMs`. A single-shot timer (rather
+   * than setInterval) is what allows the delay to grow with the consecutive
+   * failure count and to be cancelled atomically on shutdown.
+   */
+  private scheduleNextTick(delayMs: number): void {
+    if (this.isStopped || this.isPaused) {
+      return;
+    }
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.tick().finally(() =>
+        this.scheduleNextTick(this.nextTickDelayMs())
+      );
+    }, delayMs);
+  }
+
+  /**
+   * Delay before the next tick: the configured interval while healthy,
+   * doubled per consecutive failure up to the configured ceiling.
+   */
+  private nextTickDelayMs(): number {
+    if (this.consecutiveTickFailures === 0) {
+      return this.intervalMs;
+    }
+    const maxMs = this.deps.tickBackoffMaxMs ?? DEFAULT_TICK_BACKOFF_MAX_MS;
+    if (maxMs <= 0) {
+      // Kill-switch: backoff disabled, always retry at the base interval.
+      return this.intervalMs;
+    }
+    const exponent = Math.min(this.consecutiveTickFailures, 30);
+    return Math.min(this.intervalMs * 2 ** exponent, maxMs);
+  }
+
+  /**
+   * Records a failed tick: bumps the streak, exports the counters, and logs
+   * the *next* delay so an operator can see the loop backing off instead of
+   * silently retrying at full rate.
+   */
+  private recordTickFailure(error: unknown): void {
+    this.consecutiveTickFailures += 1;
+    this.metrics.incrementIngestionFailure(this.consecutiveTickFailures);
+    this.telemetry.record("indexer.ingestion.tick_failed", 1, {
+      consecutiveFailures: String(this.consecutiveTickFailures),
+      nextDelayMs: String(this.nextTickDelayMs()),
+    });
+    this.logger.error("Ingestion tick failed", {
+      event: "indexer.ingestion.tick_failed",
+      error: error instanceof Error ? error.message : String(error),
+      consecutiveTickFailures: this.consecutiveTickFailures,
+      nextTickDelayMs: this.nextTickDelayMs(),
+    });
+  }
+
+  /** Clears the failure streak after a healthy tick. */
+  private recordTickSuccess(): void {
+    if (this.consecutiveTickFailures > 0) {
+      this.logger.info("Ingestion tick recovered", {
+        event: "indexer.ingestion.tick_recovered",
+        previousConsecutiveFailures: this.consecutiveTickFailures,
+      });
+    }
+    this.consecutiveTickFailures = 0;
+    this.metrics.resetIngestionFailures();
+  }
+
+  /**
+   * Exposed for ops/tests: how many consecutive ticks have failed. Stays 0
+   * while the loop is healthy.
+   */
+  getConsecutiveTickFailures(): number {
+    return this.consecutiveTickFailures;
   }
 
   async stop(): Promise<void> {
+    // Idempotent: a second stop() (double SIGTERM, or stop() after a failed
+    // shutdown) must not re-flush or schedule anything.
+    if (this.isStopped) {
+      return;
+    }
+    this.isStopped = true;
+
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
     if (this.heartbeatTimer) {
@@ -158,13 +291,18 @@ export class PollingIngestionLoop implements IngestionLoop {
       this.logger.info(
         "Waiting for active ingestion tick to complete before stop..."
       );
-      // Set 30 second timeout to prevent indefinite wait if tick hangs
-      const tickTimeoutMs = 30_000;
+      // Bound the wait so a hung tick cannot block shutdown forever. The
+      // timeout handle is always cleared — a leaked timer would keep the
+      // event loop (and therefore the process) alive for the full 30s after
+      // a *successful* drain.
+      const tickTimeoutMs =
+        this.deps.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
           this.activeTickPromise,
-          new Promise<void>((_, reject) =>
-            setTimeout(
+          new Promise<void>((_, reject) => {
+            timeoutId = setTimeout(
               () =>
                 reject(
                   new Error(
@@ -172,22 +310,38 @@ export class PollingIngestionLoop implements IngestionLoop {
                   )
                 ),
               tickTimeoutMs
-            )
-          ),
+            );
+          }),
         ]);
       } catch (error) {
         this.logger.warn("Ingestion tick timeout on shutdown", {
           error: error instanceof Error ? error.message : String(error),
+          shutdownTimeoutMs: tickTimeoutMs,
         });
+      } finally {
+        if (timeoutId !== undefined) clearTimeout(timeoutId);
       }
     }
 
-    await this.flushCheckpoint(true);
+    // Fail-closed shutdown: a store outage must not turn into an unhandled
+    // rejection that kills the process before the final log line. The cursor
+    // stays on the previous value and the batch is re-ingested (idempotently)
+    // on the next start.
+    try {
+      await this.flushCheckpoint(true);
+    } catch (error) {
+      this.logger.error("Final checkpoint flush failed on shutdown", {
+        event: "indexer.ingestion.checkpoint_failed",
+        phase: "shutdown",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     this.logger.info("Indexer ingestion loop stopped", {
       finalCursor: this.cursor,
       latestIndexedLedgerSequence:
         this.metrics.getLatestIndexedLedgerSequence(),
+      consecutiveTickFailures: this.consecutiveTickFailures,
     });
   }
 
@@ -219,12 +373,26 @@ export class PollingIngestionLoop implements IngestionLoop {
           );
           this.successfulBatchesSinceLastCheckpoint += 1;
           this.batchesSinceLastHeartbeat += 1;
-          await this.flushCheckpoint(false);
+          // A checkpoint failure is *not* a processing failure: the batch is
+          // already durably written and the cursor is retried on the next
+          // tick, so it is logged separately and does not back the loop off.
+          try {
+            await this.flushCheckpoint(false);
+          } catch (error) {
+            this.logger.error(
+              "Checkpoint flush failed — will retry next tick",
+              {
+                event: "indexer.ingestion.checkpoint_failed",
+                phase: "tick",
+                cursor: this.cursor,
+                error: error instanceof Error ? error.message : String(error),
+              }
+            );
+          }
         }
+        this.recordTickSuccess();
       } catch (error) {
-        this.logger.error("Ingestion tick failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        this.recordTickFailure(error);
       } finally {
         this.isTickInProgress = false;
         this.activeTickPromise = null;
@@ -282,6 +450,8 @@ export class PollingIngestionLoop implements IngestionLoop {
       ledgerDelta,
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
       isPaused: this.isPaused,
+      consecutiveTickFailures: this.consecutiveTickFailures,
+      nextTickDelayMs: this.nextTickDelayMs(),
     });
 
     this.batchesSinceLastHeartbeat = 0;
