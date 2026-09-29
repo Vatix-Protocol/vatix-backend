@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { Pool } from "pg";
+import { readFileSync } from "node:fs";
 import {
   getTestPrismaClient,
   getTestPool,
@@ -146,6 +147,69 @@ describe("Database Schema Tests", () => {
       expect(indexes).toContain("markets_status_idx");
       expect(indexes).toContain("markets_end_time_idx");
       expect(indexes).toContain("markets_status_end_time_idx");
+    });
+
+    // Issue #1144: the trade-history read paths are
+    //   WHERE (buyer_address = $1 OR seller_address = $1) [AND market_id = $2]
+    //     [AND traded_at BETWEEN ..] ORDER BY traded_at DESC
+    //   WHERE market_id = $1 [AND traded_at BETWEEN ..] ORDER BY traded_at DESC
+    // These composites make both index range scans that can return rows
+    // already in traded_at order, instead of a bitmap scan plus a sort.
+    it("should verify trades table history indexes", async () => {
+      const result = await pool.query(`
+        SELECT indexname
+        FROM pg_indexes
+        WHERE tablename = 'trades'
+        ORDER BY indexname;
+      `);
+
+      const indexes = result.rows.map((row) => row.indexname);
+
+      // Per-wallet history, one index per side of the OR.
+      expect(indexes).toContain("trades_buyer_address_traded_at_idx");
+      expect(indexes).toContain("trades_seller_address_traded_at_idx");
+      // Market-scoped history (#1144).
+      expect(indexes).toContain("trades_market_id_traded_at_idx");
+      // Settlement reconciliation scans unsettled trades oldest-first (#1144).
+      expect(indexes).toContain("trades_settlement_status_traded_at_idx");
+    });
+
+    it("should verify trade history indexes are declared in the Prisma schema", () => {
+      // Guards against the migration and schema.prisma drifting apart, which
+      // would let a fresh `prisma migrate dev` drop the indexes.
+      expect(prisma).toBeDefined();
+      const dmmf = (
+        prisma as unknown as {
+          _runtimeDataModel: {
+            models: {
+              name: string;
+              uniqueFields: string[][];
+              primaryKey: { name: string | null } | null;
+            }[];
+          };
+        }
+      )._runtimeDataModel;
+
+      const trades = dmmf.models.find((m) => m.name === "Trade");
+      expect(trades).toBeDefined();
+
+      // Re-read the schema file: the runtime DMMF omits secondary indexes.
+      const schema = readFileSync("prisma/schema.prisma", "utf8");
+      const tradeModel = schema.slice(
+        schema.indexOf("model Trade {"),
+        schema.indexOf("model TradeAuditEvent {")
+      );
+
+      expect(tradeModel).toContain("@@index([marketId, tradedAt(sort: Desc)])");
+      expect(tradeModel).toContain(
+        "@@index([settlementStatus, tradedAt(sort: Desc)])"
+      );
+      expect(tradeModel).toContain(
+        "@@index([buyerAddress, tradedAt(sort: Desc)])"
+      );
+      expect(tradeModel).toContain(
+        "@@index([sellerAddress, tradedAt(sort: Desc)])"
+      );
     });
 
     it("should verify orders table indexes", async () => {
