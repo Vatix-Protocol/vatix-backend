@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed a syntax error in `apps/oracle/primary-adapter.ts` that prevented the
+  oracle service from loading at all. `PrimaryAdapter.resolve()` now returns a
+  populated `ProviderResult` on the success path, and a missing `await` that
+  let primary-provider failures bypass the `catch` was corrected so
+  `vatix_oracle_primary_provider_attempts_total` records them.
 - Public API routes are canonical under `/v1/*`. Update frontend clients
   (`apps/web`) and external integrations to use `/v1/health`, `/v1/ready`,
   `/v1/markets`, `/v1/orders`, `/v1/orders/user/:address`,
