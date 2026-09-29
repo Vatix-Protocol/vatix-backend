@@ -218,4 +218,57 @@ describe("raw-stream DLQ replay — real execution path (#1136)", () => {
     expect(await redis.xlen(ORACLE_DLQ)).toBe(1);
     expect(await redis.xlen(ORACLE_LIVE)).toBe(0);
   });
+
+  // Regression: `logDeadLetter()` writes a dedupe mark at
+  // `{prefix}dead-letter:dedupe:{queue}:{payloadHash}` on every dead-letter,
+  // and that key is a plain STRING. `SCAN MATCH {prefix}dead-letter:*` returns
+  // it alongside the real streams, so the CLI used to call XRANGE on it, get
+  // WRONGTYPE, and abort the whole run with exit 1 — an unqualified replay
+  // could never recover anything on a Redis that had ever failed a job (#1136).
+  it("replays the real stream even when a dedupe mark sits in the same namespace", async () => {
+    await seedDeadLetter(ORACLE_DLQ, "oracle-submission", { marketId: "m-4" });
+    await redis.set(
+      `${DLQ_PREFIX}dedupe:oracle-submission:${"a".repeat(64)}`,
+      "1",
+      "EX",
+      3600
+    );
+
+    const { code, lines } = await runCli(["--queue", "oracle-submission"]);
+
+    expect(code).toBe(0);
+    const done = lines.find(
+      (l) => l.message === "DLQ replay completed"
+    ) as Record<string, unknown>;
+    expect(done.replayed).toBe(1);
+
+    expect(await redis.xlen(ORACLE_LIVE)).toBe(1);
+    // The dedupe mark is left alone: it is bookkeeping, not a message.
+    expect(
+      await redis.exists(
+        `${DLQ_PREFIX}dedupe:oracle-submission:${"a".repeat(64)}`
+      )
+    ).toBe(1);
+  });
+
+  // The same collision applies to a fully unqualified `pnpm replay:dlq`, which
+  // sweeps every queue — the default an operator reaches for during an incident.
+  it("an unqualified replay is not broken by dedupe marks from another queue", async () => {
+    await seedDeadLetter(ORACLE_DLQ, "oracle-submission", { marketId: "m-5" });
+    await redis.set(
+      `${DLQ_PREFIX}dedupe:settlement:${"b".repeat(64)}`,
+      "1",
+      "EX",
+      3600
+    );
+
+    const { code, lines } = await runCli([]);
+
+    expect(code).toBe(0);
+    const done = lines.find(
+      (l) => l.message === "DLQ replay completed"
+    ) as Record<string, unknown>;
+    expect(done.replayed).toBe(1);
+    expect(await redis.xlen(ORACLE_LIVE)).toBe(1);
+  });
 });

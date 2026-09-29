@@ -1,4 +1,11 @@
 import type { ILogger } from "./logger.js";
+import {
+  KNOWN_NETWORK_PASSPHRASES,
+  isKnownStellarNetwork,
+  normalizeStellarNetwork,
+  type KnownStellarNetwork,
+  type StellarEndpointKind,
+} from "./networkConsistency.js";
 
 export type CircuitState = "closed" | "open" | "half-open";
 
@@ -292,11 +299,80 @@ export function parseEndpointUrls(input: string | undefined): string[] {
  * Precedence:
  * 1. STELLAR_HORIZON_URLS / STELLAR_RPC_URLS (comma-separated)
  * 2. STELLAR_HORIZON_URL / STELLAR_RPC_URL (single, legacy)
- * 3. Defaults (public Stellar endpoints)
+ * 3. Defaults (public Stellar endpoints for the declared network)
+ *
+ * #1133/#1134/#1135 — the defaults are derived from `STELLAR_NETWORK`, the
+ * single source of truth for the target chain, and not from the passphrase.
+ * The previous implementation inferred the network by string-comparing the
+ * passphrase to the mainnet one, so a deployment that declared
+ * `STELLAR_NETWORK=mainnet` but had no `SOROBAN_NETWORK_PASSPHRASE` set
+ * silently resolved the **testnet** Horizon and RPC hosts. Every other boot
+ * gate already treats `STELLAR_NETWORK` as authoritative, so deriving the
+ * defaults from anything else contradicted the documented behaviour in
+ * docs/env-validation.md ("the default is chosen from STELLAR_NETWORK").
+ *
+ * Resolution order for the declared network:
+ *   1. `STELLAR_NETWORK` when it names a known network.
+ *   2. the `defaultPassphrase` argument, for callers that resolve the network
+ *      from a passphrase instead (custom/standalone networks).
+ *   3. `testnet`, the documented default — never mainnet by omission.
  */
 export interface EndpointConfig {
   horizonUrls: string[];
   rpcUrls: string[];
+}
+
+/** Public default endpoint per known network, used when no URL is configured. */
+const DEFAULT_PUBLIC_ENDPOINTS = {
+  testnet: {
+    horizon: "https://horizon-testnet.stellar.org",
+    rpc: "https://soroban-testnet.stellar.org:443",
+  },
+  mainnet: {
+    horizon: "https://horizon.stellar.org",
+    rpc: "https://soroban-mainnet.stellar.org:443",
+  },
+} as const satisfies Record<string, Record<StellarEndpointKind, string>>;
+
+/** The mainnet passphrase, used only to infer a network from a passphrase. */
+const MAINNET_PASSPHRASE = KNOWN_NETWORK_PASSPHRASES.mainnet;
+
+/**
+ * Resolves which known network the public defaults should be taken from.
+ *
+ * `STELLAR_NETWORK` wins whenever it is actually set — that is the whole point
+ * of the #1133/#1134/#1135 change. Only when it is unset/absent does the
+ * passphrase argument get a say, which keeps callers that resolve their network
+ * from a passphrase (custom/standalone chains) working as before.
+ *
+ * Note the distinction between "unset" and "explicitly testnet": the gate
+ * elsewhere defaults `STELLAR_NETWORK` to `testnet`, but here an absent value
+ * must fall through to the passphrase rather than pinning testnet.
+ *
+ * Returns the known network to take public defaults from, defaulting to
+ * testnet when nothing identifies the chain.
+ */
+function resolveDefaultNetwork(
+  env: NodeJS.ProcessEnv,
+  defaultPassphrase?: string
+): KnownStellarNetwork {
+  const rawNetwork = env.STELLAR_NETWORK?.trim();
+  if (rawNetwork) {
+    const declared = normalizeStellarNetwork(rawNetwork);
+    if (isKnownStellarNetwork(declared)) return declared;
+    // An explicitly declared custom network has no published endpoints; fall
+    // through so a known passphrase can still identify the real chain.
+  }
+
+  const passphrase = env.SOROBAN_NETWORK_PASSPHRASE || defaultPassphrase;
+  if (passphrase === MAINNET_PASSPHRASE) return "mainnet";
+  if (passphrase === KNOWN_NETWORK_PASSPHRASES.testnet) return "testnet";
+
+  // Nothing identifies the chain. The documented default is testnet, and
+  // testnet is the safe direction to guess in: a custom/standalone deployment
+  // must point at an endpoint explicitly, and one that does not is caught by
+  // the caller's own required-variable check, not silently served mainnet.
+  return "testnet";
 }
 
 export function loadStellarEndpoints(
@@ -320,21 +396,12 @@ export function loadStellarEndpoints(
         : [];
 
   // Apply defaults if neither env var is set
-  const passphrase = env.SOROBAN_NETWORK_PASSPHRASE || defaultPassphrase;
+  const network = resolveDefaultNetwork(env, defaultPassphrase);
   if (horizonUrls.length === 0) {
-    if (passphrase === "Public Global Stellar Network ; September 2015") {
-      horizonUrls.push("https://horizon.stellar.org");
-    } else {
-      horizonUrls.push("https://horizon-testnet.stellar.org");
-    }
+    horizonUrls.push(DEFAULT_PUBLIC_ENDPOINTS[network].horizon);
   }
-
   if (rpcUrls.length === 0) {
-    if (passphrase === "Public Global Stellar Network ; September 2015") {
-      rpcUrls.push("https://soroban-mainnet.stellar.org:443");
-    } else {
-      rpcUrls.push("https://soroban-testnet.stellar.org:443");
-    }
+    rpcUrls.push(DEFAULT_PUBLIC_ENDPOINTS[network].rpc);
   }
 
   return { horizonUrls, rpcUrls };

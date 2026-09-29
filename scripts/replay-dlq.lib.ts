@@ -205,6 +205,35 @@ export function toReplayFields(payload: unknown): string[] {
 }
 
 /**
+ * Sub-namespace, under the dead-letter prefix, that holds the dedupe marks
+ * written by `checkAndMarkDuplicate()` in
+ * apps/workers/src/consumers/dead-letter.ts:
+ * `{prefix}dead-letter:dedupe:{queue}:{payloadHash}`.
+ *
+ * Those are plain **string** keys, not streams. `SCAN MATCH
+ * {prefix}dead-letter:*` returns them alongside the real
+ * `{prefix}dead-letter:{queue}` streams, and the replay CLI used to treat
+ * every match as a stream: `XRANGE` on a string key fails with `WRONGTYPE`,
+ * which aborted the entire run with exit code 1 before any queue was
+ * replayed. Because `logDeadLetter()` writes a dedupe mark on *every*
+ * dead-letter (duplicate or not), this broke every unqualified
+ * `pnpm replay:dlq` against a Redis that had ever dead-lettered anything —
+ * exactly when an operator most needs the tool (#1136).
+ */
+export const DEDUPE_KEY_SUBPREFIX = "dedupe:";
+
+/**
+ * True when a discovered key belongs to the dedupe sub-namespace rather than
+ * to a dead-letter stream, so the caller can skip it.
+ *
+ * Pure and unit-testable without Redis: scripts/replay-dlq.ts relies on this
+ * helper when filtering what `SCAN` returned.
+ */
+export function isDedupKey(streamKey: string, dlqPrefix: string): boolean {
+  return streamKey.startsWith(`${dlqPrefix}${DEDUPE_KEY_SUBPREFIX}`);
+}
+
+/**
  * Maps a dead-letter stream suffix to the live stream that actually consumes
  * it, or `undefined` when the queue is not stream-backed.
  *

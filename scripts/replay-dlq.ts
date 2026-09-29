@@ -31,6 +31,7 @@ import {
   UsageError,
   assertQueueFilter,
   fieldsToRecord,
+  isDedupKey,
   isReplayablePayload,
   mutationAllowed,
   parseReplayArgs,
@@ -87,6 +88,14 @@ function log(
  * The `--queue` filter is interpolated into a SCAN MATCH pattern, so it is
  * validated against QUEUE_NAME_PATTERN first: an unvalidated filter could
  * inject glob metacharacters and sweep unrelated Redis keys (#1136).
+ *
+ * The dedupe sub-namespace (`{prefix}dead-letter:dedupe:*`) is filtered out.
+ * Those keys are plain strings written by `checkAndMarkDuplicate()`, not
+ * streams, so replaying them is both meaningless and destructive to attempt:
+ * `XRANGE` on a string key fails with `WRONGTYPE` and aborts the whole run
+ * before any queue is touched. `logDeadLetter()` writes a dedupe mark on every
+ * dead-letter, so this is present on any Redis that has ever failed a job —
+ * i.e. exactly when an operator reaches for the replay CLI (#1136).
  */
 async function discoverDLQStreams(
   redis: Redis,
@@ -100,6 +109,7 @@ async function discoverDLQStreams(
 
   const keys: string[] = [];
   let cursor = "0";
+  let dedupeKeysSkipped = 0;
 
   do {
     const [nextCursor, batch] = await redis.scan(
@@ -110,8 +120,21 @@ async function discoverDLQStreams(
       100
     );
     cursor = nextCursor;
-    keys.push(...batch);
+
+    for (const key of batch) {
+      if (isDedupKey(key, DLQ_PREFIX)) {
+        dedupeKeysSkipped++;
+        continue;
+      }
+      keys.push(key);
+    }
   } while (cursor !== "0");
+
+  if (dedupeKeysSkipped > 0) {
+    log("info", "Skipped dead-letter dedupe marks (not replayable streams)", {
+      skipped: dedupeKeysSkipped,
+    });
+  }
 
   return keys.sort();
 }
@@ -172,11 +195,23 @@ async function main(): Promise<number> {
         break;
       }
 
-      const entries: Array<[string, string[]]> = await redis.xrange(
-        streamKey,
-        "-",
-        "+"
-      );
+      // Read this stream defensively. A key under the dead-letter prefix is
+      // not guaranteed to be a stream (see discoverDLQStreams), and a single
+      // unreadable key must not abort the replay of every other queue — the
+      // operator would lose a whole recovery window to one bad key (#1136).
+      let entries: Array<[string, string[]]>;
+      try {
+        entries = await redis.xrange(streamKey, "-", "+");
+      } catch (error) {
+        totalFailed++;
+        log("error", "Could not read dead-letter stream, skipping it", {
+          queue: queueName,
+          dlqStream: streamKey,
+          hint: "key is not a readable Redis stream; left untouched",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
 
       if (entries.length === 0) continue;
 
