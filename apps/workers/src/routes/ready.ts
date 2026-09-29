@@ -1,14 +1,32 @@
 import type { FastifyInstance } from "fastify";
 import { getPrismaClient } from "../../../../src/services/prisma.js";
 import { redis } from "../../../../src/services/redis.js";
+import {
+  classifyProbeError,
+  sanitizeProbeMessage,
+  type ProbeErrorCode,
+} from "../../../../packages/shared/src/probeErrors.js";
+
+interface DependencyReport {
+  status: "ok" | "error";
+  /**
+   * Secret-free failure summary. This route is unauthenticated, so the
+   * driver's raw message is never published — a Prisma/ioredis error can
+   * embed the full DSN or an internal host:port (#1141). The unsanitized
+   * message is written to the request log only.
+   */
+  error?: string;
+  /** Stable, secret-free classification for dashboards and alerts. */
+  code?: ProbeErrorCode;
+}
 
 interface ReadyResponse {
   ready: boolean;
   service: string;
   timestamp: string;
   dependencies: {
-    database: { status: "ok" | "error"; error?: string };
-    redis: { status: "ok" | "error"; error?: string };
+    database: DependencyReport;
+    redis: DependencyReport;
   };
 }
 
@@ -28,17 +46,24 @@ export async function readyRoutes(fastify: FastifyInstance) {
 
     let dbStatus: "ok" | "error" = "ok";
     let dbError: string | undefined;
+    let dbCode: ProbeErrorCode | undefined;
+    // Raw driver messages stay server-side: they go to the log, never the reply.
+    let rawDbError: string | undefined;
+    let rawRedisError: string | undefined;
 
     try {
       const prisma = getPrismaClient();
       await prisma.$queryRaw`SELECT 1`;
     } catch (err) {
       dbStatus = "error";
-      dbError = err instanceof Error ? err.message : String(err);
+      dbCode = classifyProbeError(err);
+      dbError = sanitizeProbeMessage(err);
+      rawDbError = err instanceof Error ? err.message : String(err);
     }
 
     let redisStatus: "ok" | "error" = "ok";
     let redisError: string | undefined;
+    let redisCode: ProbeErrorCode | undefined;
 
     try {
       const pong = await redis.healthCheck();
@@ -47,21 +72,25 @@ export async function readyRoutes(fastify: FastifyInstance) {
       }
     } catch (err) {
       redisStatus = "error";
-      redisError = err instanceof Error ? err.message : String(err);
+      redisCode = classifyProbeError(err);
+      redisError = sanitizeProbeMessage(err);
+      rawRedisError = err instanceof Error ? err.message : String(err);
     }
 
     const ready = dbStatus === "ok" && redisStatus === "ok";
 
     if (!ready) {
-      // Log without secrets: dbError/redisError are driver error messages
-      // (e.g. "connection refused"), never connection strings or credentials.
+      // Server-side only. The raw messages are useful for on-call debugging
+      // and are never reachable by an unauthenticated probe client.
       request.log.warn(
         {
           requestId,
           dbStatus,
           redisStatus,
-          ...(dbError ? { dbError } : {}),
-          ...(redisError ? { redisError } : {}),
+          ...(dbCode ? { dbCode } : {}),
+          ...(redisCode ? { redisCode } : {}),
+          ...(rawDbError ? { dbError: rawDbError } : {}),
+          ...(rawRedisError ? { redisError: rawRedisError } : {}),
         },
         "Workers readiness check failed"
       );
@@ -74,10 +103,12 @@ export async function readyRoutes(fastify: FastifyInstance) {
       dependencies: {
         database: {
           status: dbStatus,
+          ...(dbCode ? { code: dbCode } : {}),
           ...(dbError ? { error: dbError } : {}),
         },
         redis: {
           status: redisStatus,
+          ...(redisCode ? { code: redisCode } : {}),
           ...(redisError ? { error: redisError } : {}),
         },
       },

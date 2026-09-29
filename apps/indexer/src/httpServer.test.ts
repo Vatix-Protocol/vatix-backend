@@ -4,6 +4,8 @@ import {
   buildIndexerHttpServer,
   createInMemoryRateLimitStore,
   resolveCorrelationId,
+  setRateLimitHeaders,
+  type RateLimitCounter,
 } from "./httpServer.js";
 import { getPrismaClient } from "../../../src/services/prisma.js";
 import type { PrismaClient } from "../../../src/generated/prisma/client.js";
@@ -645,8 +647,207 @@ describe("buildIndexerHttpServer", () => {
     expect(response.statusCode).toBe(429);
     expect(response.headers["ratelimit-limit"]).toBe("0");
     expect(response.headers["ratelimit-remaining"]).toBe("0");
+    // The body explains the denial so a missing policy is self-evident.
+    expect(response.json().message).toMatch(/no rate-limit policy/i);
 
     await app.close();
+  });
+
+  it("decrements RateLimit-Remaining across consecutive requests", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitPolicies: { "/markets": { limit: 60, windowMs: 60_000 } },
+    });
+    await app.ready();
+
+    const headers = { "x-principal": "test-user" };
+    const remaining: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await app.inject({ method: "GET", url: "/markets", headers });
+      remaining.push(res.headers["ratelimit-remaining"] as string);
+    }
+
+    expect(remaining).toEqual(["59", "58", "57"]);
+
+    await app.close();
+  });
+
+  it("never reports a negative RateLimit-Remaining under sustained load", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitPolicies: { "/markets": { limit: 3, windowMs: 60_000 } },
+    });
+    await app.ready();
+
+    const headers = { "x-principal": "test-user" };
+    for (let i = 0; i < 10; i++) {
+      const res = await app.inject({ method: "GET", url: "/markets", headers });
+      expect(Number(res.headers["ratelimit-remaining"])).toBeGreaterThanOrEqual(
+        0
+      );
+    }
+
+    await app.close();
+  });
+
+  it("resets the quota once the window elapses", async () => {
+    let now = 1_700_000_000_000;
+    const app = await buildIndexerHttpServer({
+      rateLimitPolicies: { "/markets": { limit: 1, windowMs: 1_000 } },
+      rateLimitStore: createInMemoryRateLimitStore(() => now),
+      now: () => now,
+    });
+    await app.ready();
+
+    const headers = { "x-principal": "test-user" };
+    expect(
+      (await app.inject({ method: "GET", url: "/markets", headers })).statusCode
+    ).not.toBe(429);
+    expect(
+      (await app.inject({ method: "GET", url: "/markets", headers })).statusCode
+    ).toBe(429);
+
+    // Roll past the window: the counter resets and the client is served again.
+    now += 2_000;
+    expect(
+      (await app.inject({ method: "GET", url: "/markets", headers })).statusCode
+    ).not.toBe(429);
+
+    await app.close();
+  });
+
+  it("keys the quota per principal so clients cannot exhaust each other", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitPolicies: { "/markets": { limit: 1, windowMs: 60_000 } },
+    });
+    await app.ready();
+
+    await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "alice" },
+    });
+    const aliceSecond = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "alice" },
+    });
+    const bobFirst = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "bob" },
+    });
+
+    expect(aliceSecond.statusCode).toBe(429);
+    expect(bobFirst.statusCode).not.toBe(429);
+
+    await app.close();
+  });
+
+  it("reports a zero quota and fails closed when the counter store is down", async () => {
+    const app = await buildIndexerHttpServer({
+      rateLimitPolicies: { "/markets": { limit: 60, windowMs: 60_000 } },
+      rateLimitStore: {
+        increment: async () => {
+          throw new Error("redis down: password=hunter2");
+        },
+      },
+    });
+    await app.ready();
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: { "x-principal": "test-user" },
+    });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.headers["ratelimit-remaining"]).toBe("0");
+    // The store's error message must never reach the client.
+    expect(res.body).not.toContain("hunter2");
+    expect(res.body).not.toContain("redis down");
+
+    await app.close();
+  });
+
+  it("emits no quota headers on /metrics (exempt from rate limiting)", async () => {
+    const app = await buildIndexerHttpServer();
+    await app.ready();
+
+    const res = await app.inject({ method: "GET", url: "/metrics" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["ratelimit-limit"]).toBeUndefined();
+    expect(res.headers["ratelimit-remaining"]).toBeUndefined();
+
+    await app.close();
+  });
+
+  describe("setRateLimitHeaders", () => {
+    const policy = { limit: 10, windowMs: 60_000 };
+
+    const stubReply = () =>
+      ({
+        header: vi.fn().mockReturnThis(),
+      }) as unknown as Parameters<typeof setRateLimitHeaders>[0];
+
+    it("rounds RateLimit-Reset up to the next whole second", () => {
+      const reply = stubReply();
+
+      setRateLimitHeaders(
+        reply,
+        policy,
+        { count: 1, resetAtMs: 1_700_000_000_500 },
+        1_700_000_000_000
+      );
+
+      const reset = reply.header.mock.calls.find(
+        (c) => c[0] === "RateLimit-Reset"
+      );
+      expect(reset?.[1]).toBe("1700000001");
+    });
+
+    it("omits Retry-After once the window has elapsed", () => {
+      const reply = stubReply();
+
+      setRateLimitHeaders(
+        reply,
+        policy,
+        { count: 1, resetAtMs: 1_700_000_000_000 },
+        1_700_000_060_000 // window already rolled over
+      );
+
+      expect(reply.header.mock.calls.some((c) => c[0] === "Retry-After")).toBe(
+        false
+      );
+    });
+
+    it("sets Retry-After to the seconds left in the window", () => {
+      const reply = stubReply();
+
+      setRateLimitHeaders(
+        reply,
+        policy,
+        { count: 1, resetAtMs: 1_700_000_030_000 },
+        1_700_000_000_000
+      );
+
+      const retry = reply.header.mock.calls.find((c) => c[0] === "Retry-After");
+      expect(retry?.[1]).toBe("30");
+    });
+
+    it("clamps RateLimit-Remaining at zero", () => {
+      const reply = stubReply();
+
+      const counter: RateLimitCounter = {
+        count: 99,
+        resetAtMs: 1_700_000_060_000,
+      };
+      setRateLimitHeaders(reply, policy, counter, 1_700_000_000_000);
+
+      const remaining = reply.header.mock.calls.find(
+        (c) => c[0] === "RateLimit-Remaining"
+      );
+      expect(remaining?.[1]).toBe("0");
+    });
   });
 
   // Issue #1096: /metrics must be exempt from rate limiting so that

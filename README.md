@@ -56,6 +56,59 @@ Stable error codes:
 - Probe outcomes are emitted as structured logs/metrics keyed by dependency
   name and status, with the correlation id for cross-referencing.
 
+#### No-secret invariant for probe error messages (#1141)
+
+A failed dependency check used to be reported by copying the driver's raw
+error message into the HTTP response. That is a leak: probes are
+**unauthenticated**, and driver messages routinely embed the exact values we
+must never publish.
+
+```
+Can't reach database server at `postgres://vatix:s3cr3t@db.internal:5432/vatix`
+connect ECONNREFUSED 10.0.0.5:6379
+request to https://<token>@rpc.example/soroban failed
+```
+
+Any client that can reach the probe port could scrape those credentials and
+internal hostnames. The workers' `/ready` now reduces every dependency failure
+with `sanitizeProbeMessage` (`packages/shared/src/probeErrors.ts`), which
+redacts DSNs, `user:password@host` URLs, bare `host:port` pairs,
+`api_key=…`-style pairs, JWTs, and Stellar secret seeds, then collapses
+newlines and truncates to 200 characters. Benign text (`connection refused`) is
+preserved so on-call engineers keep the diagnostic signal. The API's
+`/v1/ready` is stricter still: it publishes only a fixed, coarse reason
+(`"Database check failed"`) and never any part of the driver text.
+
+Each failed dependency additionally carries a stable `code` so dashboards can
+alert on exact strings instead of parsing prose:
+
+| Code                     | Meaning                                                  |
+| ------------------------ | -------------------------------------------------------- |
+| `DEPENDENCY_UNAVAILABLE` | The check threw or the dependency is unreachable.        |
+| `PROBE_TIMEOUT`          | The check exceeded its deadline (`ETIMEDOUT`, etc.).     |
+| `NO_DATA`                | Nothing has been indexed yet, so freshness is unknown.   |
+| `STALE`                  | The newest indexed data is past the staleness threshold. |
+
+The **unsanitized** message is still written to the server-side request log
+alongside the correlation id, so nothing is lost for debugging — it is simply
+no longer published. Response shape:
+
+```json
+{
+  "ready": false,
+  "dependencies": {
+    "database": {
+      "status": "error",
+      "code": "DEPENDENCY_UNAVAILABLE",
+      "error": "Can't reach database server at [REDACTED]"
+    }
+  }
+}
+```
+
+This invariant applies to both probe surfaces changed here: the API's
+`/v1/ready` and the workers' `/ready`.
+
 ### Orchestrator wiring
 
 - **Liveness probe:** `GET /health`

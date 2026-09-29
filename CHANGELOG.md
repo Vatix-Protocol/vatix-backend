@@ -7,6 +7,19 @@
   populated `ProviderResult` on the success path, and a missing `await` that
   let primary-provider failures bypass the `catch` was corrected so
   `vatix_oracle_primary_provider_attempts_total` records them.
+- `pnpm replay:dlq` no longer aborts with `WRONGTYPE` when a dead-letter dedupe
+  mark (`vatix:dead-letter:dedupe:*`, a string key) shares the dead-letter
+  namespace. Such marks are skipped, and an unreadable key no longer stops the
+  other queues from being replayed. Affects unqualified `pnpm replay:dlq` on any
+  Redis that has ever dead-lettered a job. See `docs/dead-letter-log.md`.
+- `STELLAR_NETWORK` now also drives the public Horizon/RPC defaults
+  (`loadStellarEndpoints`). A `STELLAR_NETWORK=mainnet` deployment with no
+  `SOROBAN_NETWORK_PASSPHRASE` set resolves the mainnet endpoints instead of
+  silently falling back to testnet.
+- Signing refuses the dev/test fallback passphrase when `STELLAR_NETWORK` names
+  a known non-testnet network, instead of binding order-receipt and
+  oracle-resolution signatures to testnet on a mainnet deployment.
+  See `docs/env-validation.md`.
 - Public API routes are canonical under `/v1/*`. Update frontend clients
   (`apps/web`) and external integrations to use `/v1/health`, `/v1/ready`,
   `/v1/markets`, `/v1/orders`, `/v1/orders/user/:address`,

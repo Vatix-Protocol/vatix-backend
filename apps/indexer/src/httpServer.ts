@@ -122,31 +122,46 @@ function secretsMatch(provided: string | undefined, expected: string): boolean {
 }
 
 /**
- * Attach IETF-style quota-visibility headers to a response.
+ * Attach the IETF rate-limit headers to a reply.
  *
- * Header names follow the IETF RateLimit header fields draft
- * (draft-ietf-httpapi-ratelimit-headers), matching the main API surface
- * (src/api/middleware/rateLimiter.ts) and RATE_LIMIT_POLICY.md:
+ * RATE_LIMIT_POLICY.md requires every response to carry
+ * `RateLimit-Limit` / `RateLimit-Remaining` / `RateLimit-Reset`, and a `429` to
+ * additionally carry `Retry-After`. Without them a client cannot tell how long
+ * to back off and is reduced to blind retry loops, which is exactly the load
+ * the limiter exists to shed.
  *
- *   RateLimit-Limit     — maximum requests allowed in the window
- *   RateLimit-Remaining — requests still available in the current window
- *   RateLimit-Reset     — Unix timestamp (seconds) when the window resets
+ * - `RateLimit-Limit`     — the tier's maximum requests per window
+ * - `RateLimit-Remaining` — requests left in the current window (never negative)
+ * - `RateLimit-Reset`     — Unix timestamp in **seconds** when the window resets
+ * - `Retry-After`         — seconds until reset; **omitted** when the window has
+ *                           already elapsed, since `Retry-After: 0` would instruct
+ *                           an immediate retry, the opposite of the intent
  *
- * `remaining` is clamped at 0 so a client never sees a negative quota.
+ * `now` is injectable so `Retry-After` is deterministic under test.
  */
-function setQuotaHeaders(
+export function setRateLimitHeaders(
   reply: FastifyReply,
   policy: RateLimitPolicy,
-  remaining: number,
+  counter: RateLimitCounter,
   now: number = nowMs()
 ): void {
+  const resetSeconds = Math.ceil(counter.resetAtMs / 1000);
+  const retryAfterSeconds = Math.max(
+    0,
+    Math.ceil((counter.resetAtMs - now) / 1000)
+  );
+
   reply
     .header("RateLimit-Limit", String(policy.limit))
-    .header("RateLimit-Remaining", String(Math.max(0, remaining)))
     .header(
-      "RateLimit-Reset",
-      String(Math.ceil((now + policy.windowMs) / 1000))
-    );
+      "RateLimit-Remaining",
+      String(Math.max(0, policy.limit - counter.count))
+    )
+    .header("RateLimit-Reset", String(resetSeconds));
+
+  if (retryAfterSeconds > 0) {
+    reply.header("Retry-After", String(retryAfterSeconds));
+  }
 }
 
 /**
@@ -176,7 +191,26 @@ export const RATE_LIMIT_POLICIES: Record<string, RateLimitPolicy> = {
   "/ready": { limit: 30, windowMs: 60_000 },
   "/markets": { limit: 60, windowMs: 60_000 },
   "/markets/:id": { limit: 120, windowMs: 60_000 },
+  // Trade history is the heaviest read: a full page is a 100-row range scan
+  // over indexed_trades, so it gets the tightest budget of the data routes.
+  "/markets/:id/trades": { limit: 30, windowMs: 60_000 },
 };
+
+/**
+ * A rate-limit counter after a request.
+ *
+ * The reset instant is reported by the store rather than recomputed in the
+ * HTTP handler. Only the store knows when a window actually rolled over, so
+ * deriving `RateLimit-Reset` from `Date.now() + windowMs` would drift for any
+ * window that did not open on the current request — a Redis-backed store and
+ * the in-memory store would disagree about the same window's expiry.
+ */
+export interface RateLimitCounter {
+  /** Request count for this key within the current window, after this request. */
+  count: number;
+  /** Unix epoch milliseconds at which the current window resets. */
+  resetAtMs: number;
+}
 
 /**
  * Minimal counter store surface. Implementations may be in-memory (single
@@ -185,7 +219,7 @@ export const RATE_LIMIT_POLICIES: Record<string, RateLimitPolicy> = {
  * on dependency outage so callers can fail closed.
  */
 export interface RateLimitStore {
-  increment: (key: string, windowMs: number) => Promise<number>;
+  increment: (key: string, windowMs: number) => Promise<RateLimitCounter>;
   /**
    * Optional: evict entries whose window has reset. Implementations that
    * never forget a key (the in-memory default) must implement this, otherwise
@@ -211,11 +245,12 @@ export function createInMemoryRateLimitStore(
       const ts = now();
       const existing = buckets.get(key);
       if (!existing || existing.resetAt <= ts) {
-        buckets.set(key, { count: 1, resetAt: ts + windowMs });
-        return 1;
+        const resetAt = ts + windowMs;
+        buckets.set(key, { count: 1, resetAt });
+        return { count: 1, resetAtMs: resetAt };
       }
       existing.count += 1;
-      return existing.count;
+      return { count: existing.count, resetAtMs: existing.resetAt };
     },
     /** Test/ops hook: drops every window whose quota has already reset. */
     sweep(ts = now()): void {
@@ -388,6 +423,13 @@ export async function buildIndexerHttpServer(options?: {
   logger?: ProbeLogger;
   rateLimitStore?: RateLimitStore;
   rateLimitPolicies?: Record<string, RateLimitPolicy>;
+  /**
+   * Clock used to compute `Retry-After`. Injectable so tests can assert an
+   * exact backoff; defaults to the wall clock. Keep this consistent with the
+   * clock the supplied `rateLimitStore` uses, otherwise the two disagree about
+   * when the window opened.
+   */
+  now?: () => number;
   /** Prometheus registry to serve at GET /metrics. Defaults to a new empty registry. */
   metricsRegistry?: Registry;
 }): Promise<FastifyInstance> {
@@ -411,6 +453,7 @@ export async function buildIndexerHttpServer(options?: {
   const rateLimitStore =
     options?.rateLimitStore ?? createInMemoryRateLimitStore();
   const rateLimitPolicies = options?.rateLimitPolicies ?? RATE_LIMIT_POLICIES;
+  const nowFn = options?.now ?? Date.now;
   const metricsRegistry = options?.metricsRegistry;
 
   await app.register(indexerCorsPlugin);
@@ -491,13 +534,15 @@ export async function buildIndexerHttpServer(options?: {
     if (!policy) {
       // Deny-by-default: an entrypoint with no explicit policy is rejected
       // rather than served unlimited. Advertise a zero quota so a client
-      // sees the denial is a policy decision, not a transient failure.
+      // sees the denial is a policy decision, not a transient failure, and
+      // name the misconfiguration so it is self-evident.
       reply
         .header("RateLimit-Limit", "0")
         .header("RateLimit-Remaining", "0")
-        .header("RateLimit-Reset", String(Math.ceil(nowMs() / 1000)));
+        .header("RateLimit-Reset", String(Math.ceil(nowFn() / 1000)));
       return reply.code(429).send({
         code: "RATE_LIMITED" satisfies RateLimitErrorCode,
+        message: "No rate-limit policy is configured for this route",
         correlationId,
       });
     }
@@ -506,9 +551,9 @@ export async function buildIndexerHttpServer(options?: {
       (request.headers["x-principal"] as string | undefined) ?? undefined;
     const key = rateLimitKey(routePath, principal, request.ip);
 
-    let count: number;
+    let counter: RateLimitCounter;
     try {
-      count = await rateLimitStore.increment(key, policy.windowMs);
+      counter = await rateLimitStore.increment(key, policy.windowMs);
     } catch {
       if (logger) {
         logger.warn(
@@ -516,32 +561,37 @@ export async function buildIndexerHttpServer(options?: {
           "rate limit store unavailable"
         );
       }
-      return reply.code(503).send({
-        code: "DEPENDENCY_UNAVAILABLE" satisfies ProbeErrorCode,
-        correlationId,
-      });
+      // Fail closed on a counter-store outage. Remaining is reported as 0 so a
+      // client that trusts the header stops hammering a broken limiter instead
+      // of falling back to unbounded retries.
+      return reply
+        .code(503)
+        .header("RateLimit-Limit", String(policy.limit))
+        .header("RateLimit-Remaining", "0")
+        .send({
+          code: "DEPENDENCY_UNAVAILABLE" satisfies ProbeErrorCode,
+          correlationId,
+        });
     }
 
-    if (count > policy.limit) {
+    // Attach the quota headers *before* the limit check so they are present on
+    // the 200 path as well as the 429 path — RATE_LIMIT_POLICY.md requires them
+    // on all responses, not only the denials. `Retry-After` is set here too, and
+    // tells the client exactly how long to wait instead of guessing.
+    setRateLimitHeaders(reply, policy, counter, nowFn());
+
+    if (counter.count > policy.limit) {
       if (logger) {
         logger.warn(
           { event: "indexer.ratelimit.exceeded", correlationId, routePath },
           "rate limit exceeded"
         );
       }
-      setQuotaHeaders(reply, policy, Math.max(0, policy.limit - count));
-      return reply
-        .code(429)
-        .header("Retry-After", String(Math.ceil(policy.windowMs / 1000)))
-        .send({
-          code: "RATE_LIMITED" satisfies RateLimitErrorCode,
-          correlationId,
-        });
+      return reply.code(429).send({
+        code: "RATE_LIMITED" satisfies RateLimitErrorCode,
+        correlationId,
+      });
     }
-
-    // Advertise the remaining quota on every allowed response so clients
-    // can back off proactively instead of discovering the limit as a 429.
-    setQuotaHeaders(reply, policy, Math.max(0, policy.limit - count));
 
     // Authz: every external entrypoint (market data) requires an
     // authenticated principal.  Probes (/health, /ready) are exempt
@@ -643,8 +693,8 @@ export async function buildIndexerHttpServer(options?: {
         (request.headers["x-principal"] as string | undefined) ?? undefined;
       const key = rateLimitKey(routePath, principal, request.ip);
       try {
-        const count = await rateLimitStore.increment(key, policy.windowMs);
-        setQuotaHeaders(reply, policy, Math.max(0, policy.limit - count));
+        const counter = await rateLimitStore.increment(key, policy.windowMs);
+        setRateLimitHeaders(reply, policy, counter, nowFn());
       } catch {
         if (logger) {
           logger.warn(

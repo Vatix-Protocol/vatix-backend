@@ -199,6 +199,20 @@ Production safeguards (#1136):
   (primitive, array, or empty object) is _kept_ in the DLQ and counted as a
   failure — it is never deleted without a re-enqueue. Any failure during a run
   makes the script exit `1`.
+- **Dedupe marks are not streams.** `logDeadLetter()` also writes a dedupe mark
+  at `{prefix}dead-letter:dedupe:{queue}:{payloadHash}` (a plain **string** key,
+  see "Dedupe via Payload Hash" above) on _every_ dead-letter. It lives under
+  the dead-letter prefix, so `SCAN MATCH {prefix}dead-letter:*` returns it
+  alongside the real streams. The CLI filters it out and never calls `XRANGE` on
+  it: an `XRANGE` against a string key fails with `WRONGTYPE`, which used to
+  abort the whole run with exit code 1 **before any queue was replayed** — on any
+  Redis that had ever dead-lettered anything, i.e. exactly when an operator
+  reaches for this tool. The marks are left untouched; they are bookkeeping for
+  the 24-hour dedupe window, not messages.
+- **One bad key cannot abort a run.** Each stream is read inside its own
+  `try`/`catch`, so an unreadable key is logged, counted as a failure, and the
+  remaining queues are still replayed. A partial replay exits `1`, so automation
+  notices.
 - **At-least-once:** replaying twice re-enqueues twice; dedupe lives in the
   consumers (e.g. the settlement worker's idempotency lock), never in this
   script. Always `--dry-run` first in production.
