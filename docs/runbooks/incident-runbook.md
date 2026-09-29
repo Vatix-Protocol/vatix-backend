@@ -676,7 +676,41 @@ echo $ORACLE_SECRET_KEY
 curl http://localhost:3000/v1/oracle/health
 ```
 
-#### Step 2: Manual Resolution (If Automated Fails)
+#### Step 2: Oracle Reliability Triage (Price Fetcher, Fallback Chain, Poll Loop)
+
+Before escalating to a manual resolution, establish whether the oracle is
+_failing_, _slow_, or simply _not resolving_. The policies and their constants
+are documented in [`apps/oracle/README.md`](../../apps/oracle/README.md); the
+series below are declared in [`src/services/metrics.ts`](../../src/services/metrics.ts)
+and described in [`docs/metrics.md`](../../docs/metrics.md).
+
+```bash
+# Every oracle reliability series in one shot — no secrets, no payloads
+curl -s localhost:9090/metrics | grep -E '^vatix_oracle_(price_fetch|fallback_chain|poll_|fail_closed|primary_provider|dry_run)'
+
+# The failure/skip/abort log events these series correspond to
+docker logs vatix-backend 2>&1 | grep -E 'oracle\.poll_cycle_failed|oracle\.poll_aborted|oracle\.dry_run_enabled'
+```
+
+| Symptom                                           | Series to read                                                                                    | First lever                                                                                                  |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Nothing is being resolved at all                  | `vatix_oracle_poll_cycles_total{outcome="success"}` flat while `{outcome="failure"}` rises        | A DB/Redis/provider outage fails closed. Back-off after 3 consecutive failures is automatic — not a bug.     |
+| Cycles stop for minutes                           | `vatix_oracle_poll_consecutive_failures` (gauge)                                                  | The bounded back-off is working. Fix the dependency; do not restart to "speed it up".                        |
+| A cycle runs as long as the cycle deadline        | `vatix_oracle_poll_cycle_duration_ms` ≈ `ORACLE_CYCLE_TIMEOUT_MS`                                 | Fix the slow dependency. Raise `ORACLE_CYCLE_TIMEOUT_MS` only together with the provider timeouts below.     |
+| A provider hangs instead of erroring              | `vatix_oracle_price_fetch_attempts_total{outcome="timeout"}`                                      | `ORACLE_PRIMARY_TIMEOUT_MS` / `ORACLE_FALLBACK_TIMEOUT_MS`. A provider that only ever times out is a _hang_. |
+| Primary rejects what it is configured to accept   | `vatix_oracle_primary_provider_attempts_total{type="AUTHENTICATION"}`                             | Credential fault: retries and failover never fix it. See `docs/oracle-key-rotation.md`.                      |
+| Every fallback entry fails                        | `vatix_oracle_fallback_chain_attempts_total{outcome="failure"}`, `vatix_oracle_fail_closed_total` | Reorder or prune `ORACLE_FALLBACK_URLS`. The chain is capped at 8 entries; a longer list fails at boot.      |
+| Weak results are being refused                    | `vatix_oracle_fail_closed_total`, `vatix_oracle_dry_run_evaluations_total{would="fail_closed"}`   | Investigate the feed (`ORACLE_MIN_CONFIDENCE_THRESHOLD` defines "weak"). Never lower it to force a resolve.  |
+| `oracle.poll_aborted` in the logs during a deploy | —                                                                                                 | Expected: `SIGTERM` cancels in-flight fetches. Nothing is half-written; the market resolves next cycle.      |
+
+Two rules for this path:
+
+- **Never** bypass the confidence gate to force a resolution. A refused result is
+  the oracle working correctly.
+- **Fail closed is the default.** Every row ends with "nothing was submitted",
+  never with a stale or default value.
+
+#### Step 3: Manual Resolution (If Automated Fails)
 
 ```sql
 -- WARNING: Only use manual resolution as last resort
@@ -713,7 +747,7 @@ INSERT INTO audit_log (
 );
 ```
 
-#### Step 3: Verify Resolution
+#### Step 4: Verify Resolution
 
 ```sql
 -- Confirm market status
@@ -733,13 +767,26 @@ WHERE market_id = '[MARKET_ID]'
   AND is_settled = false;
 ```
 
-#### Step 4: Prevention
+#### Step 5: Prevention
 
-- [ ] Implement oracle health monitoring
-- [ ] Add fallback oracle providers
-- [ ] Set up alerts for markets approaching challenge window expiry
-- [ ] Implement automatic retry with exponential backoff
-- [ ] Create manual resolution runbook with proper access controls
+- [ ] Alert on `vatix_oracle_poll_consecutive_failures > 3`, and on
+      `vatix_oracle_poll_cycles_total{outcome="success"}` not increasing over
+      three intervals — an oracle that is quietly not resolving is the failure
+      mode this runbook exists for.
+- [ ] Alert on any increase in `vatix_oracle_fail_closed_total`: every provider
+      failed and nothing was submitted.
+- [ ] Alert on `vatix_oracle_price_fetch_attempts_total{outcome="timeout"}`
+      rising — a hanging provider is invisible in a plain success/failure ratio.
+- [ ] Keep the fallback chain inside `MAX_FALLBACK_PROVIDERS` (8 entries) and
+      confirm every entry answers its `/health` probe.
+- [ ] Keep `ORACLE_CYCLE_TIMEOUT_MS` consistent with the provider timeouts: the
+      cycle deadline must be large enough for a whole chain attempt, and no
+      larger than the shutdown grace period operators expect.
+- [ ] Do **not** page on `oracle.poll_aborted` — every rolling restart emits it.
+- [ ] Set `ORACLE_DRY_RUN=true` when validating new provider wiring or a
+      confidence-threshold change against live data, then remove it.
+- [ ] Set up alerts for markets approaching challenge window expiry.
+- [ ] Create manual resolution runbook with proper access controls.
 
 ---
 

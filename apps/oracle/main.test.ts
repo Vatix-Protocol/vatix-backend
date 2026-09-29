@@ -19,9 +19,14 @@ const mockPrisma = vi.hoisted(() => ({
   oracleReport: { create: vi.fn() },
 }));
 
+// The BullMQ producer `main.ts` actually constructs. Mocking this module (and
+// not the sibling `redis-submission-queue.ts` implementation, which the oracle
+// entrypoint does not import) is what keeps these tests hermetic: the real
+// queue dials Redis, so an un-mocked test both hangs and silently asserts
+// against a mock that was never wired in.
 const mockQueue = vi.hoisted(() => ({
-  initialize: vi.fn().mockResolvedValue(undefined),
   enqueue: vi.fn().mockResolvedValue(true),
+  close: vi.fn().mockResolvedValue(undefined),
 }));
 
 const mockOracleService = vi.hoisted(() => ({
@@ -76,8 +81,8 @@ vi.mock("./signature-helper.js", () => ({
   })),
 }));
 
-vi.mock("../workers/src/oracle/redis-submission-queue.js", () => ({
-  RedisSubmissionQueue: vi.fn().mockImplementation(function () {
+vi.mock("../workers/src/oracle/bullmq-submission-queue.js", () => ({
+  BullMQSubmissionQueue: vi.fn().mockImplementation(function () {
     return mockQueue;
   }),
 }));
@@ -104,7 +109,6 @@ describe("apps/oracle/main poll()", () => {
       logLevel: "info",
       secretKey: "SECRETKEY",
     });
-    mockQueue.initialize.mockResolvedValue(undefined);
     mockQueue.enqueue.mockResolvedValue(true);
   });
 
@@ -146,10 +150,16 @@ describe("apps/oracle/main poll()", () => {
 
     await poll();
 
-    expect(mockQueue.initialize).toHaveBeenCalledTimes(1);
+    expect(mockQueue.enqueue).toHaveBeenCalledTimes(1);
+    // `findMany` runs twice per poll: the batch query, then a fresh
+    // lifecycle re-check per market before persisting. Both are scoped to
+    // resolvable (ACTIVE) markets, and both exclude soft-deleted ones.
     expect(mockPrisma.market.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { status: { in: ["ACTIVE"] } },
+        where: expect.objectContaining({
+          status: { in: ["ACTIVE"] },
+          deletedAt: null,
+        }),
       })
     );
     expect(mockOracleService.resolve).toHaveBeenCalledWith({
@@ -306,6 +316,79 @@ describe("apps/oracle/main poll()", () => {
 
     await expect(poll()).rejects.toThrow("ORACLE_SECRET_KEY is required");
     expect(mockPrisma.market.findMany).not.toHaveBeenCalled();
+  });
+
+  it("threads the caller's shutdown signal into every resolution (#1109/#1110)", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockResolvedValue(RESOLVED_RESULT);
+    const controller = new AbortController();
+
+    await poll({ signal: controller.signal });
+
+    // The adapters forward this signal into their in-flight `fetch`, so a
+    // shutdown cancels a hung provider instead of waiting out its timeout.
+    expect(mockOracleService.resolve).toHaveBeenCalledWith({
+      marketId: "market-1",
+      oracleAddress: "GORACLE1",
+      signal: controller.signal,
+    });
+  });
+
+  it("dials no provider and writes nothing once the caller has aborted", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-1", oracleAddress: "GORACLE1" },
+    ]);
+    const controller = new AbortController();
+    controller.abort(new Error("Oracle shutdown (SIGTERM)"));
+
+    await poll({ signal: controller.signal });
+
+    expect(mockOracleService.resolve).not.toHaveBeenCalled();
+    expect(mockPrisma.oracleReport.create).not.toHaveBeenCalled();
+    expect(mockQueue.enqueue).not.toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      "Oracle poll aborted, skipping remaining markets",
+      expect.objectContaining({
+        event: "oracle.poll_aborted",
+        marketId: "market-1",
+      })
+    );
+  });
+
+  it("stops the batch on a mid-cycle abort without reporting a provider fault", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-abort", oracleAddress: "GABORT" },
+      { id: "market-2", oracleAddress: "GOK" },
+    ]);
+    const controller = new AbortController();
+    mockOracleService.resolve.mockImplementationOnce(async () => {
+      controller.abort(new Error("Oracle shutdown (SIGTERM)"));
+      const aborted = new Error("Operation aborted by caller");
+      aborted.name = "AbortError";
+      throw aborted;
+    });
+
+    await poll({ signal: controller.signal });
+
+    // The aborted market is abandoned (no report, nothing enqueued) and the
+    // remaining market is never dialled.
+    expect(mockOracleService.resolve).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.oracleReport.create).not.toHaveBeenCalled();
+    expect(mockQueue.enqueue).not.toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      "Oracle poll aborted while resolving market",
+      expect.objectContaining({
+        event: "oracle.poll_aborted",
+        marketId: "market-abort",
+      })
+    );
+    // A deliberate cancellation must not be logged as a provider failure.
+    expect(mockLogger.error).not.toHaveBeenCalledWith(
+      "Failed to resolve market",
+      expect.anything()
+    );
   });
 });
 
