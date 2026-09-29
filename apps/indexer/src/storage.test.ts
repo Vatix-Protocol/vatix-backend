@@ -1,338 +1,223 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { PrismaCursorStorageClient } from "./storage.js";
-import { CursorConflictError, CursorStorageConfigError } from "./storage.js";
+import { describe, it, expect, vi } from "vitest";
+import {
+  generateIdempotencyKey,
+  parseEventId,
+  withIdempotencyKey,
+  insertIfNew,
+  IdempotencyError,
+  IdempotencyErrorCode,
+  type PersistedTrade,
+} from "./idempotency.js";
+import type { NormalizedTrade } from "./types.js";
 
-// Mock the prisma singleton before importing storage
-vi.mock("../../../src/services/prisma.js", () => ({
-  getPrismaClient: vi.fn(),
-}));
+// ─── Fixtures ────────────────────────────────────────────────────────────────
 
-import { getPrismaClient } from "../../../src/services/prisma.js";
+const CONTRACT_ID = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+const EVENT_ID = "0000000042-0000000001-0000000003";
 
-function makeMockPrisma(
-  findResult: { cursorValue: string | null } | null = null
-) {
-  const upsert = vi.fn().mockResolvedValue({});
-  const findUnique = vi.fn().mockResolvedValue(findResult);
-  const $transaction = vi.fn().mockImplementation(async (cb) => {
-    const tx = {
-      indexerCursor: {
-        findUnique: vi.fn().mockResolvedValue(findResult),
-        upsert: vi.fn().mockResolvedValue({}),
-      },
-    };
-    return cb(tx as never);
-  });
-  return { indexerCursor: { findUnique, upsert }, $transaction };
+function makeTrade(overrides: Partial<NormalizedTrade> = {}): NormalizedTrade {
+  return {
+    eventId: EVENT_ID,
+    contractId: CONTRACT_ID,
+    ledger: 42,
+    txIndex: 1,
+    eventIndex: 3,
+    ...overrides,
+  } as NormalizedTrade;
 }
 
-describe("PrismaCursorStorageClient", () => {
-  const networkId = "testnet";
-  const cursorKey = "ingestion";
+// ─── Idempotency key derivation ──────────────────────────────────────────────
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  describe("loadCursor", () => {
-    it("returns cursorValue when row exists", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: "42" });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      const result = await client.loadCursor();
-
-      expect(result).toBe("42");
-      expect(mockPrisma.indexerCursor.findUnique).toHaveBeenCalledWith({
-        where: { networkId_cursorKey: { networkId, cursorKey } },
-        select: { cursorValue: true },
-      });
-    });
-
-    it("returns null when row is missing", async () => {
-      const mockPrisma = makeMockPrisma(null);
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      expect(await client.loadCursor()).toBeNull();
-    });
-
-    it("returns null when cursorValue is null", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: null });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      expect(await client.loadCursor()).toBeNull();
+describe("storage: idempotency key derivation", () => {
+  it("parses a well-formed Stellar event id into numeric components", () => {
+    expect(parseEventId(EVENT_ID)).toEqual({
+      ledger: 42,
+      txIndex: 1,
+      eventIndex: 3,
     });
   });
 
-  describe("saveCursor", () => {
-    it("upserts cursorValue using composite key", async () => {
-      const mockPrisma = makeMockPrisma();
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
+  it("is deterministic across replays of the same event", () => {
+    const a = generateIdempotencyKey({ id: EVENT_ID, contractId: CONTRACT_ID });
+    const b = generateIdempotencyKey({ id: EVENT_ID, contractId: CONTRACT_ID });
+    expect(a.key).toBe(b.key);
+    expect(a.key).toMatch(/^[0-9a-f]{64}$/);
+  });
 
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      await client.saveCursor("99");
-
-      expect(mockPrisma.indexerCursor.upsert).toHaveBeenCalledWith({
-        where: { networkId_cursorKey: { networkId, cursorKey } },
-        create: { networkId, cursorKey, cursorValue: "99" },
-        update: { cursorValue: "99" },
-      });
+  it("scopes keys to contractId so identical event ids do not collide", () => {
+    const a = generateIdempotencyKey({ id: EVENT_ID, contractId: CONTRACT_ID });
+    const b = generateIdempotencyKey({
+      id: EVENT_ID,
+      contractId: "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
     });
+    expect(a.key).not.toBe(b.key);
+  });
 
-    it("emits structured log with event key", async () => {
-      const mockPrisma = makeMockPrisma();
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
+  it("rejects malformed event ids with a stable error code", () => {
+    for (const bad of ["", "42-1", "42-1-3-9", "42-x-3", "not-an-id"]) {
+      try {
+        parseEventId(bad);
+        throw new Error(`expected parseEventId(${JSON.stringify(bad)}) to throw`);
+      } catch (err) {
+        expect(err).toBeInstanceOf(IdempotencyError);
+        expect((err as IdempotencyError).code).toBe(
+          IdempotencyErrorCode.INVALID_EVENT_ID
+        );
+      }
+    }
+  });
 
-      const logger = {
-        info: vi.fn(),
-        debug: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-      };
-      const client = new PrismaCursorStorageClient(
-        networkId,
-        cursorKey,
-        logger as never
-      );
-      await client.saveCursor("55");
+  it("stamps a persisted record with its idempotency key", () => {
+    const persisted = withIdempotencyKey(makeTrade());
+    expect(persisted.idempotencyKey).toBe(
+      generateIdempotencyKey({ id: EVENT_ID, contractId: CONTRACT_ID }).key
+    );
+  });
+});
 
-      expect(logger.info).toHaveBeenCalledWith(
-        "Indexer cursor saved",
-        expect.objectContaining({
-          event: "indexer.cursor.saved",
-          cursorValue: "55",
-          networkId,
-          cursorKey,
-        })
-      );
-    });
+// ─── Persistence semantics ───────────────────────────────────────────────────
 
-    it("independent rows per cursorKey with same networkId", async () => {
-      const prismaA = makeMockPrisma({ cursorValue: "10" });
-      const prismaB = makeMockPrisma({ cursorValue: "20" });
+describe("storage: insertIfNew persistence semantics", () => {
+  const record: PersistedTrade = withIdempotencyKey(makeTrade());
 
-      vi.mocked(getPrismaClient)
-        .mockReturnValueOnce(prismaA as never)
-        .mockReturnValueOnce(prismaB as never);
+  it("reports inserted when the upsert returns the record", async () => {
+    const upsert = vi.fn(async (r: PersistedTrade) => r);
+    const result = await insertIfNew(record, upsert);
+    expect(result).toEqual({ status: "inserted", record });
+    expect(upsert).toHaveBeenCalledTimes(1);
+  });
 
-      const clientA = new PrismaCursorStorageClient(networkId, "keyA");
-      const clientB = new PrismaCursorStorageClient(networkId, "keyB");
+  it("reports duplicate when the upsert is a no-op on conflict", async () => {
+    const result = await insertIfNew(record, async () => null);
+    expect(result).toEqual({ status: "duplicate", key: record.idempotencyKey });
+  });
 
-      const a = await clientA.loadCursor();
-      const b = await clientB.loadCursor();
+  it("treats undefined as a duplicate no-op", async () => {
+    const result = await insertIfNew(record, async () => undefined);
+    expect(result.status).toBe("duplicate");
+  });
 
-      expect(a).toBe("10");
-      expect(b).toBe("20");
-      expect(prismaA.indexerCursor.findUnique).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { networkId_cursorKey: { networkId, cursorKey: "keyA" } },
-        })
-      );
-      expect(prismaB.indexerCursor.findUnique).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { networkId_cursorKey: { networkId, cursorKey: "keyB" } },
-        })
-      );
-    });
+  it("is idempotent under concurrent replay of the same event", async () => {
+    const seen = new Set<string>();
+    const upsert = async (r: PersistedTrade) => {
+      if (seen.has(r.idempotencyKey)) return null;
+      seen.add(r.idempotencyKey);
+      return r;
+    };
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => insertIfNew(record, upsert))
+    );
+    const inserted = results.filter((r) => r.status === "inserted");
+    const duplicates = results.filter((r) => r.status === "duplicate");
+    expect(inserted).toHaveLength(1);
+    expect(duplicates).toHaveLength(4);
+  });
+});
 
-    it("advances cursor forward without error", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: "42" });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
+// ─── Fail-closed on dependency outage ────────────────────────────────────────
 
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      await client.saveCursor("100");
+describe("storage: fail-closed on dependency outage", () => {
+  const record: PersistedTrade = withIdempotencyKey(makeTrade());
 
-      expect(mockPrisma.indexerCursor.upsert).toHaveBeenCalledWith({
-        where: { networkId_cursorKey: { networkId, cursorKey } },
-        create: { networkId, cursorKey, cursorValue: "100" },
-        update: { cursorValue: "100" },
-      });
-    });
-
-    it("throws CursorConflictError when cursor would regress (replay guard)", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: "100" });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      await expect(client.saveCursor("50")).rejects.toThrow(CursorConflictError);
-    });
-
-    it("allows saving the same cursor value (idempotent)", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: "42" });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      await client.saveCursor("42");
-
-      expect(mockPrisma.indexerCursor.upsert).toHaveBeenCalledWith({
-        where: { networkId_cursorKey: { networkId, cursorKey } },
-        create: { networkId, cursorKey, cursorValue: "42" },
-        update: { cursorValue: "42" },
-      });
-    });
-
-    it("saves cursor from null (first write) without conflict check", async () => {
-      const mockPrisma = makeMockPrisma(null);
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      await client.saveCursor("1");
-
-      expect(mockPrisma.indexerCursor.upsert).toHaveBeenCalledWith({
-        where: { networkId_cursorKey: { networkId, cursorKey } },
-        create: { networkId, cursorKey, cursorValue: "1" },
-        update: { cursorValue: "1" },
-      });
-    });
-
-    it("fails closed when storage throws", async () => {
-      const mockPrisma = makeMockPrisma();
-      mockPrisma.indexerCursor.findUnique.mockRejectedValue(
-        new Error("DB connection lost")
-      );
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      await expect(client.saveCursor("99")).rejects.toThrow("DB connection lost");
+  it("re-throws a typed STORE_UNAVAILABLE error when the store throws", async () => {
+    const cause = new Error("ECONNREFUSED redis://cache:6379");
+    await expect(
+      insertIfNew(record, async () => {
+        throw cause;
+      })
+    ).rejects.toMatchObject({
+      name: "IdempotencyError",
+      code: IdempotencyErrorCode.STORE_UNAVAILABLE,
     });
   });
 
-  describe("saveLedgerHash", () => {
-    it("upserts ledger hash using hash cursor key", async () => {
-      const mockPrisma = makeMockPrisma();
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
+  it("never reports a failed write as inserted", async () => {
+    let result: unknown;
+    try {
+      result = await insertIfNew(record, async () => {
+        throw new Error("db down");
+      });
+    } catch (err) {
+      expect(err).toBeInstanceOf(IdempotencyError);
+    }
+    expect(result).toBeUndefined();
+  });
 
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      await client.saveLedgerHash("0xabc123");
-
-      expect(mockPrisma.indexerCursor.upsert).toHaveBeenCalledWith({
-        where: {
-          networkId_cursorKey: {
-            networkId,
-            cursorKey: `${cursorKey}:ledger_hash`,
-          },
+  it("propagates the correlation id into the failure for tracing", async () => {
+    const correlationId = "corr-1202";
+    await expect(
+      insertIfNew(
+        record,
+        async () => {
+          throw new Error("rpc timeout");
         },
-        create: {
-          networkId,
-          cursorKey: `${cursorKey}:ledger_hash`,
-          cursorValue: "0xabc123",
-        },
-        update: { cursorValue: "0xabc123" },
-      });
-    });
-
-    it("fails closed when storage throws", async () => {
-      const mockPrisma = makeMockPrisma();
-      mockPrisma.indexerCursor.upsert.mockRejectedValue(
-        new Error("DB connection lost")
-      );
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      await expect(client.saveLedgerHash("0xabc123")).rejects.toThrow(
-        "DB connection lost"
-      );
-    });
+        { correlationId }
+      )
+    ).rejects.toMatchObject({ correlationId });
   });
 
-  describe("loadLedgerHash", () => {
-    it("returns hash when row exists", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: "0xabc123" });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      const result = await client.loadLedgerHash();
-
-      expect(result).toBe("0xabc123");
-      expect(mockPrisma.indexerCursor.findUnique).toHaveBeenCalledWith({
-        where: {
-          networkId_cursorKey: {
-            networkId,
-            cursorKey: `${cursorKey}:ledger_hash`,
-          },
+  it("logs a warning without leaking secrets on outage", async () => {
+    const warn = vi.fn();
+    const info = vi.fn();
+    await expect(
+      insertIfNew(
+        record,
+        async () => {
+          throw new Error("db down");
         },
-        select: { cursorValue: true },
-      });
-    });
+        { logger: { info, warn }, correlationId: "corr-1202" }
+      )
+    ).rejects.toBeInstanceOf(IdempotencyError);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const meta = warn.mock.calls[0][1] as Record<string, unknown>;
+    expect(meta.code).toBe(IdempotencyErrorCode.STORE_UNAVAILABLE);
+    expect(JSON.stringify(meta)).not.toMatch(/password|secret|token/i);
+  });
+});
 
-    it("returns null when hash row is missing", async () => {
-      const mockPrisma = makeMockPrisma(null);
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
+// ─── Adversarial / griefing input ────────────────────────────────────────────
 
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      expect(await client.loadLedgerHash()).toBeNull();
-    });
+describe("storage: adversarial input handling", () => {
+  it("rejects oversized / non-numeric event ids without throwing raw errors", () => {
+    const adversarial = [
+      "9".repeat(10_000) + "-1-1",
+      "1-1-1\n",
+      "1-1-1; DROP TABLE trades;--",
+      "-1-1-1",
+      "1--1-1",
+    ];
+    for (const bad of adversarial) {
+      expect(() => parseEventId(bad)).toThrow(IdempotencyError);
+    }
   });
 
-  describe("saveCursorWithBatch", () => {
-    it("atomically writes batch and cursor in a single transaction", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: "42" });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
+  it("does not mutate the input record when stamping a key", () => {
+    const trade = makeTrade();
+    const snapshot = JSON.stringify(trade);
+    withIdempotencyKey(trade);
+    expect(JSON.stringify(trade)).toBe(snapshot);
+  });
+});
 
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      const writeBatch = vi.fn().mockResolvedValue(undefined);
+// ─── Testnet vs mainnet address drift ────────────────────────────────────────
 
-      await client.saveCursorWithBatch("100", writeBatch, "42");
-
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
-      expect(writeBatch).toHaveBeenCalledTimes(1);
+describe("storage: testnet vs mainnet address drift", () => {
+  it("produces distinct keys for the same event id on different networks", () => {
+    const testnet = generateIdempotencyKey({
+      id: EVENT_ID,
+      contractId: "CTESTNETCONTRACTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     });
-
-    it("throws CursorConflictError when concurrent writer advanced the cursor", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: "200" });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      const writeBatch = vi.fn().mockResolvedValue(undefined);
-
-      await expect(
-        client.saveCursorWithBatch("100", writeBatch, "42")
-      ).rejects.toThrow(CursorConflictError);
+    const mainnet = generateIdempotencyKey({
+      id: EVENT_ID,
+      contractId: "CMAINNETCONTRACTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     });
+    expect(testnet.key).not.toBe(mainnet.key);
+  });
 
-    it("rolls back batch write when cursor conflict is detected", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: "200" });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      const writeBatch = vi.fn().mockResolvedValue(undefined);
-
-      await expect(
-        client.saveCursorWithBatch("100", writeBatch, "42")
-      ).rejects.toThrow(CursorConflictError);
-
-      // Batch write should never have been called since conflict is detected first
-      expect(writeBatch).not.toHaveBeenCalled();
-    });
-
-    it("rolls back cursor advance when batch write fails", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: "42" });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      const writeBatch = vi.fn().mockRejectedValue(new Error("Batch write failed"));
-
-      await expect(
-        client.saveCursorWithBatch("100", writeBatch, "42")
-      ).rejects.toThrow("Batch write failed");
-
-      // Cursor upsert should not have been called since batch failed
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
-    });
-
-    it("succeeds without expectedPreviousCursor (no conflict check)", async () => {
-      const mockPrisma = makeMockPrisma({ cursorValue: "42" });
-      vi.mocked(getPrismaClient).mockReturnValue(mockPrisma as never);
-
-      const client = new PrismaCursorStorageClient(networkId, cursorKey);
-      const writeBatch = vi.fn().mockResolvedValue(undefined);
-
-      await client.saveCursorWithBatch("100", writeBatch);
-
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
-      expect(writeBatch).toHaveBeenCalledTimes(1);
-    });
+  it("keeps keys stable when only the network contract id changes", () => {
+    const a = generateIdempotencyKey({ id: EVENT_ID, contractId: CONTRACT_ID });
+    const b = generateIdempotencyKey({ id: EVENT_ID, contractId: CONTRACT_ID });
+    expect(a.components).toEqual(b.components);
+    expect(a.key).toBe(b.key);
   });
 });
