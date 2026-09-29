@@ -57,6 +57,69 @@ describe("signingDomain — domain separation (#978)", () => {
         })
       ).toThrow(/SOROBAN_NETWORK_PASSPHRASE is required in production/);
     });
+
+    // #1133 — the dev/test stub IS the testnet passphrase, so it must not be
+    // used to sign for a deployment that declares itself on mainnet. That
+    // binding is the whole point of domain separation, and a testnet binding
+    // on a mainnet deployment is a silent cross-network signature failure.
+    it("refuses the testnet stub when STELLAR_NETWORK=mainnet, even in dev", () => {
+      expect(() =>
+        resolveSigningNetworkPassphrase({
+          NODE_ENV: "development",
+          STELLAR_NETWORK: "mainnet",
+        })
+      ).toThrow(SigningDomainConfigError);
+      expect(() =>
+        resolveSigningNetworkPassphrase({
+          NODE_ENV: "development",
+          STELLAR_NETWORK: "mainnet",
+        })
+      ).toThrow(/STELLAR_NETWORK="mainnet"/);
+    });
+
+    it("normalizes STELLAR_NETWORK before comparing it to the stub's network", () => {
+      expect(() =>
+        resolveSigningNetworkPassphrase({
+          NODE_ENV: "test",
+          STELLAR_NETWORK: "  MainNet  ",
+        })
+      ).toThrow(SigningDomainConfigError);
+    });
+
+    it("still allows the stub when STELLAR_NETWORK is unset or testnet", () => {
+      expect(
+        resolveSigningNetworkPassphrase({
+          NODE_ENV: "development",
+          STELLAR_NETWORK: "testnet",
+        })
+      ).toBe(STUB_NETWORK_PASSPHRASE);
+    });
+
+    it("still allows the stub for a custom network (no published passphrase)", () => {
+      expect(
+        resolveSigningNetworkPassphrase({
+          NODE_ENV: "development",
+          STELLAR_NETWORK: "futurenet",
+        })
+      ).toBe(STUB_NETWORK_PASSPHRASE);
+    });
+
+    it("never embeds a passphrase value in the thrown message", () => {
+      let thrown: unknown;
+      try {
+        resolveSigningNetworkPassphrase({
+          NODE_ENV: "development",
+          STELLAR_NETWORK: "mainnet",
+          SOROBAN_NETWORK_PASSPHRASE: "   ",
+        });
+      } catch (err) {
+        thrown = err;
+      }
+      expect((thrown as Error).message).toContain(
+        "SOROBAN_NETWORK_PASSPHRASE is required"
+      );
+      expect((thrown as Error).message).not.toContain(STUB_NETWORK_PASSPHRASE);
+    });
   });
 
   describe("buildDomainSeparatedMessage", () => {

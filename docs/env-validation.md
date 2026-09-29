@@ -140,6 +140,30 @@ only** — never a passphrase, credential, or full URL. The
 re-labels it as `EnvValidationError` with the same code so log scraping and
 tests match one string.
 
+### `STELLAR_NETWORK` also drives defaults and signing (#1133)
+
+The declared network is the single source of truth beyond the checks above, so
+two behaviours depend on it rather than on the passphrase:
+
+- **Endpoint defaults** (#1134, #1135). `loadStellarEndpoints()`
+  (`packages/shared/src/stellarTransport.ts`) takes its public Horizon/RPC
+  defaults from `STELLAR_NETWORK`, falling back to inferring the network from a
+  passphrase only when `STELLAR_NETWORK` is unset entirely. A
+  `STELLAR_NETWORK=mainnet` deployment therefore resolves mainnet defaults even
+  with no `SOROBAN_NETWORK_PASSPHRASE` set — previously the passphrase drove the
+  choice, so that deployment silently got the **testnet** hosts. When nothing
+  identifies the chain the default is testnet; mainnet is never chosen by
+  omission.
+- **Signature network binding** (#1133). `resolveSigningNetworkPassphrase()`
+  (`packages/shared/src/signingDomain.ts`) already refuses an unset passphrase in
+  production. The dev/test fallback is the **testnet** passphrase, so it is now
+  also refused when `STELLAR_NETWORK` names a known non-testnet network: signing
+  order receipts or oracle resolutions with the testnet passphrase on a mainnet
+  deployment would produce signatures that do not verify against the chain they
+  are replayed on, i.e. exactly the cross-network replay the domain separation
+  exists to prevent. `testnet` and custom networks (which have no published
+  passphrase) keep the stub.
+
 ### Operator checklist after a network change
 
 When you switch a deployment between testnet and mainnet, change **all** of

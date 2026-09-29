@@ -252,4 +252,67 @@ describe("loadStellarEndpoints", () => {
     });
     expect(config.horizonUrls).toEqual(["https://urls.org"]);
   });
+
+  // #1134 / #1135 — STELLAR_NETWORK is the single source of truth for the
+  // target chain, so the public defaults must follow it. Deriving them from the
+  // passphrase instead meant a `STELLAR_NETWORK=mainnet` deployment with no
+  // passphrase set silently resolved the *testnet* Horizon and RPC hosts.
+  it("derives default endpoints from STELLAR_NETWORK, not the passphrase", () => {
+    const config = loadStellarEndpoints({
+      STELLAR_NETWORK: "mainnet",
+      // A testnet passphrase must not pull the defaults back to testnet —
+      // loadStellarEndpoints resolves endpoints, it does not gate drift
+      // (assertStellarNetworkConsistency does that, and fails boot).
+      SOROBAN_NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
+    });
+    expect(config.horizonUrls).toEqual(["https://horizon.stellar.org"]);
+    expect(config.rpcUrls).toEqual(["https://soroban-mainnet.stellar.org:443"]);
+  });
+
+  it("uses testnet defaults for STELLAR_NETWORK=testnet", () => {
+    const config = loadStellarEndpoints({ STELLAR_NETWORK: "testnet" });
+    expect(config.horizonUrls).toEqual(["https://horizon-testnet.stellar.org"]);
+    expect(config.rpcUrls).toEqual(["https://soroban-testnet.stellar.org:443"]);
+  });
+
+  it("normalizes STELLAR_NETWORK case and whitespace", () => {
+    const config = loadStellarEndpoints({ STELLAR_NETWORK: "  MainNet  " });
+    expect(config.horizonUrls).toEqual(["https://horizon.stellar.org"]);
+  });
+
+  it("never defaults to mainnet by omission", () => {
+    const config = loadStellarEndpoints({});
+    expect(config.horizonUrls).toEqual(["https://horizon-testnet.stellar.org"]);
+    expect(config.rpcUrls).toEqual(["https://soroban-testnet.stellar.org:443"]);
+  });
+
+  it("falls back to testnet for a custom network, never mainnet by omission", () => {
+    // A custom network (standalone/futurenet) has no published default, so the
+    // documented default applies. Crucially it must not resolve to *mainnet*:
+    // guessing the money-path chain in the wrong direction is the failure this
+    // whole gate exists to prevent.
+    const config = loadStellarEndpoints({
+      STELLAR_NETWORK: "standalone",
+      SOROBAN_NETWORK_PASSPHRASE: "Some Custom Net ; January 2024",
+    });
+    expect(config.horizonUrls).toEqual(["https://horizon-testnet.stellar.org"]);
+    expect(config.rpcUrls).toEqual(["https://soroban-testnet.stellar.org:443"]);
+  });
+
+  it("infers the network from the defaultPassphrase argument when STELLAR_NETWORK is unset", () => {
+    const config = loadStellarEndpoints(
+      {},
+      "Public Global Stellar Network ; September 2015"
+    );
+    expect(config.horizonUrls).toEqual(["https://horizon.stellar.org"]);
+  });
+
+  it("still defaults the unconfigured family when only one URL is set", () => {
+    const config = loadStellarEndpoints({
+      STELLAR_NETWORK: "mainnet",
+      STELLAR_RPC_URL: "https://rpc.internal",
+    });
+    expect(config.horizonUrls).toEqual(["https://horizon.stellar.org"]);
+    expect(config.rpcUrls).toEqual(["https://rpc.internal"]);
+  });
 });

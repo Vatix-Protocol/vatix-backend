@@ -7,11 +7,13 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  DEDUPE_KEY_SUBPREFIX,
   QUEUE_NAME_PATTERN,
   UsageError,
   assertQueueFilter,
   computePayloadHash,
   fieldsToRecord,
+  isDedupKey,
   isReplayablePayload,
   resolveReplayStreamKey,
   toReplayFields,
@@ -267,5 +269,60 @@ describe("resolveReplayStreamKey", () => {
 
   it("returns undefined for an unknown queue rather than inventing a key", () => {
     expect(resolveReplayStreamKey("mystery", "vatix:")).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dedupe-mark exclusion (#1136).
+//
+// `logDeadLetter()` writes a dedupe mark at
+// `{prefix}dead-letter:dedupe:{queue}:{payloadHash}` on EVERY dead-letter,
+// before the stream entry. `SCAN MATCH {prefix}dead-letter:*` returns those
+// string keys alongside the real streams, and `XRANGE` on a string key fails
+// with WRONGTYPE — so an unqualified `pnpm replay:dlq` aborted with exit 1
+// before replaying a single entry, on any Redis that had ever failed a job.
+// ---------------------------------------------------------------------------
+describe("isDedupKey", () => {
+  const PREFIX = "vatix:";
+  const DLQ_PREFIX = `${PREFIX}dead-letter:`;
+
+  it("flags the dedupe marks that logDeadLetter writes", () => {
+    expect(
+      isDedupKey(
+        `${DLQ_PREFIX}${DEDUPE_KEY_SUBPREFIX}settlement:abc123`,
+        DLQ_PREFIX
+      )
+    ).toBe(true);
+  });
+
+  it("does not flag a real dead-letter stream", () => {
+    expect(isDedupKey(`${DLQ_PREFIX}oracle-submission`, DLQ_PREFIX)).toBe(
+      false
+    );
+    expect(isDedupKey(`${DLQ_PREFIX}settlement`, DLQ_PREFIX)).toBe(false);
+  });
+
+  it("matches the exact key shape written by checkAndMarkDuplicate", () => {
+    // dead-letter.ts: `${prefix}dead-letter:dedupe:${queue}:${payloadHash}`
+    expect(DEDUPE_KEY_SUBPREFIX).toBe("dedupe:");
+    expect(
+      isDedupKey(
+        `${PREFIX}dead-letter:${DEDUPE_KEY_SUBPREFIX}oracle-submission:${"f".repeat(64)}`,
+        DLQ_PREFIX
+      )
+    ).toBe(true);
+  });
+
+  it("does not flag a queue whose name merely starts with 'dedupe'", () => {
+    // A queue literally named `dedupe-x` is still a stream; only the
+    // `dedupe:` sub-namespace segment marks a non-replayable key.
+    expect(isDedupKey(`${DLQ_PREFIX}dedupe-x`, DLQ_PREFIX)).toBe(false);
+  });
+
+  it("scopes the check to the configured DLQ prefix", () => {
+    expect(
+      isDedupKey(`${PREFIX}dead-letter:dedupe:q:h`, `${PREFIX}dead-letter:`)
+    ).toBe(true);
+    expect(isDedupKey("other:dead-letter:dedupe:q:h", DLQ_PREFIX)).toBe(false);
   });
 });

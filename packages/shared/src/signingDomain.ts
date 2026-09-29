@@ -21,6 +21,11 @@
  * @module packages/shared/src/signingDomain
  */
 
+import {
+  isKnownStellarNetwork,
+  normalizeStellarNetwork,
+} from "./networkConsistency.js";
+
 /**
  * Purpose tags. Each distinct signing use gets its own stable, versioned
  * string. Bump the version suffix if the enveloped payload shape changes in
@@ -43,6 +48,15 @@ export type SigningDomain =
  */
 export const STUB_NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
 
+/**
+ * The network {@link STUB_NETWORK_PASSPHRASE} belongs to.
+ *
+ * Named separately from the passphrase value so `resolveSigningNetworkPassphrase()`
+ * can ask "may this deployment use the stub?" without hard-coding a second
+ * copy of the network id (#1133).
+ */
+export const STUB_NETWORK_PASSPHRASE_NETWORK = "testnet";
+
 /** Thrown when the signing network binding is misconfigured. */
 export class SigningDomainConfigError extends Error {
   constructor(message: string) {
@@ -61,8 +75,20 @@ export class SigningDomainConfigError extends Error {
  *     testnet and mainnet signatures interchangeable.
  *   - otherwise           : falls back to STUB_NETWORK_PASSPHRASE.
  *
+ * #1133 — the dev/test fallback is itself network-aware. `STUB_NETWORK_PASSPHRASE`
+ * is the **testnet** passphrase, so falling back to it on a deployment that
+ * declares `STELLAR_NETWORK=mainnet` would bind every order-receipt and
+ * oracle-resolution signature to testnet while the rest of the stack talks to
+ * mainnet: the signature would not match the chain it is replayed against, and
+ * the binding the domain separation exists to provide is silently wrong. So
+ * when the declared network is a known network *other* than testnet, an unset
+ * passphrase throws in every environment — fail-closed, same rule, same class
+ * of error. Only `testnet` (and custom networks, which have no published
+ * passphrase to compare against) may use the stub.
+ *
  * @param env - environment map (default: process.env), injectable for tests
- * @throws {SigningDomainConfigError} in production when the passphrase is unset
+ * @throws {SigningDomainConfigError} when the passphrase is unset and cannot be
+ *   safely stubbed (production, or a declared non-testnet known network)
  */
 export function resolveSigningNetworkPassphrase(
   env: Record<string, string | undefined> = process.env
@@ -75,6 +101,25 @@ export function resolveSigningNetworkPassphrase(
       "SOROBAN_NETWORK_PASSPHRASE is required in production for signing " +
         "domain separation. Refusing to sign with a local stub passphrase, " +
         "which would allow cross-network signature replay."
+    );
+  }
+
+  // #1133 — the stub is the testnet passphrase, so it is only a valid
+  // substitute for a deployment that is itself on testnet. A custom network
+  // (futurenet, standalone) has no published passphrase, so it keeps the
+  // historical dev/test behaviour.
+  const declaredNetwork = normalizeStellarNetwork(env.STELLAR_NETWORK);
+  if (
+    isKnownStellarNetwork(declaredNetwork) &&
+    declaredNetwork !== STUB_NETWORK_PASSPHRASE_NETWORK
+  ) {
+    throw new SigningDomainConfigError(
+      `SOROBAN_NETWORK_PASSPHRASE is required when STELLAR_NETWORK="${declaredNetwork}" ` +
+        "because the dev/test fallback passphrase is the testnet one. Signing " +
+        `with it would bind every signature to testnet while the deployment ` +
+        "operates on " +
+        declaredNetwork +
+        "."
     );
   }
 
