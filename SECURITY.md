@@ -10,6 +10,12 @@ Instead, report them responsibly by contacting security@vatix.io.
 - **Deny-by-default**: Every external entrypoint requires an authenticated
   principal unless explicitly marked as a probe. Unauthenticated requests
   to data or money-path routes fail closed with `401 UNAUTHORIZED`.
+- **CORS allowlist**: Browser origins are deny-by-default. In production
+  `CORS_ALLOWED_ORIGINS` must list every allowed origin explicitly, as a bare
+  `https://host[:port]` — `*` and `null` are rejected at startup because the
+  API enables credentialed requests. Matching is exact (no implied
+  subdomains) and rejected origins are never echoed into logs or responses.
+  See [`src/api/middleware/README.md`](src/api/middleware/README.md).
 - **Rate limiting**: Every external route is governed by an explicit policy in
   `RATE_LIMIT_POLICIES` (see `RATE_LIMIT_POLICY.md`). Routes without a policy
   are denied by default.
@@ -27,6 +33,15 @@ Instead, report them responsibly by contacting security@vatix.io.
   behind a feature flag or kill-switch so they can be turned off without a
   redeploy (e.g. oracle [`ORACLE_DRY_RUN`](docs/oracle-dry-run.md), indexer
   `INDEXER_GAP_BACKFILL_ENABLED`).
+- **Oracle money path**: the oracle signs and enqueues resolutions, so it is a
+  privileged surface. Its invariants — a deadline on every price fetch, a
+  bounded fallback chain that fails closed, a per-cycle deadline with
+  exponential back-off, shutdown cancellation, and no credential in a log or
+  metric label — are documented in
+  [`apps/oracle/README.md`](apps/oracle/README.md), and `apps/oracle/main.test.ts`
+  covers the poll pipeline (including the fail-closed paths) hermetically. The
+  incident procedure is
+  [Incident 5](docs/runbooks/incident-runbook.md#incident-5-oracle-resolution-failure).
 - **Soft-deleted markets**: A soft-deleted market (`markets.deleted_at IS NOT
 NULL`) is invisible to and unusable by every read and write path, including
   market search. `deletedAt: null` is a literal part of every market predicate

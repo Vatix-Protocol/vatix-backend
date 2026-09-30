@@ -140,6 +140,9 @@ export class AuditArchiverJob {
 
       // Query all entries after the watermark
       let cursor = watermark?.marketStreamId ?? "-";
+      // Where this pass started, so `persistWatermark` can tell "advanced" from
+      // "never moved" and avoid recording a no-op watermark.
+      const startCursor = cursor;
 
       // Hash-chain state for this market, threaded through the batch loop in
       // memory instead of re-read per event (see `getPrevHash`).
@@ -263,23 +266,22 @@ export class AuditArchiverJob {
           }
         }
 
-        if (aborted) break;
+        if (aborted) {
+          // The run budget (or a poisoned entry) cut this market short. Any
+          // entry processed before that point *was* durably written and the
+          // cursor only advances after a successful upsert, so persisting the
+          // watermark makes the resume point exact: the next run resumes at the
+          // first *unarchived* entry instead of re-reading and re-hashing
+          // everything already archived. If the cursor never moved there is
+          // nothing to record — the failed entry stays unarchived and is
+          // retried, which is at-least-once, never a silent skip.
+          await this.persistWatermark(marketId, cursor, watermark, startCursor);
+          break;
+        }
 
         // Update watermark after batch
         if (cursor !== watermark?.marketStreamId) {
-          await this.prisma.tradeStreamWatermark.upsert({
-            where: { marketId },
-            create: {
-              marketId,
-              globalStreamId: cursor,
-              marketStreamId: cursor,
-              archiveInitiatedAt: new Date(),
-            },
-            update: {
-              marketStreamId: cursor,
-              lastArchivedAt: new Date(),
-            },
-          });
+          await this.persistWatermark(marketId, cursor, watermark, startCursor);
           // The watermark moved, so re-read the chain tail once per batch: a
           // concurrent archiver may have appended rows since the last read.
           prevHash = await this.getPrevHash(marketId);
@@ -295,6 +297,39 @@ export class AuditArchiverJob {
     }
 
     return results;
+  }
+
+  /**
+   * Move this market's archive watermark to `cursor`.
+   *
+   * `globalStreamId` is only populated on create and is intentionally left
+   * untouched on update: this job archives the per-market stream only, so it
+   * has no global-stream position to advance, and overwriting the column with a
+   * market-stream id would misreport progress on `GET /audit/watermark`.
+   */
+  private async persistWatermark(
+    marketId: string,
+    cursor: string,
+    watermark: { marketStreamId: string } | null,
+    startCursor: string
+  ): Promise<void> {
+    // No progress was made this pass, so there is nothing new to record.
+    if (cursor === startCursor || cursor === watermark?.marketStreamId) {
+      return;
+    }
+    await this.prisma.tradeStreamWatermark.upsert({
+      where: { marketId },
+      create: {
+        marketId,
+        globalStreamId: cursor,
+        marketStreamId: cursor,
+        archiveInitiatedAt: new Date(),
+      },
+      update: {
+        marketStreamId: cursor,
+        lastArchivedAt: new Date(),
+      },
+    });
   }
 
   /**

@@ -89,19 +89,63 @@ blast radius on the money path:
 cycle, waits, then schedules the next one — it never uses a fixed `setInterval`,
 so a slow cycle cannot build a backlog of queued ticks.
 
-| Behaviour        | Policy                                                                                                    |
-| ---------------- | --------------------------------------------------------------------------------------------------------- |
-| Base interval    | `ORACLE_POLL_INTERVAL_MS`, integer within `[5000, 3600000]`. Anything else throws at startup.             |
-| Overlap          | A tick that lands while a cycle is running is **skipped**, never run concurrently.                        |
-| Cycle deadline   | `ORACLE_CYCLE_TIMEOUT_MS` (default 300000). A cycle that overruns is abandoned and recorded as a failure. |
-| Failure back-off | Exponential after 3 consecutive failures, clamped to 300000 ms. One success resets the streak.            |
-| Jitter           | Up to +20% of the computed delay, so replicas that failed together do not retry in lockstep.              |
-| Shutdown         | `SIGINT`/`SIGTERM` stop scheduling, then wait for the in-flight cycle (bounded by the cycle deadline).    |
+| Behaviour        | Policy                                                                                                     |
+| ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| Base interval    | `ORACLE_POLL_INTERVAL_MS`, integer within `[5000, 3600000]`. Anything else throws at startup.              |
+| Overlap          | A tick that lands while a cycle is running is **skipped**, never run concurrently.                         |
+| Cycle deadline   | `ORACLE_CYCLE_TIMEOUT_MS` (default 300000). A cycle that overruns is abandoned and recorded as a failure.  |
+| Failure back-off | Exponential after 3 consecutive failures, clamped to 300000 ms. One success resets the streak.             |
+| Jitter           | Up to +20% of the computed delay, so replicas that failed together do not retry in lockstep.               |
+| Shutdown         | `SIGINT`/`SIGTERM` stop scheduling, cancel in-flight provider requests, then wait for the cycle to unwind. |
 
 Metrics: `vatix_oracle_poll_cycles_total{outcome}`,
 `vatix_oracle_poll_cycle_duration_ms`, `vatix_oracle_poll_consecutive_failures`.
 A rising `outcome="skipped"` share means the interval is shorter than a real
 cycle — raise `ORACLE_POLL_INTERVAL_MS` or fix the slow dependency.
+
+## Shutdown and cancellation (#1109, #1110)
+
+`poll()` takes an optional `{ signal }` and `bootstrap()` owns one
+`AbortController` for the process lifetime, aborting it on `SIGINT`/`SIGTERM`.
+That closes the gap between what the adapters promise and what the entrypoint
+actually did: `PrimaryAdapter` and `FallbackAdapter` already forwarded
+`request.signal` into their `fetch` and already refuse to retry or fail over an
+abort, but nothing ever supplied a signal, so a `SIGTERM` had to wait out a hung
+provider — up to `ORACLE_PRIMARY_TIMEOUT_MS`, per chain entry, until the cycle
+deadline.
+
+On shutdown, in order:
+
+1. The scheduler stops, so no further cycle starts.
+2. The signal aborts the in-flight provider request (the abort reaches `fetch`,
+   releasing the socket).
+3. The cycle unwinds: markets already resolved still persist their
+   `OracleReport` and enqueue; the market whose fetch was cancelled writes
+   nothing and logs `oracle.poll_aborted` at `warn`; the remaining markets are
+   skipped.
+
+**Nothing is half-written.** A report is only persisted after `resolve()` has
+returned, and the abort only cancels _fetches_, so a cancellation can never
+leave a partial row or a half-signed report. The abandoned market is picked up
+by the next poll cycle (and, because a replay resolves to the same market and
+payload, the BullMQ producer's `marketId:payloadHash` job id deduplicates it).
+No new submission is possible that was not possible before.
+
+Operationally: expect a `warn` line with `event: "oracle.poll_aborted"` on every
+rolling restart, and do not alert on it. `ORACLE_DRY_RUN` remains the kill
+switch for the submission path (#1146); a restart is not required to use it.
+Rolling back this change restores the previous "wait out the cycle deadline"
+shutdown with no other behaviour change.
+
+## Tests
+
+`apps/oracle/main.test.ts` covers the per-cycle fetch → resolve → sign →
+persist → enqueue pipeline. It stubs
+`../workers/src/oracle/bullmq-submission-queue.js` — the producer `main.ts`
+actually constructs — so the suite is hermetic and needs no Redis. Mocking the
+sibling `redis-submission-queue.ts` implementation instead (as the suite once
+did) leaves the real producer dialling Redis: the assertions then target a mock
+that was never wired in, and the run hangs until the test timeout.
 
 ## Failover Metrics (#1147)
 
@@ -177,3 +221,11 @@ When running multiple Oracle replicas in High Availability (HA) mode:
 - **Execution Invariant**: Before resolving, signing, or persisting an `OracleReport` for a market, each replica must acquire the submission lock.
 - **Fail-Closed / Contention**: If another replica holds the lock, the market is skipped with an info log. If Redis is unreachable, lock acquisition fails closed to prevent racing duplicate resolutions.
 - **Lock Release**: On resolution failure or non-resolvable market state, the lock is released immediately so the market can be retried.
+
+## Reliability runbook
+
+Symptom → metric → first lever triage for the price fetcher, the fallback chain,
+the poll loop, and the shutdown path lives in
+[Incident 5 of the incident runbook](../../docs/runbooks/incident-runbook.md#incident-5-oracle-resolution-failure).
+Keep it in sync when a policy constant, an environment variable, or one of the
+oracle series in [docs/metrics.md](../../docs/metrics.md) changes.

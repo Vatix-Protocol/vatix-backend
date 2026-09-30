@@ -50,10 +50,29 @@ export function setSubmissionLock(lock: OracleSubmissionLock | null): void {
   globalSubmissionLock = lock;
 }
 
-export async function poll(): Promise<void> {
+/**
+ * Optional per-cycle controls for {@link poll}.
+ */
+export interface PollOptions {
+  /**
+   * Caller-owned cancellation signal — in production, the bootstrap shutdown
+   * signal (#1109/#1110).
+   *
+   * Both adapters forward it into their in-flight `fetch`, and an abort is
+   * never retried and never failed over, so a `SIGTERM` cancels a hung provider
+   * request instead of waiting out the configured provider timeout (or the
+   * whole cycle deadline). Markets resolved before the abort are still
+   * persisted and enqueued; the market that was cancelled, and every market
+   * after it, is left for the next cycle.
+   */
+  signal?: AbortSignal;
+}
+
+export async function poll(options: PollOptions = {}): Promise<void> {
   const config = loadOracleConfig();
   const logger = createLogger(config.logLevel);
   const prisma = getPrismaClient();
+  const signal = options.signal;
 
   if (!config.secretKey) {
     throw new Error("ORACLE_SECRET_KEY is required");
@@ -117,6 +136,17 @@ export async function poll(): Promise<void> {
   const submissionLock = getSubmissionLock({ logger });
 
   for (const market of markets) {
+    // A caller abort means "stop working": dial no further provider and write
+    // nothing else. Anything already resolved and persisted above this point
+    // stands — a cancellation never rolls back work that already succeeded.
+    if (signal?.aborted) {
+      logger.warn("Oracle poll aborted, skipping remaining markets", {
+        event: "oracle.poll_aborted",
+        marketId: market.id,
+      });
+      break;
+    }
+
     if (!market.oracleAddress) continue;
 
     // Acquire submission lock to prevent concurrent resolution & duplicate submission in HA (#1168)
@@ -132,6 +162,9 @@ export async function poll(): Promise<void> {
     const request: ResolutionRequest = {
       marketId: market.id,
       oracleAddress: market.oracleAddress,
+      // Present only when a caller owns a signal, so the request shape is
+      // unchanged for callers (and tests) that do not cancel.
+      ...(signal ? { signal } : {}),
     };
 
     try {
@@ -230,6 +263,19 @@ export async function poll(): Promise<void> {
         confidence: result.confidence,
       });
     } catch (error) {
+      // A cancellation is a decision, not a fault: report it as such (an
+      // `error` line for a deliberate shutdown would page someone) and stop
+      // the batch instead of walking the remaining markets to re-discover that
+      // the caller has already aborted.
+      if (signal?.aborted) {
+        logger.warn("Oracle poll aborted while resolving market", {
+          event: "oracle.poll_aborted",
+          marketId: market.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        break;
+      }
+
       logger.error("Failed to resolve market", {
         marketId: market.id,
         error: error instanceof Error ? error.message : String(error),
@@ -283,13 +329,22 @@ export async function bootstrap(): Promise<void> {
     cycleTimeoutMs: config.cycleTimeoutMs,
   });
 
+  // #1109/#1110: one controller for the process lifetime. Aborting it on
+  // shutdown cancels in-flight provider requests, so an operator's `SIGTERM`
+  // drains in milliseconds instead of waiting out a hung provider — up to the
+  // configured provider timeout, or the whole cycle deadline. Nothing already
+  // written is rolled back: a market whose resolution already returned still
+  // persists its report and enqueues, and a market whose fetch was cancelled
+  // writes nothing and is resolved by the next poll cycle.
+  const shutdownController = new AbortController();
+
   // #1110: the scheduler owns overlap protection, the per-cycle deadline, and
   // bounded back-off after consecutive failures. `poll` itself only knows how
   // to resolve one batch of markets.
   const scheduler = new PollScheduler({
     intervalMs: config.pollIntervalMs,
     cycleTimeoutMs: config.cycleTimeoutMs,
-    runCycle: poll,
+    runCycle: () => poll({ signal: shutdownController.signal }),
     logger,
   });
 
@@ -301,9 +356,12 @@ export async function bootstrap(): Promise<void> {
     isShuttingDown = true;
 
     logger.info("Oracle shutdown initiated", { signal });
-    // Stop scheduling first, then let an in-flight cycle finish (it is bounded
-    // by cycleTimeoutMs) so a resolution is never cut off mid-write.
+    // Stop scheduling first, then cancel in-flight provider requests and let
+    // the current cycle unwind: a resolution already fetched still persists
+    // (nothing is cut off mid-write), while a hung provider is cancelled
+    // instead of holding the process for the rest of the cycle deadline.
     scheduler.stop();
+    shutdownController.abort(new Error(`Oracle shutdown (${signal})`));
     await scheduler.waitForIdle();
 
     try {

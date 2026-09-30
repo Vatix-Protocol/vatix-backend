@@ -5,6 +5,7 @@ import type { FastifyCorsOptions } from "@fastify/cors";
 import { loadBaseConfig } from "../../../../packages/shared/src/config.js";
 import {
   resolveCorsAllowedOrigins,
+  isOriginAllowed,
   type NodeEnv,
 } from "../../../../packages/shared/src/cors.js";
 
@@ -83,7 +84,7 @@ export const indexerCorsPlugin = fp(async (fastify: FastifyInstance) => {
         return;
       }
 
-      const allowed = allowedOrigins.includes(origin);
+      const allowed = isOriginAllowed(origin, allowedOrigins);
       if (allowed) {
         fastify.log.debug(
           { originAllowed: true },
@@ -95,10 +96,7 @@ export const indexerCorsPlugin = fp(async (fastify: FastifyInstance) => {
           { originAllowed: false },
           "CORS origin rejected (origin value redacted)"
         );
-        callback(
-          new Error("Origin not allowed by CORS policy"),
-          false
-        );
+        callback(new Error("Origin not allowed by CORS policy"), false);
       }
     },
     methods: ["GET", "OPTIONS"],

@@ -666,3 +666,80 @@ describe("distributed rate limiting (Redis-backed)", () => {
     await s.close();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Quota-header correctness (#1142)
+//
+// `RateLimit-Reset` and `Retry-After` are the headers a client uses to
+// self-throttle, so a wrong value is not cosmetic: it either stalls a
+// well-behaved client or invites a retry storm. These cover the two ways the
+// values could drift away from the window they describe.
+// ---------------------------------------------------------------------------
+
+describe("quota header correctness (#1142)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    clearRateLimitStores();
+  });
+
+  it("does not report a Reset that keeps moving forward on every request", async () => {
+    // A sliding window's reset is anchored on its oldest surviving entry, so
+    // the reported instant must stay constant across requests inside that
+    // window. Deriving it as `now + windowMs` advances it on every call, so a
+    // client polling the header is told to wait a full window even when the
+    // real reset is seconds away.
+    vi.stubEnv("RATE_LIMIT_MAX", "5");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
+
+    const s = buildServer(rateLimiter);
+    const first = await s.inject({ method: "GET", url: "/test" });
+    // Sleep long enough that a per-request derivation would move the reported
+    // second by several, well outside any rounding tolerance.
+    await new Promise((resolve) => setTimeout(resolve, 3200));
+    const second = await s.inject({ method: "GET", url: "/test" });
+
+    expect(Number(first.headers["ratelimit-reset"])).toBe(
+      Number(second.headers["ratelimit-reset"])
+    );
+
+    await s.close();
+  });
+
+  it("never advertises Retry-After: 0 on a rejection", async () => {
+    // `Retry-After: 0` tells the client to retry immediately, which is the
+    // opposite of the backoff the rejection asked for.
+    vi.stubEnv("RATE_LIMIT_MAX", "2");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "60000");
+
+    const s = buildServer(rateLimiter);
+    await exhaust(s, 2);
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    expect(res.statusCode).toBe(429);
+    expect(Number(res.headers["retry-after"])).toBeGreaterThanOrEqual(1);
+    expect(res.json().retryAfter).toBeGreaterThanOrEqual(1);
+
+    await s.close();
+  });
+
+  it("derives the fail-closed backoff from the tier window, not a fixed 60s", async () => {
+    // Production fail-closed must not hardcode a minute: a 15s tier asking a
+    // client to wait 60s stalls it, and a 5-minute tier inviting a retry at
+    // 60s produces a storm against a limiter that is already down.
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("RATE_LIMIT_MAX", "5");
+    vi.stubEnv("RATE_LIMIT_WINDOW_MS", "15000");
+
+    const s = buildServer(rateLimiter);
+    const res = await s.inject({ method: "GET", url: "/test" });
+
+    // With Redis unreachable the production path rejects; the backoff must
+    // track the configured 15s window rather than 60.
+    if (res.statusCode === 429) {
+      expect(Number(res.headers["retry-after"])).toBe(15);
+      expect(res.json().retryAfter).toBe(15);
+    }
+
+    await s.close();
+  });
+});

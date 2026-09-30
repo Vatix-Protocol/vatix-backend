@@ -108,7 +108,15 @@ Retry-After         — Seconds until the window resets (omitted once elapsed)
 `RateLimit-Remaining` is clamped at `0` and never goes negative, so a client
 can poll it as a simple "am I allowed to send?" check. `Retry-After` is
 **omitted** rather than set to `0` when the window has already elapsed, since
-`Retry-After: 0` would instruct a client to retry immediately.
+`Retry-After: 0` would instruct a client to retry immediately. It is likewise
+clamped to a minimum of `1` second on a rejection.
+
+`RateLimit-Reset` is the instant the window actually rolls over. The limiter uses
+a **sliding** window, so that instant is anchored on the oldest entry still
+inside the window — not on the current request. Deriving it as `now + windowMs`
+would push the reported reset forward on every call, telling a client polling
+the header to wait a full window even when the real reset is seconds away, and
+making two replicas disagree about the same window.
 
 ### Indexer HTTP surface
 
@@ -147,6 +155,15 @@ Retry-After: <seconds-until-reset>
 ```
 
 The `Retry-After` header indicates how long the client should wait before retrying.
+
+### Fail-closed backoff
+
+When the counter store is unreachable, production **fails closed**: the request
+is rejected with `429` and `RateLimit-Remaining: 0` rather than served
+unlimited. The `Retry-After` on that rejection is derived from the tier's own
+configured window, not a fixed constant — a 15-second tier must not ask a
+client to wait a minute, and a 5-minute tier must not invite a retry storm at
+60 seconds. Non-production falls back to the in-memory limiter.
 
 ---
 

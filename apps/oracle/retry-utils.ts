@@ -200,6 +200,15 @@ export function isRetryableError(error: unknown): boolean {
     return false;
   }
 
+  // An explicit, typed verdict from the throwing component wins over any
+  // inference below. Provider adapters classify their own failures precisely
+  // (a `PrimaryProviderError` knows whether its own answer was malformed), and
+  // inference from a message string both misses those and over-matches.
+  const verdict = (error as { retryable?: unknown }).retryable;
+  if (typeof verdict === "boolean") {
+    return verdict;
+  }
+
   const status = httpStatusOf(error);
   if (status !== undefined) {
     if (status === 408 || status === 429) {

@@ -64,6 +64,19 @@ Every dead-lettered message is hashed (`sha256(JSON.stringify(payload))`) before
 
 > **Why atomic:** the previous implementation called `EXISTS` and then `SET`. That is a read-then-write race: two workers dead-lettering the same poison job concurrently both observe "not a duplicate", so one incident raises two alerts and the dedupe signal is unreliable exactly when a queue is under stress. `SET ... NX` collapses that into a single round trip.
 
+## Stream retention (bounded growth)
+
+Each dead-letter stream is written with an approximate `MAXLEN ~` cap so it cannot grow without bound. A poison message that redelivers on every deploy — or a dependency outage that fails every job in a queue — otherwise appends an entry per failure for as long as the worker is up, turning an incident into a memory-exhaustion outage on the very component that exists to record failures.
+
+| Config env var                  | Default  | Description                                                                    |
+| ------------------------------- | -------- | ------------------------------------------------------------------------------ |
+| `DEAD_LETTER_MAX_STREAM_LENGTH` | `100000` | Max entries retained per stream, trimmed approximately. `0` disables trimming. |
+
+- A malformed value falls back to the default rather than being parsed leniently, so a typo can never silently remove the bound.
+- The cap is a **retention** bound, not a correctness one. The BullMQ `failed` set (`removeOnFail: false`) remains the durable record and is unaffected.
+- Each write logs the effective `maxLength` alongside `stream` and `persisted`, so an operator can confirm the bound that was in force for a given incident.
+- **Rollback:** set `DEAD_LETTER_MAX_STREAM_LENGTH=0` and restart the workers to restore unbounded retention.
+
 ## When Messages Are Dead-Lettered
 
 A message is sent to the dead letter log when:

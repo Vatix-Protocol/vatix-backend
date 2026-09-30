@@ -11,7 +11,9 @@ export type { LogLevel, ILogger } from "./logger.js";
 
 export {
   PROBE_ERROR_CODES,
+  PROBE_IDENTITY_FALLBACK,
   classifyProbeError,
+  sanitizeProbeIdentity,
   sanitizeProbeMessage,
 } from "./probeErrors.js";
 export type { ProbeErrorCode } from "./probeErrors.js";

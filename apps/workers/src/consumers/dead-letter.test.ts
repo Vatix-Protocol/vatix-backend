@@ -240,4 +240,100 @@ describe("Dead Letter Log", () => {
       persistenceError: "OOM command not allowed",
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Bounded stream growth (#1106)
+  // -------------------------------------------------------------------------
+
+  it("caps the dead-letter stream with approximate MAXLEN trimming", async () => {
+    const mockLogger = createMockLogger();
+    xaddImpl.mockClear();
+
+    await logDeadLetter(mockLogger as any, {
+      id: "msg-cap",
+      queue: "settlement",
+      payload: { tradeId: "t-cap" },
+      reason: "Max retries exceeded",
+    });
+
+    // An unbounded stream is a memory-exhaustion path: a poison message that
+    // redelivers forever appends an entry per failure.
+    const args = xaddImpl.mock.calls[0];
+    expect(args.slice(0, 5)).toEqual([
+      "vatix:dead-letter:settlement",
+      "MAXLEN",
+      "~",
+      "100000",
+      "*",
+    ]);
+  });
+
+  it("honours DEAD_LETTER_MAX_STREAM_LENGTH and can disable trimming with 0", async () => {
+    const previous = process.env.DEAD_LETTER_MAX_STREAM_LENGTH;
+    try {
+      process.env.DEAD_LETTER_MAX_STREAM_LENGTH = "25";
+      xaddImpl.mockClear();
+      const mockLogger = createMockLogger();
+      await logDeadLetter(mockLogger as any, {
+        id: "msg-cap-2",
+        queue: "settlement",
+        payload: { tradeId: "t-cap-2" },
+        reason: "Max retries exceeded",
+      });
+      expect(xaddImpl.mock.calls[0].slice(0, 5)).toEqual([
+        "vatix:dead-letter:settlement",
+        "MAXLEN",
+        "~",
+        "25",
+        "*",
+      ]);
+
+      // 0 opts out entirely, for operators who archive the stream out of band.
+      process.env.DEAD_LETTER_MAX_STREAM_LENGTH = "0";
+      xaddImpl.mockClear();
+      await logDeadLetter(createMockLogger() as any, {
+        id: "msg-cap-3",
+        queue: "settlement",
+        payload: { tradeId: "t-cap-3" },
+        reason: "Max retries exceeded",
+      });
+      const args = xaddImpl.mock.calls[0];
+      expect(args).not.toContain("MAXLEN");
+      expect(args[1]).toBe("*");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.DEAD_LETTER_MAX_STREAM_LENGTH;
+      } else {
+        process.env.DEAD_LETTER_MAX_STREAM_LENGTH = previous;
+      }
+    }
+  });
+
+  it("falls back to the default cap when the override is malformed", async () => {
+    const previous = process.env.DEAD_LETTER_MAX_STREAM_LENGTH;
+    try {
+      // A malformed cap must not silently disable the bound.
+      process.env.DEAD_LETTER_MAX_STREAM_LENGTH = "1000; DROP";
+      xaddImpl.mockClear();
+      await logDeadLetter(createMockLogger() as any, {
+        id: "msg-cap-4",
+        queue: "settlement",
+        payload: { tradeId: "t-cap-4" },
+        reason: "Max retries exceeded",
+      });
+      expect(xaddImpl.mock.calls[0].slice(0, 5)).toEqual([
+        "vatix:dead-letter:settlement",
+        "MAXLEN",
+        "~",
+        "100000",
+        "*",
+      ]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.DEAD_LETTER_MAX_STREAM_LENGTH;
+      } else {
+        process.env.DEAD_LETTER_MAX_STREAM_LENGTH = previous;
+      }
+    }
+  });
 });

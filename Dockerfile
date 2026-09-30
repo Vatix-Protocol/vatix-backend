@@ -31,6 +31,13 @@ ARG NODE_VERSION=22-bookworm-slim
 FROM node:${NODE_VERSION} AS base
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10 --activate
+# The unprivileged `vatix` user is created once here so every stage that runs
+# application code can drop root, not just `runtime`. The one-off `migrate` and
+# `load-test` stages run app code too and were still root before this moved up
+# (#1120). Build-time stages below intentionally stay root: `pnpm install` and
+# `prisma generate` write into /app before any ownership is set.
+RUN groupadd --system --gid 1001 vatix \
+    && useradd --system --uid 1001 --gid vatix --no-create-home vatix
 
 # ---------------------------------------------------------------------------
 # deps — full install (including devDependencies) so the Prisma CLI is
@@ -75,6 +82,14 @@ RUN pnpm prisma:generate
 # (the Prisma CLI is a devDependency) and the generated client from "build".
 # ---------------------------------------------------------------------------
 FROM build AS migrate
+# Migrations execute DDL against the live database, so this container runs
+# unprivileged like every other one: a container escape during a migration must
+# not start from uid 0. `migrate deploy` only reads prisma/schema.prisma and
+# writes nothing into the image, so ownership of the copied tree is left as-is
+# and only the schema is made readable by the runtime user.
+RUN chown vatix:vatix /app/prisma /app/prisma/schema.prisma \
+    && chown -R vatix:vatix /app/prisma/migrations
+USER vatix
 CMD ["pnpm", "prisma:deploy"]
 
 # ---------------------------------------------------------------------------
@@ -89,8 +104,8 @@ CMD ["pnpm", "prisma:deploy"]
 # ---------------------------------------------------------------------------
 FROM base AS runtime
 ENV NODE_ENV=production
-RUN groupadd --system --gid 1001 vatix \
-    && useradd --system --uid 1001 --gid vatix --no-create-home vatix
+# The `vatix` user is created in `base`; see the note there for why it is not
+# re-created per-stage.
 # Every COPY is --chown'd rather than fixing ownership afterwards with a
 # recursive `chown`: a trailing `chown -R` writes a second full copy of the tree
 # into a new layer, so the root-owned originals stay in the image history and
@@ -163,3 +178,17 @@ CMD ["node_modules/.bin/tsx", "apps/workers/src/oracle/main.ts"]
 # ---------------------------------------------------------------------------
 FROM runtime AS settlement-worker
 CMD ["node_modules/.bin/tsx", "apps/workers/src/settlement/consumer.ts"]
+
+# ---------------------------------------------------------------------------
+# load-test — one-off local order-placement load test (LOCAL ONLY; see the
+# header in scripts/load-test-orders.ts and the load-testing section of
+# docs/docker-compose.md).
+#
+# compose pointed this service at the `build` target, which declares no USER
+# and so ran the load generator as root. This stage keeps the full `build`
+# tree (tsx + the script, which `runtime` does not carry) and then drops root
+# like every other code-executing target.
+# ---------------------------------------------------------------------------
+FROM build AS load-test
+USER vatix
+CMD ["node_modules/.bin/tsx", "scripts/load-test-orders.ts"]

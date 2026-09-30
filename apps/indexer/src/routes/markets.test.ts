@@ -472,3 +472,101 @@ describe("GET /markets/:id/trades", () => {
     expect(JSON.parse(response.body).correlationId).toBe("corr-trades");
   });
 });
+
+/**
+ * Cursor validation (#1143).
+ *
+ * A cursor is the id of the last row on the previous page, so it is the same
+ * kind of opaque token as a market id and is bounded by the same rule. The
+ * important property is that an invalid cursor *fails closed* with 400: it
+ * must not silently fall through to an unfiltered first page, which a client
+ * would read as "the collection ended here" and stop paging.
+ */
+describe("cursor validation (#1143)", () => {
+  let app: FastifyInstance;
+
+  beforeEach(async () => {
+    app = makeApp();
+    vi.clearAllMocks();
+    useMockPrisma();
+    mockPrisma.market.findUnique.mockResolvedValue({ id: "market-1" });
+    mockPrisma.market.findMany.mockResolvedValue([]);
+    mockPrisma.market.count.mockResolvedValue(0);
+    mockPrisma.indexedTrade.findMany.mockResolvedValue([]);
+    mockPrisma.indexedTrade.count.mockResolvedValue(0);
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it("rejects an over-long cursor on /markets", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/markets?cursor=${"a".repeat(200)}`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.code).toBe("MARKETS_VALIDATION_FAILED");
+    expect(body).toHaveProperty("correlationId");
+  });
+
+  it("rejects a cursor containing SQL metacharacters on /markets", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets?cursor=%27%20OR%201%3D1%20--",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).code).toBe("MARKETS_VALIDATION_FAILED");
+    // The rejected value is never handed to the database.
+    expect(mockPrisma.market.findMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects an over-long cursor on /markets/:id/trades", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/markets/market-1/trades?cursor=${"a".repeat(200)}`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.code).toBe("MARKETS_VALIDATION_FAILED");
+  });
+
+  it("rejects a cursor with embedded whitespace on /markets/:id/trades", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets/market-1/trades?cursor=trade%201",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).code).toBe("MARKETS_VALIDATION_FAILED");
+  });
+
+  it("does not echo a rejected cursor back to the caller", async () => {
+    const marker = "a".repeat(200);
+    const response = await app.inject({
+      method: "GET",
+      url: `/markets?cursor=${marker}`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).not.toContain(marker);
+  });
+
+  it("still accepts a well-formed cursor", async () => {
+    await app.inject({
+      method: "GET",
+      url: "/markets?cursor=market-42&limit=10",
+    });
+
+    expect(mockPrisma.market.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { gt: "market-42" } }),
+      }),
+      expect.anything()
+    );
+  });
+});

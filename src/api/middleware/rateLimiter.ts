@@ -146,10 +146,27 @@ async function applyLimitAsync(
     // Count current entries in window
     const count = await client.zcard(redisKey);
     const remaining = maxRequests - count;
-    const resetAtMs = now + windowMs;
+    // The window resets when its *oldest* surviving entry ages out, not
+    // `now + windowMs`. Deriving the reset from the current request would
+    // push `RateLimit-Reset` forward on every call, so a client polling the
+    // header would be told to wait a full window even though the oldest entry
+    // — and therefore the real reset — is only seconds away. The oldest
+    // entry's score is the window's true anchor.
+    //
+    // `zRangeWithScores` rather than `zRange(..., "WITHSCORES")`: the latter
+    // silently drops the flag on this client and returns members only, which
+    // would leave the score undefined and quietly reinstate the drift.
+    const oldest = await client.zRangeWithScores(redisKey, 0, 0);
+    const oldestScore = Number(oldest?.[0]?.score);
+    const resetAtMs =
+      Number.isFinite(oldestScore) && oldestScore > 0
+        ? oldestScore + windowMs
+        : now + windowMs;
 
     if (count >= maxRequests) {
-      const retryAfter = Math.ceil((resetAtMs - now) / 1000);
+      // Clamp to at least 1s: `Retry-After: 0` would instruct a client to
+      // retry immediately, defeating the backoff it asked for.
+      const retryAfter = Math.max(1, Math.ceil((resetAtMs - now) / 1000));
       setQuotaHeaders(reply, maxRequests, 0, resetAtMs);
       reply.status(429).header("Retry-After", String(retryAfter)).send({
         error: "Too Many Requests",
@@ -169,12 +186,18 @@ async function applyLimitAsync(
   } catch (error) {
     // Production: fail closed (reject request) if Redis unavailable
     if (config.nodeEnv === "production") {
-      setQuotaHeaders(reply, maxRequests, 0, now + windowMs);
-      reply.status(429).header("Retry-After", "60").send({
+      // The backoff is derived from the tier's own window rather than a
+      // hardcoded 60s: a tier configured with a 15s window must not tell a
+      // client to wait a minute, and a 5-minute window must not invite a
+      // retry storm after 60s.
+      const resetAtMs = now + windowMs;
+      const retryAfter = Math.max(1, Math.ceil(windowMs / 1000));
+      setQuotaHeaders(reply, maxRequests, 0, resetAtMs);
+      reply.status(429).header("Retry-After", String(retryAfter)).send({
         error: "Too Many Requests",
         code: "RATE_LIMITED",
         statusCode: 429,
-        retryAfter: 60,
+        retryAfter,
       });
       return;
     }
@@ -195,7 +218,9 @@ async function applyLimitAsync(
     const remaining = maxRequests - entry.count;
 
     if (entry.count > maxRequests) {
-      const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
+      // Same clamp as the Redis path: a window that is about to roll over
+      // must not yield `Retry-After: 0`.
+      const retryAfter = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
       setQuotaHeaders(reply, maxRequests, 0, entry.resetAt);
       reply.status(429).header("Retry-After", String(retryAfter)).send({
         error: "Too Many Requests",
