@@ -68,6 +68,17 @@ export interface RetentionPlan {
 const MS_PER_DAY = 86_400_000;
 
 /**
+ * A single archived row considered during a retention scan.
+ * Mirrors the Prisma select used in `job.ts`:
+ * `select: { id: true, marketId: true, archivedAt: true }`.
+ */
+export interface RetentionCandidate {
+  id: string;
+  marketId: string;
+  archivedAt: Date;
+}
+
+/**
  * Compute the retention cutoff, or `null` when retention is disabled.
  *
  * Exported so operators/tests can reason about the exact boundary: a row is
