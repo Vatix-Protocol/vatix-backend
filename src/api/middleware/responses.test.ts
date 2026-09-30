@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
-import { unauthorized, forbidden, success } from "./responses.js";
+import {
+  unauthorized,
+  forbidden,
+  matchingUnavailable,
+  serviceUnavailable,
+  success,
+} from "./responses.js";
+import { errorHandler } from "./errorHandler.js";
+import { ValidationError } from "./errors.js";
 import { makeGenReqId, requestIdMiddleware, UUID_REGEX } from "./requestId.js";
 
 describe("Auth response helpers", () => {
@@ -75,6 +83,122 @@ describe("Auth response helpers", () => {
     expect(body.requestId).toBe(body.requestId.trim());
     expect(typeof body.timestamp).toBe("string");
     expect(() => new Date(body.timestamp)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1124 — one standard error envelope for every error path.
+//
+// A guard that sends a response directly (authz / dependency) and an error
+// that is thrown and mapped by errorHandler must be indistinguishable to a
+// client: same fields, same code vocabulary, and a usable requestId.
+// ---------------------------------------------------------------------------
+
+describe("standard error envelope (#1124)", () => {
+  const CASES = [
+    {
+      name: "unauthorized",
+      helper: unauthorized,
+      status: 401,
+      code: "UNAUTHORIZED",
+    },
+    {
+      name: "forbidden",
+      helper: forbidden,
+      status: 403,
+      code: "FORBIDDEN",
+    },
+    {
+      name: "matchingUnavailable",
+      helper: matchingUnavailable,
+      status: 503,
+      code: "MATCHING_UNAVAILABLE",
+    },
+    {
+      name: "serviceUnavailable",
+      helper: serviceUnavailable,
+      status: 503,
+      code: "SERVICE_UNAVAILABLE",
+    },
+  ] as const;
+
+  let server: FastifyInstance;
+  afterEach(() => server.close());
+
+  for (const c of CASES) {
+    it(`${c.name} returns the full envelope (code/message/error/statusCode/requestId)`, async () => {
+      server = Fastify({ logger: false, genReqId: () => "req-envelope" });
+      server.get("/x", async (_, reply) => c.helper(reply));
+
+      const res = await server.inject({ method: "GET", url: "/x" });
+      const body = JSON.parse(res.body);
+
+      expect(res.statusCode).toBe(c.status);
+      expect(body).toEqual({
+        code: c.code,
+        message: body.message,
+        error: body.message,
+        statusCode: c.status,
+        requestId: "req-envelope",
+      });
+      // `error` mirrors `message` for clients written against the old shape.
+      expect(body.error).toBe(body.message);
+      expect(typeof body.message).toBe("string");
+    });
+  }
+
+  it("always includes a non-empty requestId so a denial is traceable", async () => {
+    server = Fastify({ logger: false, genReqId: () => "req-trace" });
+    server.get("/x", async (_, reply) => forbidden(reply));
+
+    const res = await server.inject({ method: "GET", url: "/x" });
+    const body = JSON.parse(res.body);
+
+    expect(body).toHaveProperty("requestId");
+    expect(body.requestId).toBe("req-trace");
+  });
+
+  it("uses the same envelope as a thrown error mapped by errorHandler", async () => {
+    server = Fastify({ logger: false, genReqId: () => "req-same" });
+    server.setErrorHandler(errorHandler);
+    // Guard path: sends directly.
+    server.get("/guard", async (_, reply) => forbidden(reply));
+    // Thrown path: mapped by the central error handler.
+    server.get("/thrown", async () => {
+      throw new ValidationError("bad input");
+    });
+
+    const guardBody = JSON.parse(
+      (await server.inject({ method: "GET", url: "/guard" })).body
+    );
+    const thrownBody = JSON.parse(
+      (await server.inject({ method: "GET", url: "/thrown" })).body
+    );
+
+    // Identical key sets — a client needs only one parse path.
+    expect(Object.keys(guardBody).sort()).toEqual(
+      Object.keys(thrownBody).sort()
+    );
+    expect(guardBody.requestId).toBe(thrownBody.requestId);
+  });
+
+  it("does not leak a stack trace in the envelope", async () => {
+    server = Fastify({ logger: false });
+    server.get("/x", async (_, reply) => serviceUnavailable(reply));
+
+    const res = await server.inject({ method: "GET", url: "/x" });
+    expect(JSON.parse(res.body)).not.toHaveProperty("stack");
+  });
+
+  it("keeps a caller-supplied message in both message and error", async () => {
+    server = Fastify({ logger: false, genReqId: () => "req-msg" });
+    server.get("/x", async (_, reply) => unauthorized(reply, "Token expired"));
+
+    const body = JSON.parse(
+      (await server.inject({ method: "GET", url: "/x" })).body
+    );
+    expect(body.message).toBe("Token expired");
+    expect(body.error).toBe("Token expired");
   });
 });
 
