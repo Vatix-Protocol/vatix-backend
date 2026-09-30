@@ -4,6 +4,8 @@ export interface StartupHealthInput {
   cursorKey: string;
   /** process.env.DATABASE_URL — required for the indexer to persist cursor/events. */
   databaseUrl: string | undefined;
+  /** process.env.REDIS_URL — required for the indexer's dedupe/lock coordination. */
+  redisUrl: string | undefined;
 }
 
 export interface StartupHealthResult {
@@ -19,6 +21,10 @@ export function checkStartupHealth(
 
   if (!input.databaseUrl || input.databaseUrl.trim() === "") {
     errors.push("Missing required environment variable: DATABASE_URL");
+  }
+
+  if (!input.redisUrl || input.redisUrl.trim() === "") {
+    errors.push("Missing required environment variable: REDIS_URL");
   }
 
   if (!input.networkId || input.networkId.trim() === "") {
@@ -238,21 +244,24 @@ export async function checkReadiness(
       ]);
     } catch (err) {
       const code =
-        err instanceof Error && err.message === PROBE_ERROR_CODES.PROBE_TIMEOUT
+        err instanceof Error &&
+        err.message === PROBE_ERROR_CODES.PROBE_TIMEOUT
           ? PROBE_ERROR_CODES.PROBE_TIMEOUT
           : PROBE_ERROR_CODES.DEPENDENCY_UNAVAILABLE;
       errors.push({ dependency: probe.name, code });
     } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
+      if (timer) clearTimeout(timer);
     }
   }
 
   if (errors.length > 0) {
     return {
       status: 503,
-      body: { status: "unavailable", correlationId: options.correlationId, errors },
+      body: {
+        status: "unavailable",
+        correlationId: options.correlationId,
+        errors,
+      },
     };
   }
 
@@ -260,4 +269,88 @@ export async function checkReadiness(
     status: 200,
     body: { status: "ok", correlationId: options.correlationId, errors: [] },
   };
+}
+
+// ─── Redis startup gate (#1193) ──────────────────────────────────────────────
+//
+// The indexer relies on Redis for cross-instance dedupe/lock coordination.
+// If Redis is missing or unreachable at startup, silently continuing lets
+// multiple instances double-process the same ledger/event (or skip the lock
+// entirely), which corrupts liquidity/trading/settlement state. Startup must
+// therefore fail closed: a missing REDIS_URL is a hard config error, and an
+// unreachable Redis is a hard readiness failure — never a pass-through.
+
+/** Stable, machine-readable startup error codes (never leak raw messages). */
+export const STARTUP_ERROR_CODES = {
+  MISSING_REDIS_URL: "MISSING_REDIS_URL",
+  REDIS_UNAVAILABLE: "REDIS_UNAVAILABLE",
+} as const;
+
+export type StartupErrorCode =
+  (typeof STARTUP_ERROR_CODES)[keyof typeof STARTUP_ERROR_CODES];
+
+export interface StartupError {
+  code: StartupErrorCode;
+  /** Short, log-friendly dependency name; never a URL or credential. */
+  dependency: string;
+}
+
+export interface RedisStartupGateOptions {
+  /** process.env.REDIS_URL — required; absence fails closed. */
+  redisUrl: string | undefined;
+  /** Correlation id for log/trace stitching. */
+  correlationId: string;
+  /** Real connectivity probe (e.g. PING). Must reject when unreachable. */
+  ping: () => Promise<void>;
+  /** Per-probe timeout in ms. Default 2000. */
+  timeoutMs?: number;
+}
+
+export interface RedisStartupGateResult {
+  ready: boolean;
+  errors: StartupError[];
+}
+
+/**
+ * Fail-closed Redis startup gate. Returns `ready: false` (never throws) when
+ * REDIS_URL is missing/blank or when the connectivity probe fails or times
+ * out. Only stable codes and the dependency name are reported — the Redis URL
+ * and any credentials are never included in the result, so they cannot leak
+ * into logs or probe responses.
+ */
+export async function checkRedisStartup(
+  options: RedisStartupGateOptions
+): Promise<RedisStartupGateResult> {
+  const errors: StartupError[] = [];
+
+  if (!options.redisUrl || options.redisUrl.trim() === "") {
+    errors.push({
+      code: STARTUP_ERROR_CODES.MISSING_REDIS_URL,
+      dependency: "redis",
+    });
+    return { ready: false, errors };
+  }
+
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      options.ping(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(PROBE_ERROR_CODES.PROBE_TIMEOUT)),
+          timeoutMs
+        );
+      }),
+    ]);
+  } catch {
+    errors.push({
+      code: STARTUP_ERROR_CODES.REDIS_UNAVAILABLE,
+      dependency: "redis",
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+
+  return { ready: errors.length === 0, errors };
 }
