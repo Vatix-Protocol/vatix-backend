@@ -178,8 +178,14 @@ single query never degrades into a sequential scan:
 | / `trades_seller_address_traded_at_idx`                            |                                                  |                                      |
 | Settlement sweep — `settlement_status = $1`                        | `trades_settlement_status_idx`                   | `apps/workers/src/settlement`        |
 | Per-market order-book / trade lookups — `market_id = $1`           | `trades_market_id_idx`                           | markets read API                     |
-| Market-scoped history — `market_id = $1` `ORDER BY traded_at DESC` | `trades_market_id_traded_at_idx` (#1144)         | `AuditService.getMarketTradeHistory` |
+| Market-scoped history — `market_id = $1` `ORDER BY traded_at DESC` | `trades_market_id_traded_at_idx` (#1144)         | market-scoped history reads          |
 | Unsettled trades, oldest-first                                     | `trades_settlement_status_traded_at_idx` (#1144) | `apps/workers/src/settlement`        |
+
+Each row is asserted with `EXPLAIN` in
+[`tests/integration/trades-index.test.ts`](../tests/integration/trades-index.test.ts),
+including the two #1144 composites — an index that the planner stops choosing,
+or that is reordered and starts sorting again, fails the suite rather than
+silently costing latency.
 
 The composite `(address, traded_at DESC)` indexes are deliberately ordered
 address-first: every per-wallet history query filters on the address and sorts
@@ -200,8 +206,7 @@ every trade-history shape ends in `ORDER BY traded_at DESC`.
   rows but which carries no ordering — so every request additionally sorted the
   market's entire history before applying `LIMIT`, degrading linearly with
   history depth. `trades_market_id_traded_at_idx` turns it into a range scan
-  that stops after `LIMIT` rows. This is the read path behind
-  `getMarketTradeHistory`.
+  that stops after `LIMIT` rows.
 - **Settlement reconciliation** scans unsettled trades oldest-first. The
   single-column `settlement_status` index finds the rows but returns them in
   arbitrary order, so the queue sorted before taking a batch.

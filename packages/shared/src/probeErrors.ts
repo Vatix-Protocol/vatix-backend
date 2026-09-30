@@ -124,3 +124,59 @@ function isTimeoutError(err: unknown): boolean {
     name === "TimeoutError"
   );
 }
+
+// ---------------------------------------------------------------------------
+// Probe identity fields (#1141)
+// ---------------------------------------------------------------------------
+
+/** Value published when a probe identity field is absent or fails validation. */
+export const PROBE_IDENTITY_FALLBACK = "unknown";
+
+/**
+ * Characters allowed in a probe identity field. Identity fields (`service`,
+ * `version`) are operator-supplied through the environment and are echoed on
+ * **unauthenticated** probes, so they are validated rather than trusted: a
+ * value carrying a scheme, credentials, `user:password@`, `key=value`, a
+ * `host:port` pair, a JWT or a Stellar secret seed is rejected outright. The
+ * allowlist is deliberately narrow so an accidental
+ * `SERVICE_NAME=postgres://vatix:s3cr3t@db.internal:5432/vatix` cannot be
+ * published to anyone who can reach the port.
+ */
+const IDENTITY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
+ * A Stellar secret seed. This is *not* caught by {@link IDENTITY_PATTERN}: a
+ * seed is `S` followed by 55 base32 characters, so it is a 56-character
+ * value drawn entirely from `[A-Z2-7]` and looks exactly like a legitimate
+ * service name to a character allowlist. It is rejected explicitly because it
+ * is the single most damaging value an operator could paste into `SERVICE_NAME`
+ * — publishing it hands an unauthenticated caller the ability to sign for the
+ * service. A public account id (`G...`) is unaffected: it carries no signing
+ * authority and is already what probes legitimately publish.
+ */
+const STELLAR_SECRET_SEED_PATTERN = /^S[A-Z2-7]{55}$/;
+
+/**
+ * Reduce an operator-supplied identity field to a value safe to publish on an
+ * unauthenticated probe.
+ *
+ * The input is an environment variable, which means it is fully attacker- or
+ * operator-controlled and may legitimately hold a connection string during
+ * local debugging. Returning a fixed fallback for anything that is not a
+ * short, scheme-free, credential-free token keeps the probe response stable
+ * and secret-free without inventing a value.
+ *
+ * @param value - Raw environment value, or `undefined` when unset.
+ * @returns The value when it matches {@link IDENTITY_PATTERN}, otherwise
+ * {@link PROBE_IDENTITY_FALLBACK}.
+ */
+export function sanitizeProbeIdentity(value: string | undefined): string {
+  if (value === undefined) {
+    return PROBE_IDENTITY_FALLBACK;
+  }
+  const trimmed = value.trim();
+  if (STELLAR_SECRET_SEED_PATTERN.test(trimmed)) {
+    return PROBE_IDENTITY_FALLBACK;
+  }
+  return IDENTITY_PATTERN.test(trimmed) ? trimmed : PROBE_IDENTITY_FALLBACK;
+}

@@ -81,6 +81,24 @@ function isValidId(id: string): boolean {
   return ID_PATTERN.test(id);
 }
 
+/**
+ * Guard for the `cursor` query parameter.
+ *
+ * A cursor is the `id` of the last row on the previous page, so it obeys
+ * exactly the same shape as an id and is validated with the same rule. Without
+ * this check a caller could push a multi-kilobyte `cursor` straight into the
+ * `id > $cursor` predicate: the value is parameterised so it cannot inject
+ * SQL, but it is still an unbounded string the database has to parse and
+ * compare, and it is echoed back to the client — a cheap way to make the
+ * endpoint do work proportional to attacker-controlled input. An invalid
+ * cursor fails closed with `400 MARKETS_VALIDATION_FAILED` rather than
+ * silently degrading to a first page, which would make a client believe it
+ * had reached the end of the collection.
+ */
+function isValidCursor(cursor: string): boolean {
+  return ID_PATTERN.test(cursor);
+}
+
 function correlationId(request: FastifyRequest): string {
   return (
     (request.headers["x-correlation-id"] as string | undefined) ?? request.id
@@ -154,6 +172,14 @@ export const marketsRoutes = async function (
       const { status, cursor, limit } = request.query;
 
       const parsedLimit = limit ?? DEFAULT_LIMIT;
+
+      if (cursor !== undefined && !isValidCursor(cursor)) {
+        return reply.code(400).send({
+          code: ERR.VALIDATION,
+          message: "Invalid cursor",
+          correlationId: cid,
+        });
+      }
 
       try {
         const where: {
@@ -326,6 +352,14 @@ export const marketsRoutes = async function (
         return reply.code(400).send({
           code: ERR.VALIDATION,
           message: "Invalid market id",
+          correlationId: cid,
+        });
+      }
+
+      if (cursor !== undefined && !isValidCursor(cursor)) {
+        return reply.code(400).send({
+          code: ERR.VALIDATION,
+          message: "Invalid cursor",
           correlationId: cid,
         });
       }
