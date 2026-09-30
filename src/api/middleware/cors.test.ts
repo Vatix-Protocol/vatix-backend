@@ -192,4 +192,29 @@ describe("corsPlugin integration", () => {
     expect(res.headers["access-control-allow-origin"]).toBe("https://app.vatix.io");
     expect(res.headers["access-control-allow-credentials"]).toBe("true");
   });
+
+  it("throws at plugin registration when CORS_ALLOWED_ORIGINS is '*' (#1165)", async () => {
+    vi.stubEnv("CORS_ALLOWED_ORIGINS", "*");
+    const { corsPlugin } = await import("./cors.js");
+    server = Fastify({ logger: false });
+    await expect(server.register(corsPlugin)).rejects.toThrow(
+      /wildcard origin '\*' (cannot be combined with credentials|is not allowed)/
+    );
+  });
+
+  it("denies request carrying wildcard Origin: * header (#1165)", async () => {
+    vi.stubEnv("CORS_ALLOWED_ORIGINS", "https://app.vatix.io");
+    const { corsPlugin } = await import("./cors.js");
+    server = Fastify({ logger: false });
+    await server.register(corsPlugin);
+    server.get("/test", async () => ({ ok: true }));
+
+    const res = await server.inject({
+      method: "GET",
+      url: "/test",
+      headers: { origin: "*" },
+    });
+    expect(res.headers["access-control-allow-origin"]).not.toBe("*");
+  });
 });
+

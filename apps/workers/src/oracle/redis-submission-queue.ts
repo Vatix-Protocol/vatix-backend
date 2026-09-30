@@ -14,20 +14,24 @@ import type { SubmissionQueueItem } from "../../../oracle/submission-queue.js";
 const STREAM_BASENAME = "oracle:submissions";
 const CONSUMER_GROUP = "oracle-worker";
 
+function resolveKeyPrefix(prefix?: string): string {
+  const envPrefix = process.env.REDIS_KEY_PREFIX;
+  // Use explicit config prefix first, then env var, then default.
+  // Treat empty strings as absent.
+  return (
+    (prefix !== undefined && prefix !== "" ? prefix : undefined) ??
+    (envPrefix !== undefined && envPrefix !== "" ? envPrefix : undefined) ??
+    "vatix:"
+  );
+}
+
 /**
  * Build the prefixed stream key from the environment.
  * Reads REDIS_KEY_PREFIX (default "vatix:") at construction time so the
  * prefix is consistent for the lifetime of a RedisSubmissionQueue instance.
  */
 function buildStreamKey(prefix?: string): string {
-  const envPrefix = process.env.REDIS_KEY_PREFIX;
-  // Use explicit config prefix first, then env var, then default.
-  // Treat empty strings as absent.
-  const keyPrefix =
-    (prefix !== undefined && prefix !== "" ? prefix : undefined) ??
-    (envPrefix !== undefined && envPrefix !== "" ? envPrefix : undefined) ??
-    "vatix:";
-  return `${keyPrefix}${STREAM_BASENAME}`;
+  return `${resolveKeyPrefix(prefix)}${STREAM_BASENAME}`;
 }
 
 export interface RedisSubmissionQueueConfig {
@@ -59,6 +63,8 @@ export class RedisSubmissionQueue {
   private visibilityTimeoutMs: number;
   private deduplicationTtlSeconds: number;
   private logger: ILogger;
+  /** Key prefix applied to all Redis keys (stream, dedup, inflight lock). */
+  private keyPrefix: string;
   /** Fully-qualified Redis stream key (prefix + base name). */
   private streamKey: string;
   /** Approximate maximum number of entries kept in the stream. 0 = unlimited. */
@@ -69,7 +75,8 @@ export class RedisSubmissionQueue {
     this.visibilityTimeoutMs = config.visibilityTimeoutMs;
     this.deduplicationTtlSeconds = config.deduplicationTtlSeconds ?? 86400;
     this.logger = config.logger;
-    this.streamKey = buildStreamKey(config.keyPrefix);
+    this.keyPrefix = resolveKeyPrefix(config.keyPrefix);
+    this.streamKey = `${this.keyPrefix}${STREAM_BASENAME}`;
     this.maxStreamLength = config.maxStreamLength ?? 0;
   }
 
@@ -120,7 +127,7 @@ export class RedisSubmissionQueue {
     marketId: string,
     payloadHash: string
   ): Promise<boolean> {
-    const dedupKey = `oracle:dedup:${marketId}:${payloadHash}`;
+    const dedupKey = `${this.keyPrefix}oracle:dedup:${marketId}:${payloadHash}`;
     return (await this.redisClient.exists(dedupKey)) > 0;
   }
 
@@ -132,7 +139,7 @@ export class RedisSubmissionQueue {
     payloadHash: string,
     streamId: string
   ): Promise<void> {
-    const dedupKey = `oracle:dedup:${marketId}:${payloadHash}`;
+    const dedupKey = `${this.keyPrefix}oracle:dedup:${marketId}:${payloadHash}`;
     await this.redisClient.set(
       dedupKey,
       streamId,
@@ -142,7 +149,7 @@ export class RedisSubmissionQueue {
   }
 
   private marketLockKey(marketId: string): string {
-    return `oracle:inflight:${marketId}`;
+    return `${this.keyPrefix}oracle:inflight:${marketId}`;
   }
 
   /**

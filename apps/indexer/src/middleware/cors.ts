@@ -46,6 +46,14 @@ export const indexerCorsPlugin = fp(async (fastify: FastifyInstance) => {
     process.env.CORS_ALLOWED_ORIGINS
   );
 
+  // Deny wildcard combined with credentials fail-closed:
+  // Access-Control-Allow-Origin: * must NEVER be combined with Access-Control-Allow-Credentials: true.
+  if (allowedOrigins.includes("*") || allowedOrigins.some((o) => o.includes("*"))) {
+    throw new Error(
+      "CORS misconfiguration: wildcard origin '*' cannot be combined with credentials: true"
+    );
+  }
+
   // Fail-closed in production: an empty allowlist means no cross-origin
   // browser request can succeed — which is the intended deny-by-default.
   if (nodeEnv === "production" && allowedOrigins.length === 0) {
@@ -59,6 +67,19 @@ export const indexerCorsPlugin = fp(async (fastify: FastifyInstance) => {
     origin: (origin, callback) => {
       if (!origin) {
         callback(null, true);
+        return;
+      }
+
+      // Explicitly reject wildcard origin requests when credentials are true
+      if (origin === "*" || origin.includes("*")) {
+        fastify.log.warn(
+          { originAllowed: false, reason: "WILDCARD_WITH_CREDENTIALS" },
+          "CORS wildcard origin denied when credentials are enabled"
+        );
+        callback(
+          new Error("Wildcard origin '*' is not allowed when credentials are enabled"),
+          false
+        );
         return;
       }
 

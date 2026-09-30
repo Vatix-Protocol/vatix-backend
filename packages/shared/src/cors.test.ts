@@ -21,4 +21,22 @@ describe("resolveCorsAllowedOrigins", () => {
       )
     ).toEqual(["https://app.vatix.io", "https://staging.vatix.io"]);
   });
+
+  it("throws when wildcard origin '*' is provided in development (#1165)", () => {
+    expect(() =>
+      resolveCorsAllowedOrigins("development", "*")
+    ).toThrow(/wildcard origin '\*' is not allowed/);
+  });
+
+  it("throws when wildcard origin '*' is provided in production (#1165)", () => {
+    expect(() =>
+      resolveCorsAllowedOrigins("production", "*")
+    ).toThrow(/wildcard origin '\*' is not allowed/);
+  });
+
+  it("throws when wildcard is mixed in comma-separated list (#1165)", () => {
+    expect(() =>
+      resolveCorsAllowedOrigins("development", "http://localhost:3000, *")
+    ).toThrow(/wildcard origin '\*' is not allowed/);
+  });
 });

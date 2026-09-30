@@ -22,6 +22,15 @@ export function resolveCorsAllowedOrigins(
       .map((origin) => origin.trim())
       .filter((origin) => origin.length > 0);
 
+    // Wildcards are strictly forbidden when credentials are enabled across all surfaces.
+    const wildcardOrigins = origins.filter((o) => o === "*" || o.includes("*"));
+    if (wildcardOrigins.length > 0) {
+      throw new Error(
+        `CORS misconfiguration: wildcard origin '*' is not allowed when credentials are enabled. ` +
+          `Insecure origin(s): ${wildcardOrigins.join(", ")}`
+      );
+    }
+
     if (nodeEnv === "production") {
       const insecure = origins.filter((o) => !o.startsWith("https://"));
       if (insecure.length > 0) {

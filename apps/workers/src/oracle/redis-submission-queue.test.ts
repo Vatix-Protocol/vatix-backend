@@ -176,7 +176,7 @@ describe("RedisSubmissionQueue", () => {
         86400
       );
       expect(mockClient.set).toHaveBeenCalledWith(
-        "oracle:inflight:market-1",
+        "test:oracle:inflight:market-1",
         "1-0",
         "EX",
         86400
@@ -210,7 +210,7 @@ describe("RedisSubmissionQueue", () => {
       expect(result).toBe(false);
       expect(mockClient.exists).toHaveBeenNthCalledWith(
         2,
-        "oracle:inflight:market-1"
+        "test:oracle:inflight:market-1"
       );
       expect(mockClient.xadd).not.toHaveBeenCalled();
       expect(mockLogger.info).toHaveBeenCalledWith(
@@ -307,7 +307,7 @@ describe("RedisSubmissionQueue", () => {
         "oracle-worker",
         "1-0"
       );
-      expect(mockClient.del).toHaveBeenCalledWith("oracle:inflight:m1");
+      expect(mockClient.del).toHaveBeenCalledWith("test:oracle:inflight:m1");
       expect(mockLogger.info).toHaveBeenCalledWith(
         "Acknowledged oracle submission",
         expect.any(Object)

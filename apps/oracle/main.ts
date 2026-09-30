@@ -24,6 +24,10 @@ import { PrimaryAdapter } from "./primary-adapter.js";
 import { FallbackAdapter } from "./fallback-adapter.js";
 import { signResolutionReport } from "./signature-helper.js";
 import { BullMQSubmissionQueue } from "../workers/src/oracle/bullmq-submission-queue.js";
+import {
+  OracleSubmissionLock,
+  type OracleSubmissionLockConfig,
+} from "./submission-queue.js";
 import type { ResolutionRequest } from "./provider-adapter.js";
 import type {
   ShutdownHandler,
@@ -31,6 +35,20 @@ import type {
 } from "../workers/src/finalization/types.js";
 
 let globalQueue: BullMQSubmissionQueue | null = null;
+let globalSubmissionLock: OracleSubmissionLock | null = null;
+
+export function getSubmissionLock(
+  config?: OracleSubmissionLockConfig
+): OracleSubmissionLock {
+  if (!globalSubmissionLock) {
+    globalSubmissionLock = new OracleSubmissionLock(config);
+  }
+  return globalSubmissionLock;
+}
+
+export function setSubmissionLock(lock: OracleSubmissionLock | null): void {
+  globalSubmissionLock = lock;
+}
 
 export async function poll(): Promise<void> {
   const config = loadOracleConfig();
@@ -96,8 +114,20 @@ export async function poll(): Promise<void> {
     select: { id: true, oracleAddress: true },
   });
 
+  const submissionLock = getSubmissionLock({ logger });
+
   for (const market of markets) {
     if (!market.oracleAddress) continue;
+
+    // Acquire submission lock to prevent concurrent resolution & duplicate submission in HA (#1168)
+    const lockToken = await submissionLock.acquireLock(market.id);
+    if (!lockToken) {
+      logger.info(
+        "Market submission locked by another oracle instance, skipping",
+        { marketId: market.id }
+      );
+      continue;
+    }
 
     const request: ResolutionRequest = {
       marketId: market.id,
@@ -134,6 +164,7 @@ export async function poll(): Promise<void> {
         logger.info("Market no longer resolvable, skipping", {
           marketId: market.id,
         });
+        await submissionLock.releaseLock(market.id, lockToken);
         continue;
       }
 
@@ -152,6 +183,7 @@ export async function poll(): Promise<void> {
             source: result.source,
           }
         );
+        await submissionLock.releaseLock(market.id, lockToken);
         continue;
       }
 
@@ -202,6 +234,8 @@ export async function poll(): Promise<void> {
         marketId: market.id,
         error: error instanceof Error ? error.message : String(error),
       });
+      // Release lock on failure so the next cycle or another instance can retry
+      await submissionLock.releaseLock(market.id, lockToken);
     }
   }
 }

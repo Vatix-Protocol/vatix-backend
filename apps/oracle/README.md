@@ -168,3 +168,12 @@ ORACLE_DRY_RUN=true pnpm oracle:start
   silently fall back to the submitting path. Default: `false`.
 
 Full runbook: [`docs/oracle-dry-run.md`](../../docs/oracle-dry-run.md).
+
+## Oracle High Availability & Submission Locks (#1168)
+
+When running multiple Oracle replicas in High Availability (HA) mode:
+- **`OracleSubmissionLock` (`submission-queue.ts`)**: Distributed atomic lock manager using Redis `SET key value PX ttl NX` and safe compare-and-delete (Lua script).
+- **Lock Key**: `${REDIS_KEY_PREFIX}oracle:submission-lock:${marketId}` (default TTL: 60s).
+- **Execution Invariant**: Before resolving, signing, or persisting an `OracleReport` for a market, each replica must acquire the submission lock.
+- **Fail-Closed / Contention**: If another replica holds the lock, the market is skipped with an info log. If Redis is unreachable, lock acquisition fails closed to prevent racing duplicate resolutions.
+- **Lock Release**: On resolution failure or non-resolvable market state, the lock is released immediately so the market can be retried.

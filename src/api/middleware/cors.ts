@@ -25,6 +25,13 @@ function getAllowedOrigins(): string[] {
   // resolveCorsAllowedOrigins throws in production if any origin is not https://
   const origins = resolveCorsAllowedOrigins(nodeEnv, process.env.CORS_ALLOWED_ORIGINS);
 
+  // Fail-fast across all envs: credentials=true with wildcard origin is forbidden
+  if (origins.includes("*") || origins.some((o) => o.includes("*"))) {
+    throw new Error(
+      "CORS misconfiguration: wildcard origin '*' cannot be combined with credentials: true"
+    );
+  }
+
   // Fail-fast in production: credentials=true with an empty allowlist would
   // mean no browser can ever make a credentialed cross-origin request — which
   // is almost certainly a misconfiguration rather than intentional lockdown.
@@ -48,6 +55,15 @@ export const corsPlugin = fp(async (fastify: FastifyInstance) => {
       // Same-origin requests (no Origin header) are always allowed
       if (!origin) {
         callback(null, true);
+        return;
+      }
+
+      // Explicitly reject wildcard origin requests when credentials are true
+      if (origin === "*" || origin.includes("*")) {
+        callback(
+          new Error("Wildcard origin '*' is not allowed when credentials are enabled"),
+          false
+        );
         return;
       }
 

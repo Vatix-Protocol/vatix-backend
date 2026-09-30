@@ -13,7 +13,10 @@ export interface DeadLetterMessage {
   classification?: string;
 }
 
-const DEAD_LETTER_STREAM_PREFIX = process.env.REDIS_KEY_PREFIX ?? "vatix:";
+export function getDeadLetterStreamPrefix(): string {
+  return process.env.REDIS_KEY_PREFIX ?? "vatix:";
+}
+
 /** How long a payload hash is remembered for dedupe purposes. */
 const DEDUPE_TTL_SECONDS = 24 * 60 * 60;
 
@@ -26,7 +29,7 @@ function computePayloadHash(payload: unknown): string {
 }
 
 function dedupeKey(queue: string, payloadHash: string): string {
-  return `${DEAD_LETTER_STREAM_PREFIX}dead-letter:dedupe:${queue}:${payloadHash}`;
+  return `${getDeadLetterStreamPrefix()}dead-letter:dedupe:${queue}:${payloadHash}`;
 }
 
 /**
@@ -70,7 +73,7 @@ export async function logDeadLetter(
   message: DeadLetterMessage
 ): Promise<{ duplicate: boolean }> {
   const timestamp = new Date().toISOString();
-  const stream = `${DEAD_LETTER_STREAM_PREFIX}dead-letter:${message.queue}`;
+  const stream = `${getDeadLetterStreamPrefix()}dead-letter:${message.queue}`;
   const payloadHash = computePayloadHash(message.payload);
   const duplicate = await checkAndMarkDuplicate(
     logger,

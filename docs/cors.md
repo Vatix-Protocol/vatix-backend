@@ -83,6 +83,15 @@ credentials: true
 
 This means cross-origin requests with `credentials: 'include'` or `withCredentials: true` are allowed, and response headers like `Set-Cookie` are sent to the client.
 
+### Wildcard Origin Deny with Credentials (#1165)
+
+In compliance with W3C / Fetch CORS specifications and production fail-closed security standards, wildcard origins (`*`) must **never** be combined with `credentials: true`. 
+
+- **Startup validation**: Specifying `*` or wildcard patterns in `CORS_ALLOWED_ORIGINS` throws an explicit configuration error at server/indexer boot across all environments (`development`, `test`, `production`).
+- **Request rejection**: Incoming requests carrying `Origin: *` are rejected fail-closed with an error and never reflected in `Access-Control-Allow-Origin`.
+- **Security guarantee**: Prevents credential leakage and unauthorized cross-origin requests from arbitrary origins.
+
+
 ## Same-Origin Requests
 
 Requests without an `Origin` header (same-origin requests) are always allowed, regardless of origin configuration.

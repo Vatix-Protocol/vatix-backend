@@ -885,6 +885,7 @@ describe("SettlementWorker — payload validation", () => {
       exists: vi.fn().mockResolvedValue(false),
       set: vi.fn().mockResolvedValue(undefined),
       setnx: vi.fn().mockResolvedValue(true),
+      del: vi.fn().mockResolvedValue(undefined),
     };
     worker = new SettlementWorker(redisClient, logger, {
       maxAttempts: 3,
@@ -1004,4 +1005,64 @@ describe("SettlementWorker — payload validation", () => {
       86_400
     );
   });
+
+  describe("Redis key namespacing per environment (#1166)", () => {
+    it("namespaces idempotency key using config.keyPrefix", async () => {
+      const customWorker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({ keyPrefix: "vatix:staging:" })
+      );
+      const job = makeJob({ payload: { ...makeJob().payload, tradeId: "trade-pfx-1" } });
+
+      await customWorker.process(job);
+
+      expect(redisClient.setnx).toHaveBeenCalledWith(
+        "vatix:staging:settlement:processed:trade-pfx-1",
+        "1",
+        86_400
+      );
+    });
+
+    it("namespaces idempotency key using REDIS_KEY_PREFIX env var when config.keyPrefix is omitted", async () => {
+      vi.stubEnv("REDIS_KEY_PREFIX", "vatix:prod:");
+      const envWorker = new SettlementWorker(redisClient, logger, makeConfig());
+      const job = makeJob({ payload: { ...makeJob().payload, tradeId: "trade-pfx-2" } });
+
+      await envWorker.process(job);
+
+      expect(redisClient.setnx).toHaveBeenCalledWith(
+        "vatix:prod:settlement:processed:trade-pfx-2",
+        "1",
+        86_400
+      );
+      vi.unstubAllEnvs();
+    });
+
+    it("releases namespaced idempotency key on failure", async () => {
+      const failingWorker = new SettlementWorker(
+        redisClient,
+        logger,
+        makeConfig({
+          keyPrefix: "vatix:test:",
+          stellar: {
+            rpcUrl: "http://localhost:8000",
+            contractId: "C123",
+            networkPassphrase: "test",
+            signerSecret: "S123",
+          },
+        })
+      );
+      // Force failure during on-chain execution
+      mockSendTransaction.mockRejectedValueOnce(new Error("RPC_NETWORK_DOWN"));
+      const job = makeJob({ payload: { ...makeJob().payload, tradeId: "trade-fail-pfx" } });
+
+      await expect(failingWorker.process(job)).rejects.toThrow();
+
+      expect(redisClient.del).toHaveBeenCalledWith(
+        "vatix:test:settlement:processed:trade-fail-pfx"
+      );
+    });
+  });
 });
+
