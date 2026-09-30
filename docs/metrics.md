@@ -258,6 +258,15 @@ sum(rate(vatix_oracle_primary_provider_attempts_total{type="UPSTREAM"}[5m])) > 0
 `type` values are the stable `PrimaryProviderErrorType` union and never contain
 response bodies, market ids, or credentials.
 
+Each `PrimaryProviderError` also carries a structured `status` and a typed
+`retryable` verdict, and `isRetryableError` consults `retryable` **before** any
+message-text inference. Only `TIMEOUT`, `RATE_LIMIT` and `UPSTREAM` are retried;
+`INVALID_RESPONSE`, `NOT_FOUND` and `AUTHENTICATION` are deterministic — the
+provider will answer identically on every attempt — so retrying them would burn
+the retry budget, the provider's rate limit, and the resolution deadline only to
+fail with the same answer. This is why an `AUTHENTICATION` blip above shows a
+single attempt rather than a burst.
+
 ### `vatix_queue_job_*` (#1105)
 
 `vatix_queue_job_processed_total{queue,outcome}` counts every job run through the

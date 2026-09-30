@@ -2,7 +2,10 @@ import fp from "fastify-plugin";
 import cors from "@fastify/cors";
 import type { FastifyInstance } from "fastify";
 import type { FastifyCorsOptions } from "@fastify/cors";
-import { resolveCorsAllowedOrigins } from "../../../packages/shared/src/cors.js";
+import {
+  resolveCorsAllowedOrigins,
+  isOriginAllowed,
+} from "../../../packages/shared/src/cors.js";
 import type { NodeEnv } from "../../../packages/shared/src/cors.js";
 
 export interface CorsOriginConfig {
@@ -23,7 +26,10 @@ export interface CorsConfig {
 function getAllowedOrigins(): string[] {
   const nodeEnv = (process.env.NODE_ENV ?? "development") as NodeEnv;
   // resolveCorsAllowedOrigins throws in production if any origin is not https://
-  const origins = resolveCorsAllowedOrigins(nodeEnv, process.env.CORS_ALLOWED_ORIGINS);
+  const origins = resolveCorsAllowedOrigins(
+    nodeEnv,
+    process.env.CORS_ALLOWED_ORIGINS
+  );
 
   // Fail-fast in production: credentials=true with an empty allowlist would
   // mean no browser can ever make a credentialed cross-origin request — which
@@ -51,13 +57,21 @@ export const corsPlugin = fp(async (fastify: FastifyInstance) => {
         return;
       }
 
-      if (allowedOrigins.includes(origin)) {
+      if (isOriginAllowed(origin, allowedOrigins)) {
+        fastify.log.debug(
+          { originAllowed: true },
+          "CORS origin allowed (origin value redacted)"
+        );
         callback(null, true);
       } else {
-        callback(
-          new Error(`Origin '${origin}' not allowed by CORS policy`),
-          false
+        // Ops-safe: log the decision, never the adversarial origin value.
+        fastify.log.warn(
+          { originAllowed: false },
+          "CORS origin rejected (origin value redacted)"
         );
+        // The message must not echo the origin either — it is attacker
+        // controlled and would end up in logs and error responses.
+        callback(new Error("Origin not allowed by CORS policy"), false);
       }
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -73,4 +87,3 @@ export const corsPlugin = fp(async (fastify: FastifyInstance) => {
 
   await fastify.register(cors, corsConfig);
 });
-

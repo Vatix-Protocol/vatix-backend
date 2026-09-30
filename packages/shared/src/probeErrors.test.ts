@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   PROBE_ERROR_CODES,
+  PROBE_IDENTITY_FALLBACK,
   classifyProbeError,
+  sanitizeProbeIdentity,
   sanitizeProbeMessage,
 } from "./probeErrors.js";
 
@@ -137,5 +139,70 @@ describe("classifyProbeError", () => {
     expect(classifyProbeError(new Error("boom"))).toBe(
       PROBE_ERROR_CODES.DEPENDENCY_UNAVAILABLE
     );
+  });
+});
+
+describe("sanitizeProbeIdentity", () => {
+  it("publishes an ordinary service name unchanged", () => {
+    expect(sanitizeProbeIdentity("vatix-backend")).toBe("vatix-backend");
+  });
+
+  it("publishes a dotted/dashed version string unchanged", () => {
+    expect(sanitizeProbeIdentity("1.4.2-rc.1")).toBe("1.4.2-rc.1");
+  });
+
+  it("trims surrounding whitespace before validating", () => {
+    expect(sanitizeProbeIdentity("  vatix-api  ")).toBe("vatix-api");
+  });
+
+  it("falls back when the value is unset", () => {
+    expect(sanitizeProbeIdentity(undefined)).toBe(PROBE_IDENTITY_FALLBACK);
+  });
+
+  // #1141: probes are unauthenticated, so a DSN pasted into an env var must
+  // never be echoed back to any caller that can reach the port.
+  it("rejects a postgres DSN carrying credentials", () => {
+    expect(
+      sanitizeProbeIdentity("postgres://vatix:s3cr3t@db.internal:5432/vatix")
+    ).toBe(PROBE_IDENTITY_FALLBACK);
+  });
+
+  it("rejects a bare host:port pair", () => {
+    expect(sanitizeProbeIdentity("10.0.0.5:6379")).toBe(
+      PROBE_IDENTITY_FALLBACK
+    );
+  });
+
+  it("rejects a key=value secret pair", () => {
+    expect(sanitizeProbeIdentity("api_key=abcd1234")).toBe(
+      PROBE_IDENTITY_FALLBACK
+    );
+  });
+
+  it("rejects a Stellar secret seed", () => {
+    expect(sanitizeProbeIdentity(`S${"A".repeat(55)}`)).toBe(
+      PROBE_IDENTITY_FALLBACK
+    );
+  });
+
+  it("rejects a value with embedded whitespace or control characters", () => {
+    expect(sanitizeProbeIdentity("vatix backend")).toBe(
+      PROBE_IDENTITY_FALLBACK
+    );
+    expect(sanitizeProbeIdentity("vatix\nbackend")).toBe(
+      PROBE_IDENTITY_FALLBACK
+    );
+  });
+
+  it("rejects an over-long value", () => {
+    expect(sanitizeProbeIdentity("a".repeat(65))).toBe(PROBE_IDENTITY_FALLBACK);
+  });
+
+  it("never leaks any part of the rejected value", () => {
+    const secret = "postgres://vatix:s3cr3t@db.internal:5432/vatix";
+    const result = sanitizeProbeIdentity(secret);
+    expect(result).not.toContain("s3cr3t");
+    expect(result).not.toContain("vatix");
+    expect(result).not.toContain("db.internal");
   });
 });
