@@ -37,7 +37,7 @@
     "prisma:seed": "tsx prisma/seed.ts",
     "prisma:validate": "tsx scripts/validate-migrations.ts",
     "prisma:reset": "prisma migrate reset",
-    "prisma:deploy": "prisma migrate deploy",
+    "prisma:deploy": "tsx scripts/deploy-migrations.ts",
     "test:run": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "test:matching": "vitest run src/matching",
