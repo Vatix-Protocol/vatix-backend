@@ -258,9 +258,34 @@ describe("insertIfNew", () => {
     expect(upsert).toHaveBeenCalledWith(persisted);
   });
 
-  it("fails closed when the upsert dependency throws", async () => {
-    const upsert = vi.fn().mockRejectedValue(new Error("db down"));
-    await expect(insertIfNew(persisted, upsert)).rejects.toThrow("db down");
+  it("propagates upsert errors (fail-closed on dependency outage)", async () => {
+    const upsert = vi.fn().mockRejectedValue(new Error("db unavailable"));
+    await expect(insertIfNew(persisted, upsert)).rejects.toThrow(
+      "db unavailable"
+    );
+  });
+
+  it("treats concurrent replays of the same key as a single effect", async () => {
+    // First writer wins; the second concurrent call sees the row already present.
+    const upsert = vi
+      .fn()
+      .mockResolvedValueOnce(persisted)
+      .mockResolvedValueOnce(null);
+    const [first, second] = await Promise.all([
+      insertIfNew(persisted, upsert),
+      insertIfNew(persisted, upsert),
+    ]);
+    expect(first.status).toBe("inserted");
+    expect(second.status).toBe("duplicate");
+    expect(upsert).toHaveBeenCalledTimes(2);
+  });
+
+  it("handles duplicate keys deterministically across replays", async () => {
+    const upsert = vi.fn().mockResolvedValue(null);
+    const a = await insertIfNew(persisted, upsert);
+    const b = await insertIfNew(persisted, upsert);
+    expect(a).toEqual(b);
+    expect(a.status).toBe("duplicate");
   });
 });
 
@@ -269,36 +294,30 @@ describe("insertIfNew", () => {
 describe("insertAllIfNew", () => {
   const persisted = withIdempotencyKey(TRADE);
 
-  it("returns inserted status when the batch upsert returns the record", async () => {
-    const upsertMany = vi.fn().mockResolvedValue([persisted]);
-    const result = await insertAllIfNew([persisted], upsertMany);
+  it("returns inserted status when the batch upsert returns the records", async () => {
+    const upsertAll = vi.fn().mockResolvedValue([persisted]);
+    const result = await insertAllIfNew([persisted], upsertAll);
     expect(result.status).toBe("inserted");
     if (result.status === "inserted") expect(result.records).toEqual([persisted]);
   });
 
   it("returns duplicate status when the batch upsert returns an empty array", async () => {
-    const upsertMany = vi.fn().mockResolvedValue([]);
-    const result = await insertAllIfNew([persisted], upsertMany);
+    const upsertAll = vi.fn().mockResolvedValue([]);
+    const result = await insertAllIfNew([persisted], upsertAll);
     expect(result.status).toBe("duplicate");
   });
 
-  it("returns duplicate status when the batch upsert returns null", async () => {
-    const upsertMany = vi.fn().mockResolvedValue(null);
-    const result = await insertAllIfNew([persisted], upsertMany);
-    expect(result.status).toBe("duplicate");
+  it("calls the batch upsert exactly once with all records", async () => {
+    const upsertAll = vi.fn().mockResolvedValue([persisted]);
+    await insertAllIfNew([persisted], upsertAll);
+    expect(upsertAll).toHaveBeenCalledTimes(1);
+    expect(upsertAll).toHaveBeenCalledWith([persisted]);
   });
 
-  it("calls upsertMany exactly once with the records", async () => {
-    const upsertMany = vi.fn().mockResolvedValue([persisted]);
-    await insertAllIfNew([persisted], upsertMany);
-    expect(upsertMany).toHaveBeenCalledTimes(1);
-    expect(upsertMany).toHaveBeenCalledWith([persisted]);
-  });
-
-  it("fails closed when the batch upsert dependency throws", async () => {
-    const upsertMany = vi.fn().mockRejectedValue(new Error("redis down"));
-    await expect(insertAllIfNew([persisted], upsertMany)).rejects.toThrow(
-      "redis down"
+  it("propagates batch upsert errors (fail-closed on dependency outage)", async () => {
+    const upsertAll = vi.fn().mockRejectedValue(new Error("redis unavailable"));
+    await expect(insertAllIfNew([persisted], upsertAll)).rejects.toThrow(
+      "redis unavailable"
     );
   });
 });
