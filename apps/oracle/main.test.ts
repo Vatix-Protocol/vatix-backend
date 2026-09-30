@@ -39,7 +39,11 @@ vi.mock("../../src/services/prisma.js", () => ({
 }));
 
 vi.mock("../../src/services/redis.js", () => ({
-  redis: { disconnect: vi.fn() },
+  redis: {
+    disconnect: vi.fn(),
+    set: vi.fn().mockResolvedValue("OK"),
+    eval: vi.fn().mockResolvedValue(1),
+  },
 }));
 
 vi.mock("../indexer/src/logger.js", () => ({
@@ -87,9 +91,38 @@ vi.mock("../workers/src/oracle/bullmq-submission-queue.js", () => ({
   }),
 }));
 
-import { poll, createOverlapGuardedPoll } from "./main.js";
+vi.mock("../workers/src/oracle/redis-submission-queue.js", () => ({
+  RedisSubmissionQueue: vi.fn().mockImplementation(function () {
+    return mockQueue;
+  }),
+}));
+
+import { poll, createOverlapGuardedPoll, setSubmissionLock } from "./main.js";
 import { loadOracleConfig } from "./oracle-config.js";
 import { signResolutionReport } from "./signature-helper.js";
+
+const mockSubmissionLock = {
+  acquireLock: vi.fn().mockResolvedValue("lock-token-1"),
+  releaseLock: vi.fn().mockResolvedValue(true),
+  extendLock: vi.fn().mockResolvedValue(true),
+  getLockKey: vi.fn().mockReturnValue("vatix:oracle:submission-lock:m1"),
+};
+
+const RE
+    return mockQueue;
+  }),
+}));
+
+import { poll, createOverlapGuardedPoll, setSubmissionLock } from "./main.js";
+import { loadOracleConfig } from "./oracle-config.js";
+import { signResolutionReport } from "./signature-helper.js";
+
+const mockSubmissionLock = {
+  acquireLock: vi.fn().mockResolvedValue("lock-token-1"),
+  releaseLock: vi.fn().mockResolvedValue(true),
+  extendLock: vi.fn().mockResolvedValue(true),
+  getLockKey: vi.fn().mockReturnValue("vatix:oracle:submission-lock:m1"),
+};
 
 const RESOLVED_RESULT = {
   outcome: true,
@@ -103,6 +136,9 @@ const RESOLVED_RESULT = {
 describe("apps/oracle/main poll()", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    setSubmissionLock(mockSubmissionLock as any);
+    mockSubmissionLock.acquireLock.mockResolvedValue("lock-token-1");
+    mockSubmissionLock.releaseLock.mockResolvedValue(true);
     (loadOracleConfig as ReturnType<typeof vi.fn>).mockReturnValue({
       pollIntervalMs: 60_000,
       challengeWindowSeconds: 86_400,
@@ -318,6 +354,38 @@ describe("apps/oracle/main poll()", () => {
     expect(mockPrisma.market.findMany).not.toHaveBeenCalled();
   });
 
+  it("skips market when submission lock is held by another oracle replica (#1168)", async () => {
+    mockSubmissionLock.acquireLock.mockResolvedValueOnce(null);
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-locked", oracleAddress: "GORACLE1" },
+    ]);
+
+    await poll();
+
+    expect(mockSubmissionLock.acquireLock).toHaveBeenCalledWith("market-locked");
+    expect(mockOracleService.resolve).not.toHaveBeenCalled();
+    expect(mockQueue.enqueue).not.toHaveBeenCalled();
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      expect.stringContaining("locked by another oracle instance"),
+      expect.objectContaining({ marketId: "market-locked" })
+    );
+  });
+
+  it("releases submission lock when resolution fails (#1168)", async () => {
+    mockSubmissionLock.acquireLock.mockResolvedValueOnce("token-fail-123");
+    mockPrisma.market.findMany.mockResolvedValue([
+      { id: "market-fail", oracleAddress: "GORACLE1" },
+    ]);
+    mockOracleService.resolve.mockRejectedValueOnce(new Error("RPC timeout"));
+
+    await poll();
+
+    expect(mockSubmissionLock.releaseLock).toHaveBeenCalledWith(
+      "market-fail",
+      "token-fail-123"
+    );
+  });
+
   it("threads the caller's shutdown signal into every resolution (#1109/#1110)", async () => {
     mockPrisma.market.findMany.mockResolvedValue([
       { id: "market-1", oracleAddress: "GORACLE1" },
@@ -388,6 +456,24 @@ describe("apps/oracle/main poll()", () => {
     expect(mockLogger.error).not.toHaveBeenCalledWith(
       "Failed to resolve market",
       expect.anything()
+    );
+  });
+});
+
+describe("createOverlapGuardedPoll", () => {
+  it("skips a tick that starts while a previous poll is still in flight", async () => {
+    let resolveFirst: () => void = () => {};
+    const first = new Promise<void>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const pollFn = vi
+      .fn()
+      .mockImplementationOnce(() => first)
+      .mockImplementationOnce(() => Promise.resolve());
+
+    const guardedPoll = createOverlapGuardedPoll(pollFn, mockLogger as any);
+
+  
     );
   });
 });

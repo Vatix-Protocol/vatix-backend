@@ -90,6 +90,11 @@ export interface SettlementWorkerConfig {
   maxAttempts: number;
   processingTimeoutMs: number;
   idempotencyTtlSeconds: number;
+  /**
+   * Optional Redis key prefix override for environment namespacing (#1166).
+   * Falls back to REDIS_KEY_PREFIX env var.
+   */
+  keyPrefix?: string;
   stellar?: SettlementStellarConfig;
   /**
    * Number of permanent (non-retryable) failures for the same tradeId before
@@ -153,6 +158,7 @@ export interface SettlementPrismaClient {
 export class SettlementWorker {
   private readonly consumerConfig: QueueConsumerConfig;
   private readonly idempotencyTtlSeconds: number;
+  private readonly keyPrefix: string;
   private readonly logger: ILogger;
   private readonly redisClient: SettlementRedisClient;
   private readonly stellarConfig?: SettlementStellarConfig;
@@ -176,6 +182,12 @@ export class SettlementWorker {
     this.redisClient = redisClient;
     this.logger = logger;
     this.idempotencyTtlSeconds = config.idempotencyTtlSeconds;
+    this.keyPrefix =
+      config.keyPrefix !== undefined
+        ? config.keyPrefix
+        : process.env.REDIS_KEY_PREFIX !== undefined
+        ? process.env.REDIS_KEY_PREFIX
+        : "";
     this.stellarConfig = config.stellar;
     this.prisma = prisma;
     this.quarantineThreshold = config.quarantineThreshold ?? 1;
@@ -313,7 +325,7 @@ export class SettlementWorker {
       }
     }
 
-    const idempotencyKey = `settlement:processed:${tradeId}`;
+    const idempotencyKey = this.idempotencyKey(tradeId);
 
     // Atomically claim the idempotency lock via SET NX.
     // This prevents double-settlement when two workers race on the same tradeId.
@@ -448,10 +460,15 @@ export class SettlementWorker {
     return quarantined;
   }
 
+  /** Fully qualified idempotency key namespaced by keyPrefix (#1166). */
+  private idempotencyKey(tradeId: string): string {
+    return `${this.keyPrefix}settlement:processed:${tradeId}`;
+  }
+
   /** Best-effort release of the idempotency lock; never throws (#870). */
   private async releaseIdempotencyLock(tradeId: string): Promise<void> {
     try {
-      await this.redisClient.del(`settlement:processed:${tradeId}`);
+      await this.redisClient.del(this.idempotencyKey(tradeId));
     } catch (error) {
       this.logger.warn("Failed to release settlement idempotency lock", {
         tradeId,

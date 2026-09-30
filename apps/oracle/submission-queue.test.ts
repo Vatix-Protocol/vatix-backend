@@ -2,16 +2,18 @@
  * Tests for submission queue types and validation.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type {
   SubmissionQueueItem,
   SubmissionQueueSnapshot,
   SubmissionStatus,
+  OracleLockRedisClient,
 } from "./submission-queue.js";
 import type { ILogger } from "../../packages/shared/src/logger.js";
 import {
   validateSubmissionQueueItem,
   SubmissionQueueValidationError,
+  OracleSubmissionLock,
 } from "./submission-queue.js";
 
 function makeItem(
@@ -205,3 +207,139 @@ describe("SubmissionQueue", () => {
     );
   });
 });
+
+describe("OracleSubmissionLock (#1168)", () => {
+  const createMockRedis = (): OracleLockRedisClient => ({
+    set: vi.fn(),
+    eval: vi.fn(),
+  });
+
+  it("constructs correct lock key with default prefix", () => {
+    const mockRedis = createMockRedis();
+    const lock = new OracleSubmissionLock({
+      redisClient: mockRedis,
+      keyPrefix: "vatix:",
+    });
+
+    expect(lock.getLockKey("market-123")).toBe(
+      "vatix:oracle:submission-lock:market-123"
+    );
+  });
+
+  it("constructs correct lock key with custom keyPrefix", () => {
+    const mockRedis = createMockRedis();
+    const lock = new OracleSubmissionLock({
+      redisClient: mockRedis,
+      keyPrefix: "staging:env:",
+    });
+
+    expect(lock.getLockKey("market-abc")).toBe(
+      "staging:env:oracle:submission-lock:market-abc"
+    );
+  });
+
+  it("acquires lock via atomic SET NX PX when free", async () => {
+    const mockRedis = createMockRedis();
+    (mockRedis.set as any).mockResolvedValueOnce("OK");
+
+    const lock = new OracleSubmissionLock({
+      redisClient: mockRedis,
+      ttlMs: 45_000,
+      keyPrefix: "test:",
+    });
+
+    const token = await lock.acquireLock("mkt-1", "token-uuid-1");
+
+    expect(token).toBe("token-uuid-1");
+    expect(mockRedis.set).toHaveBeenCalledWith(
+      "test:oracle:submission-lock:mkt-1",
+      "token-uuid-1",
+      "PX",
+      45_000,
+      "NX"
+    );
+  });
+
+  it("returns null when lock is already held by another replica", async () => {
+    const mockRedis = createMockRedis();
+    (mockRedis.set as any).mockResolvedValueOnce(null);
+
+    const lock = new OracleSubmissionLock({
+      redisClient: mockRedis,
+      keyPrefix: "test:",
+    });
+
+    const token = await lock.acquireLock("mkt-1", "token-uuid-2");
+
+    expect(token).toBeNull();
+  });
+
+  it("fails closed (returns null) on Redis connection error", async () => {
+    const mockRedis = createMockRedis();
+    (mockRedis.set as any).mockRejectedValueOnce(new Error("Redis ECONNREFUSED"));
+
+    const lock = new OracleSubmissionLock({
+      redisClient: mockRedis,
+    });
+
+    const token = await lock.acquireLock("mkt-err");
+
+    expect(token).toBeNull();
+  });
+
+  it("safely releases lock only when holder token matches", async () => {
+    const mockRedis = createMockRedis();
+    (mockRedis.eval as any).mockResolvedValueOnce(1); // 1 = released
+
+    const lock = new OracleSubmissionLock({
+      redisClient: mockRedis,
+      keyPrefix: "test:",
+    });
+
+    const released = await lock.releaseLock("mkt-1", "token-1");
+
+    expect(released).toBe(true);
+    expect(mockRedis.eval).toHaveBeenCalledWith(
+      expect.stringContaining("if redis.call('get', KEYS[1]) == ARGV[1] then"),
+      1,
+      "test:oracle:submission-lock:mkt-1",
+      "token-1"
+    );
+  });
+
+  it("refuses to release lock when holder token does not match (CAS safety)", async () => {
+    const mockRedis = createMockRedis();
+    (mockRedis.eval as any).mockResolvedValueOnce(0); // 0 = not holder
+
+    const lock = new OracleSubmissionLock({
+      redisClient: mockRedis,
+      keyPrefix: "test:",
+    });
+
+    const released = await lock.releaseLock("mkt-1", "wrong-token");
+
+    expect(released).toBe(false);
+  });
+
+  it("extends lock TTL via compare-and-pexpire", async () => {
+    const mockRedis = createMockRedis();
+    (mockRedis.eval as any).mockResolvedValueOnce(1);
+
+    const lock = new OracleSubmissionLock({
+      redisClient: mockRedis,
+      keyPrefix: "test:",
+    });
+
+    const extended = await lock.extendLock("mkt-1", "token-1", 30_000);
+
+    expect(extended).toBe(true);
+    expect(mockRedis.eval).toHaveBeenCalledWith(
+      expect.stringContaining("pexpire"),
+      1,
+      "test:oracle:submission-lock:mkt-1",
+      "token-1",
+      "30000"
+    );
+  });
+});
+

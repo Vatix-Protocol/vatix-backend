@@ -250,3 +250,71 @@ describe("indexer CORS — auth negatives", () => {
     await app.close();
   });
 });
+
+// ── #1165: CORS deny wildcard+credentials ────────────────────────────────────
+describe("indexer CORS — deny wildcard+credentials (#1165)", () => {
+  afterEach(() => {
+    delete process.env.CORS_ALLOWED_ORIGINS;
+    delete process.env.NODE_ENV;
+  });
+
+  it("throws at plugin registration when CORS_ALLOWED_ORIGINS contains wildcard '*'", async () => {
+    process.env.NODE_ENV = "development";
+    process.env.CORS_ALLOWED_ORIGINS = "*";
+
+    const app = fastify({ logger: false });
+    await expect(app.register(indexerCorsPlugin)).rejects.toThrow(
+      /wildcard origin '\*' (cannot be combined with credentials|is not allowed)/
+    );
+    await app.close();
+  });
+
+  it("denies wildcard origin '*' header on preflight OPTIONS request", async () => {
+    process.env.NODE_ENV = "development";
+    process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3000";
+
+    const app = fastify({ logger: false });
+    await app.register(indexerCorsPlugin);
+    app.get("/markets", async () => ({ ok: true }));
+    await app.ready();
+
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/markets",
+      headers: {
+        origin: "*",
+        "access-control-request-method": "GET",
+      },
+    });
+
+    const acao = response.headers["access-control-allow-origin"];
+    expect(acao).not.toBe("*");
+    expect(response.statusCode).not.toBe(200);
+
+    await app.close();
+  });
+
+  it("denies wildcard origin '*' header on GET request", async () => {
+    process.env.NODE_ENV = "development";
+    process.env.CORS_ALLOWED_ORIGINS = "http://localhost:3000";
+
+    const app = fastify({ logger: false });
+    await app.register(indexerCorsPlugin);
+    app.get("/markets", async () => ({ ok: true }));
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets",
+      headers: {
+        origin: "*",
+      },
+    });
+
+    const acao = response.headers["access-control-allow-origin"];
+    expect(acao).not.toBe("*");
+
+    await app.close();
+  });
+});
+

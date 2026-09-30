@@ -759,4 +759,3 @@ end
 export const redis = new RedisService();
 
 export { RedisService };
-export { matchingService } from "../matching/matching-service.js";

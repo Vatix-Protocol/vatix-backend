@@ -214,6 +214,19 @@ export const settlementOutboxQuarantineTransitionsTotal = new client.Counter({
   registers: [metricsRegistry],
 });
 
+export const settlementDuplicateSkippedTotal = new client.Counter({
+  name: "vatix_settlement_duplicate_skipped_total",
+  help: "Total number of duplicate settlement jobs skipped via idempotency check",
+  registers: [metricsRegistry],
+});
+
+export const settlementErrorQuarantinedTotal = new client.Counter({
+  name: "vatix_settlement_error_quarantined_total",
+  help: "Total number of settlement errors quarantined by error code",
+  labelNames: ["code"] as const,
+  registers: [metricsRegistry],
+});
+
 /**
  * 1 when this process currently holds the matching leader lease, else 0.
  * Updated by src/matching/leader-lease.ts.

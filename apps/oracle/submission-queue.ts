@@ -7,8 +7,10 @@
  * @module apps/oracle/submission-queue
  */
 
+import { randomUUID } from "crypto";
 import type { ProviderResult, ResolutionRequest } from "./provider-adapter.js";
 import type { ILogger } from "../../packages/shared/src/logger.js";
+import { redis } from "../../src/services/redis.js";
 
 /** Possible states of a queued submission. */
 export type SubmissionStatus = "pending" | "submitted" | "failed";
@@ -138,3 +140,178 @@ export class SubmissionQueue {
     } satisfies SubmissionQueueLogMeta);
   }
 }
+
+/** Redis client interface for Oracle HA submission locks. */
+export interface OracleLockRedisClient {
+  set(
+    key: string,
+    value: string,
+    mode: "PX",
+    duration: number,
+    flag: "NX"
+  ): Promise<string | null>;
+  eval(
+    script: string,
+    numkeys: number,
+    ...args: (string | number)[]
+  ): Promise<unknown>;
+}
+
+export interface OracleSubmissionLockConfig {
+  redisClient?: OracleLockRedisClient;
+  /** Lock TTL in milliseconds. Default: 60,000 ms. */
+  ttlMs?: number;
+  /** Key prefix override. Falls back to REDIS_KEY_PREFIX (default: "vatix:"). */
+  keyPrefix?: string;
+  logger?: ILogger;
+}
+
+/**
+ * Distributed submission lock manager for Oracle High Availability (HA) (#1168).
+ *
+ * Guarantees that only one oracle replica resolves and enqueues on-chain
+ * submissions for a given market at any time, preventing duplicate gas spend,
+ * concurrent signing, and database race conditions.
+ */
+export class OracleSubmissionLock {
+  private readonly redisClient: OracleLockRedisClient;
+  private readonly ttlMs: number;
+  private readonly keyPrefix: string;
+  private readonly logger?: ILogger;
+
+  constructor(config: OracleSubmissionLockConfig = {}) {
+    this.redisClient =
+      config.redisClient ?? (redis as unknown as OracleLockRedisClient);
+    this.ttlMs = config.ttlMs ?? 60_000;
+    const envPrefix = process.env.REDIS_KEY_PREFIX;
+    this.keyPrefix =
+      config.keyPrefix !== undefined && config.keyPrefix !== ""
+        ? config.keyPrefix
+        : envPrefix !== undefined && envPrefix !== ""
+        ? envPrefix
+        : "vatix:";
+    this.logger = config.logger;
+  }
+
+  getLockKey(marketId: string): string {
+    return `${this.keyPrefix}oracle:submission-lock:${marketId}`;
+  }
+
+  /**
+   * Attempts to atomically acquire a submission lock for the given market via SET NX PX.
+   *
+   * @param marketId Market identifier
+   * @param lockId   Unique token for this holder (defaults to a random UUID)
+   * @param ttlMs    Optional TTL override in ms
+   * @returns The lock holder token on success, or null if already held / unavailable.
+   */
+  async acquireLock(
+    marketId: string,
+    lockId: string = randomUUID(),
+    ttlMs: number = this.ttlMs
+  ): Promise<string | null> {
+    const lockKey = this.getLockKey(marketId);
+    try {
+      const res = await this.redisClient.set(lockKey, lockId, "PX", ttlMs, "NX");
+      if (res === "OK") {
+        this.logger?.debug("Acquired oracle submission lock", {
+          marketId,
+          lockId,
+          lockKey,
+        });
+        return lockId;
+      }
+      this.logger?.info(
+        "Oracle submission lock already held by another instance",
+        { marketId, lockKey }
+      );
+      return null;
+    } catch (err) {
+      this.logger?.error(
+        "Failed to acquire oracle submission lock (failing closed)",
+        {
+          marketId,
+          lockKey,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      );
+      // Fail closed: if Redis is unreachable or errored, do not risk duplicate submission
+      return null;
+    }
+  }
+
+  /**
+   * Safely releases the submission lock for the given market using CAS (compare-and-delete).
+   *
+   * Only deletes the lock if the value currently stored in Redis matches `lockId`.
+   * This prevents an instance from accidentally deleting a lock that expired
+   * and was acquired by another instance.
+   *
+   * @returns true if the lock was successfully released, false otherwise.
+   */
+  async releaseLock(marketId: string, lockId: string): Promise<boolean> {
+    const lockKey = this.getLockKey(marketId);
+    const luaScript = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('del', KEYS[1])
+else
+  return 0
+end
+`;
+    try {
+      const res = await this.redisClient.eval(luaScript, 1, lockKey, lockId);
+      const released = Number(res) === 1;
+      if (released) {
+        this.logger?.debug("Released oracle submission lock", {
+          marketId,
+          lockId,
+        });
+      }
+      return released;
+    } catch (err) {
+      this.logger?.warn("Failed to release oracle submission lock", {
+        marketId,
+        lockId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Extends the TTL of a currently held lock (heartbeat/extension).
+   * Only extends if `lockId` matches current holder.
+   */
+  async extendLock(
+    marketId: string,
+    lockId: string,
+    ttlMs: number = this.ttlMs
+  ): Promise<boolean> {
+    const lockKey = this.getLockKey(marketId);
+    const luaScript = `
+if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('pexpire', KEYS[1], ARGV[2])
+else
+  return 0
+end
+`;
+    try {
+      const res = await this.redisClient.eval(
+        luaScript,
+        1,
+        lockKey,
+        lockId,
+        String(ttlMs)
+      );
+      return Number(res) === 1;
+    } catch (err) {
+      this.logger?.warn("Failed to extend oracle submission lock", {
+        marketId,
+        lockId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+}
+

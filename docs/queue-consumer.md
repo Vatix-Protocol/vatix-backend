@@ -166,10 +166,24 @@ The settlement worker (`apps/workers/src/settlement/`) consumes the Redis settle
 
 ### Environment Variables
 
-| Variable                | Default             | Description                           |
-| ----------------------- | ------------------- | ------------------------------------- |
-| `SETTLEMENT_QUEUE_NAME` | `settlement-trades` | Redis stream name for settlement jobs |
-| `REDIS_KEY_PREFIX`      | `vatix:`            | Key prefix applied to the stream name |
+| Variable                | Default             | Description                                           |
+| ----------------------- | ------------------- | ----------------------------------------------------- |
+| `SETTLEMENT_QUEUE_NAME` | `settlement-trades` | Redis stream name for settlement jobs                 |
+| `REDIS_KEY_PREFIX`      | `vatix:`            | Global key prefix applied to all Redis keys and queues|
+
+### Redis Key Namespaces per Environment (#1166)
+
+To support multiple environments (development, staging, test, production) sharing a Redis cluster safely without key collision or cross-environment interference, all Redis keys are strictly namespaced using `REDIS_KEY_PREFIX` (defaulting to `vatix:` or configured per environment, e.g. `vatix:staging:`):
+
+| Purpose                    | Redis Key Pattern                                                    |
+| -------------------------- | ------------------------------------------------------------------- |
+| Settlement Stream          | `${REDIS_KEY_PREFIX}${SETTLEMENT_QUEUE_NAME}` (`vatix:settlement-trades`) |
+| Settlement Idempotency Lock| `${REDIS_KEY_PREFIX}settlement:processed:{tradeId}`                 |
+| Oracle Submissions Stream  | `${REDIS_KEY_PREFIX}oracle:submissions`                             |
+| Oracle In-Flight Lock      | `${REDIS_KEY_PREFIX}oracle:inflight:{marketId}`                     |
+| Oracle Dedup Hash          | `${REDIS_KEY_PREFIX}oracle:dedup:{marketId}:{payloadHash}`          |
+| Dead-Letter Stream         | `${REDIS_KEY_PREFIX}dead-letter:{queue}`                             |
+| Dead-Letter Dedup Hash     | `${REDIS_KEY_PREFIX}dead-letter:dedupe:{queue}:{payloadHash}`       |
 
 ### Redis TLS & credentials (#1131)
 
@@ -232,7 +246,7 @@ REDIS_TLS_CA_FILE=/etc/ssl/certs/vatix-redis-ca.pem
 
 ### Idempotency
 
-Before processing, the worker atomically claims `settlement:processed:{tradeId}` in Redis via `SETNX`. If the key already exists the job is acknowledged and skipped. The lock is only meant to mark a _fully completed_ job — if the handler throws for any reason (transient RPC error, mid-transaction DB failure, permanent validation error), the lock is released (`DEL`) as part of error handling in `SettlementWorker.process()` before the error is re-thrown. This guarantees a legitimate retry (BullMQ redelivery) or a manual replay (`pnpm dlq`) actually reprocesses the trade instead of silently no-op'ing as "already processed" (#870).
+Before processing, the worker atomically claims `${REDIS_KEY_PREFIX}settlement:processed:{tradeId}` in Redis via `SETNX`. If the key already exists the job is acknowledged and skipped. The lock is only meant to mark a _fully completed_ job — if the handler throws for any reason (transient RPC error, mid-transaction DB failure, permanent validation error), the lock is released (`DEL`) as part of error handling in `SettlementWorker.process()` before the error is re-thrown. This guarantees a legitimate retry (BullMQ redelivery) or a manual replay (`pnpm dlq`) actually reprocesses the trade instead of silently no-op'ing as "already processed" (#870).
 
 ### Transactional Settlement Apply (#870)
 
@@ -285,7 +299,7 @@ MatchingService.placeOrder()
            ├─ quarantine check (trades.settlementStatus === QUARANTINED)
            │       └─ quarantined → skip, ACK
            │
-           ├─ idempotency check (SETNX settlement:processed:{tradeId})
+           ├─ idempotency check (SETNX {prefix}settlement:processed:{tradeId})
            │       └─ already processed → ACK, skip
            │
            └─ processJob() → handler

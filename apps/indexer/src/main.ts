@@ -1,10 +1,18 @@
-import { validateEnv, EnvValidationError } from "./env";
+import { validateEnv, EnvValidationError } from "./env.js";
 import {
   checkStartupHealth,
   checkLiveDependencies,
-} from "./startupHealth";
-import { buildIndexerHttpServer } from "./httpServer";
-import type { DependencyProbe } from "./startupHealth";
+} from "./startupHealth.js";
+import { buildIndexerHttpServer } from "./httpServer.js";
+import type { DependencyProbe } from "./startupHealth.js";
+import {
+  loadIndexerHaConfig,
+  IndexerLeaderLease,
+  type IndexerHaConfig,
+} from "./haCoordinator.js";
+
+let leaderLease: IndexerLeaderLease | null = null;
+let httpServer: Awaited<ReturnType<typeof buildIndexerHttpServer>> | null = null;
 
 async function main(): Promise<void> {
   try {
@@ -27,25 +35,17 @@ async function main(): Promise<void> {
 
 async function start(): Promise<void> {
   const env = process.env;
+  const haConfig: IndexerHaConfig = loadIndexerHaConfig(env);
 
-  // Feature flag: the indexer's HTTP server is opt-in so the default
-  // off-chain event-ingestion role stays HTTP-free.  When disabled the
-  // process runs headless (polling only) and the kill-switch is a
-  // single env var flip — no code change, no redeploy.
-  const httpEnabled = env.INDEXER_HTTP_ENABLED === "true";
-  if (!httpEnabled) {
-    console.log("[boot] INDEXER_HTTP_ENABLED not set; skipping HTTP server");
-    return;
-  }
-
-  // Startup health gate — fail-closed before the HTTP server binds.
+  // Startup health gate — fail-closed before the HTTP server binds or ingestion starts.
   // Validates config shape (cursor, networkId, cursorKey, databaseUrl)
   // so the indexer never starts with a malformed cursor that would
   // poison the ingestion pipeline.
+  const cursorKey = haConfig.shardPlan.cursorKey;
   const startupResult = checkStartupHealth({
     cursor: env.INDEXER_CURSOR ?? null,
     networkId: env.SOROBAN_NETWORK_PASSPHRASE ?? "",
-    cursorKey: env.INDEXER_CURSOR_KEY ?? "ingestion",
+    cursorKey,
     databaseUrl: env.DATABASE_URL,
   });
 
@@ -67,10 +67,6 @@ async function start(): Promise<void> {
     probes.push({
       name: "database",
       check: async () => {
-        // Placeholder — real probe would run a lightweight query
-        // (e.g. SELECT 1) against the Postgres connection string.
-        // The check is injected by the caller so the indexer module
-        // stays free of hard-coded driver imports.
         throw new Error("database probe not configured");
       },
     });
@@ -93,15 +89,66 @@ async function start(): Promise<void> {
     }
   }
 
-  // HTTP server starts only after startup health and live dependency
-  // checks pass — fail-closed at every gate.
-  const app = await buildIndexerHttpServer();
-  const port = env.INDEXER_HTTP_PORT ? parseInt(env.INDEXER_HTTP_PORT, 10) : 3000;
-  await app.listen({ port });
-  console.log(`[boot] indexer HTTP server listening on port ${port}`);
+  // HA Leader Election & Shard Coordination (#1167)
+  if (haConfig.enabled) {
+    console.log(
+      `[ha] initializing indexer HA coordinator: shard ${haConfig.shardPlan.shardId}/${haConfig.shardPlan.totalShards}, cursorKey=${cursorKey}`
+    );
+    leaderLease = new IndexerLeaderLease(haConfig);
+    await leaderLease.start({
+      onAcquired: (token) => {
+        console.log(
+          `[ha] elected leader for shard ${haConfig.shardPlan.shardId} (fencing token: ${token}); ingestion active`
+        );
+      },
+      onLost: (reason) => {
+        console.warn(
+          `[ha] lost leader lease for shard ${haConfig.shardPlan.shardId} (${reason}); demoting to standby`
+        );
+      },
+    });
+  } else {
+    console.log(
+      `[ha] HA leader election disabled; running standalone ingestion on shard ${haConfig.shardPlan.shardId}`
+    );
+  }
+
+  // Feature flag: the indexer's HTTP server is opt-in so the default
+  // off-chain event-ingestion role stays HTTP-free. When disabled the
+  // process runs headless (polling only) and the kill-switch is a
+  // single env var flip — no code change, no redeploy.
+  const httpEnabled = env.INDEXER_HTTP_ENABLED === "true";
+  if (httpEnabled) {
+    httpServer = await buildIndexerHttpServer();
+    const port = env.INDEXER_HTTP_PORT ? parseInt(env.INDEXER_HTTP_PORT, 10) : 3000;
+    await httpServer.listen({ port });
+    console.log(`[boot] indexer HTTP server listening on port ${port}`);
+  } else {
+    console.log("[boot] INDEXER_HTTP_ENABLED not set; skipping HTTP server");
+  }
+
+  // Graceful shutdown registration
+  const shutdown = async (signal: string) => {
+    console.log(`[shutdown] received ${signal}, shutting down indexer cleanly...`);
+    if (leaderLease) {
+      await leaderLease.release();
+    }
+    if (httpServer) {
+      await httpServer.close();
+    }
+    process.exit(0);
+  };
+
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  process.once("SIGINT", () => void shutdown("SIGINT"));
 }
 
-main().catch((err) => {
-  console.error("[boot] fatal error", err instanceof Error ? err.message : "unknown");
-  process.exit(1);
-});
+export { main, start };
+
+// Only invoke automatically when run directly as CLI
+if (process.argv[1] && process.argv[1].endsWith("main.ts")) {
+  main().catch((err) => {
+    console.error("[boot] fatal error", err instanceof Error ? err.message : "unknown");
+    process.exit(1);
+  });
+}

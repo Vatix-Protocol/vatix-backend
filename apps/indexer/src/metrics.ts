@@ -87,6 +87,22 @@ export const consecutiveIngestionFailuresGauge = new client.Gauge({
   registers: [indexerMetricsRegistry],
 });
 
+/** 1 when this indexer instance currently holds the leader lease for its shard, else 0 (#1167). */
+export const indexerLeaderGauge = new client.Gauge({
+  name: "vatix_indexer_leader",
+  help: "Whether this indexer process currently holds the leader lease (1) or not (0)",
+  labelNames: ["shard_id"] as const,
+  registers: [indexerMetricsRegistry],
+});
+
+/** Incremented whenever an indexer leader lease renewal/acquisition attempt fails (#1167). */
+export const indexerLeaseRenewFailuresTotal = new client.Counter({
+  name: "vatix_indexer_lease_renew_failures_total",
+  help: "Total number of indexer leader lease acquire/renew failures",
+  labelNames: ["shard_id"] as const,
+  registers: [indexerMetricsRegistry],
+});
+
 // ---------------------------------------------------------------------------
 // In-memory metrics service (also updates Prometheus metrics)
 // ---------------------------------------------------------------------------
