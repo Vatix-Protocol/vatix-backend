@@ -189,7 +189,90 @@ describe("corsPlugin integration", () => {
       headers: { origin: "https://app.vatix.io" },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.headers["access-control-allow-origin"]).toBe("https://app.vatix.io");
+    expect(res.headers["access-control-allow-origin"]).toBe(
+      "https://app.vatix.io"
+    );
     expect(res.headers["access-control-allow-credentials"]).toBe("true");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1122 — allowlist exactness, wildcard rejection, adversarial origins
+// ---------------------------------------------------------------------------
+
+describe("corsPlugin allowlist hardening (#1122)", () => {
+  let appRef: FastifyInstance | null = null;
+  afterEach(async () => {
+    if (appRef) await appRef.close();
+    appRef = null;
+    vi.unstubAllEnvs();
+  });
+
+  async function buildWith(
+    origins: string | undefined,
+    nodeEnv = "production"
+  ) {
+    vi.stubEnv("NODE_ENV", nodeEnv);
+    vi.stubEnv("CORS_ALLOWED_ORIGINS", origins ?? "");
+    vi.resetModules();
+    const { corsPlugin } = await import("./cors.js");
+    const app = Fastify({ logger: false });
+    await app.register(corsPlugin);
+    app.get("/test", async () => ({ ok: true }));
+    return app;
+  }
+
+  it("rejects a wildcard allowlist at registration in production", async () => {
+    await expect(buildWith("*")).rejects.toThrow(/rejected in production/);
+  });
+
+  it("rejects an opaque 'null' allowlist at registration in production", async () => {
+    await expect(buildWith("null")).rejects.toThrow(/rejected in production/);
+  });
+
+  it("allows a configured origin whose casing/slash differs from the header", async () => {
+    appRef = await buildWith("https://App.Vatix.IO/");
+    const res = await appRef!.inject({
+      method: "GET",
+      url: "/test",
+      headers: { origin: "https://app.vatix.io" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["access-control-allow-origin"]).toBe(
+      "https://app.vatix.io"
+    );
+  });
+
+  it("denies a suffix near-miss of an allowed origin", async () => {
+    appRef = await buildWith("https://app.vatix.io");
+    const res = await appRef!.inject({
+      method: "GET",
+      url: "/test",
+      headers: { origin: "https://app.vatix.io.evil.example" },
+    });
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("denies a subdomain of an allowed origin (no implicit wildcard)", async () => {
+    appRef = await buildWith("https://app.vatix.io");
+    const res = await appRef!.inject({
+      method: "GET",
+      url: "/test",
+      headers: { origin: "https://evil.app.vatix.io" },
+    });
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("does not echo the rejected origin value in the error body", async () => {
+    appRef = await buildWith("https://app.vatix.io");
+    const res = await appRef!.inject({
+      method: "GET",
+      url: "/test",
+      headers: { origin: "https://attacker.example" },
+    });
+    // The origin is attacker-controlled; it must not be reflected to logs or
+    // the response body (log-injection / reflected-content vector).
+    expect(res.body).not.toContain("attacker.example");
   });
 });
