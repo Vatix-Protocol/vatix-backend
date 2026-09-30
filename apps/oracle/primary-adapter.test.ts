@@ -582,4 +582,94 @@ describe("PrimaryAdapter", () => {
       else process.env.NODE_ENV = previous;
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Typed retry verdicts (#1108)
+  // -------------------------------------------------------------------------
+
+  it("does not retry a deterministic INVALID_RESPONSE failure", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ outcome: "yes", confidence: "high" }), {
+        status: 200,
+      })
+    );
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+      retryConfig: { maxRetries: 3, initialDelayMs: 1, useJitter: false },
+    });
+
+    await expect(
+      adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" })
+    ).rejects.toMatchObject({ type: "INVALID_RESPONSE", retryable: false });
+
+    // The provider will answer identically every time, so retrying just burns
+    // the retry budget, the rate limit, and the resolution deadline.
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("still retries a transient upstream failure", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("boom", { status: 503 }))
+      .mockResolvedValue(
+        new Response(JSON.stringify({ outcome: true, confidence: 0.9 }), {
+          status: 200,
+        })
+      );
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+      retryConfig: { maxRetries: 2, initialDelayMs: 1, useJitter: false },
+    });
+
+    const result = await adapter.resolve({
+      marketId: "market-1",
+      oracleAddress: "GORACLE",
+    });
+
+    expect(result.outcome).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("exposes the HTTP status so retry policy does not depend on message text", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(new Response("nope", { status: 404 }));
+    const adapter = new PrimaryAdapter({
+      baseUrl: "https://primary.example.com",
+      fetchFn,
+      retryConfig: { maxRetries: 3, initialDelayMs: 1, useJitter: false },
+    });
+
+    await expect(
+      adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" })
+    ).rejects.toMatchObject({
+      type: "NOT_FOUND",
+      status: 404,
+      retryable: false,
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies auth and rate-limit failures distinctly", async () => {
+    const makeAdapter = (status: number) =>
+      new PrimaryAdapter({
+        baseUrl: "https://primary.example.com",
+        fetchFn: vi.fn().mockResolvedValue(new Response("x", { status })),
+        retryConfig: { maxRetries: 0 },
+      });
+
+    for (const [status, type, retryable] of [
+      [401, "AUTHENTICATION", false],
+      [429, "RATE_LIMIT", true],
+    ] as const) {
+      await expect(
+        makeAdapter(status).resolve({
+          marketId: "market-1",
+          oracleAddress: "GORACLE",
+        })
+      ).rejects.toMatchObject({ type, retryable });
+    }
+  });
 });

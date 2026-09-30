@@ -25,6 +25,11 @@ jobs:
           - finalization-worker
           - oracle-worker
           - settlement-worker
+          # The one-off jobs execute application code too and were running as
+          # root because they were absent from this matrix (#1120). `migrate`
+          # applies DDL against the live database, so it matters most.
+          - migrate
+          - load-test
 
     steps:
       - name: Checkout code

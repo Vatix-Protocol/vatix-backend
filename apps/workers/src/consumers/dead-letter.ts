@@ -18,6 +18,39 @@ const DEAD_LETTER_STREAM_PREFIX = process.env.REDIS_KEY_PREFIX ?? "vatix:";
 const DEDUPE_TTL_SECONDS = 24 * 60 * 60;
 
 /**
+ * Upper bound on the dead-letter stream, applied with approximate `MAXLEN ~`
+ * trimming (the same mechanism `redis-submission-queue.ts` and
+ * `src/services/audit.ts` use for their streams).
+ *
+ * Without a cap, `vatix:dead-letter:<queue>` grows without bound: a poison
+ * message that redelivers on every deploy, or a dependency outage that fails
+ * every job in the queue, appends an entry per failure for as long as the
+ * worker is up. That is a memory-exhaustion path on the exact component that
+ * exists to record failures, and it turns an incident into an outage.
+ *
+ * The cap is a retention bound, not a correctness one: the BullMQ `failed` set
+ * (`removeOnFail: false`, see `docs/dead-letter-log.md`) is the durable record
+ * and is unaffected. This is deliberately generous so a real incident is
+ * fully captured, and `0` disables trimming for operators who archive the
+ * stream out of band.
+ */
+const DEFAULT_MAX_STREAM_LENGTH = 100_000;
+
+function maxStreamLength(): number {
+  const raw = process.env.DEAD_LETTER_MAX_STREAM_LENGTH;
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_MAX_STREAM_LENGTH;
+  }
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    // A malformed cap must not silently disable the bound, so fall back to the
+    // default rather than parsing `Number("1000; DROP")` as 1000.
+    return DEFAULT_MAX_STREAM_LENGTH;
+  }
+  return parsed;
+}
+
+/**
  * Stable SHA-256 hash of the payload, used to recognize replays of the same
  * failure as duplicates rather than distinct incidents.
  */
@@ -77,19 +110,17 @@ export async function logDeadLetter(
     message.queue,
     payloadHash
   );
+  const maxLength = maxStreamLength();
 
   try {
     await (
       redis as unknown as {
-        xadd: (
-          streamKey: string,
-          id: string,
-          ...fields: string[]
-        ) => Promise<string>;
+        xadd: (...args: (string | number)[]) => Promise<string>;
       }
     ).xadd(
-      stream,
-      "*",
+      ...(maxLength > 0
+        ? [stream, "MAXLEN", "~", String(maxLength), "*"]
+        : [stream, "*"]),
       "messageId",
       message.id,
       "queue",
@@ -124,6 +155,7 @@ export async function logDeadLetter(
       timestamp,
       persisted: true,
       stream,
+      maxLength,
     });
   } catch (error) {
     logger.error("Job dead-lettered", {

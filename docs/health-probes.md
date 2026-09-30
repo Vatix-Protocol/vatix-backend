@@ -88,6 +88,28 @@ for debugging — it is simply never published over HTTP. When adding a new
 probe, route failures through `sanitizeProbeMessage` and emit a `code` from
 `classifyProbeError`; do not add a raw `err.message` to a probe response.
 
+#### Identity fields are validated, not trusted (#1141)
+
+Redaction only covers _error text_. A probe response also echoes
+operator-supplied identity fields — `service` and `version` on `GET /v1/health`
+— which come straight from the environment. Those are passed through
+`sanitizeProbeIdentity` (`packages/shared/src/probeErrors.ts`), which publishes
+the value only when it is a short, scheme-free, credential-free token
+(`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`) and otherwise substitutes the fixed
+fallback `unknown`.
+
+This closes a case redaction cannot: `SERVICE_NAME` is a plausible place for an
+on-call engineer to paste a connection string while debugging, and doing so
+would publish it to every unauthenticated caller. A Stellar **secret seed**
+(`S` + 55 base32 characters) is rejected explicitly because it is 56 characters
+of `[A-Z2-7]` and therefore passes a plain character allowlist — publishing one
+hands a caller the ability to sign for the service. Public account ids (`G…`)
+are unaffected; they carry no signing authority.
+
+The rule for any new probe: **nothing reaches an unauthenticated response
+without passing through a validator or a redactor.** If a field is neither,
+leave it out of the response.
+
 If you believe a secret has leaked through a probe, rotate it immediately —
 treat any value that reached an unauthenticated endpoint as public. See
 [`SECURITY.md`](../SECURITY.md) for the reporting process.

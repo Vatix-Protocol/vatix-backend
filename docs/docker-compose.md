@@ -10,18 +10,18 @@ just the data layer (for host-run development) or the fully containerized stack.
 
 ## Services
 
-| Service               | Profiles                                | Container name              | Notes                                              |
-| --------------------- | --------------------------------------- | --------------------------- | -------------------------------------------------- |
-| `postgres`            | _(default)_                             | `vatix-postgres`            | PostgreSQL 16                                      |
-| `redis`               | _(default)_                             | `vatix-redis`               | Redis 7 — caching + job queues                     |
-| `api`                 | `app`, `api`                            | `vatix-backend`             | Fastify HTTP API, port 3000                        |
-| `indexer`             | `app`, `indexer`                        | `vatix-indexer`             | Stellar event indexer                              |
-| `oracle`              | `app`, `oracle`                         | `vatix-oracle`              | Oracle poll loop — sources off-chain prices        |
-| `finalization-worker` | `app`, `workers`, `finalization-worker` | `vatix-finalization-worker` | Resolution finalization loop                       |
-| `oracle-worker`       | `app`, `workers`, `oracle-worker`       | `vatix-oracle-worker`       | Oracle submission queue consumer                   |
-| `settlement-worker`   | `app`, `workers`, `settlement-worker`   | `vatix-settlement-worker`   | Trade settlement queue consumer                    |
-| `migrate`             | `tools`, `migrate`                      | `vatix-migrate`             | One-off `prisma migrate deploy` job                |
-| `load-test`           | `tools`, `load-test`                    | `vatix-load-test`           | One-off local order-placement load test (~100 rps) |
+| Service               | Profiles                                        | Container name              | Notes                                              |
+| --------------------- | ----------------------------------------------- | --------------------------- | -------------------------------------------------- |
+| `postgres`            | _(default)_                                     | `vatix-postgres`            | PostgreSQL 16                                      |
+| `redis`               | _(default)_                                     | `vatix-redis`               | Redis 7 — caching + job queues                     |
+| `api`                 | `app`, `full`, `api`                            | `vatix-backend`             | Fastify HTTP API, port 3000                        |
+| `indexer`             | `app`, `full`, `indexer`                        | `vatix-indexer`             | Stellar event indexer                              |
+| `oracle`              | `app`, `oracle`                                 | `vatix-oracle`              | Oracle poll loop — sources off-chain prices        |
+| `finalization-worker` | `app`, `full`, `workers`, `finalization-worker` | `vatix-finalization-worker` | Resolution finalization loop                       |
+| `oracle-worker`       | `app`, `full`, `workers`, `oracle-worker`       | `vatix-oracle-worker`       | Oracle submission queue consumer                   |
+| `settlement-worker`   | `app`, `full`, `workers`, `settlement-worker`   | `vatix-settlement-worker`   | Trade settlement queue consumer                    |
+| `migrate`             | `tools`, `migrate`                              | `vatix-migrate`             | One-off `prisma migrate deploy` job                |
+| `load-test`           | `tools`, `load-test`                            | `vatix-load-test`           | One-off local order-placement load test (~100 rps) |
 
 `oracle` is the poll loop (`apps/oracle/main.ts`); `oracle-worker` is the queue
 consumer that submits what the poll loop produced (`apps/workers/src/oracle/`).
@@ -44,10 +44,17 @@ commands like `docker logs vatix-indexer` work as documented there.
 default — this preserves the original host-run development workflow below.
 Every application process lives behind a profile so you opt in explicitly.
 
-All application images (`api`, `indexer`, `finalization-worker`,
-`oracle-worker`, `settlement-worker`) run as the non-root `vatix` user
-(uid/gid `1001`), set in the Dockerfile `runtime` stage. CI's
-`docker-image-smoke` job builds all worker target images and asserts
+Every image that executes application code runs as the non-root `vatix` user
+(uid/gid `1001`): `api`, `indexer`, `oracle`, `finalization-worker`,
+`oracle-worker`, `settlement-worker`, and the one-off `migrate` and `load-test`
+jobs. The user is created once in the Dockerfile `base` stage so those two
+one-off targets can drop root too — `migrate` applies DDL against the live
+database, so it is the last place that should start from uid 0. Only the
+build-time stages (`base`, `deps`, `prod-deps`, `build`) stay root, because
+`pnpm install` and `prisma generate` write into `/app` before any ownership is
+set.
+
+CI's `docker-image-smoke` job builds all worker target images and asserts
 `id -u` inside each container is non-zero, ensuring non-root execution is
 consistent across all processes. The `api` target additionally confirms
 `postgres`/`redis` healthchecks pass with the stack up.
@@ -144,6 +151,10 @@ root, which defines one build `--target` per process.
 
    This builds and starts `postgres`, `redis`, `api`, `indexer`, `oracle`,
    `finalization-worker`, `oracle-worker`, and `settlement-worker`.
+
+   `--profile full` is an alias that starts exactly the same set; `app` is just
+   the shorter name. The two exist because both spellings are referenced from
+   the compose file's own header comment, so neither is going away.
 
    To run a subset, use the matching profile instead of `app`, e.g.:
 

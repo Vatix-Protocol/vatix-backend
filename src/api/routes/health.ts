@@ -21,10 +21,20 @@
  *     "timestamp": string
  *   }
  *
+ * SECURITY (#1141 — probes are unauthenticated, so nothing is trusted):
+ *   `service` and `version` are operator-supplied environment values echoed
+ *   back to any caller that can reach the port. They are passed through
+ *   `sanitizeProbeIdentity`, which publishes the value only when it is a short,
+ *   scheme-free, credential-free token and otherwise substitutes a fixed
+ *   fallback. Without it, a debugging aid such as
+ *   `SERVICE_NAME=postgres://vatix:s3cr3t@db.internal:5432/vatix` would be
+ *   published verbatim to every unauthenticated caller.
+ *
  * HTTP status: always 200 while the process is alive.
  */
 
 import type { FastifyInstance } from "fastify";
+import { sanitizeProbeIdentity } from "../../../packages/shared/src/probeErrors.js";
 
 interface HealthResponse {
   status: "ok";
@@ -48,8 +58,12 @@ export async function healthRoutes(fastify: FastifyInstance) {
 
     return reply.status(200).send({
       status: "ok",
-      service: process.env.SERVICE_NAME ?? "vatix-backend",
-      version: process.env.npm_package_version ?? "unknown",
+      service: sanitizeProbeIdentity(
+        process.env.SERVICE_NAME ?? "vatix-backend"
+      ),
+      version: sanitizeProbeIdentity(
+        process.env.npm_package_version ?? "unknown"
+      ),
       uptime,
       timestamp: new Date().toISOString(),
     });

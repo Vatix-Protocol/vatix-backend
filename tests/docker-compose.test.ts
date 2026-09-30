@@ -160,14 +160,23 @@ describe("docs/docker-compose.md", () => {
     const doc = readFileSync(DOC_PATH, "utf8");
     const servicesSection = content.slice(content.indexOf("\nservices:"));
 
+    // Count the services whose profiles were actually parsed, so a future
+    // reformat of docker-compose.yml that this scanner cannot read fails loudly
+    // instead of silently reducing the loop below to zero assertions.
+    let profiled = 0;
+
     for (const line of servicesSection.split("\n")) {
       const service = line.match(/^ {2}([a-z][a-z0-9-]*):$/);
       if (!service) continue;
 
       const start = servicesSection.indexOf(line);
       const block = servicesSection.slice(start, start + 400);
-      const profiles = block.match(/^ {4}profiles:\s*\[(.*)\]/);
+      // `/m` is load-bearing: without it `^` only matches the very start of the
+      // block, which is the service key itself, so the profile line never
+      // matched and this test asserted nothing. Anchor per line instead.
+      const profiles = block.match(/^ {4}profiles:\s*\[(.*)\]/m);
       if (!profiles) continue;
+      profiled += 1;
 
       const declared = profiles[1]
         .split(",")
@@ -189,6 +198,14 @@ describe("docs/docker-compose.md", () => {
         ).toContain(`\`${profile}\``);
       }
     }
+
+    // Every service except postgres/redis is profile-gated, so the scan above
+    // must have covered all of them. Without this floor the test would pass
+    // trivially if the compose format ever changes under it.
+    expect(
+      profiled,
+      "no service profiles were parsed from docker-compose.yml"
+    ).toBe(composeServices().length - 2);
   });
 
   it("points at the upstream repository with its real owner casing", () => {
@@ -223,6 +240,58 @@ describe("Dockerfile", () => {
   it("runs as a non-root user in the runtime image", () => {
     const content = readFileSync(DOCKERFILE_PATH, "utf8");
     expect(content).toMatch(/USER vatix/);
+  });
+
+  // #1120: `runtime` set USER, but `migrate` derived from `build` and
+  // `load-test` pointed straight at the `build` target — neither declared a
+  // USER, so both executed application code as uid 0. A migration applies DDL
+  // against the live database, so that is the worst possible place to start
+  // from root. Every stage that runs app code must drop privileges.
+  it("runs every code-executing stage as the non-root user", () => {
+    const content = readFileSync(DOCKERFILE_PATH, "utf8");
+    const stages = content
+      .split("\n")
+      .filter((line) => /^FROM \S+ AS /.test(line))
+      .map((line) => line.replace(/^FROM \S+ AS /, "").trim());
+
+    // Stages that run application code. `base`, `deps`, `prod-deps` and
+    // `build` are build-time only: they must stay root because `pnpm install`
+    // and `prisma generate` write into /app before any ownership is set.
+    const codeStages = [
+      "migrate",
+      "api",
+      "indexer",
+      "oracle",
+      "finalization-worker",
+      "oracle-worker",
+      "settlement-worker",
+      "load-test",
+    ];
+
+    for (const stage of codeStages) {
+      expect(stages, `Dockerfile is missing the "${stage}" stage`).toContain(
+        stage
+      );
+      const body = content.slice(content.indexOf(` AS ${stage}\n`));
+      expect(body, `stage "${stage}" never drops to the non-root user`).toMatch(
+        /^USER vatix$/m
+      );
+    }
+  });
+
+  // compose must not point a service at a root-only stage. `load-test` used
+  // `target: build`, which is exactly this failure mode.
+  it("points no compose service at a build-only Dockerfile stage", () => {
+    const compose = readFileSync(COMPOSE_PATH, "utf8");
+    const buildOnly = ["build", "deps", "prod-deps", "base"];
+
+    for (const target of compose.match(/^\s{6}target:\s*(\S+)/gm) ?? []) {
+      const name = target.replace(/^\s*target:\s*/, "").trim();
+      expect(
+        buildOnly,
+        `a compose service builds target "${name}", which runs as root`
+      ).not.toContain(name);
+    }
   });
 
   // #1120: a trailing `chown -R` writes a second full copy of the tree into a

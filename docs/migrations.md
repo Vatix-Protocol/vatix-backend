@@ -56,13 +56,31 @@ This will:
 
 ### Apply Migrations (Production)
 
-To apply migrations without creating new ones (production deployment):
+`prisma:deploy` is the **only** migration command intended for production, and
+it is wrapped in a fail-closed guard ([`scripts/deploy-migrations.ts`](../scripts/deploy-migrations.ts)):
 
 ```bash
-npm run prisma:migrate deploy
-# or
-pnpm prisma:migrate deploy
+pnpm prisma:deploy          # = prisma migrate deploy, guarded
+pnpm prisma:deploy status   # read-only migration status
 ```
+
+The guard enforces the following invariants before it shells out to Prisma:
+
+| Guard                                     | Behaviour on violation                                                                                                                            |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL` must be set                | Exits `1` without touching the database (fail-closed)                                                                                             |
+| `DATABASE_URL` must be `postgresql(s)://` | Exits `1` — sqlite/file targets are rejected so the prod DB cannot be shadowed                                                                    |
+| Only `deploy` / `status` are accepted     | `dev`, `reset`, `db push`, `db pull`, `studio` are refused (they bypass or destroy migration history)                                             |
+| Secrets                                   | The connection string is redacted to `postgresql://***@host/db` before logging — credentials never reach CI logs                                  |
+| Prisma failure                            | Exits `1` with a pointer to [the rollback procedure](./migration-rollback.md) so app containers are not rolled out against a half-migrated schema |
+
+**Invariant:** the app containers are only rolled out after `prisma:deploy`
+exits `0` (see [Deployment Runbook](./deployment-runbook.md#standard-deployment),
+step 2). A non-zero exit aborts the rollout.
+
+**Rollback:** Prisma has no automatic rollback — ship a forward-fix migration,
+or follow [Migration Rollback Procedure](./migration-rollback.md) for a manual
+reverse migration. `prisma:deploy` never rolls back for you.
 
 ### Reset Database
 
@@ -284,11 +302,16 @@ The project includes several helpful scripts in `package.json`:
 ```json
 {
   "prisma:generate": "prisma generate",
-  "prisma:migrate": "prisma migrate dev",
+  "prisma:migrate": "prisma migrate deploy",
   "prisma:studio": "prisma studio",
-  "prisma:seed": "tsx prisma/seed.ts"
+  "prisma:seed": "tsx prisma/seed.ts",
+  "prisma:validate": "tsx scripts/validate-migrations.ts",
+  "prisma:deploy": "tsx scripts/deploy-migrations.ts"
 }
 ```
+
+`prisma:deploy` is the production entrypoint (guarded — see
+[Apply Migrations (Production)](#apply-migrations-production)).
 
 ## Seed Data
 
