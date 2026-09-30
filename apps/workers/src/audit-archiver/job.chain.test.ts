@@ -171,6 +171,47 @@ describe("AuditArchiverJob — hash chain integrity (#1107)", () => {
     expect(watermarkCalls).toHaveLength(0);
   });
 
+  it("persists the watermark over entries archived before a failure", async () => {
+    // Two batches: the first archives cleanly, the second hits a poisoned entry.
+    xrangeMock
+      .mockResolvedValueOnce([["1-0", ["tradeId", "t-1"]]])
+      .mockResolvedValueOnce([["2-0", ["tradeId", "t-2"]]])
+      .mockResolvedValue([]);
+
+    const { prisma, watermarkCalls } = makePrisma({
+      marketIds: ["m-1"],
+      upsertEvent: async (args) => {
+        if (args.where.streamId === "2-0") {
+          throw new Error("deadlock detected");
+        }
+        return args;
+      },
+    });
+
+    // batchSize 1 forces one entry per xrange call, so the successful entry is
+    // committed to the chain before the failing one is reached.
+    const result = await new AuditArchiverJob(prisma, mockLogger, {
+      batchSize: 1,
+    }).run();
+
+    expect(result.archivedCount).toBe(1);
+    expect(result.erroredCount).toBe(1);
+
+    // The durable resume point must cover the entry that was actually written,
+    // so the next run does not re-read and re-hash it. It must stop short of
+    // the failed entry, which stays unarchived and is retried.
+    expect(watermarkCalls.at(-1)).toMatchObject({
+      update: { marketStreamId: "1-0" },
+    });
+    expect(
+      watermarkCalls.some(
+        (c: any) =>
+          c.update?.marketStreamId === "2-0" ||
+          c.create?.marketStreamId === "2-0"
+      )
+    ).toBe(false);
+  });
+
   it("moves the watermark only over entries that were durably archived", async () => {
     xrangeMock
       .mockResolvedValueOnce([["1-0", ["tradeId", "t-1"]]])

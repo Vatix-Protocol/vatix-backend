@@ -448,4 +448,38 @@ describe("Queue Consumer — correlation id and cancellation (#1105)", () => {
 
     expect(observed?.aborted).toBe(false);
   });
+
+  it("does not raise an unhandled rejection when a timed-out handler later fails", async () => {
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      vi.useFakeTimers();
+      // The handler ignores its signal and rejects *after* the timeout already
+      // settled the race. Node terminates the process on an unhandled rejection
+      // by default, so without an explicit handler on the abandoned promise one
+      // slow dependency crash-loops the whole worker.
+      const promise = processJob(
+        makeLogger(),
+        makeConfig({ processingTimeoutMs: 50 }),
+        makeJob(),
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            setTimeout(() => reject(new Error("late failure")), 200);
+          })
+      );
+
+      vi.advanceTimersByTime(50);
+      await expect(promise).rejects.toBeInstanceOf(JobTimeoutError);
+
+      vi.advanceTimersByTime(200);
+      // Let the microtask queue drain the orphan's rejection.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      process.off("unhandledRejection", unhandled);
+    }
+  });
 });

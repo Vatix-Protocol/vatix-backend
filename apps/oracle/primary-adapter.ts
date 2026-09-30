@@ -51,14 +51,44 @@ export type PrimaryProviderErrorType =
   | "TIMEOUT"
   | "UPSTREAM";
 
+/**
+ * Which failure types are worth another attempt.
+ *
+ * Only genuinely transient conditions are retried. `INVALID_RESPONSE`,
+ * `NOT_FOUND` and `AUTHENTICATION` are deterministic: the provider will answer
+ * identically on every attempt, so retrying them just burns the retry budget,
+ * the provider's rate limit, and the resolution deadline before failing with
+ * exactly the same answer. `TIMEOUT`, `RATE_LIMIT` and `UPSTREAM` are the
+ * transient set.
+ */
+const RETRYABLE_PRIMARY_ERROR_TYPES: ReadonlySet<PrimaryProviderErrorType> =
+  new Set<PrimaryProviderErrorType>(["TIMEOUT", "RATE_LIMIT", "UPSTREAM"]);
+
 export class PrimaryProviderError extends Error {
+  /**
+   * Structured HTTP status when the failure came from a response, so
+   * `isRetryableError` can apply its status policy instead of sniffing this
+   * error's message text.
+   */
+  readonly status?: number;
+
+  /**
+   * Typed retry verdict. `isRetryableError` consults this before any
+   * message/status inference, so the adapter's own classification of a
+   * deterministic failure is never overridden.
+   */
+  readonly retryable: boolean;
+
   constructor(
     public readonly type: PrimaryProviderErrorType,
     message: string,
-    public readonly cause?: unknown
+    public readonly cause?: unknown,
+    status?: number
   ) {
     super(message);
     this.name = "PrimaryProviderError";
+    this.status = status;
+    this.retryable = RETRYABLE_PRIMARY_ERROR_TYPES.has(type);
   }
 }
 
@@ -226,7 +256,9 @@ export class PrimaryAdapter implements ProviderAdapter {
     if (!response.ok) {
       throw new PrimaryProviderError(
         this.mapStatus(response.status),
-        `Primary provider returned HTTP ${response.status}`
+        `Primary provider returned HTTP ${response.status}`,
+        undefined,
+        response.status
       );
     }
 
