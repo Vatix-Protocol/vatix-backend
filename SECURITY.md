@@ -10,6 +10,12 @@ Instead, report them responsibly by contacting security@vatix.io.
 - **Deny-by-default**: Every external entrypoint requires an authenticated
   principal unless explicitly marked as a probe. Unauthenticated requests
   to data or money-path routes fail closed with `401 UNAUTHORIZED`.
+- **CORS allowlist**: Browser origins are deny-by-default. In production
+  `CORS_ALLOWED_ORIGINS` must list every allowed origin explicitly, as a bare
+  `https://host[:port]` — `*` and `null` are rejected at startup because the
+  API enables credentialed requests. Matching is exact (no implied
+  subdomains) and rejected origins are never echoed into logs or responses.
+  See [`src/api/middleware/README.md`](src/api/middleware/README.md).
 - **Rate limiting**: Every external route is governed by an explicit policy in
   `RATE_LIMIT_POLICIES` (see `RATE_LIMIT_POLICY.md`). Routes without a policy
   are denied by default.
