@@ -214,7 +214,9 @@ services:
   load-test:
     build:
       context: .
-      target: build
+      # The dedicated `load-test` target, not `build`: `build` declares no USER
+      # and would run the load generator as root (#1120).
+      target: load-test
     container_name: vatix-load-test
     profiles: ["tools", "load-test"]
     environment:
