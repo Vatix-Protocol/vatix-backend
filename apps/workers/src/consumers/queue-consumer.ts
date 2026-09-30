@@ -257,7 +257,17 @@ export async function processJob(
   });
 
   try {
-    await Promise.race([handler(job, controller.signal), timeoutPromise]);
+    // Attach a no-op rejection handler to the handler promise *before* racing
+    // it. If the timeout wins the race, the handler is abandoned mid-flight and
+    // its eventual rejection would otherwise be an unhandled rejection, which
+    // Node terminates the process on by default — one slow dependency would
+    // crash-loop the whole worker instead of just failing one job.
+    const handlerPromise = handler(job, controller.signal);
+    handlerPromise.catch(() => {
+      /* the race below already reported this outcome; swallow the orphan */
+    });
+
+    await Promise.race([handlerPromise, timeoutPromise]);
 
     // Handler won the race — cancel the pending timeout.
     if (timeoutHandle !== null) clearTimeout(timeoutHandle);
