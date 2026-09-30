@@ -16,7 +16,11 @@ export type ApiErrorResponse = AuthErrorResponse;
  *
  * @property success   - Always `true`; signals a successful response
  * @property data      - The response payload
- * @property requestId - UUID v4 generated per-request for traceability
+ * @property requestId - The correlation id for this request, taken from
+ *   `reply.request.id` so it matches the `x-request-id` response header and
+ *   the `requestId` field in every structured log line for the same request.
+ *   A random UUID is only generated as a fallback for replies that are not
+ *   bound to a request.
  * @property timestamp - ISO-8601 UTC timestamp of when the response was produced
  */
 export interface SuccessResponse<T> {
@@ -34,7 +38,10 @@ export function success<T>(
   const body: SuccessResponse<T> = {
     success: true,
     data,
-    requestId: randomUUID(),
+    // Echo the request id resolved by the requestId middleware. Minting a
+    // fresh UUID here would give the body, the response header, and the
+    // request logs three different correlation ids for the same request.
+    requestId: reply.request?.id ?? randomUUID(),
     timestamp: new Date().toISOString(),
   };
   reply.status(statusCode).send(body);
@@ -84,4 +91,3 @@ export function serviceUnavailable(
   };
   reply.status(503).send(body);
 }
-

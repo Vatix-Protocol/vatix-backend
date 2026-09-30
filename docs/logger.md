@@ -182,6 +182,11 @@ Rules enforced by the middleware and verified in CI:
 - Sensitive headers (`Authorization`, `Cookie`, `x-api-key`, `x-signature`, `x-admin-token`, etc.) are **never** logged.
 - `durationMs` and `statusCode` are numeric — not stringified — for log aggregation.
 - Every response includes an `x-request-id` header matching `requestId` in the logs.
+- That same id is also the `requestId` in the `success()` and error response
+  envelopes, so the header, the body, and the log lines for one request all
+  carry a single correlation id. A caller-supplied `x-request-id` is honoured
+  only when it is a valid UUID; otherwise a fresh id is generated (see
+  [src/api/middleware/README.md](../src/api/middleware/README.md#correlation-id)).
 
 ## Examples
 
