@@ -57,6 +57,21 @@ API_KEY=test-api-key          # set automatically by buildTestApp if absent
 ADMIN_TOKEN=test-admin-token  # set automatically by buildTestApp if absent
 ```
 
+## Workspace boundary tests
+
+`tests/config/workspace-boundaries.test.ts` verifies that the pnpm workspace is properly configured:
+
+- Every workspace package listed in `pnpm-workspace.yaml` has a `package.json` with a `name` field.
+- No workspace package imports from another using relative paths to `packages/` (they must use package names like `@vatix/shared`).
+- `@vatix/shared` declares exports for all public modules.
+- `@vatix/api` has a valid `package.json`.
+
+Run these tests with:
+
+```bash
+pnpm test -- workspace-boundaries
+```
+
 ## Test Types
 
 ### Unit Tests

@@ -79,12 +79,97 @@ interface FallbackProviderResponse {
 }
 
 /**
+ * Stable error codes for fallback adapter switch conditions.
+ * These are part of the public contract and must not change without a
+ * corresponding docs/runbook update.
+ */
+export type FallbackSwitchErrorCode =
+  | "FALLBACK_SWITCH_UNAUTHORIZED"
+  | "FALLBACK_SWITCH_INVALID_REQUEST"
+  | "FALLBACK_SWITCH_DEPENDENCY_UNAVAILABLE"
+  | "FALLBACK_SWITCH_REPLAYED"
+  | "FALLBACK_SWITCH_DISABLED";
+
+/**
+ * Error raised when a fallback switch condition is not satisfied.
+ * Carries a stable `code` and a `correlationId` for ops tracing.
+ */
+export class FallbackSwitchError extends Error {
+  constructor(
+    public readonly code: FallbackSwitchErrorCode,
+    message: string,
+    public readonly correlationId: string,
+    public readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = "FallbackSwitchError";
+  }
+}
+
+/**
+ * Trusted caller roles permitted to trigger a fallback switch.
+ * Deny-by-default: any role not listed here is rejected.
+ */
+export type FallbackSwitchRole = "oracle-admin" | "oracle-operator";
+
+const ALLOWED_SWITCH_ROLES: ReadonlySet<FallbackSwitchRole> = new Set([
+  "oracle-admin",
+  "oracle-operator",
+]);
+
+/**
+ * A request to switch the active oracle adapter to the fallback chain.
+ */
+export interface FallbackSwitchRequest {
+  /** Caller role — must be an allowed privileged role */
+  role: FallbackSwitchRole | string;
+  /** Idempotency key; replays with the same key are rejected */
+  idempotencyKey: string;
+  /** Correlation id propagated through logs/metrics */
+  correlationId?: string;
+  /** Reason for the switch, recorded for audit */
+  reason?: string;
+}
+
+/**
+ * Result of a successful fallback switch.
+ */
+export interface FallbackSwitchResult {
+  switched: true;
+  correlationId: string;
+  activeSource: string;
+}
+
+/**
+ * Dependency health probe used to fail closed on writes when a
+ * dependency (RPC/DB/Redis) is unavailable.
+ */
+export interface FallbackSwitchDependencies {
+  /** Returns true when the dependency is reachable and healthy */
+  isHealthy: () => Promise<boolean>;
+}
+
+/**
+ * Options for {@link FallbackAdapter.switchToFallback}.
+ */
+export interface FallbackSwitchOptions {
+  /** Kill-switch: when false, all switches are denied */
+  enabled?: boolean;
+  /** Dependency health probe; when unhealthy the switch fails closed */
+  dependencies?: FallbackSwitchDependencies;
+  /** Clock injection for deterministic tests */
+  now?: () => number;
+}
+
+/**
  * Secondary fallback provider adapter.
  * Walks the provider chain in order, returning the first successful result.
  */
 export class FallbackAdapter implements ProviderAdapter {
   private readonly config: FallbackAdapterConfig;
   private readonly fetchFn: typeof fetch;
+  private readonly seenIdempotencyKeys = new Set<string>();
+  private activeSource = "primary";
 
   constructor(config: FallbackAdapterConfig) {
     if (!config.providers || config.providers.length === 0) {
@@ -98,6 +183,91 @@ export class FallbackAdapter implements ProviderAdapter {
     // timeout that doesn't match the documented fallback policy.
     this.config.timeoutMs = validateTimeout(this.config.timeoutMs);
     this.fetchFn = config.fetchFn ?? fetch;
+  }
+
+  /**
+   * Switch the active oracle adapter to the fallback chain.
+   *
+   * Conditions enforced (fail-closed):
+   * 1. Kill-switch must be enabled.
+   * 2. Caller role must be an allowed privileged role (deny-by-default).
+   * 3. Request must carry a non-empty idempotency key that has not been
+   *    seen before (replay protection).
+   * 4. Dependency health probe must report healthy; otherwise the write
+   *    is refused rather than silently proceeding.
+   */
+  async switchToFallback(
+    request: FallbackSwitchRequest,
+    options: FallbackSwitchOptions = {}
+  ): Promise<FallbackSwitchResult> {
+    const correlationId = request.correlationId ?? this.newCorrelationId(options);
+
+    if (options.enabled === false) {
+      throw new FallbackSwitchError(
+        "FALLBACK_SWITCH_DISABLED",
+        "Fallback switch is disabled by kill-switch",
+        correlationId
+      );
+    }
+
+    if (!ALLOWED_SWITCH_ROLES.has(request.role as FallbackSwitchRole)) {
+      throw new FallbackSwitchError(
+        "FALLBACK_SWITCH_UNAUTHORIZED",
+        `Role '${request.role}' is not authorized to switch the fallback adapter`,
+        correlationId
+      );
+    }
+
+    if (
+      typeof request.idempotencyKey !== "string" ||
+      request.idempotencyKey.trim().length === 0
+    ) {
+      throw new FallbackSwitchError(
+        "FALLBACK_SWITCH_INVALID_REQUEST",
+        "Fallback switch requires a non-empty idempotencyKey",
+        correlationId
+      );
+    }
+
+    if (this.seenIdempotencyKeys.has(request.idempotencyKey)) {
+      throw new FallbackSwitchError(
+        "FALLBACK_SWITCH_REPLAYED",
+        `Fallback switch idempotencyKey '${request.idempotencyKey}' was already used`,
+        correlationId
+      );
+    }
+
+    if (options.dependencies) {
+      let healthy = false;
+      try {
+        healthy = await options.dependencies.isHealthy();
+      } catch (err) {
+        throw new FallbackSwitchError(
+          "FALLBACK_SWITCH_DEPENDENCY_UNAVAILABLE",
+          "Fallback switch dependency probe failed",
+          correlationId,
+          err
+        );
+      }
+      if (!healthy) {
+        throw new FallbackSwitchError(
+          "FALLBACK_SWITCH_DEPENDENCY_UNAVAILABLE",
+          "Fallback switch refused: dependency unavailable (fail-closed)",
+          correlationId
+        );
+      }
+    }
+
+    // Record the key only after all conditions pass so a rejected request
+    // does not consume the caller's idempotency key.
+    this.seenIdempotencyKeys.add(request.idempotencyKey);
+    this.activeSource = "fallback";
+
+    return {
+      switched: true,
+      correlationId,
+      activeSource: this.activeSource,
+    };
   }
 
   /**
@@ -185,6 +355,11 @@ export class FallbackAdapter implements ProviderAdapter {
 
   getSource(): string {
     return "fallback";
+  }
+
+  private newCorrelationId(options: FallbackSwitchOptions): string {
+    const now = options.now ?? Date.now;
+    return `fb-${now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
   private async fetchFromProvider(

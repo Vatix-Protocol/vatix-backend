@@ -103,20 +103,86 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Default upper bound for any single computed backoff delay. Prevents an
+ * unbounded exponential (or a misconfigured base) from producing a delay
+ * that effectively hangs the indexer.
+ */
+export const DEFAULT_MAX_DELAY_MS = 30_000;
+
+/**
+ * Default jitter ratio: the randomized portion of the delay is drawn from
+ * `[0, jitterRatio * delay]`. 0.5 = "equal jitter" (half guaranteed, half
+ * randomized), which is the historical behavior of this module.
+ */
+export const DEFAULT_JITTER_RATIO = 0.5;
+
+/**
+ * Options controlling how a backoff delay is jittered and clamped.
+ * All fields are optional; safe defaults preserve prior behavior.
+ */
+export interface JitterOptions {
+  /**
+   * Fraction of the base delay that is randomized, in `[0, 1]`. The
+   * guaranteed portion is `1 - jitterRatio`. Defaults to
+   * `DEFAULT_JITTER_RATIO` (0.5).
+   */
+  jitterRatio?: number;
+  /**
+   * Hard upper bound (ms) applied to the final delay. Defaults to
+   * `DEFAULT_MAX_DELAY_MS`. Must be a non-negative finite number.
+   */
+  maxDelayMs?: number;
+  /**
+   * Injectable RNG returning a value in `[0, 1)`. Defaults to
+   * `Math.random`. Exposed so tests can assert determinism and bounds.
+   */
+  random?: () => number;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}
+
+/**
  * Compute a jittered exponential backoff delay for the given attempt.
  *
- * Uses "equal jitter": half of the exponential delay is guaranteed, the
- * other half is randomized. Backoff still grows with the attempt count,
- * but retries from many callers failing at the same time no longer land
- * on the same schedule (thundering herd).
+ * Uses "equal jitter" by default: `(1 - jitterRatio)` of the exponential
+ * delay is guaranteed, the remaining `jitterRatio` is randomized. Backoff
+ * still grows with the attempt count, but retries from many callers
+ * failing at the same time no longer land on the same schedule
+ * (thundering herd).
+ *
+ * The result is always bounded: it is clamped to `[0, maxDelayMs]`, so a
+ * large attempt count, a misconfigured base delay, or an out-of-range RNG
+ * can never produce a negative or unbounded delay.
  */
 export function jitteredBackoffMs(
   baseDelayMs: number,
-  attempt: number
+  attempt: number,
+  options: JitterOptions = {}
 ): number {
-  const exponential = baseDelayMs * 2 ** attempt;
-  const half = exponential / 2;
-  return half + Math.random() * half;
+  const {
+    jitterRatio = DEFAULT_JITTER_RATIO,
+    maxDelayMs = DEFAULT_MAX_DELAY_MS,
+    random = Math.random,
+  } = options;
+
+  const safeBase = Number.isFinite(baseDelayMs) && baseDelayMs > 0 ? baseDelayMs : 0;
+  const safeAttempt = Number.isFinite(attempt) && attempt > 0 ? Math.floor(attempt) : 0;
+  const exponential = safeBase * 2 ** safeAttempt;
+
+  const ratio = clamp(Number.isFinite(jitterRatio) ? jitterRatio : DEFAULT_JITTER_RATIO, 0, 1);
+  const guaranteed = exponential * (1 - ratio);
+  const jitterSpan = exponential * ratio;
+
+  const sample = random();
+  const normalizedSample = Number.isFinite(sample) ? clamp(sample, 0, 1) : 0;
+  const delay = guaranteed + normalizedSample * jitterSpan;
+
+  const cap = Number.isFinite(maxDelayMs) && maxDelayMs >= 0 ? maxDelayMs : DEFAULT_MAX_DELAY_MS;
+  return clamp(delay, 0, cap);
 }
 
 export interface RetryOptions {
@@ -130,6 +196,21 @@ export interface RetryOptions {
    * Rate limiting is a signal to slow down more than a bare network blip.
    */
   rateLimitBackoffMultiplier?: number;
+  /**
+   * Fraction of each backoff delay that is randomized, in `[0, 1]`.
+   * Defaults to `DEFAULT_JITTER_RATIO`. Set to 0 to disable jitter.
+   */
+  jitterRatio?: number;
+  /**
+   * Hard upper bound (ms) applied to every computed backoff delay.
+   * Defaults to `DEFAULT_MAX_DELAY_MS`.
+   */
+  maxDelayMs?: number;
+  /**
+   * Injectable RNG returning a value in `[0, 1)`. Defaults to
+   * `Math.random`. Exposed for deterministic tests.
+   */
+  random?: () => number;
   /**
    * Optional callback invoked before each retry sleep, for
    * metrics/correlation-id logging. Never receives the error's message —
@@ -188,6 +269,20 @@ function validateRetryOptions(options: RetryOptions): void {
       "retryDelayMs must be a non-negative number"
     );
   }
+  if (
+    options.jitterRatio !== undefined &&
+    (!Number.isFinite(options.jitterRatio) ||
+      options.jitterRatio < 0 ||
+      options.jitterRatio > 1)
+  ) {
+    throw new RetryValidationError("jitterRatio must be a number in [0, 1]");
+  }
+  if (
+    options.maxDelayMs !== undefined &&
+    (!Number.isFinite(options.maxDelayMs) || options.maxDelayMs < 0)
+  ) {
+    throw new RetryValidationError("maxDelayMs must be a non-negative number");
+  }
 }
 
 /**
@@ -202,6 +297,8 @@ function validateRetryOptions(options: RetryOptions): void {
  *   - "transient" (network failures, 5xx) retries with standard
  *     exponential backoff, as before.
  *
+ * Every computed delay is jittered and clamped to `[0, maxDelayMs]`.
+ *
  * @throws {RetryValidationError} When options are invalid (statusCode 400).
  * @throws {RetryExhaustedError} When transient retries are exhausted
  *   (statusCode 503, code RETRY_EXHAUSTED) — fail-closed.
@@ -212,8 +309,15 @@ export async function withRetry<T>(
   options: RetryOptions
 ): Promise<T> {
   validateRetryOptions(options);
-  const { maxRetries, retryDelayMs, rateLimitBackoffMultiplier = 4, onRetry } =
-    options;
+  const {
+    maxRetries,
+    retryDelayMs,
+    rateLimitBackoffMultiplier = 4,
+    jitterRatio,
+    maxDelayMs,
+    random,
+    onRetry,
+  } = options;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -222,21 +326,32 @@ export async function withRetry<T>(
       const isLast = attempt === maxRetries;
       const classification = classifyError(err);
       if (isLast || classification === "fatal") {
-        // Fail-closed: never return partial/empty results on exhaustion.
-        throw isLast ? new RetryExhaustedError(attempt + 1, err) : err;
+        // Fail-closed: never swallow the failure. Fatal errors are rethrown
+        // as-is; exhausted transient retries surface a stable error code.
+        if (classification === "fatal") throw err;
+        throw new RetryExhaustedError(attempt + 1, err);
       }
 
-      const delayMs =
+      const base =
         classification === "rate_limited"
-          ? retryAfterMs(err) ??
-            jitteredBackoffMs(retryDelayMs * rateLimitBackoffMultiplier, attempt)
-          : jitteredBackoffMs(retryDelayMs, attempt);
+          ? retryDelayMs * rateLimitBackoffMultiplier
+          : retryDelayMs;
+
+      const retryAfter = retryAfterMs(err);
+      const delayMs =
+        retryAfter !== undefined
+          ? clamp(retryAfter, 0, maxDelayMs ?? DEFAULT_MAX_DELAY_MS)
+          : jitteredBackoffMs(base, attempt, {
+              jitterRatio,
+              maxDelayMs,
+              random,
+            });
 
       onRetry?.({ attempt, classification, delayMs });
       await sleep(delayMs);
     }
   }
 
-  // Unreachable — satisfies TypeScript
-  throw new Error("withRetry: exhausted retries");
+  // Unreachable: the loop always returns or throws. Kept for type-safety.
+  throw new RetryExhaustedError(maxRetries + 1);
 }

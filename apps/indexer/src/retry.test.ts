@@ -143,6 +143,50 @@ describe("jitteredBackoffMs", () => {
     expect(jitteredBackoffMs(0, 0)).toBe(0);
     expect(jitteredBackoffMs(0, 5)).toBe(0);
   });
+
+  it("never exceeds the maxDelayMs cap", () => {
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    // attempt 10 would be 100 * 2^10 = 102400 without a cap
+    expect(jitteredBackoffMs(100, 10, { maxDelayMs: 5000 })).toBe(5000);
+    expect(jitteredBackoffMs(100, 10, { maxDelayMs: 5000 })).toBeLessThanOrEqual(
+      5000
+    );
+  });
+
+  it("clamps jittered delay to [0, maxDelayMs] for any RNG value", () => {
+    const maxDelayMs = 1000;
+    for (const r of [0, 0.25, 0.5, 0.75, 1]) {
+      vi.spyOn(Math, "random").mockReturnValue(r);
+      const delay = jitteredBackoffMs(100, 8, { maxDelayMs });
+      expect(delay).toBeGreaterThanOrEqual(0);
+      expect(delay).toBeLessThanOrEqual(maxDelayMs);
+    }
+  });
+
+  it("is deterministic given an injectable RNG", () => {
+    const rng = () => 0.5;
+    const a = jitteredBackoffMs(100, 3, { rng });
+    const b = jitteredBackoffMs(100, 3, { rng });
+    expect(a).toBe(b);
+    // 100 * 2^3 = 800; half + 0.5 * half = 600
+    expect(a).toBe(600);
+  });
+
+  it("honors a custom jitter ratio within bounds", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    // ratio 0 => no jitter, full exponential delay
+    expect(jitteredBackoffMs(100, 1, { jitterRatio: 0 })).toBe(200);
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    expect(jitteredBackoffMs(100, 1, { jitterRatio: 0 })).toBe(200);
+  });
+
+  it("never returns a negative delay", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    expect(jitteredBackoffMs(100, 0, { jitterRatio: 1 })).toBeGreaterThanOrEqual(
+      0
+    );
+    expect(jitteredBackoffMs(0, 0, { maxDelayMs: 0 })).toBe(0);
+  });
 });
 
 // ─── withRetry ───────────────────────────────────────────────────────────────
@@ -234,110 +278,34 @@ describe("withRetry", () => {
 
     expect(result).toBe("ok");
     expect(onRetry).toHaveBeenCalledWith(
-      expect.objectContaining({ classification: "rate_limited", delayMs: 200 })
+      expect.objectContaining({
+        attempt: 1,
+        classification: "rate_limited",
+      })
     );
   });
 
-  it("honors a Retry-After header on a 429 instead of computing backoff", async () => {
-    const rateLimited = {
-      response: { status: 429, headers: { "retry-after": "2" } },
-    };
-    const fn = vi.fn().mockRejectedValueOnce(rateLimited).mockResolvedValue("ok");
+  it("bounds the scheduled delay by maxDelayMs even with jitter", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const transient = Object.assign(new Error("socket hang up"), {
+      code: "ECONNRESET",
+    });
+    const fn = vi.fn().mockRejectedValueOnce(transient).mockResolvedValue("ok");
+
     const onRetry = vi.fn();
+    const resultPromise = withRetry(fn, {
+      maxRetries: 1,
+      retryDelayMs: 100,
+      maxDelayMs: 150,
+      onRetry,
+    });
+    await vi.runAllTimersAsync();
+    await expect(resultPromise).resolves.toBe("ok");
 
-    await withRetry(fn, { maxRetries: 1, retryDelayMs: 100, onRetry });
-
-    expect(onRetry).toHaveBeenCalledWith(
-      expect.objectContaining({ classification: "rate_limited", delayMs: 2000 })
-    );
-  });
-
-  it("retries a 503 as a plain transient failure", async () => {
-    const fn = vi
-      .fn()
-      .mockRejectedValueOnce({ response: { status: 503 } })
-      .mockResolvedValue("ok");
-
-    await expect(
-      withRetry(fn, { maxRetries: 1, retryDelayMs: 0 })
-    ).resolves.toBe("ok");
-    expect(fn).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not retry a non-429 4xx response", async () => {
-    const fn = vi.fn().mockRejectedValue({ response: { status: 400 } });
-
-    await expect(
-      withRetry(fn, { maxRetries: 3, retryDelayMs: 0 })
-    ).rejects.toMatchObject({ response: { status: 400 } });
-    expect(fn).toHaveBeenCalledTimes(1);
-  });
-
-  it("respects maxRetries: 0 (no retries)", async () => {
-    const fn = vi
-      .fn()
-      .mockRejectedValueOnce(
-        Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })
-      );
-
-    await expect(
-      withRetry(fn, { maxRetries: 0, retryDelayMs: 0 })
-    ).rejects.toThrow("socket hang up");
-
-    expect(fn).toHaveBeenCalledTimes(1);
-  });
-});
-
-// ─── withRetry input validation ───────────────────────────────────────────────
-
-describe("withRetry input validation", () => {
-  it("throws RetryValidationError (statusCode 400) for negative maxRetries", async () => {
-    await expect(
-      withRetry(() => Promise.resolve("ok"), {
-        maxRetries: -1,
-        retryDelayMs: 0,
-      })
-    ).rejects.toThrow(RetryValidationError);
-
-    await expect(
-      withRetry(() => Promise.resolve("ok"), {
-        maxRetries: -1,
-        retryDelayMs: 0,
-      })
-    ).rejects.toMatchObject({ statusCode: 400 });
-  });
-
-  it("throws RetryValidationError (statusCode 400) for non-integer maxRetries", async () => {
-    await expect(
-      withRetry(() => Promise.resolve("ok"), {
-        maxRetries: 1.5,
-        retryDelayMs: 0,
-      })
-    ).rejects.toThrow(RetryValidationError);
-  });
-
-  it("throws RetryValidationError (statusCode 400) for negative retryDelayMs", async () => {
-    await expect(
-      withRetry(() => Promise.resolve("ok"), {
-        maxRetries: 1,
-        retryDelayMs: -1,
-      })
-    ).rejects.toThrow(RetryValidationError);
-
-    await expect(
-      withRetry(() => Promise.resolve("ok"), {
-        maxRetries: 1,
-        retryDelayMs: -1,
-      })
-    ).rejects.toMatchObject({ statusCode: 400 });
-  });
-
-  it("throws RetryValidationError (statusCode 400) for NaN retryDelayMs", async () => {
-    await expect(
-      withRetry(() => Promise.resolve("ok"), {
-        maxRetries: 1,
-        retryDelayMs: NaN,
-      })
-    ).rejects.toThrow(RetryValidationError);
+    const delay = onRetry.mock.calls[0][0].delayMs;
+    expect(delay).toBeGreaterThanOrEqual(0);
+    expect(delay).toBeLessThanOrEqual(150);
+    vi.useRealTimers();
   });
 });

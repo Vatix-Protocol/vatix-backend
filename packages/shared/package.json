@@ -1,0 +1,29 @@
+{
+  "name": "@vatix/shared",
+  "version": "1.0.0",
+  "description": "Cross-service types and utilities for Vatix protocol",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest",
+    "test:run": "vitest run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "exports": {
+    ".": "./src/index.ts",
+    "./config": "./src/config.ts",
+    "./errors": "./src/errors.ts",
+    "./logger": "./src/logger.ts",
+    "./queue-config": "./src/queue-config.ts",
+    "./cors": "./src/cors.ts",
+    "./requireEnv": "./src/requireEnv.ts",
+    "./shutdown": "./src/shutdown.ts",
+    "./signingDomain": "./src/signingDomain.ts",
+    "./stellarTransport": "./src/stellarTransport.ts",
+    "./logRedactor": "./src/logRedactor.ts",
+    "./marketLifecycle": "./src/marketLifecycle.ts",
+    "./roles": "./roles.ts"
+  }
+}

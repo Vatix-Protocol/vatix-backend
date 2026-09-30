@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import type { ILogger } from "../../../packages/shared/src/logger.js";
+import type { ILogger } from "@vatix/shared/logger.js";
 import { liveRoutes } from "./routes/live.js";
 import { readyRoutes } from "./routes/ready.js";
 

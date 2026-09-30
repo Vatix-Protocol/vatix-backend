@@ -244,9 +244,6 @@ export function parseMarketCreatedEvents(
       continue;
     }
 
-    // Idempotency guard: dedupe on the stable (ledger, eventIndex) identity
-    // before parsing so replayed/concurrent deliveries of the same
-    // MarketCreated event never produce duplicate market rows downstream.
     const dedupeKey = `${event.ledger}:${event.eventIndex}`;
     if (seen.has(dedupeKey)) {
       telemetry?.record("indexer.parser.duplicate_event", 1, {
@@ -266,19 +263,13 @@ export function parseMarketCreatedEvents(
         errors.push(err);
         telemetry?.record("indexer.parser.parse_error", 1, {
           parser: "market_created",
-          code: err.code ?? "UNKNOWN",
           eventId: event.id,
           contractId: event.contractId,
           ledger: String(event.ledger),
+          code: err.code ?? "UNKNOWN",
         });
       } else {
-        errors.push(
-          new MarketCreatedParseError(
-            err instanceof Error ? err.message : String(err),
-            event.id,
-            err
-          )
-        );
+        throw err;
       }
     }
   }

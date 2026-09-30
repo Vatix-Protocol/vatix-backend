@@ -1,5 +1,5 @@
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
-import type { ILogger } from "../../../../packages/shared/src/logger.js";
+import type { ILogger } from "@vatix/shared/logger.js";
 import { lockResolutionCandidateOrThrow } from "./resolutionLock.js";
 
 /**

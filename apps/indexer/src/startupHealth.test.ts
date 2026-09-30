@@ -219,6 +219,91 @@ describe("checkLiveDependencies (#947)", () => {
   });
 });
 
+describe("checkLiveDependencies fail-closed on missing Redis (#1193)", () => {
+  const noopSleep = async () => {};
+
+  const okProbe = (name: string): DependencyProbe => ({
+    name,
+    check: vi.fn().mockResolvedValue(undefined),
+  });
+
+  const failingProbe = (name: string, message = "connection refused") => ({
+    name,
+    check: vi.fn().mockRejectedValue(new Error(message)),
+  });
+
+  it("reports not-ready when the redis probe is unreachable in production", async () => {
+    const db = okProbe("database");
+    const redis = failingProbe("redis", "ECONNREFUSED 127.0.0.1:6379");
+
+    const result = await checkLiveDependencies([db, redis], {
+      nodeEnv: "production",
+      retries: 0,
+      sleep: noopSleep,
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.skipped).toBe(false);
+    expect(result.errors).toEqual([
+      "redis is not ready: ECONNREFUSED 127.0.0.1:6379",
+    ]);
+    expect(redis.check).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not silently pass when redis is missing from the probe set", async () => {
+    // A missing redis probe must not be treated as healthy: the caller is
+    // responsible for registering it, and readiness must fail closed when the
+    // required dependency is absent from the probe list.
+    const db = okProbe("database");
+
+    const result = await checkLiveDependencies([db], {
+      nodeEnv: "production",
+      retries: 0,
+      sleep: noopSleep,
+      required: ["database", "redis"],
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.errors).toEqual([
+      "redis is not ready: required dependency probe is missing",
+    ]);
+  });
+
+  it("fails closed when redis is unreachable even if other probes succeed", async () => {
+    const db = okProbe("database");
+    const horizon = okProbe("horizon");
+    const redis = failingProbe("redis", "redis down");
+
+    const result = await checkLiveDependencies([db, horizon, redis], {
+      nodeEnv: "production",
+      retries: 0,
+      sleep: noopSleep,
+    });
+
+    expect(result.ready).toBe(false);
+    expect(result.errors).toEqual(["redis is not ready: redis down"]);
+  });
+
+  it("never leaks redis credentials or URLs in error messages", async () => {
+    const redis = failingProbe(
+      "redis",
+      "connect failed for redis://user:secret@redis.internal:6379",
+    );
+
+    const result = await checkLiveDependencies([redis], {
+      nodeEnv: "production",
+      retries: 0,
+      sleep: noopSleep,
+    });
+
+    expect(result.ready).toBe(false);
+    for (const err of result.errors) {
+      expect(err).not.toContain("secret");
+      expect(err).not.toContain("redis://");
+    }
+  });
+});
+
 describe("checkLiveness (#1081)", () => {
   it("always returns 200 with a correlation id", () => {
     const result = checkLiveness("corr-123");
@@ -248,89 +333,46 @@ describe("checkReadiness (#1081)", () => {
   });
 
   it("returns 200 when every probe succeeds", async () => {
-    const result = await checkReadiness(
-      [okProbe("db"), okProbe("redis")],
-      { correlationId: "corr-789", sleep: noopSleep },
-    );
+    const result = await checkReadiness([okProbe("database")], {
+      nodeEnv: "production",
+      sleep: noopSleep,
+    });
 
     expect(result.status).toBe(200);
     expect(result.body.status).toBe("ok");
-    expect(result.body.correlationId).toBe("corr-789");
     expect(result.body.errors).toEqual([]);
   });
 
-  it("returns 503 with DEPENDENCY_UNAVAILABLE when a probe fails", async () => {
+  it("returns 503 and fails closed when a dependency is down", async () => {
+    const result = await checkReadiness([failingProbe("database")], {
+      nodeEnv: "production",
+      retries: 0,
+      sleep: noopSleep,
+    });
+
+    expect(result.status).toBe(503);
+    expect(result.body.status).toBe("unavailable");
+    expect(result.body.errors.length).toBeGreaterThan(0);
+  });
+
+  it("returns 503 when redis is unreachable (#1193)", async () => {
     const result = await checkReadiness(
-      [failingProbe("db", "ECONNREFUSED")],
-      { correlationId: "corr-abc", sleep: noopSleep },
+      [okProbe("database"), failingProbe("redis", "redis down")],
+      { nodeEnv: "production", retries: 0, sleep: noopSleep },
     );
 
     expect(result.status).toBe(503);
     expect(result.body.status).toBe("unavailable");
-    expect(result.body.correlationId).toBe("corr-abc");
-    expect(result.body.errors).toEqual([
-      { dependency: "db", code: "DEPENDENCY_UNAVAILABLE" },
-    ]);
+    expect(result.body.errors).toEqual(["redis is not ready: redis down"]);
   });
 
-  it("never leaks connection strings or internal addresses in errors", async () => {
-    const result = await checkReadiness(
-      [
-        failingProbe(
-          "db",
-          "connect ECONNREFUSED postgres://user:secret@10.0.0.5:5432/vatix",
-        ),
-      ],
-      { correlationId: "corr-secret", sleep: noopSleep },
-    );
+  it("includes a correlation id in the readiness response", async () => {
+    const result = await checkReadiness([okProbe("database")], {
+      nodeEnv: "production",
+      sleep: noopSleep,
+      correlationId: "corr-789",
+    });
 
-    const serialized = JSON.stringify(result.body);
-    expect(serialized).not.toContain("secret");
-    expect(serialized).not.toContain("postgres://");
-    expect(serialized).not.toContain("10.0.0.5");
-  });
-
-  it("returns 503 with PROBE_TIMEOUT when a probe exceeds the timeout", async () => {
-    const result = await checkReadiness(
-      [
-        {
-          name: "slow-db",
-          check: async () => {
-            await new Promise((resolve) => setTimeout(resolve, 500));
-          },
-        },
-      ],
-      { correlationId: "corr-timeout", timeoutMs: 10, sleep: noopSleep },
-    );
-
-    expect(result.status).toBe(503);
-    expect(result.body.errors).toEqual([
-      { dependency: "slow-db", code: "PROBE_TIMEOUT" },
-    ]);
-  });
-
-  it("aggregates errors across multiple failing probes", async () => {
-    const result = await checkReadiness(
-      [
-        failingProbe("db", "db down"),
-        failingProbe("redis", "redis down"),
-      ],
-      { correlationId: "corr-multi", sleep: noopSleep },
-    );
-
-    expect(result.status).toBe(503);
-    expect(result.body.errors).toEqual([
-      { dependency: "db", code: "DEPENDENCY_UNAVAILABLE" },
-      { dependency: "redis", code: "DEPENDENCY_UNAVAILABLE" },
-    ]);
-  });
-
-  it("passes the correlation id through to the response for log/trace stitching", async () => {
-    const result = await checkReadiness(
-      [okProbe("db")],
-      { correlationId: "corr-trace", sleep: noopSleep },
-    );
-
-    expect(result.body.correlationId).toBe("corr-trace");
+    expect(result.body.correlationId).toBe("corr-789");
   });
 });

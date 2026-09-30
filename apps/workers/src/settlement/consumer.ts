@@ -26,9 +26,9 @@ import type { QueueJob } from "../consumers/queue-consumer.js";
 import {
   redisConnectionFromEnv,
   settlementQueueName,
-} from "../../../packages/shared/src/queue-config.js";
-import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
-import { loadStellarEndpoints } from "../../../../packages/shared/src/stellarTransport.js";
+} from "@vatix/shared/queue-config.js";
+import { createShutdown } from "@vatix/shared/shutdown.js";
+import { loadStellarEndpoints } from "@vatix/shared/stellarTransport.js";
 import {
   startOutboxPublisher,
   stopOutboxPublisher,

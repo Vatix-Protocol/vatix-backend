@@ -95,6 +95,38 @@ export interface NormalizedMarketCreated {
   status: MarketStatus;
 }
 
+// ─── Normalized event union ───────────────────────────────────────────────────
+
+/**
+ * Stable discriminant for every normalized event variant produced by the
+ * indexer parsers. Consumers can exhaustively narrow on `type`.
+ */
+export type NormalizedEventType =
+  | "market_created"
+  | "collateral_deposited"
+  | "resolution";
+
+/**
+ * Discriminated union of every normalized event the indexer can emit.
+ *
+ * Each variant is keyed on the stable `type` field so consumers
+ * (ingestion, batchWriter, persistence) can narrow exhaustively and the
+ * compiler flags any unhandled variant when a new parser is added.
+ */
+export type NormalizedEvent =
+  | (NormalizedMarketCreated & { type: "market_created" })
+  | (NormalizedCollateralDeposit & { type: "collateral_deposited" })
+  | (NormalizedResolution & { type: "resolution" });
+
+/**
+ * Maps a normalized event discriminant to its concrete variant type.
+ * Useful for typed dispatch tables keyed by event type.
+ */
+export type NormalizedEventByType<T extends NormalizedEventType> = Extract<
+  NormalizedEvent,
+  { type: T }
+>;
+
 // ─── Parse error base ─────────────────────────────────────────────────────────
 
 /**

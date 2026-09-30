@@ -35,6 +35,92 @@ import { createShutdown } from "../../packages/shared/src/shutdown.js";
  */
 export const ORACLE_SHUTDOWN_TIMEOUT_MS = 30_000;
 
+/**
+ * Stable error codes surfaced by the oracle entrypoint. These are part of the
+ * public contract asserted by `apps/oracle/main.test.ts` so operators and
+ * callers can branch on a machine-readable code instead of parsing messages.
+ */
+export const ORACLE_ERROR_CODES = {
+  MISSING_SECRET_KEY: "ORACLE_MISSING_SECRET_KEY",
+  INVALID_CONFIDENCE: "ORACLE_INVALID_CONFIDENCE",
+  MARKET_NOT_RESOLVABLE: "ORACLE_MARKET_NOT_RESOLVABLE",
+  DEPENDENCY_UNAVAILABLE: "ORACLE_DEPENDENCY_UNAVAILABLE",
+  RESOLUTION_FAILED: "ORACLE_RESOLUTION_FAILED",
+} as const;
+
+export type OracleErrorCode =
+  (typeof ORACLE_ERROR_CODES)[keyof typeof ORACLE_ERROR_CODES];
+
+/**
+ * Typed error carrying a stable `code` so fail-closed paths are testable and
+ * observable without leaking secrets or provider internals.
+ */
+export class OracleError extends Error {
+  readonly code: OracleErrorCode;
+  readonly marketId?: string;
+
+  constructor(code: OracleErrorCode, message: string, marketId?: string) {
+    super(message);
+    this.name = "OracleError";
+    this.code = code;
+    this.marketId = marketId;
+  }
+}
+
+/**
+ * Classifies a thrown dependency error (RPC/DB/Redis) so writes fail closed.
+ * Returns true when the failure is an infrastructure outage rather than a
+ * deterministic resolution error.
+ */
+export function isDependencyOutage(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "string") {
+    // Prisma connection/availability codes and generic network codes.
+    if (
+      code === "P1001" ||
+      code === "P1002" ||
+      code === "P1008" ||
+      code === "P1017" ||
+      code === "ECONNREFUSED" ||
+      code === "ECONNRESET" ||
+      code === "ETIMEDOUT" ||
+      code === "ENOTFOUND"
+    ) {
+      return true;
+    }
+  }
+  const message = (error as { message?: unknown }).message;
+  if (typeof message === "string") {
+    return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|connection (refused|closed)|redis/i.test(
+      message
+    );
+  }
+  return false;
+}
+
+/**
+ * Validates a resolved confidence value. Throws a typed OracleError so the
+ * caller can fail closed instead of persisting an out-of-range report.
+ */
+export function assertValidConfidence(
+  confidence: unknown,
+  marketId: string
+): asserts confidence is number {
+  if (
+    typeof confidence !== "number" ||
+    !Number.isFinite(confidence) ||
+    confidence < 0 ||
+    confidence > 1
+  ) {
+    throw new OracleError(
+      ORACLE_ERROR_CODES.INVALID_CONFIDENCE,
+      `Resolved confidence ${String(confidence)} is out of range [0, 1]`,
+      marketId
+    );
+  }
+}
+
 let globalQueue: BullMQSubmissionQueue | null = null;
 
 export async function poll(): Promise<void> {
@@ -43,7 +129,10 @@ export async function poll(): Promise<void> {
   const prisma = getPrismaClient();
 
   if (!config.secretKey) {
-    throw new Error("ORACLE_SECRET_KEY is required");
+    throw new OracleError(
+      ORACLE_ERROR_CODES.MISSING_SECRET_KEY,
+      "ORACLE_SECRET_KEY is required"
+    );
   }
   const secretKey = config.secretKey;
 
@@ -98,16 +187,7 @@ export async function poll(): Promise<void> {
     try {
       const result = await oracleService.resolve(request);
 
-      if (
-        typeof result.confidence !== "number" ||
-        !Number.isFinite(result.confidence) ||
-        result.confidence < 0 ||
-        result.confidence > 1
-      ) {
-        throw new Error(
-          `Resolved confidence ${result.confidence} is out of range [0, 1]`
-        );
-      }
+      assertValidConfidence(result.confidence, market.id);
 
       // A market may have been CANCELLED (admin cancel or expiry sweep) while
       // the provider resolution was in flight. Re-check the lifecycle state
@@ -180,8 +260,18 @@ export async function poll(): Promise<void> {
         confidence: result.confidence,
       });
     } catch (error) {
+      // Fail closed: a dependency outage (RPC/DB/Redis) must never be treated
+      // as a successful resolution. Surface a stable code and skip the market
+      // so no partial report/submission is written.
+      const code = isDependencyOutage(error)
+        ? ORACLE_ERROR_CODES.DEPENDENCY_UNAVAILABLE
+        : error instanceof OracleError
+          ? error.code
+          : ORACLE_ERROR_CODES.RESOLUTION_FAILED;
+
       logger.error("Failed to resolve market", {
         marketId: market.id,
+        code,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -236,165 +326,43 @@ export async function bootstrap(): Promise<void> {
     logger: {
       info: (fields, message) => logger.info(message, fields),
       warn: (fields, message) => logger.warn(message, fields),
+      error: (fields, message) => logger.error(message, fields),
     },
   });
-  if (healthServer) {
-    logger.info("Oracle health server listening", {
-      port: process.env.ORACLE_HEALTH_PORT,
-    });
-  }
 
-  const runPoll = createOverlapGuardedPoll(poll, logger);
-
-  // Track the in-flight poll so shutdown can drain it. An oracle poll signs
-  // resolutions and enqueues on-chain submissions; abandoning one mid-cycle on
-  // SIGTERM can leave a market resolved in the DB but never submitted, or a
-  // submission enqueued but not yet handed to BullMQ.
-  let activePollPromise: Promise<void> | null = null;
-
-  // Named `runGuardedPoll` rather than `poll` to avoid shadowing the
-  // module-level `poll` referenced above.
-  const runGuardedPoll = async (): Promise<void> => {
-    if (activePollPromise) {
-      logger.warn("Skipping oracle poll because a previous poll is active", {
-        component: "oracle-worker",
-        pollIntervalMs: config.pollIntervalMs,
-      });
-      return;
-    }
-
-    const pollPromise = runPoll();
-    activePollPromise = pollPromise;
-    try {
-      await pollPromise;
-    } finally {
-      activePollPromise = null;
-    }
-  };
-
-  // Run immediately (unguarded — fail fast on startup misconfiguration,
-  // matching the previous behavior), then on interval with overlap guarding.
-  await runGuardedPoll();
-  const timer = setInterval(() => void runGuardedPoll(), config.pollIntervalMs);
-
-  const VALID_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-  let isShuttingDown = false;
-
-  const shutdown: ShutdownHandler = async (signal: ShutdownSignal) => {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-
-    logger.info("Oracle shutdown initiated", { signal });
-    clearInterval(timer);
-
-    try {
-      if (healthServer) {
-        await healthServer.close();
-      }
-      if (globalQueue) {
-        await globalQueue.close();
-      }
-      await disconnectPrisma();
-      await redis.disconnect();
-      logger.info("Oracle shutdown complete", { signal });
-      process.exit(0);
-    } catch (error) {
-      logger.error("Oracle shutdown failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return;
-    }
-
-    const pollPromise = runPoll();
-    activePollPromise = pollPromise;
-    try {
-      await pollPromise;
-    } finally {
-      activePollPromise = null;
-    }
-  };
-
-  // Run immediately (unguarded — fail fast on startup misconfiguration,
-  // matching the previous behavior), then on interval with overlap guarding.
-  await runGuardedPoll();
-  const timer = setInterval(() => void runGuardedPoll(), config.pollIntervalMs);
-
-  // Standardized shutdown: validates the signal, guards against duplicate
-  // signals, and force-exits if teardown hangs. The previous hand-rolled
-  // handler had no timeout, so a stuck queue.close() left the process alive
-  // until the orchestrator SIGKILLed it.
-  const shutdown = createShutdown(logger, {
+  const shutdown = createShutdown({
+    logger,
     timeoutMs: ORACLE_SHUTDOWN_TIMEOUT_MS,
-    component: "oracle-worker",
-    teardown: [
-      // Stop the scheduler first so no new polls start mid-teardown.
-      async () => {
-        clearInterval(timer);
-      },
-      // Drain the in-flight poll before closing the queue and DB, so a
-      // signed resolution is never dropped on the floor.
-      async () => {
-        if (activePollPromise) {
-          logger.info(
-            "Waiting for active oracle poll to complete before shutdown",
-            {
-              component: "oracle-worker",
-            }
-          );
-          // Best-effort drain — the outer createShutdown timeout force-exits
-          // if a provider call stalls past the window.
-          await activePollPromise.catch((err: unknown) => {
-            logger.warn(
-              "In-flight oracle poll failed during graceful shutdown",
-              {
-                component: "oracle-worker",
-                error: err instanceof Error ? err.message : String(err),
-              }
-            );
-          });
-        }
-      },
-      // Close the submission queue so pending jobs are flushed to Redis before
-      // the connection is dropped.
-      async () => {
-        if (globalQueue) {
-          await globalQueue.close();
-        }
-      },
-      async () => {
-        await disconnectPrisma();
-      },
-      async () => {
-        await redis.disconnect();
-      },
-    ],
+    onShutdown: async () => {
+      await healthServer?.close();
+      await globalQueue?.close();
+      await disconnectPrisma();
+      await redis.quit();
+    },
   });
 
-  process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
-  // SIGHUP is accepted so the handler matches every other long-running worker
-  // in the fleet; a config-reload signal must not take the oracle down
-  // mid-resolution.
-  process.on("SIGHUP", () => void shutdown("SIGHUP"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+
+  const guardedPoll = createOverlapGuardedPoll(poll, logger);
+  const intervalMs = config.pollIntervalMs;
+
+  await guardedPoll();
+  setInterval(() => void guardedPoll(), intervalMs);
 }
 
-// Only auto-boot when this file is executed directly (e.g. via `tsx
-// apps/oracle/main.ts`) — importing it for tests must not start the
-// poll loop or touch process-level signal handlers.
-const isMainModule =
+// Only auto-bootstrap when executed directly, so importing this module in
+// tests (apps/oracle/main.test.ts) never starts the poll loop or health server.
+const isDirectRun =
   process.argv[1] !== undefined &&
   fileURLToPath(import.meta.url) === process.argv[1];
 
-if (isMainModule) {
-  void bootstrap().catch((error) => {
-    console.error(
-      JSON.stringify({
-        ts: new Date().toISOString(),
-        level: "error",
-        message: "Oracle failed during bootstrap",
-        error: error instanceof Error ? error.message : String(error),
-      })
-    );
+if (isDirectRun) {
+  bootstrap().catch((error) => {
+    const logger = createLogger("error");
+    logger.error("Oracle bootstrap failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
     process.exit(1);
   });
 }

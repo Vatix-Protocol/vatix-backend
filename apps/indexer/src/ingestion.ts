@@ -25,6 +25,33 @@ import { GapDetector, type GapPagingConfig } from "./gapDetector.js";
  */
 const REORG_REWIND_DEPTH_MULTIPLIER = 2;
 
+/**
+ * Stable error code surfaced when a checkpoint commit cannot be completed
+ * atomically. Callers/operators can rely on this code for alerting and
+ * runbook automation without parsing free-form messages.
+ */
+export const CHECKPOINT_COMMIT_FAILED = "INDEXER_CHECKPOINT_COMMIT_FAILED";
+
+/**
+ * Raised when the batch write and checkpoint advancement cannot be committed
+ * as a single all-or-nothing unit. The checkpoint is NOT advanced when this
+ * is thrown, so a subsequent tick re-processes the same window (idempotent
+ * replay) rather than skipping events.
+ */
+export class CheckpointCommitError extends Error {
+  readonly code = CHECKPOINT_COMMIT_FAILED;
+  readonly correlationId: string;
+
+  constructor(message: string, correlationId: string, options?: { cause?: unknown }) {
+    super(message);
+    this.name = "CheckpointCommitError";
+    this.correlationId = correlationId;
+    if (options?.cause !== undefined) {
+      (this as { cause?: unknown }).cause = options.cause;
+    }
+  }
+}
+
 export interface IngestionLoop {
   start(initialCursor: string | null): Promise<void>;
   stop(): Promise<void>;
@@ -213,6 +240,33 @@ export class PollingIngestionLoop implements IngestionLoop {
       try {
         const batchResult = await this.ingestFromCursor(this.cursor);
         if (batchResult.nextCursor && batchResult.nextCursor !== this.cursor) {
+          // Atomic commit: only advance the in-memory cursor once the batch
+          // write has been durably persisted. If the write failed, the
+          // checkpoint must NOT move so the same window is re-processed
+          // (idempotent replay) instead of silently skipping events.
+          if (!batchResult.batchWriteSucceeded) {
+            const correlationId = this.buildCorrelationId(
+              batchResult.lastIndexedLedgerSequence
+            );
+            this.metrics.incrementIngestionErrors?.("checkpoint_commit_failed");
+            this.logger.error(
+              "Checkpoint commit aborted: batch write did not succeed — checkpoint not advanced",
+              {
+                event: "indexer.checkpoint.commit_failed",
+                code: CHECKPOINT_COMMIT_FAILED,
+                correlationId,
+                attemptedCursor: batchResult.nextCursor,
+                retainedCursor: this.cursor,
+                lastIndexedLedgerSequence:
+                  batchResult.lastIndexedLedgerSequence,
+              }
+            );
+            throw new CheckpointCommitError(
+              "Batch write failed; checkpoint advancement aborted to preserve atomicity",
+              correlationId
+            );
+          }
+
           this.cursor = batchResult.nextCursor;
           this.metrics.setLatestIndexedLedgerSequence(
             batchResult.lastIndexedLedgerSequence
@@ -222,9 +276,18 @@ export class PollingIngestionLoop implements IngestionLoop {
           await this.flushCheckpoint(false);
         }
       } catch (error) {
-        this.logger.error("Ingestion tick failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        if (error instanceof CheckpointCommitError) {
+          this.logger.error("Ingestion tick failed (checkpoint commit)", {
+            event: "indexer.checkpoint.commit_failed",
+            code: error.code,
+            correlationId: error.correlationId,
+            error: error.message,
+          });
+        } else {
+          this.logger.error("Ingestion tick failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       } finally {
         this.isTickInProgress = false;
         this.activeTickPromise = null;
@@ -232,6 +295,14 @@ export class PollingIngestionLoop implements IngestionLoop {
     })();
 
     await this.activeTickPromise;
+  }
+
+  /**
+   * Builds a stable, non-secret correlation id for a checkpoint commit
+   * attempt so operators can trace a failed commit across logs and metrics.
+   */
+  private buildCorrelationId(lastIndexedLedgerSequence: number): string {
+    return `ckpt-${this.deps.contractId}-${lastIndexedLedgerSequence}`;
   }
 
   private async flushCheckpoint(force: boolean): Promise<void> {
@@ -242,184 +313,6 @@ export class PollingIngestionLoop implements IngestionLoop {
     if (
       !force &&
       this.successfulBatchesSinceLastCheckpoint <
-        this.checkpointFlushEveryBatches
-    ) {
-      return;
-    }
+        this.checkpointFlushE
 
-    try {
-      await this.storage.saveCursor(this.cursor);
-      this.successfulBatchesSinceLastCheckpoint = 0;
-    } catch (error) {
-      this.logger.error("Failed to persist ingestion cursor", {
-        cursor: this.cursor,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  private emitHeartbeat(): void {
-    const latest = this.metrics.getLatestIndexedLedgerSequence();
-    const advanced =
-      this.lastHeartbeatLedgerSequence === null ||
-      latest !== this.lastHeartbeatLedgerSequence;
-
-    this.logger.info("Indexer heartbeat", {
-      event: "indexer.heartbeat",
-      cursor: this.cursor,
-      latestIndexedLedgerSequence: latest,
-      batchesSinceLastHeartbeat: this.batchesSinceLastHeartbeat,
-      advanced,
-    });
-
-    this.lastHeartbeatLedgerSequence = latest;
-    this.batchesSinceLastHeartbeat = 0;
-  }
-
-  /**
-   * Fetches, parses, and writes a single batch of events starting from the
-   * given cursor. Returns the next cursor and the last indexed ledger.
-   *
-   * Fail-closed semantics: if the batch write fails, the cursor is NOT
-   * advanced and the caller must not persist a new checkpoint. This ensures
-   * no partial/corrupt market rows are committed and replayed events are
-   * handled idempotently via {@link withIdempotencyKey}.
-   */
-  private async ingestFromCursor(
-    cursor: string | null
-  ): Promise<IngestionBatchResult> {
-    const startLedger = cursor ? Number(cursor) : 0;
-    const endLedger = startLedger + this.deps.ledgerWindowSize;
-
-    const span = this.telemetry.startSpan("indexer.ingestBatch", {
-      startLedger,
-      endLedger,
-      contractId: this.deps.contractId,
-    });
-
-    let events;
-    try {
-      events = await this.deps.eventFetcher.fetchEvents({
-        contractId: this.deps.contractId,
-        startLedger,
-        endLedger,
-      });
-    } catch (error) {
-      span.recordError(error);
-      span.end();
-      // Fail-closed: dependency (RPC) outage must not advance the cursor.
-      throw error;
-    }
-
-    const records: BatchRecord[] = [];
-
-    try {
-      const tradeEvents = parseTradeEvents(events);
-      for (const trade of tradeEvents) {
-        records.push({
-          idempotencyKey: withIdempotencyKey("trade", trade),
-          kind: "trade",
-          payload: trade,
-        });
-      }
-    } catch (error) {
-      if (error instanceof TradeParseError) {
-        this.logger.warn("Skipping malformed trade event", {
-          code: error.code,
-          error: error.message,
-        });
-      } else {
-        throw error;
-      }
-    }
-
-    try {
-      const resolutionEvents = parseResolutionEvents(events);
-      for (const resolution of resolutionEvents) {
-        records.push({
-          idempotencyKey: withIdempotencyKey("resolution", resolution),
-          kind: "resolution",
-          payload: resolution,
-        });
-      }
-    } catch (error) {
-      if (error instanceof ResolutionParseError) {
-        this.logger.warn("Skipping malformed resolution event", {
-          code: error.code,
-          error: error.message,
-        });
-      } else {
-        throw error;
-      }
-    }
-
-    try {
-      const collateralEvents = parseCollateralDepositedEvents(events);
-      for (const collateral of collateralEvents) {
-        records.push({
-          idempotencyKey: withIdempotencyKey("collateral", collateral),
-          kind: "collateral",
-          payload: collateral,
-        });
-      }
-    } catch (error) {
-      if (error instanceof CollateralDepositedParseError) {
-        this.logger.warn("Skipping malformed collateral event", {
-          code: error.code,
-          error: error.message,
-        });
-      } else {
-        throw error;
-      }
-    }
-
-    // Index MarketCreated events end-to-end so the API list endpoint can
-    // surface newly created markets. Replayed/concurrent events are
-    // deduplicated via the idempotency key derived from the event identity.
-    try {
-      const marketCreatedEvents = parseMarketCreatedEvents(events);
-      for (const market of marketCreatedEvents) {
-        records.push({
-          idempotencyKey: withIdempotencyKey("marketCreated", market),
-          kind: "marketCreated",
-          payload: market,
-        });
-      }
-    } catch (error) {
-      if (error instanceof MarketCreatedParseError) {
-        this.logger.warn("Skipping malformed marketCreated event", {
-          code: error.code,
-          error: error.message,
-        });
-      } else {
-        throw error;
-      }
-    }
-
-    let batchWriteSucceeded = true;
-    if (records.length > 0) {
-      try {
-        await this.deps.batchWriter.writeBatch(records);
-      } catch (error) {
-        batchWriteSucceeded = false;
-        span.recordError(error);
-        this.logger.error("Failed to write ingestion batch", {
-          recordCount: records.length,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        // Fail-closed: do not advance the cursor on write failure so the
-        // batch is retried and no partial market rows are committed.
-        span.end();
-        throw error;
-      }
-    }
-
-    span.end();
-
-    return {
-      nextCursor: String(endLedger),
-      lastIndexedLedgerSequence: endLedger,
-      batchWriteSucceeded,
-    };
-  }
-}
+/* … truncated 5324 chars — edit only what you need near the top … */
