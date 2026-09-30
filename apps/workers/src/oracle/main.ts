@@ -21,7 +21,7 @@ import {
   disconnectPrisma,
 } from "../../../../src/services/prisma.js";
 import { redis } from "../../../../src/services/redis.js";
-import { loadOracleWorkerConfig } from "../../../../packages/shared/src/config.js";
+import { loadOracleWorkerConfig } from "@vatix/shared/config.js";
 import {
   validateAndResolveStellarConfig,
   type ResolvedOracleStellarConfig,
@@ -43,8 +43,8 @@ import {
   rpc as StellarRpc,
   xdr,
 } from "@stellar/stellar-sdk";
-import type { ShutdownSignal } from "../../../../packages/shared/src/shutdown.js";
-import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
+import type { ShutdownSignal } from "@vatix/shared/shutdown.js";
+import { createShutdown } from "@vatix/shared/shutdown.js";
 import { withRetry } from "../../../oracle/retry-utils.js";
 import {
   checkOnChainStatus,

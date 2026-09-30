@@ -13,6 +13,11 @@ and in what format.
 ### Added
 
 - Indexer: Gap detector fixture tests in `apps/indexer/src/gap-detection.fixture.test.ts` covering cursor jumps, backfill re-fetching, idempotency, metrics increments, and fail-closed thresholds (#1199).
+- pnpm workspace boundaries: every workspace package now has a `package.json` with a `name` field (`@vatix/api`, `@vatix/shared`, `@vatix/db`).
+- Cross-package imports use package names (`@vatix/shared`) instead of relative paths to `packages/`.
+- `tests/config/workspace-boundaries.test.ts` enforces workspace boundary rules in CI.
+- `packages/shared/package.json` declares `exports` for all public modules.
+- CONTRIBUTING.md, docs/architecture.md, docs/testing.md, and SECURITY.md updated with workspace boundary documentation.
 - Indexer: `MarketCreated` event parsing in `apps/indexer/src/marketCreatedParser.ts`.
 - Indexer: ingestion pipeline wiring in `apps/indexer/src/ingestion.ts`.
 - Indexer: oracle resolution path in `apps/indexer/src/resolutionParser.ts`.

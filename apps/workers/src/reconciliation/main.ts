@@ -1,4 +1,4 @@
-import { Logger } from "../../../../packages/shared/src/logger.js";
+import { Logger } from "@vatix/shared/logger.js";
 import { loadReconciliationConfig } from "./config.js";
 import { ReconciliationJob } from "./job.js";
 

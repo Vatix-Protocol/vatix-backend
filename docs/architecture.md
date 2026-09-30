@@ -33,13 +33,20 @@ Vatix Backend is a monorepo of services that together power the Vatix prediction
 
 ## Service Boundaries
 
-| Module      | Directory          | Responsibility                                                                                                                                               |
-| ----------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **API**     | `src/`             | HTTP server (Fastify). Handles order placement, market queries, position reads. Owns the CLOB matching engine.                                               |
-| **Indexer** | `apps/indexer/`    | Polls Stellar network for on-chain events, parses them, and writes canonical records to PostgreSQL.                                                          |
-| **Oracle**  | `apps/oracle/`     | Fetches external price/resolution data, signs reports, and submits them on-chain via the Stellar SDK.                                                        |
-| **Workers** | `apps/workers/`    | Queue consumers and scheduled jobs (e.g. settlement, expiry sweeps). Decoupled from the HTTP request lifecycle.                                              |
-| **Shared**  | `packages/shared/` | Cross-package types and utilities (logging, queue config, market lifecycle). TypeScript project references prevent direct imports across service boundaries. |
+| Module      | Directory          | Package name    | Responsibility                                                                                                                                               |
+| ----------- | ------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **API**     | `src/`             | `@vatix/api`    | HTTP server (Fastify). Handles order placement, market queries, position reads. Owns the CLOB matching engine.                                               |
+| **Indexer** | `apps/indexer/`    | `@vatix/indexer`| Polls Stellar network for on-chain events, parses them, and writes canonical records to PostgreSQL.                                                          |
+| **Oracle**  | `apps/oracle/`     | `@vatix/oracle` | Fetches external price/resolution data, signs reports, and submits them on-chain via the Stellar SDK.                                                        |
+| **Workers** | `apps/workers/`    | `@vatix/workers`| Queue consumers and scheduled jobs (e.g. settlement, expiry sweeps). Decoupled from the HTTP request lifecycle.                                              |
+| **Shared**  | `packages/shared/` | `@vatix/shared` | Cross-package types and utilities (logging, queue config, market lifecycle). Public API defined via `exports` in `package.json`.                            |
+
+### Workspace boundary rules
+
+- **Cross-package imports must use the package name**, not relative paths. For example, import from `@vatix/shared` rather than `../../../packages/shared/src/...`.
+- **`packages/shared` is the only shared package.** It contains cross-cutting types and utilities. Business/domain logic does not belong here.
+- **Every workspace package must have a `package.json`** with a `name` field.
+- **Workspace boundaries are enforced by tests** (`tests/config/workspace-boundaries.test.ts`). CI runs these tests to catch boundary violations.
 
 ## Major Data Flows
 

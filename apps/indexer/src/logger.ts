@@ -1,7 +1,7 @@
 import {
   redactMeta,
   redactText,
-} from "../../../packages/shared/src/logRedactor.js";
+} from "@vatix/shared/logRedactor.js";
 
 export interface Logger {
   debug(message: string, meta?: Record<string, unknown>): void;

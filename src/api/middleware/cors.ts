@@ -2,8 +2,8 @@ import fp from "fastify-plugin";
 import cors from "@fastify/cors";
 import type { FastifyInstance } from "fastify";
 import type { FastifyCorsOptions } from "@fastify/cors";
-import { resolveCorsAllowedOrigins } from "../../../packages/shared/src/cors.js";
-import type { NodeEnv } from "../../../packages/shared/src/cors.js";
+import { resolveCorsAllowedOrigins } from "@vatix/shared/cors.js";
+import type { NodeEnv } from "@vatix/shared/cors.js";
 
 export interface CorsOriginConfig {
   origin: NonNullable<FastifyCorsOptions["origin"]>;

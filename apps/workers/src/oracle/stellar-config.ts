@@ -1,5 +1,5 @@
-import { loadIndexerContractId } from "../../../../packages/shared/src/config.js";
-import { loadStellarEndpoints } from "../../../../packages/shared/src/stellarTransport.js";
+import { loadIndexerContractId } from "@vatix/shared/config.js";
+import { loadStellarEndpoints } from "@vatix/shared/stellarTransport.js";
 
 export interface ResolvedOracleStellarConfig {
   rpcUrl: string;

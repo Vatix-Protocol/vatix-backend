@@ -1,7 +1,7 @@
 // Custom error classes for Vatix Backend
 // Each class carries a stable `code` used in the API error envelope.
 
-import { MARKET_INVALID_TRANSITION_CODE } from "../../../packages/shared/src/marketLifecycle.js";
+import { MARKET_INVALID_TRANSITION_CODE } from "@vatix/shared/marketLifecycle.js";
 
 export class AppError extends Error {
   statusCode: number;

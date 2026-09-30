@@ -50,7 +50,7 @@ export interface FinalizationJobResult {
  * @deprecated Import from "../../../../packages/shared/src/shutdown.js" instead.
  */
 export type ShutdownSignal =
-  import("../../../../packages/shared/src/shutdown.js").ShutdownSignal;
+  import("@vatix/shared/shutdown.js").ShutdownSignal;
 
 /** Async handler invoked when a shutdown signal is received.
  * @deprecated Import from "packages/shared/src/shutdown.js" instead.

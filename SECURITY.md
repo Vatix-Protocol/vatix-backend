@@ -13,6 +13,16 @@ If you discover a security vulnerability in Vatix-Protocol, please report it res
 
 This policy covers all packages in the Vatix-Protocol monorepo, including `vatix-backend` (`apps/api`).
 
+## Workspace boundaries
+
+This repo is a pnpm workspace. Cross-package imports must use the
+package name (e.g. `@vatix/shared`), not relative paths to
+`packages/`. Workspace boundary violations are caught by automated
+tests (`tests/config/workspace-boundaries.test.ts`).
+
+Every workspace package must have a `package.json` with a `name`
+field. The workspace is defined in `pnpm-workspace.yaml`.
+
 ## Secret Scanning
 
 Secrets must never be committed to the repository or baked into images. This

@@ -6,7 +6,7 @@ import {
   getPrismaClient,
   disconnectPrisma,
 } from "../../../../src/services/prisma.js";
-import { createShutdown } from "../../../../packages/shared/src/shutdown.js";
+import { createShutdown } from "@vatix/shared/shutdown.js";
 
 async function bootstrap(): Promise<void> {
   const config = loadExpiryConfig();

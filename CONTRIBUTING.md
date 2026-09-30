@@ -18,6 +18,35 @@ expectations every change must meet.
 - [Security](#security)
 - [Getting Help](#getting-help)
 
+## Monorepo workspace boundaries
+
+This repo is a pnpm workspace with the following packages:
+
+| Workspace | Package name | Directory |
+|-----------|-------------|-----------|
+| API | `@vatix/api` | `apps/api/` |
+| Indexer | `@vatix/indexer` | `apps/indexer/` |
+| Oracle | `@vatix/oracle` | `apps/oracle/` |
+| Workers | `@vatix/workers` | `apps/workers/` |
+| Shared | `@vatix/shared` | `packages/shared/` |
+
+### Rules
+
+1. **Every workspace package must have a `package.json`** with a `name` field.
+2. **Cross-package imports must use the package name**, not relative paths. For example, import from `@vatix/shared` rather than `../../../packages/shared/src/...`.
+3. **`packages/shared` is the only shared package.** It contains cross-cutting types and utilities (logging, config, errors, queue config, CORS). Business/domain logic does not belong here.
+4. **Workspace boundaries are enforced by tests** (`tests/config/workspace-boundaries.test.ts`). CI runs these tests to catch boundary violations.
+
+### Workspace config
+
+The workspace is defined in `pnpm-workspace.yaml`:
+
+```yaml
+packages:
+  - "apps/*"
+  - "packages/*"
+```
+
 ## Prerequisites
 
 - Node.js 20+ and npm (see `package.json` `engines` if present).
