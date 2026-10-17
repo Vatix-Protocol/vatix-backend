@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { loadIndexerConfig, KNOWN_PASSPHRASES } from "./config.js";
+import { validateEnv, EnvValidationError } from "./env.js";
 
 const TESTNET = KNOWN_PASSPHRASES.testnet;
 const MAINNET = KNOWN_PASSPHRASES.mainnet;
@@ -180,5 +181,84 @@ describe("contract ID boot gate (#1132)", () => {
       MARKET_CONTRACT_ID: "CLEGACY",
     });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("disagree"));
+  });
+});
+
+// ── HTTP flag validation (#1293) ──────────────────────────────────────────
+//
+// The HTTP flags control whether the server starts at all, so they must be
+// part of the fail-closed boot contract. Invalid values must surface as an
+// EnvValidationError naming the variable and a stable code, without echoing
+// the offending raw value into the error output.
+describe("HTTP flag validation (#1293)", () => {
+  const base = {
+    SOROBAN_NETWORK_PASSPHRASE: TESTNET,
+    INDEXER_CONTRACT_ID: CONTRACT_ID,
+  };
+
+  function catchEnv(env: Record<string, string>): unknown {
+    try {
+      validateEnv(env);
+    } catch (err) {
+      return err;
+    }
+    return undefined;
+  }
+
+  it("accepts a valid baseline with HTTP flags set", () => {
+    const result = validateEnv({
+      ...base,
+      INDEXER_HTTP_ENABLED: "true",
+      INDEXER_HTTP_FORCE_LIVE_CHECK: "false",
+      INDEXER_HTTP_PORT: "8080",
+    });
+    expect(result.INDEXER_HTTP_ENABLED).toBe("true");
+    expect(result.INDEXER_HTTP_FORCE_LIVE_CHECK).toBe("false");
+    expect(result.INDEXER_HTTP_PORT).toBe("8080");
+  });
+
+  it("rejects INDEXER_HTTP_ENABLED=yes", () => {
+    const caught = catchEnv({ ...base, INDEXER_HTTP_ENABLED: "yes" });
+    expect(caught).toBeInstanceOf(EnvValidationError);
+    const err = caught as EnvValidationError;
+    expect(err.issues.some((i) => i.name === "INDEXER_HTTP_ENABLED")).toBe(
+      true
+    );
+    expect(String(err)).toContain("INDEXER_HTTP_ENABLED");
+    expect(String(err)).not.toContain("yes");
+  });
+
+  it("rejects INDEXER_HTTP_FORCE_LIVE_CHECK=1", () => {
+    const caught = catchEnv({ ...base, INDEXER_HTTP_FORCE_LIVE_CHECK: "1" });
+    expect(caught).toBeInstanceOf(EnvValidationError);
+    const err = caught as EnvValidationError;
+    expect(
+      err.issues.some((i) => i.name === "INDEXER_HTTP_FORCE_LIVE_CHECK")
+    ).toBe(true);
+    expect(String(err)).toContain("INDEXER_HTTP_FORCE_LIVE_CHECK");
+    expect(String(err)).not.toContain("1");
+  });
+
+  it("rejects INDEXER_HTTP_PORT=abc", () => {
+    const caught = catchEnv({ ...base, INDEXER_HTTP_PORT: "abc" });
+    expect(caught).toBeInstanceOf(EnvValidationError);
+    const err = caught as EnvValidationError;
+    expect(err.issues.some((i) => i.name === "INDEXER_HTTP_PORT")).toBe(true);
+    expect(String(err)).toContain("INDEXER_HTTP_PORT");
+    expect(String(err)).not.toContain("abc");
+  });
+
+  it("rejects INDEXER_HTTP_PORT=0", () => {
+    const caught = catchEnv({ ...base, INDEXER_HTTP_PORT: "0" });
+    expect(caught).toBeInstanceOf(EnvValidationError);
+    const err = caught as EnvValidationError;
+    expect(err.issues.some((i) => i.name === "INDEXER_HTTP_PORT")).toBe(true);
+  });
+
+  it("rejects INDEXER_HTTP_PORT=70000", () => {
+    const caught = catchEnv({ ...base, INDEXER_HTTP_PORT: "70000" });
+    expect(caught).toBeInstanceOf(EnvValidationError);
+    const err = caught as EnvValidationError;
+    expect(err.issues.some((i) => i.name === "INDEXER_HTTP_PORT")).toBe(true);
   });
 });

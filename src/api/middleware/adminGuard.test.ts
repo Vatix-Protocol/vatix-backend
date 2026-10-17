@@ -44,6 +44,14 @@ function bodyText(reply: { body: unknown }): string {
   return JSON.stringify(reply.body ?? "");
 }
 
+  afterEach(async () => {
+    await server.close();
+    await prisma.adminIdentityAuditLog.deleteMany({});
+    await prisma.adminIdentity.deleteMany({});
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
 describe("requireAdmin", () => {
   it("returns 401 when no Authorization header is present", async () => {
     const reply = makeReply();
@@ -69,11 +77,42 @@ describe("requireAdmin", () => {
     expect(reply.statusCode).toBe(401);
   });
 
-  it("returns 401 for a Bearer token with no colon", async () => {
+  it("does not query the identity store for a malformed credential", async () => {
+    const findFirstSpy = vi.spyOn(prisma.adminIdentity, "findFirst");
+    const res = await server.inject({
+      method: "GET",
+      url: "/admin/test",
+      headers: { authorization: "Bearer invalid-format" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(findFirstSpy).not.toHaveBeenCalled();
+  });
+
+  it("allows request with valid identity and credential", async () => {
+    await identityService.createIdentity("alice", "secret123", "system");
+    const res = await server.inject({
+      method: "GET",
+      url: "/admin/test",
+      headers: { authorization: "Bearer alice:secret123" },
+    });
+
+    await guard(makeRequest("Bearer alice"), reply);
+
+    expect(reply.statusCode).toBe(401);
+    expect(bodyText(reply)).not.toContain("alice");
+  });
+
+  it("returns 401 for a Bearer token with an empty credential", async () => {
     const reply = makeReply();
     const guard = requireAdmin({
       identityService: makeIdentityService(),
       isProduction: false,
+    });
+
+    await guard(makeRequest("Bearer alice:"), reply);
+
+    expect(reply.statusCode).toBe(401);
+    expect(bodyTex
     });
 
     await guard(makeRequest("Bearer alice"), reply);

@@ -95,6 +95,13 @@ export const config = {
      */
     pollIntervalMs: env.ORACLE_POLL_INTERVAL_MS,
   },
+  /**
+   * Minimum log level for the shared logger (packages/shared/src/logger.ts).
+   * Read from the Zod-parsed `env` (#1295) so the admin path no longer reads
+   * `process.env.LOG_LEVEL` directly with an `as any` cast.
+   * Configured via LOG_LEVEL (default: info).
+   */
+  logLevel: env.LOG_LEVEL,
 } as const;
 
 /**

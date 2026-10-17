@@ -1,5 +1,7 @@
 export {
   REDACTED,
+  REDACTION_TRUNCATED,
+  MAX_REDACTION_DEPTH,
   SENSITIVE_KEYS,
   isSensitiveKey,
   redactObject,

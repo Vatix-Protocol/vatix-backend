@@ -4,25 +4,29 @@ export interface MarketListItemDto {
   id: string;
   question: string;
   endTime: string;
-  resolutionTime: string | null;
-  oracleAddress: string;
   status: MarketStatus;
-  outcome: boolean | null;
+  outcome: Outcome | null;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface MarketDetailsDto extends MarketListItemDto {}
+export interface MarketDetailsDto {
+  id: string;
+  question: string;
+  endTime: string;
+  resolutionTime: string | null;
+  oracleAddress: string;
+  status: MarketStatus;
+  outcome: Outcome | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface OrderBookLevelDto {
-  /** Price level expressed as a decimal in the range 0-1 */
   price: number;
-  /** Total quantity available at this price level */
-  totalQuantity: number;
-  /** Number of orders aggregated into this price level */
-  orderCount: number;
-  /** Outcome associated with this order level (YES or NO) */
   outcome: Outcome;
+  totalQuantity: number;
+  orderCount: number;
 }
 
 export interface MarketOrderBookDto {
@@ -34,12 +38,28 @@ export interface MarketOrderBookDto {
 }
 
 /**
- * Computes a weak ETag for a market resource from its id and last-modified
- * timestamp, so it changes whenever the row is updated. Used for If-Match
- * concurrency control on market update endpoints.
+ * Compute a weak ETag for a market row, used for If-Match concurrency
+ * control on market update endpoints.
+ *
+ * The validator is a pure function of the market id and the row's
+ * last-modified instant. The timestamp component is derived from
+ * `updatedAt.toISOString()` so the same instant always yields the same
+ * string regardless of how the Date was constructed (driver string, JSON
+ * round-trip, etc.). The format is `W/"<id>-<iso>"` and is pinned by tests
+ * in market.dto.test.ts — changing it invalidates every client's cached
+ * validator, so do so deliberately.
+ *
+ * Throws if `updatedAt` is not a valid Date, rather than emitting a
+ * non-deterministic validator.
  */
 export function computeMarketEtag(
   market: Pick<Market, "id" | "updatedAt">
 ): string {
-  return `W/"${market.id}-${market.updatedAt.getTime()}"`;
+  const updatedAt = market.updatedAt;
+  if (!(updatedAt instanceof Date) || Number.isNaN(updatedAt.getTime())) {
+    throw new Error(
+      `computeMarketEtag: invalid updatedAt for market ${market.id}`
+    );
+  }
+  return `W/"${market.id}-${updatedAt.toISOString()}"`;
 }

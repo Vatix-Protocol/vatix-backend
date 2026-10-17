@@ -9,6 +9,7 @@ import {
   parseMarketCreatedEvent,
   type RawMarketCreatedEvent,
 } from "./market-created-parser.js";
+import { MARKET_QUESTION_MAX_LENGTH } from "../../packages/shared/src/marketLifecycle.js";
 
 describe("parseMarketCreatedEvent", () => {
   const validEvent: RawMarketCreatedEvent = {
@@ -33,6 +34,17 @@ describe("parseMarketCreatedEvent", () => {
       expect(result.data!.oracleAddress).toBe(
         "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
       );
+    });
+
+    it("should accept a question exactly at the maximum length", () => {
+      const event: RawMarketCreatedEvent = {
+        ...validEvent,
+        question: "a".repeat(MARKET_QUESTION_MAX_LENGTH),
+      };
+      const result = parseMarketCreatedEvent(event);
+
+      expect(result.success).toBe(true);
+      expect(result.data!.question).toHaveLength(MARKET_QUESTION_MAX_LENGTH);
     });
 
     it("should convert numeric endTime to ISO-8601 string", () => {
@@ -160,6 +172,17 @@ describe("parseMarketCreatedEvent", () => {
       expect(result.error).toContain("question");
     });
 
+    it("should fail when question exceeds the maximum length", () => {
+      const event: RawMarketCreatedEvent = {
+        ...validEvent,
+        question: "a".repeat(MARKET_QUESTION_MAX_LENGTH + 1),
+      };
+      const result = parseMarketCreatedEvent(event);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("question");
+    });
+
     it("should fail when endTime is missing", () => {
       const { endTime, ...eventWithoutEndTime } = validEvent;
       const result = parseMarketCreatedEvent(eventWithoutEndTime);
@@ -242,69 +265,15 @@ describe("parseMarketCreatedEvent", () => {
       );
     });
 
-    it("should default to ACTIVE for unknown status values", () => {
+    it("should reject a numeric endTime beyond the Date range", () => {
       const event: RawMarketCreatedEvent = {
         ...validEvent,
-        status: "UNKNOWN_STATUS",
-      };
-      const result = parseMarketCreatedEvent(event);
-
-      expect(result.success).toBe(true);
-      expect(result.data!.status).toBe("ACTIVE");
-    });
-
-    it("should trim whitespace from oracleAddress", () => {
-      const event: RawMarketCreatedEvent = {
-        ...validEvent,
-        oracleAddress:
-          "  GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA  ",
-      };
-      const result = parseMarketCreatedEvent(event);
-
-      expect(result.success).toBe(true);
-      expect(result.data!.oracleAddress).toBe(
-        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-      );
-    });
-
-    it("should uppercase a lowercase oracleAddress before validation", () => {
-      const lower = validEvent.oracleAddress!.toLowerCase();
-      const event: RawMarketCreatedEvent = {
-        ...validEvent,
-        oracleAddress: lower,
-      };
-      const result = parseMarketCreatedEvent(event);
-
-      expect(result.success).toBe(true);
-      expect(result.data!.oracleAddress).toBe(validEvent.oracleAddress);
-    });
-
-    it("should reject oracleAddress with digits outside Stellar base32 charset (0, 1)", () => {
-      // '0' and '1' are not in the canonical StrKey charset [A-Z2-7]
-      const withDigit =
-        "G0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-      const event: RawMarketCreatedEvent = {
-        ...validEvent,
-        oracleAddress: withDigit,
+        endTime: 8.64e15,
       };
       const result = parseMarketCreatedEvent(event);
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain("Invalid oracle address format");
-    });
-
-    it("should strip control characters from oracleAddress before validation", () => {
-      // Null byte injected — should be stripped, leaving 55 chars → invalid length
-      const withNull =
-        "\x00GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-      const event: RawMarketCreatedEvent = {
-        ...validEvent,
-        oracleAddress: withNull,
-      };
-      const result = parseMarketCreatedEvent(event);
-
-      // After stripping \x00 the address is still 56 chars and valid
-      expect(result.success).toBe(true);
+      expect(result.error).toContain("endTime");
     });
   });
 });

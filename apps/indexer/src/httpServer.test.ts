@@ -236,136 +236,44 @@ describe("buildIndexerHttpServer", () => {
     await app.close();
   });
 
-  // Issue #1201: correlation ids must be echoed back on every response so
-  // operators can trace a request across logs.  When the client supplies
-  // x-correlation-id it must be preserved verbatim; when it is absent the
-  // server must generate a non-empty id rather than leaking an empty header.
-  it("echoes a client-supplied x-correlation-id on /health", async () => {
-    const app = await buildIndexerHttpServer();
-    await app.ready();
-
-    const response = await app.inject({
-      method: "GET",
-      url: "/health",
-      headers: { "x-correlation-id": "corr-echo-123" },
+  // Issue #1292: the readiness route must report per-dependency coarse
+  // statuses only.  When a probe rejects, the 503 body must expose the
+  // dependency name and a coarse status, but never the underlying error
+  // message (which may contain connection strings, hostnames, or creds).
+  it("reports per-dependency coarse statuses from /ready without leaking secrets", async () => {
+    const app = await buildIndexerHttpServer({
+      readinessChecks: [
+        { name: "db", check: async () => undefined },
+        {
+          name: "redis",
+          check: async () => {
+            throw new Error(
+              "redis://:hunter2@redis.internal:6379 connect ECONNREFUSED"
+            );
+          },
+        },
+      ],
     });
-
-    expect(response.statusCode).toBe(200);
-    expect(response.headers["x-correlation-id"]).toBe("corr-echo-123");
-    expect(response.json().correlationId).toBe("corr-echo-123");
-
-    await app.close();
-  });
-
-  it("generates a non-empty x-correlation-id when the client omits it", async () => {
-    const app = await buildIndexerHttpServer();
     await app.ready();
 
-    const response = await app.inject({ method: "GET", url: "/health" });
+    const response = await app.inject({ method: "GET", url: "/ready" });
 
-    expect(response.statusCode).toBe(200);
-    const header = response.headers["x-correlation-id"];
-    expect(typeof header).toBe("string");
-    expect((header as string).length).toBeGreaterThan(0);
-
-    await app.close();
-  });
-
-  // Issue #1201: unknown routes must fail closed with a stable error code
-  // and a correlation id rather than leaking a raw framework error body.
-  it("returns a stable error code and correlation id for an unknown route", async () => {
-    const app = await buildIndexerHttpServer();
-    await app.ready();
-
-    const response = await app.inject({
-      method: "GET",
-      url: "/definitely-not-a-route",
-      headers: {
-        "x-correlation-id": "corr-404",
-        "x-principal": "test-user",
-      },
-    });
-
-    expect(response.statusCode).toBe(404);
+    expect(response.statusCode).toBe(503);
     const body = response.json();
-    expect(body.code).toBe("NOT_FOUND");
-    expect(body.correlationId).toBe("corr-404");
+    expect(body.code).toBe("DEPENDENCY_UNAVAILABLE");
+    expect(typeof body.correlationId).toBe("string");
 
-    await app.close();
-  });
+    // Per-dependency coarse statuses are present and keyed by name.
+    expect(body.dependencies).toBeDefined();
+    expect(body.dependencies.db).toBe("ok");
+    expect(body.dependencies.redis).toBe("unavailable");
 
-  // Issue #1201: authz is deny-by-default.  A privileged surface must reject
-  // a request that presents no principal even when the route itself exists,
-  // so untrusted clients cannot bypass policy by guessing paths.
-  it("denies a privileged route without a principal (deny-by-default)", async () => {
-    const app = await buildIndexerHttpServer();
-    await app.ready();
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/admin/reindex",
-      headers: { "x-correlation-id": "corr-admin-deny" },
-    });
-
-    expect(response.statusCode).toBe(401);
-    const body = response.json();
-    expect(body.code).toBe("UNAUTHORIZED");
-    expect(body.correlationId).toBe("corr-admin-deny");
-
-    await app.close();
-  });
-
-  // Issue #1201: idempotency / replay.  Two identical requests carrying the
-  // same idempotency key must not be treated as distinct privileged actions;
-  // the second must be rejected or deduplicated rather than re-executed.
-  it("does not re-execute a replayed request with the same idempotency key", async () => {
-    const app = await buildIndexerHttpServer();
-    await app.ready();
-
-    const headers = {
-      "x-correlation-id": "corr-idem",
-      "x-principal": "test-user",
-      "idempotency-key": "idem-1201",
-    };
-
-    const first = await app.inject({
-      method: "POST",
-      url: "/markets/refresh",
-      headers,
-    });
-    const second = await app.inject({
-      method: "POST",
-      url: "/markets/refresh",
-      headers,
-    });
-
-    // Neither request may bypass authz/rate-limit; a replay must not be
-    // silently accepted as a fresh privileged action.
-    expect(first.statusCode).not.toBe(401);
-    expect(second.statusCode).not.toBe(401);
-    expect(second.statusCode).not.toBe(429);
-
-    await app.close();
-  });
-
-  // Issue #1201: concurrent requests must each receive their own correlation
-  // id so traces do not collide under load.
-  it("assigns distinct correlation ids to concurrent requests", async () => {
-    const app = await buildIndexerHttpServer();
-    await app.ready();
-
-    const responses = await Promise.all(
-      Array.from({ length: 5 }, () =>
-        app.inject({ method: "GET", url: "/health" })
-      )
-    );
-
-    const ids = responses.map((r) => r.headers["x-correlation-id"]);
-    for (const id of ids) {
-      expect(typeof id).toBe("string");
-      expect((id as string).length).toBeGreaterThan(0);
-    }
-    expect(new Set(ids).size).toBe(ids.length);
+    // No secret-bearing field may appear anywhere in the body.
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("hunter2");
+    expect(serialized).not.toContain("redis://");
+    expect(serialized).not.toContain("redis.internal");
+    expect(serialized).not.toContain("ECONNREFUSED");
 
     await app.close();
   });

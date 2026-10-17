@@ -1,4 +1,5 @@
 import { validateEnv, EnvValidationError } from "./env";
+import type { ValidatedEnv } from "./env";
 import {
   checkStartupHealth,
   checkLiveDependencies,
@@ -7,8 +8,9 @@ import { buildIndexerHttpServer } from "./httpServer";
 import type { DependencyProbe } from "./startupHealth";
 
 async function main(): Promise<void> {
+  let validated: ValidatedEnv;
   try {
-    validateEnv(process.env);
+    validated = validateEnv(process.env);
   } catch (err) {
     if (err instanceof EnvValidationError) {
       // Fail-closed: log only variable names and stable error codes, never values.
@@ -22,17 +24,17 @@ async function main(): Promise<void> {
   }
 
   // Boot proceeds only with a fully validated, fail-closed configuration.
-  await start();
+  await start(validated);
 }
 
-async function start(): Promise<void> {
+async function start(validated: ValidatedEnv): Promise<void> {
   const env = process.env;
 
   // Feature flag: the indexer's HTTP server is opt-in so the default
   // off-chain event-ingestion role stays HTTP-free.  When disabled the
   // process runs headless (polling only) and the kill-switch is a
   // single env var flip — no code change, no redeploy.
-  const httpEnabled = env.INDEXER_HTTP_ENABLED === "true";
+  const httpEnabled = validated.INDEXER_HTTP_ENABLED;
   if (!httpEnabled) {
     console.log("[boot] INDEXER_HTTP_ENABLED not set; skipping HTTP server");
     return;
@@ -60,7 +62,7 @@ async function start(): Promise<void> {
   // Optional live dependency probes (DB, Horizon/RPC) — only run in
   // production or when INDEXER_HTTP_FORCE_LIVE_CHECK=true so that
   // local dev and CI are not blocked by a missing DB.
-  const forceLiveCheck = env.INDEXER_HTTP_FORCE_LIVE_CHECK === "true";
+  const forceLiveCheck = validated.INDEXER_HTTP_FORCE_LIVE_CHECK;
   const probes: DependencyProbe[] = [];
 
   if (env.DATABASE_URL) {
@@ -96,7 +98,7 @@ async function start(): Promise<void> {
   // HTTP server starts only after startup health and live dependency
   // checks pass — fail-closed at every gate.
   const app = await buildIndexerHttpServer();
-  const port = env.INDEXER_HTTP_PORT ? parseInt(env.INDEXER_HTTP_PORT, 10) : 3000;
+  const port = validated.INDEXER_HTTP_PORT;
   await app.listen({ port });
   console.log(`[boot] indexer HTTP server listening on port ${port}`);
 }

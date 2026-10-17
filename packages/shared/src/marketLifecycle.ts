@@ -18,6 +18,12 @@ export const MARKET_STATUSES = ["ACTIVE", "RESOLVED", "CANCELLED"] as const;
 export type MarketLifecycleState = (typeof MARKET_STATUSES)[number];
 
 /**
+ * Maximum length (in characters) of a market's `question`.
+ * Shared so the indexer parser and any API-side validation enforce the same cap.
+ */
+export const MARKET_QUESTION_MAX_LENGTH = 500;
+
+/**
  * Allowed successor states for each lifecycle state.
  * A state mapped to an empty list is terminal.
  */
