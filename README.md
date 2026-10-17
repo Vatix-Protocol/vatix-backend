@@ -276,3 +276,8 @@ and probe configuration.
 
 See [`SECURITY.md`](SECURITY.md) for the deny-by-default policy, rate-limit
 governance, and probe safety invariants.
+
+## Handsoff notes
+
+<!-- handsoff-issue-1287 -->
+- #1287: Add unit tests for src/services/lag-detector.ts
