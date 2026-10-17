@@ -3,16 +3,16 @@ import { Hono } from 'hono';
 import { cors } from './cors';
 
 /**
- * Unit tests locking the CORS policy defined in ./cors.ts (issue #1196).
+ * Unit tests locking the CORS policy defined in ./cors.ts (issue #1196, #1289).
  *
  * These tests pin the observable contract of the middleware so that any
  * change to the policy (allowed origin, methods, headers, preflight handling)
  * fails CI rather than silently shipping a weaker policy.
  */
 
-function buildApp() {
+function buildApp(options?: Parameters<typeof cors>[0]) {
   const app = new Hono();
-  app.use('*', cors());
+  app.use('*', cors(options));
   app.get('/health', (c) => c.json({ ok: true }));
   app.post('/tx', (c) => c.json({ ok: true }));
   return app;
@@ -165,5 +165,89 @@ describe('cors middleware', () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
+  });
+
+  describe('allowlist mode', () => {
+    const allowedOrigins = ['https://app.vatix.io', 'https://admin.vatix.io'];
+
+    it('echoes a listed origin on simple requests', async () => {
+      const app = buildApp({ allowedOrigins });
+      const res = await app.request('/health', {
+        headers: { Origin: 'https://app.vatix.io' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Access-Control-Allow-Origin')).toBe(
+        'https://app.vatix.io',
+      );
+      expect(res.headers.get('Access-Control-Allow-Credentials')).toBe('true');
+    });
+
+    it('does not send an allow-origin header for an unlisted origin', async () => {
+      const app = buildApp({ allowedOrigins });
+      const res = await app.request('/health', {
+        headers: { Origin: 'https://evil.example.com' },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Access-Control-Allow-Origin')).toBeNull();
+      expect(res.headers.get('Access-Control-Allow-Credentials')).toBeNull();
+    });
+
+    it('does not send an allow-origin header when Origin is absent', async () => {
+      const app = buildApp({ allowedOrigins });
+      const res = await app.request('/health');
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    });
+
+    it('echoes a listed origin on preflight with 204 and no body', async () => {
+      const app = buildApp({ allowedOrigins });
+      const res = await app.request('/tx', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://admin.vatix.io',
+          'Access-Control-Request-Method': 'POST',
+        },
+      });
+
+      expect(res.status).toBe(204);
+      expect(res.headers.get('Access-Control-Allow-Origin')).toBe(
+        'https://admin.vatix.io',
+      );
+      expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST');
+      expect(await res.text()).toBe('');
+    });
+
+    it('does not echo an unlisted origin on preflight', async () => {
+      const app = buildApp({ allowedOrigins });
+      const res = await app.request('/tx', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://evil.example.com',
+          'Access-Control-Request-Method': 'POST',
+        },
+      });
+
+      expect(res.status).toBe(204);
+      expect(res.headers.get('Access-Control-Allow-Origin')).toBeNull();
+      expect(await res.text()).toBe('');
+    });
+
+    it('does not invoke downstream handlers for preflight requests', async () => {
+      const app = new Hono();
+      const handler = vi.fn((c) => c.json({ ok: true }));
+      app.use('*', cors({ allowedOrigins }));
+      app.post('/tx', handler);
+
+      const res = await app.request('/tx', {
+        method: 'OPTIONS',
+        headers: { Origin: 'https://app.vatix.io' },
+      });
+
+      expect(res.status).toBe(204);
+      expect(handler).not.toHaveBeenCalled();
+    });
   });
 });

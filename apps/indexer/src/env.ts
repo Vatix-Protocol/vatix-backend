@@ -60,6 +60,7 @@ export interface StartupHealthMetrics {
 }
 
 const REDIS_URL_ENV = "REDIS_URL";
+const CORS_ALLOWED_ORIGINS_ENV = "INDEXER_CORS_ALLOWED_ORIGINS";
 
 /**
  * Resolve the Redis URL from the environment without ever logging its value.
@@ -74,6 +75,53 @@ export function resolveRedisUrl(
   }
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
+ * Parse and validate the optional INDEXER_CORS_ALLOWED_ORIGINS allowlist.
+ *
+ * The variable is a comma-separated list of origins (e.g.
+ * "https://app.example.com,https://admin.example.com"). When unset or blank
+ * the result is an empty list, which callers interpret as "wildcard mode" so
+ * existing behaviour is preserved. Each entry must be a valid absolute origin
+ * (scheme + host, optional port, no path/query/fragment); invalid entries
+ * throw so misconfiguration fails fast at startup.
+ */
+export function resolveCorsAllowedOrigins(
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  const raw = env[CORS_ALLOWED_ORIGINS_ENV];
+  if (typeof raw !== "string") {
+    return [];
+  }
+  const entries = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  const origins: string[] = [];
+  for (const entry of entries) {
+    let parsed: URL;
+    try {
+      parsed = new URL(entry);
+    } catch {
+      throw new Error(
+        `Invalid ${CORS_ALLOWED_ORIGINS_ENV} entry: ${JSON.stringify(entry)} is not a valid origin`,
+      );
+    }
+    if (
+      parsed.origin === "null" ||
+      parsed.pathname !== "/" ||
+      parsed.search !== "" ||
+      parsed.hash !== ""
+    ) {
+      throw new Error(
+        `Invalid ${CORS_ALLOWED_ORIGINS_ENV} entry: ${JSON.stringify(entry)} must be an origin (scheme://host[:port])`,
+      );
+    }
+    origins.push(parsed.origin);
+  }
+  return origins;
 }
 
 /**

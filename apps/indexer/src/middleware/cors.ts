@@ -111,12 +111,54 @@ function rejectBodyTooLarge(c: Context, maxBytes: number, actualBytes: number) {
 }
 
 /**
+ * Parse a comma-separated allowlist of origins into a normalized set.
+ * Empty entries are ignored; origins are compared case-insensitively.
+ */
+export function parseAllowedOrigins(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+}
+
+/**
+ * Resolve the configured CORS allowlist from the environment.
+ * Returns an empty list when unset, preserving the wildcard default.
+ */
+export function resolveAllowedOrigins(
+  raw: string | undefined = typeof process !== 'undefined'
+    ? process.env?.INDEXER_CORS_ALLOWED_ORIGINS
+    : undefined,
+): string[] {
+  return parseAllowedOrigins(raw);
+}
+
+/**
  * CORS middleware. Kept intact; body-limit helpers above are additive so
  * existing consumers of this module are unaffected.
+ *
+ * When no allowlist is configured the policy is a public wildcard. When an
+ * allowlist is provided, only listed origins are echoed back; unlisted origins
+ * receive no allow-origin header. Credentials are only advertised when an
+ * explicit origin is echoed.
  */
-export function cors() {
+export function cors(options: { allowedOrigins?: string[] } = {}) {
+  const allowedOrigins = options.allowedOrigins ?? resolveAllowedOrigins();
+  const allowlist = new Set(allowedOrigins.map((origin) => origin.toLowerCase()));
+  const echoMode = allowlist.size > 0;
+
   return async (c: Context, next: Next) => {
-    c.header('Access-Control-Allow-Origin', '*');
+    const requestOrigin = c.req.header('origin');
+
+    if (!echoMode) {
+      c.header('Access-Control-Allow-Origin', '*');
+    } else if (requestOrigin && allowlist.has(requestOrigin.toLowerCase())) {
+      c.header('Access-Control-Allow-Origin', requestOrigin);
+      c.header('Access-Control-Allow-Credentials', 'true');
+      c.header('Vary', 'Origin');
+    }
+
     c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Correlation-Id, X-Request-Id');
 
