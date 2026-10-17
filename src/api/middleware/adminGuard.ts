@@ -1,88 +1,83 @@
-import type { FastifyRequest, FastifyReply } from "fastify";
-import { unauthorized, forbidden } from "./responses.js";
-import { getPrismaClient } from "../../services/prisma.js";
-import { AdminIdentityService } from "../../services/admin-identity.js";
-import { config } from "../../config.js";
-import { createLogger } from "../../../apps/indexer/src/logger.js";
+import type { FastifyReply, FastifyRequest } from "fastify";
+import { unauthorized, forbidden, serviceUnavailable, internalError } from "./responses.js";
+import type { AdminIdentityService } from "../../services/admin-identity.js";
 
-const Roles = { ADMIN: "admin" } as const;
-const logger = createLogger(process.env.LOG_LEVEL as any);
-
-export async function requireAdmin(
-  request: FastifyRequest,
-  reply: FastifyReply
-): Promise<void> {
-  const authHeader = request.headers.authorization;
-
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    unauthorized(reply);
-    return;
-  }
-
-  const credential = authHeader.slice(7);
-  const requestId =
-    (request.headers["x-request-id"] as string) || "unknown";
-
-  try {
-    const prisma = getPrismaClient();
-    const identityService = new AdminIdentityService(prisma);
-
-    // In production, the identity store must be configured and reachable.
-    // Fail fast rather than silently allowing access.
-    const hasIdentities = await prisma.adminIdentity.findFirst({
-      where: { active: true },
-    });
-
-    if (
-      config.nodeEnv === "production" &&
-      !hasIdentities
-    ) {
-      logger.error(
-        { requestId },
-        "Admin identity store not configured in production"
-      );
-      forbidden(reply, `Role '${Roles.ADMIN}' required`);
-      return;
-    }
-
-    // Try identity-based auth first. Extract identity name from credential format:
-    // Format: "identity_name:credential" (e.g., "alice:secret123")
-    const [identityName, ...credentialParts] = credential.split(":");
-    const credentialValue = credentialParts.join(":");
-
-    if (!identityName || !credentialValue) {
-      logger.info(
-        { requestId },
-        "Admin auth attempt with invalid credential format"
-      );
-      forbidden(reply, `Role '${Roles.ADMIN}' required`);
-      return;
-    }
-
-    // validateCredential uses bcrypt.compare which performs timing-safe comparison
-    const isValid = await identityService.validateCredential(
-      identityName,
-      credentialValue
-    );
-
-    if (!isValid) {
-      logger.warn(
-        { requestId, identityName },
-        "Admin auth attempt failed: invalid or revoked identity"
-      );
-      forbidden(reply, `Role '${Roles.ADMIN}' required`);
-      return;
-    }
-
-    logger.info({ requestId, identityName }, "Admin auth successful");
-    (request as any).adminIdentity = identityName;
-  } catch (error) {
-    logger.error(
-      { requestId, error: String(error) },
-      "Admin auth error"
-    );
-    forbidden(reply, `Role '${Roles.ADMIN}' required`);
-    return;
-  }
+export interface AdminGuardDeps {
+  identityService: AdminIdentityService;
+  isProduction: boolean;
 }
 
+/**
+ * Fastify preHandler that enforces admin authentication and authorization
+ * for all /v1/admin/* routes.
+ *
+ * Status code semantics:
+ * - 401: missing/non-Bearer Authorization header, malformed credential
+ *   format, or failed credential validation (caller is not authenticated).
+ * - 403: caller is authenticated but is not permitted (no active
+ *   AdminIdentity rows in production).
+ * - 503: the identity store is unavailable (fail-closed, not a client error).
+ * - 500: unexpected error while evaluating the guard.
+ */
+export function requireAdmin(deps: AdminGuardDeps) {
+  return async function adminGuard(
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<void> {
+    const authHeader = request.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      unauthorized(reply);
+      return;
+    }
+
+    const token = authHeader.slice("Bearer ".length);
+    const separatorIndex = token.indexOf(":");
+
+    if (separatorIndex === -1) {
+      unauthorized(reply);
+      return;
+    }
+
+    const identityName = token.slice(0, separatorIndex);
+    const credentialValue = token.slice(separatorIndex + 1);
+
+    if (!identityName || !credentialValue) {
+      unauthorized(reply);
+      return;
+    }
+
+    try {
+      const isValid = await deps.identityService.validateCredential(
+        identityName,
+        credentialValue
+      );
+
+      if (!isValid) {
+        unauthorized(reply);
+        return;
+      }
+
+      if (deps.isProduction) {
+        const activeAdmins = await deps.identityService.listActiveAdmins();
+        if (activeAdmins.length === 0) {
+          // Fail closed: a production deployment with no active AdminIdentity
+          // rows is a misconfiguration, not a client error.
+          serviceUnavailable(
+            reply,
+            "Admin access is not configured for this deployment"
+          );
+          return;
+        }
+      }
+
+      // Authenticated and permitted.
+    } catch (error) {
+      request.log.error(
+        { err: error, requestId: request.id },
+        "adminGuard: identity check failed"
+      );
+      internalError(reply);
+    }
+  };
+}

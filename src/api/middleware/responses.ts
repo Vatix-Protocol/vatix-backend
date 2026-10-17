@@ -85,3 +85,14 @@ export function serviceUnavailable(
   reply.status(503).send(body);
 }
 
+export function internalError(
+  reply: FastifyReply,
+  message = "Internal server error"
+): void {
+  const body: ApiErrorResponse = {
+    error: message,
+    code: "INTERNAL_ERROR",
+    statusCode: 500,
+  };
+  reply.status(500).send(body);
+}
