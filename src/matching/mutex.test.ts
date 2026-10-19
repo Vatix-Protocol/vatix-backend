@@ -1,240 +1,256 @@
-import { describe, it, expect, vi } from "vitest";
-import { Mutex } from "./mutex.js";
+import { describe, it, expect } from 'vitest';
+import { Mutex } from './mutex.js';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Returns a promise and a function to resolve it externally. */
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
+/**
+ * Create a promise with externally accessible resolve/reject handles.
+ * Used to control exactly when a queued callback is allowed to proceed.
+ */
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
-/** Flushes the microtask queue so promise continuations can run. */
-const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+/**
+ * Yield to the microtask queue so pending promise continuations can run.
+ */
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-describe("Mutex", () => {
-  it("runs a single callback and returns its value", async () => {
+describe('Mutex', () => {
+  it('returns the value from a single callback', async () => {
     const mutex = new Mutex();
     const result = await mutex.run(async () => 42);
     expect(result).toBe(42);
   });
 
-  it("serialises concurrent calls — second waits for first to finish", async () => {
+  it('serialises two callers', async () => {
     const mutex = new Mutex();
-    const log: string[] = [];
+    const order: string[] = [];
 
-    const { promise: blocker, resolve: unblock } = deferred();
-
-    // First call: holds the mutex until `unblock()` is called.
     const first = mutex.run(async () => {
-      log.push("first:start");
-      await blocker;
-      log.push("first:end");
+      order.push('first-start');
+      await tick();
+      order.push('first-end');
     });
 
-    // Second call: queues behind the first.
     const second = mutex.run(async () => {
-      log.push("second:start");
+      order.push('second-start');
+      await tick();
+      order.push('second-end');
     });
 
-    // Let microtasks settle — first should have started, second is waiting.
-    await tick();
-    expect(log).toEqual(["first:start"]);
-
-    // Release the first caller.
-    unblock();
     await Promise.all([first, second]);
-
-    expect(log).toEqual(["first:start", "first:end", "second:start"]);
+    expect(order).toEqual(['first-start', 'first-end', 'second-start', 'second-end']);
   });
 
-  it("releases the mutex even when the callback throws", async () => {
+  it('serialises three callers', async () => {
     const mutex = new Mutex();
-    const log: string[] = [];
+    const order: string[] = [];
+
+    const calls = [1, 2, 3].map((n) =>
+      mutex.run(async () => {
+        order.push(`start-${n}`);
+        await tick();
+        order.push(`end-${n}`);
+      }),
+    );
+
+    await Promise.all(calls);
+    expect(order).toEqual(['start-1', 'end-1', 'start-2', 'end-2', 'start-3', 'end-3']);
+  });
+
+  it('releases the mutex when a callback throws', async () => {
+    const mutex = new Mutex();
 
     await expect(
       mutex.run(async () => {
-        log.push("threw");
-        throw new Error("boom");
-      })
-    ).rejects.toThrow("boom");
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
 
-    // Mutex must be free: the next call should run immediately.
-    await mutex.run(async () => {
-      log.push("after-throw");
-    });
-
-    expect(log).toEqual(["threw", "after-throw"]);
+    const result = await mutex.run(async () => 'recovered');
+    expect(result).toBe('recovered');
   });
 
-  it("queues three callers in order", async () => {
+  it('keeps two mutexes independent', async () => {
+    const a = new Mutex();
+    const b = new Mutex();
+    const order: string[] = [];
+
+    const blocker = deferred();
+    const first = a.run(async () => {
+      order.push('a-start');
+      await blocker.promise;
+      order.push('a-end');
+    });
+
+    const second = b.run(async () => {
+      order.push('b-start');
+      order.push('b-end');
+    });
+
+    await second;
+    expect(order).toEqual(['a-start', 'b-start', 'b-end']);
+
+    blocker.resolve();
+    await first;
+    expect(order).toEqual(['a-start', 'b-start', 'b-end', 'a-end']);
+  });
+
+  it('propagates return values through a queue', async () => {
     const mutex = new Mutex();
-    const order: number[] = [];
 
-    const blockers = [deferred(), deferred(), deferred()];
+    const first = mutex.run(async () => 'one');
+    const second = mutex.run(async () => 'two');
+    const third = mutex.run(async () => 'three');
 
-    const runners = blockers.map((b, i) =>
+    const results = await Promise.all([first, second, third]);
+    expect(results).toEqual(['one', 'two', 'three']);
+  });
+
+  it('handles a throwing first call followed by a successful second call', async () => {
+    const mutex = new Mutex();
+
+    await expect(
       mutex.run(async () => {
-        await b.promise;
-        order.push(i);
-      })
-    );
+        throw new Error('first-fails');
+      }),
+    ).rejects.toThrow('first-fails');
 
-    // Unblock each in sequence and verify ordering.
-    blockers[0].resolve();
-    await tick();
-    blockers[1].resolve();
-    await tick();
-    blockers[2].resolve();
-    await Promise.all(runners);
-
-    expect(order).toEqual([0, 1, 2]);
+    const result = await mutex.run(async () => 'second-ok');
+    expect(result).toBe('second-ok');
   });
 
-  it("two independent mutexes do not block each other", async () => {
-    const mutexA = new Mutex();
-    const mutexB = new Mutex();
-    const log: string[] = [];
-
-    const { promise: blockerA, resolve: unblockA } = deferred();
-
-    const a = mutexA.run(async () => {
-      await blockerA;
-      log.push("A");
-    });
-
-    // mutexB is independent — it should run without waiting for A.
-    const b = mutexB.run(async () => {
-      log.push("B");
-    });
-
-    await tick();
-    expect(log).toContain("B"); // B ran while A was blocked
-    expect(log).not.toContain("A");
-
-    unblockA();
-    await Promise.all([a, b]);
-    expect(log).toContain("A");
-  });
-
-  it("propagates the callback return value through a queue", async () => {
+  it('runs queued callers in order when the first holder rejects', async () => {
     const mutex = new Mutex();
-    const { promise: blocker, resolve: unblock } = deferred();
+    const order: string[] = [];
 
-    // First call holds the lock.
-    const first = mutex.run(async () => {
-      await blocker;
-      return "from-first";
-    });
-
-    // Second call is queued.
-    const second = mutex.run(async () => "from-second");
-
-    unblock();
-    const [r1, r2] = await Promise.all([first, second]);
-    expect(r1).toBe("from-first");
-    expect(r2).toBe("from-second");
-  });
-
-  it("handles a throwing first call followed by a successful second call", async () => {
-    const mutex = new Mutex();
+    const firstBlocker = deferred();
+    const secondBlocker = deferred();
+    const thirdBlocker = deferred();
 
     const first = mutex.run(async () => {
-      throw new Error("first failed");
+      order.push('first-start');
+      await firstBlocker.promise;
+      order.push('first-end');
+      return 'first';
     });
 
-    const second = mutex.run(async () => "ok");
-
-    await expect(first).rejects.toThrow("first failed");
-    await expect(second).resolves.toBe("ok");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Per-book mutex registry — mirrors the pattern used in MatchingService
-// ---------------------------------------------------------------------------
-
-/** Minimal replica of the Map<key, Mutex> registry in MatchingService. */
-class BookMutexRegistry {
-  private mutexes: Map<string, Mutex> = new Map();
-
-  getOrCreate(key: string): Mutex {
-    let mutex = this.mutexes.get(key);
-    if (!mutex) {
-      mutex = new Mutex();
-      this.mutexes.set(key, mutex);
-    }
-    return mutex;
-  }
-}
-
-describe("per-book mutex registry (pattern used by MatchingService)", () => {
-  it("creates independent mutexes for different book keys", () => {
-    const registry = new BookMutexRegistry();
-
-    const mutexA = registry.getOrCreate("market-A:YES");
-    const mutexB = registry.getOrCreate("market-B:YES");
-
-    expect(mutexA).toBeInstanceOf(Mutex);
-    expect(mutexB).toBeInstanceOf(Mutex);
-    expect(mutexA).not.toBe(mutexB);
-  });
-
-  it("returns the same mutex instance for the same book key", () => {
-    const registry = new BookMutexRegistry();
-
-    const key = "market-X:NO";
-    expect(registry.getOrCreate(key)).toBe(registry.getOrCreate(key));
-  });
-
-  it("YES and NO books for the same market get separate mutexes", () => {
-    const registry = new BookMutexRegistry();
-
-    const yes = registry.getOrCreate("market-X:YES");
-    const no = registry.getOrCreate("market-X:NO");
-
-    expect(yes).not.toBe(no);
-  });
-
-  it("concurrent operations on the same key are serialised, different keys run in parallel", async () => {
-    const registry = new BookMutexRegistry();
-    const log: string[] = [];
-
-    const { promise: blocker, resolve: unblock } = deferred();
-
-    // Two operations on the SAME key — second must wait for first.
-    const sameA = registry.getOrCreate("market-X:YES").run(async () => {
-      await blocker;
-      log.push("sameA");
-    });
-    const sameB = registry.getOrCreate("market-X:YES").run(async () => {
-      log.push("sameB");
+    const second = mutex.run(async () => {
+      order.push('second-start');
+      await secondBlocker.promise;
+      order.push('second-end');
+      return 'second';
     });
 
-    // One operation on a DIFFERENT key — should not be blocked.
-    const other = registry.getOrCreate("market-Y:YES").run(async () => {
-      log.push("other");
+    const third = mutex.run(async () => {
+      order.push('third-start');
+      await thirdBlocker.promise;
+      order.push('third-end');
+      return 'third';
+    });
+
+    // All three calls are queued before any blocker is settled.
+    await tick();
+    expect(order).toEqual(['first-start']);
+
+    // Reject the first holder; the queued callers must still run.
+    firstBlocker.reject(new Error('first-rejects'));
+    await tick();
+
+    secondBlocker.resolve();
+    await tick();
+
+    thirdBlocker.resolve();
+
+    const results = await Promise.allSettled([first, second, third]);
+
+    expect(order).toEqual([
+      'first-start',
+      'first-end',
+      'second-start',
+      'second-end',
+      'third-start',
+      'third-end',
+    ]);
+
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(rejected).toHaveLength(1);
+    expect(results[0]).toMatchObject({ status: 'rejected' });
+    expect(results[1]).toEqual({ status: 'fulfilled', value: 'second' });
+    expect(results[2]).toEqual({ status: 'fulfilled', value: 'third' });
+
+    // The mutex is free afterwards.
+    const after = await mutex.run(async () => 'after');
+    expect(after).toBe('after');
+  });
+
+  it('does not strand the tail when a mid-queue holder rejects', async () => {
+    const mutex = new Mutex();
+    const order: string[] = [];
+
+    const firstBlocker = deferred();
+    const secondBlocker = deferred();
+    const thirdBlocker = deferred();
+
+    const first = mutex.run(async () => {
+      order.push('first-start');
+      await firstBlocker.promise;
+      order.push('first-end');
+      return 'first';
+    });
+
+    const second = mutex.run(async () => {
+      order.push('second-start');
+      await secondBlocker.promise;
+      order.push('second-end');
+      return 'second';
+    });
+
+    const third = mutex.run(async () => {
+      order.push('third-start');
+      await thirdBlocker.promise;
+      order.push('third-end');
+      return 'third';
     });
 
     await tick();
+    expect(order).toEqual(['first-start']);
 
-    // `other` must be done; `sameB` must still be waiting.
-    expect(log).toContain("other");
-    expect(log).not.toContain("sameA");
-    expect(log).not.toContain("sameB");
+    // Let the first holder finish successfully.
+    firstBlocker.resolve();
+    await tick();
+    expect(order).toEqual(['first-start', 'first-end', 'second-start']);
 
-    unblock();
-    await Promise.all([sameA, sameB, other]);
+    // Reject the middle holder; the tail must still run.
+    secondBlocker.reject(new Error('second-rejects'));
+    await tick();
 
-    expect(log).toEqual(["other", "sameA", "sameB"]);
+    thirdBlocker.resolve();
+
+    const results = await Promise.allSettled([first, second, third]);
+
+    expect(order).toEqual([
+      'first-start',
+      'first-end',
+      'second-start',
+      'second-end',
+      'third-start',
+      'third-end',
+    ]);
+
+    expect(results[0]).toEqual({ status: 'fulfilled', value: 'first' });
+    expect(results[1]).toMatchObject({ status: 'rejected' });
+    expect(results[2]).toEqual({ status: 'fulfilled', value: 'third' });
+
+    // The mutex accepts a new callback immediately after the mid-queue rejection.
+    const after = await mutex.run(async () => 'after');
+    expect(after).toBe('after');
   });
 });
