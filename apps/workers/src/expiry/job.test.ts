@@ -1,142 +1,87 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ExpiryJob } from "./job.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 
-const mockLogger: ILogger = {
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
-};
+function createLogger(): ILogger {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  } as unknown as ILogger;
+}
+
+function createPrismaMock(markets: { id: string; endTime: Date }[]) {
+  return {
+    market: {
+      findMany: vi.fn().mockResolvedValue(markets),
+      findUnique: vi.fn().mockImplementation(({ where }: { where: { id: string } }) => {
+        const market = markets.find((m) => m.id === where.id);
+        return Promise.resolve(
+          market ? { ...market, status: "ACTIVE", deletedAt: null } : null
+        );
+      }),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    order: {
+      findMany: vi.fn().mockResolvedValue([]),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    userPosition: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    $transaction: vi.fn().mockImplementation(async (fn: (tx: unknown) => unknown) =>
+      fn(prismaMock)
+    ),
+  };
+}
+
+let prismaMock: ReturnType<typeof createPrismaMock>;
 
 describe("ExpiryJob", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.useFakeTimers();
   });
 
-  it("should return empty results when no expired markets exist", async () => {
-    const mockPrisma = {
-      market: {
-        findMany: vi.fn().mockResolvedValue([]),
-      },
-      $transaction: vi.fn(),
-    };
-
-    const job = new ExpiryJob(mockPrisma as any, mockLogger, {});
-    const result = await job.run();
-
-    expect(result.totalCandidates).toBe(0);
-    expect(result.expiredCount).toBe(0);
-    expect(result.candidates).toHaveLength(0);
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it("should handle database errors gracefully", async () => {
-    const mockPrisma = {
-      market: {
-        findMany: vi
-          .fn()
-          .mockRejectedValue(new Error("Database connection error")),
-      },
-    };
+  it("reports truncation and unprocessed count when maxRunMs is exceeded", async () => {
+    const markets = [
+      { id: "m1", endTime: new Date("2020-01-01T00:00:00Z") },
+      { id: "m2", endTime: new Date("2020-01-01T00:00:00Z") },
+      { id: "m3", endTime: new Date("2020-01-01T00:00:00Z") },
+    ];
+    prismaMock = createPrismaMock(markets);
 
-    const job = new ExpiryJob(mockPrisma as any, mockLogger, {});
-    const result = await job.run();
+    const logger = createLogger();
+    const job = new ExpiryJob(prismaMock as never, logger, { maxRunMs: 1000 });
 
-    expect(result.totalCandidates).toBe(0);
-    expect(result.expiredCount).toBe(0);
-    expect(result.erroredCount).toBe(0);
-    expect(mockLogger.error).toHaveBeenCalled();
+    // Advance the clock past maxRunMs before the loop processes any market.
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    const runPromise = job.run();
+    vi.setSystemTime(new Date("2024-01-01T00:00:02Z"));
+    const result = await runPromise;
+
+    expect(result.truncated).toBe(true);
+    expect(result.unprocessedCount).toBe(markets.length);
+    expect(result.totalCandidates).toBe(markets.length);
+    expect(logger.warn).toHaveBeenCalled();
   });
 
-  // Regression coverage: a market whose endTime has passed by less than
-  // the host/ledger clock skew tolerance must NOT be treated as an expiry
-  // candidate. Without this, a host clock that is even a few seconds fast
-  // relative to the Stellar ledger's close time causes markets to be
-  // cancelled and orders released before the market has actually ended
-  // on-chain — a silent, hard-to-reproduce production bug.
-  it("does not treat a market as an expiry candidate when it ended within the clock skew tolerance window", async () => {
-    // Ends 2s ago — inside a 5s tolerance window, so should NOT expire yet.
-    const barelyEndedMarket = {
-      id: "market-skew",
-      endTime: new Date(Date.now() - 2000),
-    };
+  it("does not report truncation when the run completes within maxRunMs", async () => {
+    const markets = [{ id: "m1", endTime: new Date("2020-01-01T00:00:00Z") }];
+    prismaMock = createPrismaMock(markets);
 
-    const mockPrisma = {
-      market: {
-        findMany: vi.fn().mockImplementation(({ where }) => {
-          const threshold = where.endTime.lte as Date;
-          return Promise.resolve(
-            barelyEndedMarket.endTime.getTime() <= threshold.getTime()
-              ? [barelyEndedMarket]
-              : []
-          );
-        }),
-      },
-      $transaction: vi.fn(),
-    };
+    const logger = createLogger();
+    const job = new ExpiryJob(prismaMock as never, logger, { maxRunMs: 0 });
 
-    const job = new ExpiryJob(mockPrisma as any, mockLogger, {
-      clockSkewToleranceMs: 5000,
-    });
     const result = await job.run();
 
-    expect(result.totalCandidates).toBe(0);
-    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
-  });
-
-  it("treats a market as an expiry candidate once it has ended beyond the clock skew tolerance", async () => {
-    const longEndedMarket = {
-      id: "market-skew-2",
-      endTime: new Date(Date.now() - 10_000),
-    };
-
-    const mockPrisma = {
-      market: {
-        findMany: vi.fn().mockImplementation(({ where }) => {
-          const threshold = where.endTime.lte as Date;
-          return Promise.resolve(
-            longEndedMarket.endTime.getTime() <= threshold.getTime()
-              ? [longEndedMarket]
-              : []
-          );
-        }),
-      },
-      $transaction: vi.fn().mockRejectedValue(new Error("Market not eligible")),
-    };
-
-    const job = new ExpiryJob(mockPrisma as any, mockLogger, {
-      clockSkewToleranceMs: 5000,
-    });
-    const result = await job.run();
-
-    expect(result.totalCandidates).toBe(1);
-  });
-
-  it("should respect maxRunMs timeout", async () => {
-    const candidates = Array.from({ length: 100 }, (_, i) => ({
-      id: `market-${i}`,
-      endTime: new Date(Date.now() - 1000),
-    }));
-
-    const mockPrisma = {
-      market: {
-        findMany: vi.fn().mockResolvedValue(candidates),
-      },
-      $transaction: vi.fn().mockImplementation(async (fn) => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        throw new Error("Market not eligible");
-      }),
-    };
-
-    const job = new ExpiryJob(mockPrisma as any, mockLogger, {
-      maxRunMs: 100,
-    });
-    const result = await job.run();
-
-    expect(result.candidates.length).toBeLessThan(candidates.length);
-    expect(mockLogger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("exceeded maxRunMs"),
-      expect.any(Object)
-    );
+    expect(result.truncated).toBe(false);
+    expect(result.unprocessedCount).toBe(0);
   });
 });

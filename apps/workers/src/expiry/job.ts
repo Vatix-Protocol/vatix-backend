@@ -84,6 +84,8 @@ export class ExpiryJob {
         expiredCount: 0,
         skippedCount: 0,
         erroredCount: 0,
+        truncated: false,
+        unprocessedCount: 0,
         candidates: [],
         startedAt: startedAt.toISOString(),
         completedAt: completedAt.toISOString(),
@@ -96,16 +98,20 @@ export class ExpiryJob {
     });
 
     const results: ExpiryCandidateResult[] = [];
+    let truncated = false;
+    let unprocessedCount = 0;
 
     for (const market of candidates) {
       if (
         this.maxRunMs > 0 &&
         Date.now() - startedAt.getTime() >= this.maxRunMs
       ) {
+        truncated = true;
+        unprocessedCount = candidates.length - results.length;
         this.logger.warn("Expiry job exceeded maxRunMs, stopping early", {
           maxRunMs: this.maxRunMs,
           processedSoFar: results.length,
-          remainingCandidates: candidates.length - results.length,
+          remainingCandidates: unprocessedCount,
         });
         break;
       }
@@ -152,6 +158,8 @@ export class ExpiryJob {
       expiredCount,
       erroredCount,
       skippedCount,
+      truncated,
+      unprocessedCount,
       durationMs: completedAt.getTime() - startedAt.getTime(),
     });
 
@@ -160,6 +168,8 @@ export class ExpiryJob {
       expiredCount,
       erroredCount,
       skippedCount,
+      truncated,
+      unprocessedCount,
       candidates: results,
       startedAt: startedAt.toISOString(),
       completedAt: completedAt.toISOString(),
