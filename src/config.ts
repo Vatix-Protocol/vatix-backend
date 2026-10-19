@@ -77,6 +77,8 @@ export const config = {
    * When false, startup order-book hydration is skipped and placeOrder()
    * rejects with 503 Service Unavailable. Order cancellation is unaffected.
    * Configured via MATCHING_ENGINE_ENABLED (accepts "true" | "false", default: true).
+   * Parsed by the shared `parseBooleanEnv` helper (#1322) so the lazy read in
+   * `isMatchingEngineEnabled()` and this validated value agree.
    */
   matchingEngineEnabled: env.MATCHING_ENGINE_ENABLED,
   /**
