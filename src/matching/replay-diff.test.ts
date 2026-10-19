@@ -208,4 +208,41 @@ describe("buildDivergenceReport", () => {
       actualQuantity: 40,
     });
   });
+
+  it("echoes cancel ambiguities without flagging a divergence", () => {
+    const { events, ledgerOrders, ledgerTrades } = baseCorpus();
+    const replay = replayEvents(marketId, outcome, events);
+
+    const cancelAmbiguities = ["maker-1", "taker-1"];
+
+    const report = buildDivergenceReport({
+      marketId,
+      outcome,
+      asOf: new Date(),
+      ledgerOrders,
+      ledgerTrades,
+      replay,
+      cancelAmbiguities,
+    });
+
+    // Cancel ambiguities are informational only; they must not flip the flag.
+    expect(report.hasDivergence).toBe(false);
+    expect(report.cancelAmbiguities).toEqual(cancelAmbiguities);
+  });
+
+  it("defaults cancel ambiguities to an empty array when omitted", () => {
+    const { events, ledgerOrders, ledgerTrades } = baseCorpus();
+    const replay = replayEvents(marketId, outcome, events);
+
+    const report = buildDivergenceReport({
+      marketId,
+      outcome,
+      asOf: new Date(),
+      ledgerOrders,
+      ledgerTrades,
+      replay,
+    });
+
+    expect(report.cancelAmbiguities).toEqual([]);
+  });
 });

@@ -20,6 +20,12 @@ export interface LagConfig {
   lowWaterMark: number;
 }
 
+// Prisma error codes indicating the outbox table/model does not exist yet.
+const MISSING_TABLE_CODES = new Set(["P2021", "P2022"]);
+
+// Sentinel used when the outbox read fails for a non-missing-table reason.
+const OUTBOX_UNAVAILABLE_SENTINEL = -1;
+
 export class LagDetector {
   private shedState: boolean = false;
   private readonly config: LagConfig;
@@ -56,7 +62,10 @@ export class LagDetector {
 
   /**
    * Read outbox unpublished count (pending transactional outbox entries)
-   * Returns count of records not yet published to downstream systems
+   * Returns count of records not yet published to downstream systems.
+   *
+   * Only a missing-table error (Prisma P2021/P2022) degrades to 0. Any other
+   * error is logged at warn level and rethrown so callers can fail closed.
    */
   async getOutboxUnpublishedCount(): Promise<number> {
     try {
@@ -72,9 +81,18 @@ export class LagDetector {
 
       return Math.max(0, count);
     } catch (error) {
-      // Outbox table may not exist yet; gracefully degrade to 0
-      console.debug("Outbox table not available or query failed:", error);
-      return 0;
+      const code = (error as { code?: string }).code;
+
+      if (code && MISSING_TABLE_CODES.has(code)) {
+        // Outbox table may not exist yet; gracefully degrade to 0
+        console.debug("Outbox table not available, degrading to 0", { code });
+        return 0;
+      }
+
+      // Genuine failure (transient outage, permissions, etc.) must not be
+      // masked as zero lag. Log the code only, never the connection string.
+      console.warn("Failed to read outbox unpublished count", { code });
+      throw error;
     }
   }
 
@@ -119,13 +137,26 @@ export class LagDetector {
    * Get current lag metrics
    */
   async getMetrics(): Promise<LagMetrics> {
-    const [settlementDepth, outboxCount] = await Promise.all([
+    const [settlementDepth, outboxResult] = await Promise.all([
       this.getSettlementQueueDepth(),
-      this.getOutboxUnpublishedCount(),
+      this.getOutboxUnpublishedCount().then(
+        (count) => ({ ok: true as const, count }),
+        () => ({ ok: false as const })
+      ),
     ]);
 
+    const outboxUnavailable = !outboxResult.ok;
+    const outboxCount = outboxResult.ok
+      ? outboxResult.count
+      : OUTBOX_UNAVAILABLE_SENTINEL;
+
     const totalLag = this.computeTotalLag(settlementDepth, outboxCount);
-    const shedding = this.updateShedState(totalLag);
+
+    // Fail closed: if the outbox is unavailable, force shedding regardless of
+    // the computed total lag.
+    const shedding = outboxUnavailable
+      ? this.forceShed()
+      : this.updateShedState(totalLag);
 
     const metrics: LagMetrics = {
       settlementQueueDepth: settlementDepth,
@@ -137,6 +168,19 @@ export class LagDetector {
 
     this.lastMetrics = metrics;
     return metrics;
+  }
+
+  /**
+   * Force shedding on (fail closed) when the outbox is unavailable.
+   */
+  private forceShed(): boolean {
+    if (!this.shedState) {
+      this.shedState = true;
+      console.warn(
+        "Outbox unavailable, forcing shedding state (fail closed)"
+      );
+    }
+    return this.shedState;
   }
 
   /**

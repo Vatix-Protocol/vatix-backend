@@ -209,9 +209,13 @@ export class LeaderLease {
         },
         "Failed to acquire/renew matching leader lease"
       );
-      // Redis being unreachable does not by itself demote us — the local
-      // deadline check at the top of doTick() is what enforces fail-closed
-      // behavior once the TTL we last renewed for actually elapses.
+      // A failed renewal (Redis error) while we still believe we hold the
+      // lease must fail closed: clear the token so isLeader() flips to false
+      // and in-memory books are invalidated via onLost. A failed initial
+      // acquisition (token already 0) is a no-op for handleLoss.
+      if (this.token > 0) {
+        this.handleLoss("lease renewal failed: redis error");
+      }
     }
   }
 
@@ -228,8 +232,16 @@ export class LeaderLease {
         reason,
       })
     );
-    void this.callbacks.onLost?.(reason);
+    try {
+      void this.callbacks.onLost?.(reason);
+    } catch (error) {
+      console.error(
+        {
+          service: "matching-leader-lease",
+          err: error instanceof Error ? error.message : String(error),
+        },
+        "onLost callback threw"
+      );
+    }
   }
 }
-
-export const leaderLease = new LeaderLease();

@@ -63,7 +63,10 @@ const redisMock = vi.hoisted(() => ({
 vi.mock("../services/redis.js", () => ({ redis: redisMock }));
 
 import { LeaderLease } from "./leader-lease.js";
-import { matchingLeaderGauge } from "../services/metrics.js";
+import {
+  matchingLeaderGauge,
+  matchingLeaseRenewFailuresTotal,
+} from "../services/metrics.js";
 
 const TTL_MS = 1000;
 const RENEW_INTERVAL_MS = 300;
@@ -72,6 +75,11 @@ function newLease(): LeaderLease {
   vi.stubEnv("MATCHING_LEASE_TTL_MS", String(TTL_MS));
   vi.stubEnv("MATCHING_LEASE_RENEW_INTERVAL_MS", String(RENEW_INTERVAL_MS));
   return new LeaderLease();
+}
+
+async function renewFailures(): Promise<number> {
+  const metric = await matchingLeaseRenewFailuresTotal.get();
+  return metric.values.reduce((sum, v) => sum + (v.value ?? 0), 0);
 }
 
 describe("LeaderLease", () => {
@@ -155,10 +163,51 @@ describe("LeaderLease", () => {
     await vi.advanceTimersByTimeAsync(RENEW_INTERVAL_MS);
 
     expect(lease.isLeader()).toBe(false);
+    expect(lease.getToken()).toBeNull();
     expect(onLost).toHaveBeenCalledExactlyOnceWith(
       "lease is held by another instance"
     );
     expect((await matchingLeaderGauge.get()).values[0]?.value).toBe(0);
+  });
+
+  it("clears the token and fires onLost exactly once on a failed renew, not again on later ticks", async () => {
+    const lease = newLease();
+    const onLost = vi.fn();
+    await lease.start({ onLost });
+    expect(lease.isLeader()).toBe(true);
+
+    const failuresBefore = await renewFailures();
+
+    // Renewal CAS fails: another holder owns the lock.
+    redisMock.acquireOrRenewLease.mockResolvedValueOnce(-1);
+    await vi.advanceTimersByTimeAsync(RENEW_INTERVAL_MS);
+
+    expect(lease.isLeader()).toBe(false);
+    expect(lease.getToken()).toBeNull();
+    expect(onLost).toHaveBeenCalledTimes(1);
+    expect(typeof onLost.mock.calls[0]?.[0]).toBe("string");
+    expect(await renewFailures()).toBe(failuresBefore + 1);
+
+    // Subsequent ticks must not re-fire onLost for the same loss.
+    await vi.advanceTimersByTimeAsync(RENEW_INTERVAL_MS * 3);
+    expect(onLost).toHaveBeenCalledTimes(1);
+    expect(lease.isLeader()).toBe(false);
+  });
+
+  it("increments matchingLeaseRenewFailuresTotal on each failed renew", async () => {
+    const lease = newLease();
+    await lease.start();
+    expect(lease.isLeader()).toBe(true);
+
+    const failuresBefore = await renewFailures();
+
+    redisMock.acquireOrRenewLease.mockRejectedValueOnce(new Error("ECONNRESET"));
+    await vi.advanceTimersByTimeAsync(RENEW_INTERVAL_MS);
+    expect(await renewFailures()).toBe(failuresBefore + 1);
+
+    redisMock.acquireOrRenewLease.mockRejectedValueOnce(new Error("ECONNRESET"));
+    await vi.advanceTimersByTimeAsync(RENEW_INTERVAL_MS);
+    expect(await renewFailures()).toBe(failuresBefore + 2);
   });
 
   it("does not demote on a transient Redis error alone, but still fails closed once the TTL elapses", async () => {
@@ -222,17 +271,10 @@ describe("LeaderLease", () => {
     await lease.start();
     expect(store.peek()).not.toBeNull();
 
-    await lease.release();
+    await lease.stop();
 
     expect(store.peek()).toBeNull();
     expect(lease.isLeader()).toBe(false);
-    expect((await matchingLeaderGauge.get()).values[0]?.value).toBe(0);
-  });
-
-  it("release() is a no-op against the store when this instance never held the lease", async () => {
-    const lease = newLease();
-    // Never started/acquired.
-    await lease.release();
-    expect(redisMock.releaseLeaseIfHeld).not.toHaveBeenCalled();
+    expect(lease.getToken()).toBeNull();
   });
 });

@@ -134,8 +134,15 @@ export function buildDivergenceReport(params: {
   redisSnapshot?: DepthSnapshot | null;
   cancelAmbiguities?: string[];
 }): ReplayDivergenceReport {
-  const { marketId, outcome, asOf, ledgerOrders, ledgerTrades, replay } =
-    params;
+  const {
+    marketId,
+    outcome,
+    asOf,
+    ledgerOrders,
+    ledgerTrades,
+    replay,
+    cancelAmbiguities,
+  } = params;
 
   const orderMismatches: OrderMismatch[] = [];
   const missingOrderIds: string[] = [];
@@ -231,7 +238,7 @@ export function buildDivergenceReport(params: {
     missingTrades,
     extraTrades,
     depthDeltas,
-    cancelAmbiguities: params.cancelAmbiguities ?? [],
+    cancelAmbiguities: cancelAmbiguities ?? [],
     hasDivergence,
   };
 }

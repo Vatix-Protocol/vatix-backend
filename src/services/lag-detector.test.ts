@@ -68,14 +68,33 @@ describe("LagDetector", () => {
       expect(count).toBe(50);
     });
 
-    it("should return 0 if table does not exist", async () => {
-      mockPrisma.outboxEvent.count.mockRejectedValue(
-        new Error("Table not found")
-      );
+    it("should return 0 if table does not exist (P2021)", async () => {
+      const err = Object.assign(new Error("Table not found"), { code: "P2021" });
+      mockPrisma.outboxEvent.count.mockRejectedValue(err);
 
       const count = await detector.getOutboxUnpublishedCount();
 
       expect(count).toBe(0);
+    });
+
+    it("should return 0 if column does not exist (P2022)", async () => {
+      const err = Object.assign(new Error("Column not found"), { code: "P2022" });
+      mockPrisma.outboxEvent.count.mockRejectedValue(err);
+
+      const count = await detector.getOutboxUnpublishedCount();
+
+      expect(count).toBe(0);
+    });
+
+    it("should rethrow non-missing-table errors", async () => {
+      const err = Object.assign(new Error("connection refused"), {
+        code: "P1001",
+      });
+      mockPrisma.outboxEvent.count.mockRejectedValue(err);
+
+      await expect(detector.getOutboxUnpublishedCount()).rejects.toThrow(
+        "connection refused"
+      );
     });
   });
 
@@ -125,6 +144,29 @@ describe("LagDetector", () => {
       expect(metrics.settlementQueueDepth).toBe(500);
       expect(metrics.outboxUnpublishedCount).toBe(200);
       expect(metrics.totalLag).toBe(600); // 500 + 100
+    });
+
+    it("should force shedding when outbox read fails with a generic error", async () => {
+      vi.mocked(redis.zcard).mockResolvedValue(0);
+      mockPrisma.outboxEvent.count.mockRejectedValue(
+        Object.assign(new Error("connection refused"), { code: "P1001" })
+      );
+
+      const metrics = await detector.getMetrics();
+
+      expect(metrics.shedding).toBe(true);
+    });
+
+    it("should not shed when outbox table is missing (P2021)", async () => {
+      vi.mocked(redis.zcard).mockResolvedValue(0);
+      mockPrisma.outboxEvent.count.mockRejectedValue(
+        Object.assign(new Error("Table not found"), { code: "P2021" })
+      );
+
+      const metrics = await detector.getMetrics();
+
+      expect(metrics.outboxUnpublishedCount).toBe(0);
+      expect(metrics.shedding).toBe(false);
     });
   });
 

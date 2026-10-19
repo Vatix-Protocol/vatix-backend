@@ -281,3 +281,6 @@ governance, and probe safety invariants.
 
 <!-- handsoff-issue-1287 -->
 - #1287: Add unit tests for src/services/lag-detector.ts
+
+<!-- handsoff-issue-1326 -->
+- #1326: matchOrder: assert maker-price precedence and self-trade handling in the engine suite

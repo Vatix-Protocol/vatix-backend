@@ -67,6 +67,10 @@ export interface ReplayResult {
  * `matching-service.ts#placeOrder`'s in-memory sequence (minus the DB/Redis
  * side effects). Each `cancel` event removes the order from the book with
  * no trade side effects, mirroring `matching-service.ts#cancelOrder`.
+ *
+ * A `cancel` for an id that was never created (or was already fully filled)
+ * is a corrupted event log: it throws an `Error` naming the offending order
+ * id rather than being silently swallowed.
  */
 export function replayEvents(
   marketId: string,
@@ -124,7 +128,14 @@ export function replayEvents(
         book.addOrder(bookOrder);
       }
     } else {
+      const state = orders.get(event.id);
+      if (!state) {
+        throw new Error(
+          `replayEvents: cancel references unknown order id "${event.id}"`
+        );
+      }
       book.removeOrder(event.id);
+      state.remaining = 0;
     }
   }
 

@@ -157,10 +157,15 @@ describe("FillsResumeService", () => {
       expect(result.reason).toBe("cursor_trimmed");
     });
 
-    it("fails closed when the oldest bounds read rejects", async () => {
-      vi.mocked(redis.xrange).mockImplementation(async (_key, start, end) => {
-        if (start === "-" && end === "+") {
-          throw new Error("redis unavailable");
+      const result = await fillsResumeService.detectGap("1234567890-0");
+
+      expect(result.hasGap).toBe(true);
+      expect(result.reason).toBe("cursor_unknown");
+      expect(result.suggestedCursor).toBeUndefined();
+    });
+
+    it("fails closed when the latest bounds read rejects", async () => {
+      vi.mocked(redis.xrange).mockResolvedVal
         }
         return [];
       });
@@ -186,6 +191,65 @@ describe("FillsResumeService", () => {
       expect(result.hasGap).toBe(true);
       expect(result.reason).toBe("cursor_unknown");
       expect(result.suggestedCursor).toBeUndefined();
+    });
+
+    it("should report beyond_max_window when cursor is outside the replay window even if Postgres has rows", async () => {
+      const oldCursor = `${Date.now() - 60 * 60 * 1000}-0`; // 1 hour old
+
+      // Cursor absent from Redis
+      vi.mocked(redis.xrange).mockImplementation(async (_key, start, end) => {
+        if (start === "-" && end === "+") {
+          return [["1234567900-0", ["data"]]];
+        }
+        return [];
+      });
+      vi.mocked(redis.xrevrange).mockResolvedValue([
+        ["1234567999-0", ["data"]],
+      ]);
+
+      // Postgres has rows after the cursor
+      mockPrisma.trade.findFirst.mockResolvedValue({
+        tradedAt: new Date("2026-07-29T12:01:00Z"),
+      });
+
+      const result = await fillsResumeService.detectGap(oldCursor);
+
+      expect(result.hasGap).toBe(true);
+      expect(result.reason).toBe("beyond_max_window");
+      expect(result.suggestedCursor).toBe("1234567900-0");
+    });
+
+    it("should keep backfill behaviour for cursors within the replay window", async () => {
+      const recentCursor = `${Date.now() - 60 * 1000}-0`; // 1 minute old
+
+      // Cursor absent from Redis
+      vi.mocked(redis.xrange).mockResolvedValue([]);
+
+      // Postgres has rows after the cursor
+      mockPrisma.trade.findFirst.mockResolvedValue({
+        tradedAt: new Date("2026-07-29T12:01:00Z"),
+      });
+
+      const result = await fillsResumeService.detectGap(recentCursor);
+
+      expect(result.hasGap).toBe(false);
+    });
+
+    it("should report beyond_max_window with null suggestedCursor when no Redis or Postgres data", async () => {
+      const oldCursor = `${Date.now() - 60 * 60 * 1000}-0`; // 1 hour old
+
+      // Redis has no data at all
+      vi.mocked(redis.xrange).mockResolvedValue([]);
+      vi.mocked(redis.xrevrange).mockResolvedValue([]);
+
+      // Postgres has no rows either
+      mockPrisma.trade.findFirst.mockResolvedValue(null);
+
+      const result = await fillsResumeService.detectGap(oldCursor);
+
+      expect(result.hasGap).toBe(true);
+      expect(result.reason).toBe("beyond_max_window");
+      expect(result.suggestedCursor).toBeNull();
     });
   });
 
