@@ -1,12 +1,11 @@
-import { Logger } from "@vatix/shared/logger.js";
+import { createWorkerLogger } from "../shared/logger.js";
 import { loadReconciliationConfig } from "./config.js";
 import { ReconciliationJob } from "./job.js";
-
-const logger = new Logger("reconciliation-worker");
 
 async function main() {
   try {
     const config = loadReconciliationConfig();
+    const logger = createWorkerLogger("reconciliation-worker", config.logLevel);
 
     if (config.dryRun && process.env.NODE_ENV === "production") {
       logger.warn(
@@ -74,7 +73,9 @@ async function main() {
     // Run immediately
     await poll();
   } catch (error) {
-    logger.error("Reconciliation worker startup failed", { error });
+    // Fall back to a default-level logger if config failed to load
+    const fallback = createWorkerLogger("reconciliation-worker", undefined);
+    fallback.error("Reconciliation worker startup failed", { error });
     process.exit(1);
   }
 }
