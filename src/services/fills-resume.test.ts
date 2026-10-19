@@ -156,6 +156,37 @@ describe("FillsResumeService", () => {
       expect(result.hasGap).toBe(true);
       expect(result.reason).toBe("cursor_trimmed");
     });
+
+    it("fails closed when the oldest bounds read rejects", async () => {
+      vi.mocked(redis.xrange).mockImplementation(async (_key, start, end) => {
+        if (start === "-" && end === "+") {
+          throw new Error("redis unavailable");
+        }
+        return [];
+      });
+      vi.mocked(redis.xrevrange).mockResolvedValue([
+        ["1234567999-0", ["data"]],
+      ]);
+
+      const result = await fillsResumeService.detectGap("1234567890-0");
+
+      expect(result.hasGap).toBe(true);
+      expect(result.reason).toBe("cursor_unknown");
+      expect(result.suggestedCursor).toBeUndefined();
+    });
+
+    it("fails closed when the latest bounds read rejects", async () => {
+      vi.mocked(redis.xrange).mockResolvedValue([]);
+      vi.mocked(redis.xrevrange).mockRejectedValue(
+        new Error("redis unavailable")
+      );
+
+      const result = await fillsResumeService.detectGap("1234567890-0");
+
+      expect(result.hasGap).toBe(true);
+      expect(result.reason).toBe("cursor_unknown");
+      expect(result.suggestedCursor).toBeUndefined();
+    });
   });
 
   describe("getTradesAfterCursor", () => {

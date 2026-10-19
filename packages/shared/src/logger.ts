@@ -123,3 +123,5 @@ export const log = (
     })
   );
 };
+
+export const logger = new Logger("fills-resume");

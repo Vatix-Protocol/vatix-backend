@@ -1,5 +1,6 @@
 import { redis } from "./redis.js";
 import { getPrismaClient } from "./prisma.js";
+import { logger } from "../../../packages/shared/src/logger.js";
 
 /**
  * Fills SSE resume cursor: opaque string representing a point in the trade stream
@@ -41,6 +42,7 @@ export class FillsResumeService {
 
   /**
    * Get the earliest available cursor in the audit stream (oldest non-trimmed entry)
+   * Throws if Redis is unreachable so callers can fail closed.
    */
   async getOldestAvailableCursor(): Promise<FillsResumeCursor | null> {
     try {
@@ -53,13 +55,17 @@ export class FillsResumeService {
       );
       return entries.length > 0 ? (entries[0][0] as FillsResumeCursor) : null;
     } catch (error) {
-      console.error("Failed to get oldest available cursor:", error);
-      return null;
+      logger.error(
+        { code: (error as { code?: string })?.code },
+        "Failed to get oldest available cursor"
+      );
+      throw error;
     }
   }
 
   /**
    * Get the latest cursor in the audit stream (newest entry)
+   * Throws if Redis is unreachable so callers can fail closed.
    */
   async getLatestAvailableCursor(): Promise<FillsResumeCursor | null> {
     try {
@@ -72,8 +78,11 @@ export class FillsResumeService {
       );
       return entries.length > 0 ? (entries[0][0] as FillsResumeCursor) : null;
     } catch (error) {
-      console.error("Failed to get latest available cursor:", error);
-      return null;
+      logger.error(
+        { code: (error as { code?: string })?.code },
+        "Failed to get latest available cursor"
+      );
+      throw error;
     }
   }
 
@@ -115,7 +124,14 @@ export class FillsResumeService {
         }
 
         // Neither Redis nor Postgres has data for this cursor
-        const oldest = await this.getOldestAvailableCursor();
+        let oldest: FillsResumeCursor | null;
+        try {
+          oldest = await this.getOldestAvailableCursor();
+        } catch {
+          // Bounds read failed: fail closed rather than report no gap
+          return { hasGap: true, reason: "cursor_unknown" };
+        }
+
         const latestPostgres = await prisma.trade.findFirst({
           select: { tradedAt: true },
           orderBy: { tradedAt: "desc" },
@@ -155,7 +171,10 @@ export class FillsResumeService {
       // Cursor exists in Redis; no gap
       return { hasGap: false };
     } catch (error) {
-      console.error("Failed to detect gap:", error);
+      logger.error(
+        { code: (error as { code?: string })?.code },
+        "Failed to detect gap"
+      );
       // Fail open on errors: prefer reconnecting over 410 storms
       return { hasGap: false };
     }
@@ -277,38 +296,10 @@ export class FillsResumeService {
   }
 
   /**
-   * Extract millisecond timestamp from cursor (Redis stream ID format: ms-seq)
+   * Extract timestamp (ms) from a cursor string
    */
   private extractTimestampMs(cursor: FillsResumeCursor): number {
     const [ms] = cursor.split("-");
-    const timestamp = parseInt(ms, 10);
-    return Number.isNaN(timestamp) ? 0 : timestamp;
-  }
-
-  /**
-   * Parse a resume cursor (which may be ISO timestamp for backwards compatibility)
-   */
-  parseCursor(raw: string | undefined): FillsResumeCursor | null {
-    if (!raw) return null;
-
-    // If it looks like a timestamp (numeric), use as-is
-    if (/^\d+$/.test(raw)) {
-      return raw as FillsResumeCursor;
-    }
-
-    // If it looks like stream ID format (ms-seq), use as-is
-    if (/^\d+-\d+$/.test(raw)) {
-      return raw as FillsResumeCursor;
-    }
-
-    // Try to parse as ISO date and convert to stream ID format
-    const parsed = new Date(raw);
-    if (!Number.isNaN(parsed.getTime())) {
-      return `${parsed.getTime()}-0` as FillsResumeCursor;
-    }
-
-    return null;
+    return parseInt(ms, 10);
   }
 }
-
-export const fillsResumeService = new FillsResumeService();
