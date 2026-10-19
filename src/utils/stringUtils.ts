@@ -35,18 +35,21 @@ export function toTitleCase(str: string): string {
  * returned string ends with `ellipsis` (default `"…"`), and the visible text
  * is trimmed so the total length never exceeds `maxLen`.
  *
- * If `maxLen` is shorter than or equal to the ellipsis length the function
- * returns just the ellipsis sliced to `maxLen` — it never throws.
+ * `maxLen` is normalised to a non-negative integer via `Math.floor`; a
+ * non-finite `maxLen` (e.g. `NaN`, `Infinity`) is treated as `0`. If the
+ * normalised limit is shorter than or equal to the ellipsis length the
+ * function returns just the ellipsis sliced to the limit — it never throws.
  *
  * @example truncate("Hello, world!", 8)       → "Hello, …"
  * @example truncate("Hello, world!", 8, "...") → "Hello..."
  * @example truncate("Hi", 10)                  → "Hi"
  */
 export function truncate(str: string, maxLen: number, ellipsis = "…"): string {
-  if (maxLen < 1) return "";
-  if (str.length <= maxLen) return str;
-  const cut = maxLen - ellipsis.length;
-  if (cut <= 0) return ellipsis.slice(0, maxLen);
+  const limit = Number.isFinite(maxLen) ? Math.floor(maxLen) : 0;
+  if (limit < 1) return "";
+  if (str.length <= limit) return str;
+  const cut = limit - ellipsis.length;
+  if (cut <= 0) return ellipsis.slice(0, limit);
   return str.slice(0, cut) + ellipsis;
 }
 
