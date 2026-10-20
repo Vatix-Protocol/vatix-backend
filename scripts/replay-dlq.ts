@@ -2,12 +2,12 @@
 /**
  * Replay Dead-Letter Queue Admin CLI
  *
- * Reads entries from Redis dead-letter streams and re-enqueues them to their
- * original queues.  After a successful replay the dead-letter entry is removed.
+ * Reads entries from Redis dead-letter streams and atomically re-enqueues
+ * valid payloads before removing their source entries.
  *
  * Usage:
  *   pnpm tsx scripts/replay-dlq.ts                                # replay all DLQs
- *   pnpm tsx scripts/replay-dlq.ts --queue settlement             # one queue only
+ *   pnpm tsx scripts/replay-dlq.ts --queue settlement             # settlement or oracle only
  *   pnpm tsx scripts/replay-dlq.ts --queue settlement --limit 10  # limit entries
  *   pnpm tsx scripts/replay-dlq.ts --dry-run                      # preview only
  *
@@ -15,6 +15,8 @@
  */
 
 import Redis from "ioredis";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -23,30 +25,67 @@ import Redis from "ioredis";
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 const KEY_PREFIX = process.env.REDIS_KEY_PREFIX ?? "vatix:";
 const DLQ_PREFIX = `${KEY_PREFIX}dead-letter:`;
+const DLQ_QUEUES = ["settlement", "oracle"] as const;
+type DlqQueue = (typeof DLQ_QUEUES)[number];
+
+function isDlqQueue(value: string): value is DlqQueue {
+  return DLQ_QUEUES.some((queue) => queue === value);
+}
+
+const REPLAY_ENTRY_SCRIPT = `
+local existing = redis.call('GET', KEYS[3])
+if existing then
+  redis.call('XDEL', KEYS[1], ARGV[1])
+  redis.call('DEL', KEYS[3])
+  return existing
+end
+local targetId = redis.call('XADD', KEYS[2], '*', unpack(ARGV, 2))
+redis.call('SET', KEYS[3], targetId)
+redis.call('XDEL', KEYS[1], ARGV[1])
+redis.call('DEL', KEYS[3])
+return targetId
+`;
+
+export interface ReplayArgs {
+  queueFilter?: DlqQueue;
+  limit: number;
+  dryRun: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function parseArgs(): {
-  queueFilter?: string;
-  limit: number;
-  dryRun: boolean;
-} {
-  const args = process.argv.slice(2);
-  let queueFilter: string | undefined;
+export function parseArgs(args = process.argv.slice(2)): ReplayArgs {
+  let queueFilter: DlqQueue | undefined;
   let limit = Infinity;
   let dryRun = false;
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--queue" && args[i + 1]) {
-      queueFilter = args[++i];
-    } else if (args[i] === "--limit" && args[i + 1]) {
-      limit = parseInt(args[i + 1], 10);
-      if (!Number.isFinite(limit) || limit < 1) limit = Infinity;
-      i++;
+    if (args[i] === "--queue") {
+      const value = args[++i];
+      if (!value || value.startsWith("--")) {
+        throw new Error("--queue requires a queue name");
+      }
+      if (!isDlqQueue(value)) {
+        throw new Error(
+          `Invalid --queue value "${value}"; expected ${DLQ_QUEUES.join(" or ")}`
+        );
+      }
+      queueFilter = value;
+    } else if (args[i] === "--limit") {
+      const value = args[++i];
+      if (!value || !/^[1-9]\d*$/.test(value)) {
+        throw new Error("--limit requires a positive integer");
+      }
+      limit = Number(value);
+      if (!Number.isSafeInteger(limit)) {
+        throw new Error("--limit must be a safe positive integer");
+      }
     } else if (args[i] === "--dry-run") {
       dryRun = true;
+    } else {
+      throw new Error(`Unknown argument "${args[i]}"`);
     }
   }
 
@@ -75,7 +114,7 @@ function log(
 
 async function discoverDLQStreams(
   redis: Redis,
-  queueFilter?: string
+  queueFilter?: DlqQueue
 ): Promise<string[]> {
   const pattern = queueFilter
     ? `${DLQ_PREFIX}${queueFilter}`
@@ -96,10 +135,16 @@ async function discoverDLQStreams(
     keys.push(...batch);
   } while (cursor !== "0");
 
-  return keys.sort();
+  return keys.filter((key) => isDlqQueue(key.slice(DLQ_PREFIX.length))).sort();
 }
 
-function fieldsToRecord(fields: string[]): Record<string, unknown> {
+export function fieldsToRecord(fields: string[]): Record<string, unknown> {
+  if (fields.length % 2 !== 0) {
+    throw new Error(
+      "Malformed dead-letter entry: fields must be key/value pairs"
+    );
+  }
+
   const record: Record<string, unknown> = {};
   for (let i = 0; i < fields.length; i += 2) {
     const key = fields[i];
@@ -108,7 +153,7 @@ function fieldsToRecord(fields: string[]): Record<string, unknown> {
       try {
         record[key] = JSON.parse(value);
       } catch {
-        record[key] = value;
+        throw new Error("Malformed dead-letter entry: payload is not valid JSON");
       }
     } else {
       record[key] = value;
@@ -117,11 +162,56 @@ function fieldsToRecord(fields: string[]): Record<string, unknown> {
   return record;
 }
 
+export async function replayDLQEntry(
+  redis: Pick<Redis, "eval">,
+  streamKey: string,
+  queueName: DlqQueue,
+  entryId: string,
+  message: Record<string, unknown>
+): Promise<string> {
+  const payload = message.payload;
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload)
+  ) {
+    throw new Error(
+      "Malformed dead-letter entry: payload must be a JSON object"
+    );
+  }
+
+  const xaddFields = Object.entries(payload).flatMap(([key, value]) => [
+    key,
+    String(value),
+  ]);
+  if (xaddFields.length === 0) {
+    throw new Error("Malformed dead-letter entry: payload must not be empty");
+  }
+
+  const targetStream = `${KEY_PREFIX}${queueName}`;
+  const replayKey = `${KEY_PREFIX}dlq-replay:${queueName}:${entryId}`;
+  const targetId = await redis.eval(
+    REPLAY_ENTRY_SCRIPT,
+    3,
+    streamKey,
+    targetStream,
+    replayKey,
+    entryId,
+    ...xaddFields
+  );
+
+  if (typeof targetId !== "string" || targetId.length === 0) {
+    throw new Error("Redis did not confirm the replayed stream entry");
+  }
+
+  return targetId;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const { queueFilter, limit, dryRun } = parseArgs();
 
   log("info", "DLQ replay started", {
@@ -151,7 +241,7 @@ async function main(): Promise<void> {
     });
 
     for (const streamKey of streamKeys) {
-      const queueName = streamKey.replace(DLQ_PREFIX, "");
+      const queueName = streamKey.slice(DLQ_PREFIX.length) as DlqQueue;
 
       if (totalReplayed >= limit) {
         log("info", "Replay limit reached, stopping", { limit });
@@ -174,47 +264,39 @@ async function main(): Promise<void> {
       for (const [entryId, fields] of entries) {
         if (totalReplayed >= limit) break;
 
-        const message = fieldsToRecord(fields);
+        try {
+          const message = fieldsToRecord(fields);
 
-        log("info", "Replaying dead-letter entry", {
-          entryId,
-          queue: queueName,
-          originalMessageId: message.messageId,
-          reason: message.reason,
-        });
-
-        if (dryRun) {
-          log("info", "[DRY-RUN] Would replay entry", {
+          log("info", "Replaying dead-letter entry", {
             entryId,
             queue: queueName,
-            payload: message.payload,
+            originalMessageId: message.messageId,
+            reason: message.reason,
           });
-          totalReplayed++;
-          continue;
-        }
 
-        try {
-          const targetStream = `${KEY_PREFIX}${queueName}`;
-          const rawPayload =
-            typeof message.payload === "object" && message.payload !== null
-              ? message.payload
-              : {};
-
-          const xaddFields: string[] = [];
-          for (const [key, value] of Object.entries(rawPayload)) {
-            xaddFields.push(key, String(value));
+          if (dryRun) {
+            log("info", "[DRY-RUN] Would replay entry", {
+              entryId,
+              queue: queueName,
+              payload: message.payload,
+            });
+            totalReplayed++;
+            continue;
           }
 
-          if (xaddFields.length > 0) {
-            await redis.xadd(targetStream, "*", ...xaddFields);
-          }
-
-          await redis.xdel(streamKey, entryId);
+          const targetId = await replayDLQEntry(
+            redis,
+            streamKey,
+            queueName,
+            entryId,
+            message
+          );
 
           log("info", "Entry replayed and removed from DLQ", {
             entryId,
             queue: queueName,
-            targetStream,
+            targetStream: `${KEY_PREFIX}${queueName}`,
+            targetId,
           });
 
           totalReplayed++;
@@ -234,6 +316,9 @@ async function main(): Promise<void> {
       failed: totalFailed,
       dryRun,
     });
+    if (totalFailed > 0) {
+      process.exitCode = 1;
+    }
   } finally {
     await redis.quit();
   }
@@ -243,9 +328,12 @@ async function main(): Promise<void> {
 // Run
 // ---------------------------------------------------------------------------
 
-void main().catch((error) => {
-  log("error", "DLQ replay script failed", {
-    error: error instanceof Error ? error.message : String(error),
+const entryPoint = process.argv[1];
+if (entryPoint && import.meta.url === pathToFileURL(resolve(entryPoint)).href) {
+  void main().catch((error) => {
+    log("error", "DLQ replay script failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    process.exitCode = 1;
   });
-  process.exit(1);
-});
+}

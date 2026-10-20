@@ -73,7 +73,30 @@ describe("Database Seed", () => {
         expect(market.endTime).toBeInstanceOf(Date);
         expect(market.oracleAddress).toHaveLength(56);
         expect(market.oracleAddress.startsWith("G")).toBe(true);
+        expect(market.oracleAddress).toContain("DONOTUSEPRODUCTION");
+        expect(market.oracleAddress).not.toMatch(/^G[A-Z2-7]{55}$/);
         expect(["ACTIVE", "RESOLVED", "CANCELLED"]).toContain(market.status);
+      }
+    });
+
+    it("uses only non-production placeholder Stellar addresses", async () => {
+      await seed(prisma);
+
+      const [markets, orders, positions] = await Promise.all([
+        prisma.market.findMany(),
+        prisma.order.findMany(),
+        prisma.userPosition.findMany(),
+      ]);
+      const seededAddresses = [
+        ...markets.map((market) => market.oracleAddress),
+        ...orders.map((order) => order.userAddress),
+        ...positions.map((position) => position.userAddress),
+      ];
+
+      expect(seededAddresses.length).toBeGreaterThan(0);
+      for (const address of seededAddresses) {
+        expect(address).toContain("DONOTUSEPRODUCTION");
+        expect(address).not.toMatch(/^G[A-Z2-7]{55}$/);
       }
     });
 

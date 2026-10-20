@@ -125,6 +125,40 @@ describe("PriceFetcher", () => {
       );
     });
 
+    it.each([NaN, Infinity, 0, -1])(
+      "rejects invalid primary price %s and attributes a valid fallback",
+      async (invalidPrice) => {
+        const fetcher = new PriceFetcher(mockLogger, {
+          assetId: "BTC",
+          timeoutMs: 1000,
+          primaryProvider: {
+            name: "coingecko",
+            fetchFn: async () => invalidPrice,
+          },
+          fallbackProvider: { name: "pyth", fetchFn: async () => 41_500 },
+        });
+
+        const result = await fetcher.fetchPrice();
+
+        expect(result.price).toBe(41_500);
+        expect(result.source).toBe("fallback");
+        expect(result.sourceMetadata.provider).toBe("pyth");
+      }
+    );
+
+    it("fails closed when all providers return non-finite or non-positive prices", async () => {
+      const fetcher = new PriceFetcher(mockLogger, {
+        assetId: "BTC",
+        timeoutMs: 1000,
+        primaryProvider: { name: "coingecko", fetchFn: async () => Infinity },
+        fallbackProvider: { name: "pyth", fetchFn: async () => 0 },
+      });
+
+      await expect(fetcher.fetchPrice()).rejects.toBeInstanceOf(
+        AllPriceProvidersFailedError
+      );
+    });
+
     it("requires an explicit primaryProvider in production instead of using the local stub", () => {
       vi.stubEnv("NODE_ENV", "production");
 
