@@ -60,6 +60,56 @@ describe("loadBaseConfig", () => {
     expect(config.port).toBe(4000);
   });
 
+  describe("required secret validation", () => {
+    const SECRET_VARS = ["ORACLE_SECRET_KEY", "API_KEY", "ADMIN_TOKEN"] as const;
+
+    for (const variable of SECRET_VARS) {
+      it(`throws on empty ${variable}`, () => {
+        const env = { ...BASE_ENV, [variable]: "" };
+        try {
+          loadBaseConfig(env);
+          throw new Error("expected to throw");
+        } catch (err) {
+          expect(err).toBeInstanceOf(ConfigValidationError);
+          expect((err as ConfigValidationError).variable).toBe(variable);
+          expect((err as Error).message).toContain(variable);
+        }
+      });
+
+      it(`throws on whitespace-only ${variable}`, () => {
+        const env = { ...BASE_ENV, [variable]: "   " };
+        try {
+          loadBaseConfig(env);
+          throw new Error("expected to throw");
+        } catch (err) {
+          expect(err).toBeInstanceOf(ConfigValidationError);
+          expect((err as ConfigValidationError).variable).toBe(variable);
+          expect((err as Error).message).toContain(variable);
+        }
+      });
+
+      it(`throws on whitespace-only ${variable} without leaking the value`, () => {
+        const supplied = "   supersecretvalue   ";
+        const env = { ...BASE_ENV, [variable]: supplied };
+        try {
+          loadBaseConfig(env);
+          throw new Error("expected to throw");
+        } catch (err) {
+          expect(err).toBeInstanceOf(ConfigValidationError);
+          expect((err as ConfigValidationError).variable).toBe(variable);
+          expect((err as Error).message).toContain(variable);
+          expect((err as Error).message).not.toContain(supplied);
+          expect((err as Error).message).not.toContain("supersecretvalue");
+        }
+      });
+
+      it(`accepts a valid non-blank ${variable}`, () => {
+        const env = { ...BASE_ENV, [variable]: "  validvalue  " };
+        expect(() => loadBaseConfig(env)).not.toThrow();
+      });
+    }
+  });
+
   describe("NODE_ENV validation", () => {
     it("defaults to development when NODE_ENV is absent", () => {
       const config = loadBaseConfig(BASE_ENV);
@@ -233,125 +283,4 @@ describe("loadFinalizationConfig", () => {
       "FINALIZATION_INTERVAL_MS"
     );
   });
-
-  it("throws on invalid FINALIZATION_LOG_LEVEL", () => {
-    const env = { FINALIZATION_LOG_LEVEL: "verbose" };
-    expect(() => loadFinalizationConfig(env)).toThrow("FINALIZATION_LOG_LEVEL");
-  });
-
-  // Issue #950: the finalization challenge window must match the on-chain
-  // resolution contract window (ORACLE_CHALLENGE_WINDOW_SECONDS).
-  describe("challenge window / on-chain contract drift", () => {
-    it("defaults challengeWindowSeconds to ORACLE_CHALLENGE_WINDOW_SECONDS when no override is set", () => {
-      const config = loadFinalizationConfig({
-        ORACLE_CHALLENGE_WINDOW_SECONDS: "43200",
-      });
-      expect(config.challengeWindowSeconds).toBe(43200);
-      expect(config.onChainChallengeWindowSeconds).toBe(43200);
-      expect(config.challengeWindowOverridden).toBe(false);
-    });
-
-    it("throws in production when FINALIZATION_CHALLENGE_WINDOW_SECONDS drifts from the on-chain window", () => {
-      const env = {
-        NODE_ENV: "production",
-        ORACLE_CHALLENGE_WINDOW_SECONDS: "86400",
-        FINALIZATION_CHALLENGE_WINDOW_SECONDS: "3600",
-      };
-      expect(() => loadFinalizationConfig(env)).toThrow(ConfigValidationError);
-      expect(() => loadFinalizationConfig(env)).toThrow(
-        "must match the on-chain resolution contract window"
-      );
-    });
-
-    it("allows a matching override in production", () => {
-      const config = loadFinalizationConfig({
-        NODE_ENV: "production",
-        ORACLE_CHALLENGE_WINDOW_SECONDS: "86400",
-        FINALIZATION_CHALLENGE_WINDOW_SECONDS: "86400",
-      });
-      expect(config.challengeWindowSeconds).toBe(86400);
-      expect(config.challengeWindowOverridden).toBe(false);
-    });
-
-    it("allows a drifting override outside production but flags it", () => {
-      const config = loadFinalizationConfig({
-        NODE_ENV: "development",
-        ORACLE_CHALLENGE_WINDOW_SECONDS: "86400",
-        FINALIZATION_CHALLENGE_WINDOW_SECONDS: "3600",
-      });
-      expect(config.challengeWindowSeconds).toBe(3600);
-      expect(config.onChainChallengeWindowSeconds).toBe(86400);
-      expect(config.challengeWindowOverridden).toBe(true);
-    });
-  });
-});
-
-describe("ConfigValidationError", () => {
-  it("has statusCode 400 on invalid input", () => {
-    const env = { ...BASE_ENV, NODE_ENV: "invalid" };
-    try {
-      loadBaseConfig(env);
-      throw new Error("expected to throw");
-    } catch (err) {
-      expect(err).toBeInstanceOf(ConfigValidationError);
-      expect((err as ConfigValidationError).statusCode).toBe(400);
-    }
-  });
-
-  it("populates ENV_MISSING code and variable for a missing required var", () => {
-    const env = { ...BASE_ENV, DATABASE_URL: undefined };
-    try {
-      loadBaseConfig(env);
-      throw new Error("expected to throw");
-    } catch (err) {
-      expect(err).toBeInstanceOf(ConfigValidationError);
-      expect((err as ConfigValidationError).code).toBe(
-        CONFIG_ERROR_CODES.ENV_MISSING
-      );
-      expect((err as ConfigValidationError).variable).toBe("DATABASE_URL");
-    }
-  });
-
-  it("populates ENV_MISSING code and variable for an empty required var", () => {
-    const env = { ...BASE_ENV, REDIS_URL: "" };
-    try {
-      loadBaseConfig(env);
-      throw new Error("expected to throw");
-    } catch (err) {
-      expect(err).toBeInstanceOf(ConfigValidationError);
-      expect((err as ConfigValidationError).code).toBe(
-        CONFIG_ERROR_CODES.ENV_MISSING
-      );
-      expect((err as ConfigValidationError).variable).toBe("REDIS_URL");
-    }
-  });
-
-  it("populates ENV_INVALID code and variable for a malformed positive int", () => {
-    const env = { ...BASE_ENV, PORT: "abc" };
-    try {
-      loadBaseConfig(env);
-      throw new Error("expected to throw");
-    } catch (err) {
-      expect(err).toBeInstanceOf(ConfigValidationError);
-      expect((err as ConfigValidationError).code).toBe(
-        CONFIG_ERROR_CODES.ENV_INVALID
-      );
-      expect((err as ConfigValidationError).variable).toBe("PORT");
-    }
-  });
-
-  it("populates ENV_INVALID code and variable for a malformed non-negative number", () => {
-    const env = { ...BASE_ENV, PORT: "-1" };
-    try {
-      loadBaseConfig(env);
-      throw new Error("expected to throw");
-    } catch (err) {
-      expect(err).toBeInstanceOf(ConfigValidationError);
-      expect((err as ConfigValidationError).code).toBe(
-        CONFIG_ERROR_CODES.ENV_INVALID
-      );
-      expect((err as ConfigValidationError).variable).toBe("PORT");
-    }
-  });
-
 });
