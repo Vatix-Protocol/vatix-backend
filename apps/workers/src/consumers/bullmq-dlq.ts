@@ -1,134 +1,154 @@
-/**
- * BullMQ dead-letter (failed-job) operator tooling — issue #953.
- *
- * The settlement (`settlement-trades`) and oracle (`oracle-submissions`)
- * queues run with `removeOnFail: false` (queue-config.ts), so a job that
- * exhausts its retries stays in BullMQ's `failed` set forever. That set *is*
- * the DLQ, but until now the only way to see or move those jobs was
- * `redis-cli` against BullMQ's internal keys. This module gives operators a
- * safe, typed path: list, retry (one or many), and discard.
- *
- * `scripts/replay-dlq.ts` handles the *other*, older DLQ — the raw
- * `vatix:dead-letter:*` Redis streams written by `logDeadLetter()` for
- * non-retryable poison messages. The two are independent.
- */
 import { Queue, type Job } from "bullmq";
-import {
-  redisConnectionFromEnv,
-  settlementQueueName,
-  submissionQueueName,
-} from "../../../../packages/shared/src/queue-config.js";
+import { createRedisConnection } from "../redis.js";
 
-export type DlqQueue = "settlement" | "oracle";
+/**
+ * Typed, safe access to the BullMQ dead-letter queues.
+ *
+ * Operators previously had to poke at BullMQ's internal Redis keys with
+ * `redis-cli` to inspect or replay failed jobs. This module is the supported
+ * path: it resolves the concrete queue names, exposes a small typed surface
+ * (`list`, `stats`, `retry`, `discard`, `retryAll`) and never leaks raw Redis
+ * keys to callers.
+ */
 
-export const DLQ_QUEUES: readonly DlqQueue[] = [
-  "settlement",
-  "oracle",
-] as const;
+/** Default number of entries returned by `list()` when no limit is given. */
+export const DEFAULT_LIMIT = 100;
 
-export function isDlqQueue(value: string): value is DlqQueue {
-  return (DLQ_QUEUES as readonly string[]).includes(value);
+/**
+ * Hard upper bound on a single `list()` page. A caller asking for more is
+ * clamped to this value so one call can never issue an unbounded
+ * `getFailed` range request against Redis.
+ */
+export const MAX_LIMIT = 1000;
+
+const DLQ_QUEUES = ["settlement", "oracle"] as const;
+export type DlqQueueAlias = (typeof DLQ_QUEUES)[number];
+
+/** Minimal shape of a BullMQ job that the DLQ surface relies on. */
+export interface DlqJobLike {
+  id?: string | null;
+  name?: string;
+  data?: unknown;
+  attemptsMade?: number;
+  failedReason?: string;
+  timestamp?: number;
+  getState(): Promise<string>;
+  retry(state?: string): Promise<unknown>;
+  remove(): Promise<unknown>;
 }
 
-/** Resolve the operator-facing queue alias to its real BullMQ queue name. */
-export function resolveDlqQueueName(queue: DlqQueue): string {
-  switch (queue) {
-    case "settlement":
-      return settlementQueueName();
-    case "oracle":
-      return submissionQueueName();
-  }
-}
-
-export class DlqJobNotFoundError extends Error {
-  constructor(jobId: string) {
-    super(`No job ${jobId} in this queue`);
-    this.name = "DlqJobNotFoundError";
-  }
-}
-
-export class DlqJobNotFailedError extends Error {
-  constructor(jobId: string, state: string) {
-    super(
-      `Job ${jobId} is "${state}", not "failed" — refusing to act on a job that is not dead-lettered`
-    );
-    this.name = "DlqJobNotFailedError";
-  }
+/**
+ * The subset of `Queue` used by `BullmqDlq`. Kept as a seam so tests can pass
+ * lightweight doubles instead of a live Redis connection.
+ */
+export interface DlqQueueLike {
+  getFailedCount(): Promise<number>;
+  getFailed(start?: number, end?: number): Promise<DlqJobLike[]>;
+  getJob(id: string): Promise<DlqJobLike | null | undefined>;
+  close(): Promise<void>;
 }
 
 export interface DlqEntry {
   jobId: string;
   name: string;
+  data: unknown;
   attemptsMade: number;
   failedReason: string;
-  /** ms epoch the job was created. */
   timestamp: number;
-  data: unknown;
 }
 
-export interface DlqRetryResult {
+export interface DlqListOptions {
+  /** Maximum entries to return. Clamped to `MAX_LIMIT`. Defaults to `DEFAULT_LIMIT`. */
+  limit?: number;
+  /** Zero-based offset into the failed set, for paging past the first page. */
+  offset?: number;
+}
+
+export interface DlqRetryAllOptions {
+  limit?: number;
+  dryRun?: boolean;
+}
+
+export interface DlqRetryAllResult {
   scanned: number;
   retried: string[];
   failed: Array<{ jobId: string; error: string }>;
   dryRun: boolean;
 }
 
-/** Minimal slice of a BullMQ Job the DLQ helper touches (keeps tests light). */
-export interface DlqJobLike {
-  id?: string | null;
-  name: string;
-  data: unknown;
-  attemptsMade: number;
-  failedReason?: string;
-  timestamp: number;
-  getState(): Promise<string>;
-  retry(state?: "failed" | "completed"): Promise<void>;
-  remove(): Promise<unknown>;
+export class DlqJobNotFoundError extends Error {
+  constructor(jobId: string) {
+    super(`DLQ job not found: ${jobId}`);
+    this.name = "DlqJobNotFoundError";
+  }
 }
 
-/** Minimal slice of a BullMQ Queue the DLQ helper touches. */
-export interface DlqQueueLike {
-  getFailedCount(): Promise<number>;
-  getFailed(start?: number, end?: number): Promise<DlqJobLike[]>;
-  getJob(jobId: string): Promise<DlqJobLike | undefined | null>;
-  close(): Promise<void>;
+export class DlqJobNotFailedError extends Error {
+  constructor(jobId: string) {
+    super(`DLQ job is not in the failed state: ${jobId}`);
+    this.name = "DlqJobNotFailedError";
+  }
+}
+
+export function isDlqQueue(name: string): name is DlqQueueAlias {
+  return (DLQ_QUEUES as readonly string[]).includes(name);
+}
+
+export function resolveDlqQueueName(alias: DlqQueueAlias): string {
+  if (alias === "settlement") {
+    const prefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
+    const queue = process.env.SETTLEMENT_QUEUE_NAME ?? "settlement-trades";
+    return `${prefix}${queue}`;
+  }
+  return process.env.SUBMISSION_QUEUE_NAME ?? "oracle-submissions";
 }
 
 function toEntry(job: DlqJobLike): DlqEntry {
   return {
-    jobId: String(job.id ?? job.name),
-    name: job.name,
-    attemptsMade: job.attemptsMade,
-    failedReason: job.failedReason ?? "",
-    timestamp: job.timestamp,
+    jobId: String(job.id),
+    name: job.name ?? "",
     data: job.data,
+    attemptsMade: job.attemptsMade ?? 0,
+    failedReason: job.failedReason ?? "",
+    timestamp: job.timestamp ?? 0,
   };
 }
 
-function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+function clampLimit(limit: number | undefined): number {
+  const requested = limit ?? DEFAULT_LIMIT;
+  if (!Number.isFinite(requested) || requested <= 0) return DEFAULT_LIMIT;
+  return Math.min(Math.floor(requested), MAX_LIMIT);
 }
 
-const DEFAULT_LIMIT = 100;
+function normaliseOffset(offset: number | undefined): number {
+  if (offset === undefined || !Number.isFinite(offset) || offset <= 0) return 0;
+  return Math.floor(offset);
+}
 
 export class BullmqDlq {
   constructor(private readonly queue: DlqQueueLike) {}
 
-  /** Open a live DLQ handle for one of the known queues. Caller must close(). */
-  static forQueue(queue: DlqQueue): BullmqDlq {
-    const q = new Queue(resolveDlqQueueName(queue), {
-      connection: redisConnectionFromEnv(),
-    }) as unknown as DlqQueueLike;
-    return new BullmqDlq(q);
+  static connect(alias: DlqQueueAlias): BullmqDlq {
+    const queue = new Queue(resolveDlqQueueName(alias), {
+      connection: createRedisConnection(),
+    });
+    return new BullmqDlq(queue as unknown as DlqQueueLike);
   }
 
   async stats(): Promise<{ failed: number }> {
     return { failed: await this.queue.getFailedCount() };
   }
 
-  async list(opts: { limit?: number } = {}): Promise<DlqEntry[]> {
-    const limit = Math.max(1, opts.limit ?? DEFAULT_LIMIT);
-    const jobs = await this.queue.getFailed(0, limit - 1);
+  /**
+   * List failed jobs, newest-first as BullMQ orders them, starting at `offset`.
+   * `limit` is clamped to `MAX_LIMIT` so a single call cannot request an
+   * unbounded range.
+   */
+  async list(opts: DlqListOptions = {}): Promise<DlqEntry[]> {
+    const limit = clampLimit(opts.limit);
+    const start = normaliseOffset(opts.offset);
+    const end = start + limit - 1;
+    const jobs = await this.queue.getFailed(start, end);
     return jobs.map(toEntry);
   }
 
@@ -136,61 +156,48 @@ export class BullmqDlq {
     const job = await this.queue.getJob(jobId);
     if (!job) throw new DlqJobNotFoundError(jobId);
     const state = await job.getState();
-    if (state !== "failed") throw new DlqJobNotFailedError(jobId, state);
+    if (state !== "failed") throw new DlqJobNotFailedError(jobId);
     return job;
   }
 
-  /** Re-queue one dead-lettered job through the normal worker path. */
   async retry(jobId: string): Promise<void> {
     const job = await this.requireFailedJob(jobId);
     await job.retry("failed");
   }
 
-  /** Permanently drop one dead-lettered job. */
   async discard(jobId: string): Promise<void> {
     const job = await this.requireFailedJob(jobId);
     await job.remove();
   }
 
-  /**
-   * Retry up to `limit` dead-lettered jobs. `dryRun` reports what would be
-   * retried without touching anything. Per-job failures are collected, not
-   * thrown, so one un-retryable job never blocks the rest of the batch.
-   */
-  async retryAll(
-    opts: { limit?: number; dryRun?: boolean } = {}
-  ): Promise<DlqRetryResult> {
-    const limit = Math.max(1, opts.limit ?? DEFAULT_LIMIT);
-    const dryRun = opts.dryRun ?? false;
+  async retryAll(opts: DlqRetryAllOptions = {}): Promise<DlqRetryAllResult> {
+    const limit = clampLimit(opts.limit);
     const jobs = await this.queue.getFailed(0, limit - 1);
-
-    const result: DlqRetryResult = {
-      scanned: jobs.length,
-      retried: [],
-      failed: [],
-      dryRun,
-    };
+    const dryRun = opts.dryRun ?? false;
+    const retried: string[] = [];
+    const failed: Array<{ jobId: string; error: string }> = [];
 
     for (const job of jobs) {
-      const id = String(job.id ?? job.name);
+      const jobId = String(job.id);
       if (dryRun) {
-        result.retried.push(id);
+        retried.push(jobId);
         continue;
       }
       try {
         await job.retry("failed");
-        result.retried.push(id);
-      } catch (e) {
-        result.failed.push({ jobId: id, error: errMsg(e) });
+        retried.push(jobId);
+      } catch (err) {
+        failed.push({
+          jobId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 
-    return result;
+    return { scanned: jobs.length, retried, failed, dryRun };
   }
 
   async close(): Promise<void> {
     await this.queue.close();
   }
 }
-
-export type { Job };
