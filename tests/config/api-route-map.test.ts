@@ -61,6 +61,52 @@ function sourceRoutes(): Set<string> {
   return routes;
 }
 
+/**
+ * Returns, for every route plugin file (excluding metrics.ts and legacy.ts)
+ * that declares at least one HTTP method handler, whether ALL of its routes
+ * resolve to /v1-prefixed paths in sourceRoutes().
+ *
+ * A file "has a /v1 prefix" when every route it contributes to sourceRoutes()
+ * starts with /v1 — either because the file is registered inside the /v1
+ * Fastify prefix block in index.ts, or because it hardcodes /v1 in its paths
+ * (e.g. wallet.ts).
+ *
+ * Files whose routes all resolve to /v1/... pass the invariant.
+ * Files with any route not starting with /v1 are returned as offenders.
+ */
+function routePluginBasePathCheck(): {
+  file: string;
+  routes: string[];
+  allV1: boolean;
+}[] {
+  const declaration =
+    /\.(get|post|put|patch|delete)\s*(?:<[^()]*?>)?\(\s*["`]([^"`]+)["`]/g;
+  const results: { file: string; routes: string[]; allV1: boolean }[] = [];
+
+  for (const file of readdirSync(resolve(ROOT, ROUTES_DIR))) {
+    if (!file.endsWith(".ts") || file.endsWith(".test.ts")) continue;
+    if (file === "legacy.ts" || file === "metrics.ts") continue;
+
+    const source = read(join(ROUTES_DIR, file));
+    const basePath = source.match(/basePath:\s*"([^"]+)"/)?.[1];
+
+    const fileRoutes: string[] = [];
+    declaration.lastIndex = 0;
+    for (const [, method, rawPath] of source.matchAll(declaration)) {
+      const path = rawPath.replace("${basePath}", basePath ?? "");
+      const mounted =
+        path.startsWith("/v1/") || file === "metrics.ts" ? path : `/v1${path}`;
+      fileRoutes.push(`${method.toUpperCase()} ${mounted}`);
+    }
+
+    if (fileRoutes.length === 0) continue;
+
+    const allV1 = fileRoutes.every((r) => r.split(" ")[1].startsWith("/v1"));
+    results.push({ file, routes: fileRoutes, allV1 });
+  }
+  return results;
+}
+
 describe("API README route map", () => {
   it("lists exactly the routes the API registers", () => {
     const documented = [...readmeRoutes().keys()].sort();
@@ -107,5 +153,19 @@ describe("API README route map", () => {
         );
       }
     }
+  });
+
+  it("every route-declaring plugin (except metrics.ts and legacy.ts) has a basePath starting with /v1", () => {
+    const offenders: string[] = [];
+    for (const { file, routes, allV1 } of routePluginBasePathCheck()) {
+      if (!allV1) {
+        const bad = routes.filter((r) => !r.split(" ")[1].startsWith("/v1"));
+        offenders.push(`${file}: routes not under /v1 — ${bad.join(", ")}`);
+      }
+    }
+    expect(
+      offenders,
+      `Route plugin(s) with routes outside /v1: ${offenders.join("; ")}`
+    ).toHaveLength(0);
   });
 });
