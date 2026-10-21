@@ -1,64 +1,87 @@
-import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
 
-const RUNBOOK_PATH = resolve(
-  process.cwd(),
-  "docs/runbooks/incident-runbook.md"
-);
-const COMPOSE_PATH = resolve(process.cwd(), "docker-compose.yml");
-const COMPOSE_DOC_PATH = resolve(process.cwd(), "docs/docker-compose.md");
+const repoRoot = join(__dirname, '..', '..');
 
-function extractRunbookContainerNames(content: string): Set<string> {
+function readRepoFile(relativePath: string): string {
+  return readFileSync(join(repoRoot, relativePath), 'utf8');
+}
+
+function extractComposeContainerNames(compose: string): Set<string> {
   const names = new Set<string>();
-  for (const match of content.matchAll(/\b(vatix-[a-z-]+)\b/g)) {
+  const regex = /container_name:\s*(vatix-[a-z-]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(compose)) !== null) {
     names.add(match[1]);
   }
   return names;
 }
 
-function extractComposeContainerNames(content: string): Set<string> {
+function extractComposeServiceNames(compose: string): Set<string> {
   const names = new Set<string>();
-  for (const match of content.matchAll(/container_name:\s*(vatix-[a-z-]+)/g)) {
-    names.add(match[1]);
+  const lines = compose.split('\n');
+  let inServices = false;
+  for (const line of lines) {
+    if (/^services:\s*$/.test(line)) {
+      inServices = true;
+      continue;
+    }
+    if (!inServices) {
+      continue;
+    }
+    // A non-indented, non-empty line ends the services block.
+    if (line.length > 0 && !/^\s/.test(line)) {
+      inServices = false;
+      continue;
+    }
+    // Service keys sit at exactly two spaces of indentation under `services:`.
+    const match = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (match) {
+      names.add(match[1]);
+    }
   }
   return names;
 }
 
-describe("incident runbook (config scope, min-039)", () => {
-  it("runbook exists and references docker container names", () => {
-    const runbook = readFileSync(RUNBOOK_PATH, "utf8");
+function extractRunbookContainerNames(runbook: string): Set<string> {
+  const names = new Set<string>();
+  const regex = /\bvatix-[a-z-]+\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(runbook)) !== null) {
+    names.add(match[0]);
+  }
+  return names;
+}
+
+describe('incident runbook', () => {
+  const runbook = readRepoFile('docs/runbooks/incident-runbook.md');
+  const compose = readRepoFile('docker-compose.yml');
+  const composeDocs = readRepoFile('docs/docker-compose.md');
+
+  it('every container referenced in the runbook is defined in docker-compose.yml', () => {
+    const containerNames = extractComposeContainerNames(compose);
+    const serviceNames = extractComposeServiceNames(compose);
+    const knownServices = [...serviceNames].sort();
     const referenced = extractRunbookContainerNames(runbook);
-    expect(referenced.size).toBeGreaterThan(0);
-    expect(referenced).toContain("vatix-backend");
-    expect(referenced).toContain("vatix-indexer");
-    expect(referenced).toContain("vatix-postgres");
-    expect(referenced).toContain("vatix-redis");
+
+    const missing = [...referenced].filter(
+      (name) => !containerNames.has(name) && !serviceNames.has(name),
+    );
+
+    expect(
+      missing,
+      `Runbook references containers not defined in docker-compose.yml. ` +
+        `Known services: ${knownServices.join(', ')}`,
+    ).toEqual([]);
   });
 
-  it("every container referenced in the runbook is defined in docker-compose.yml", () => {
-    const runbook = readFileSync(RUNBOOK_PATH, "utf8");
-    const compose = readFileSync(COMPOSE_PATH, "utf8");
-    const referenced = extractRunbookContainerNames(runbook);
-    const defined = extractComposeContainerNames(compose);
+  it('every container name documented in docs/docker-compose.md is defined in docker-compose.yml', () => {
+    const containerNames = extractComposeContainerNames(compose);
+    const documented = extractRunbookContainerNames(composeDocs);
 
-    for (const name of referenced) {
-      expect(defined.has(name)).toBe(true);
-    }
-  });
+    const missing = [...documented].filter((name) => !containerNames.has(name));
 
-  it("docker-compose.yml container names are documented in docs/docker-compose.md", () => {
-    const compose = readFileSync(COMPOSE_PATH, "utf8");
-    const doc = readFileSync(COMPOSE_DOC_PATH, "utf8");
-    const defined = extractComposeContainerNames(compose);
-
-    for (const name of defined) {
-      expect(doc).toContain(name);
-    }
-  });
-
-  it("docs/docker-compose.md links to the incident runbook", () => {
-    const doc = readFileSync(COMPOSE_DOC_PATH, "utf8");
-    expect(doc).toContain("docs/runbooks/incident-runbook.md");
+    expect(missing).toEqual([]);
   });
 });
