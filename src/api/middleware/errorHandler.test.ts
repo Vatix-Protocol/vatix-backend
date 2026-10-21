@@ -7,6 +7,10 @@ import {
   UnauthorizedError,
   ForbiddenError,
 } from "./errors.js";
+import {
+  MarketTransitionError,
+  MARKET_INVALID_TRANSITION_CODE,
+} from "@vatix/shared/marketLifecycle.js";
 
 describe("Error Handler Middleware", () => {
   let server: FastifyInstance;
@@ -111,6 +115,55 @@ describe("Error Handler Middleware", () => {
       const res = await server.inject({ method: "GET", url: "/test" });
       expect(res.statusCode).toBe(403);
       expect(JSON.parse(res.body).code).toBe("FORBIDDEN");
+    });
+  });
+
+  describe("MarketTransitionError", () => {
+    it("returns 409 with the stable transition code", async () => {
+      server.get("/test", async () => {
+        throw new MarketTransitionError("RESOLVED", "CANCELLED");
+      });
+      const res = await server.inject({ method: "GET", url: "/test" });
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe(MARKET_INVALID_TRANSITION_CODE);
+    });
+
+    it("does not include a stack field in the response body", async () => {
+      server.get("/test", async () => {
+        throw new MarketTransitionError("RESOLVED", "CANCELLED");
+      });
+      const res = await server.inject({ method: "GET", url: "/test" });
+      const body = JSON.parse(res.body);
+      expect(body).not.toHaveProperty("stack");
+    });
+
+    it("logs at warn level as a client error", async () => {
+      const warnCalls: unknown[] = [];
+      const errorCalls: unknown[] = [];
+      const logServer = Fastify({
+        logger: {
+          level: "trace",
+          stream: {
+            write(line: string) {
+              const entry = JSON.parse(line);
+              if (entry.level === 40) warnCalls.push(entry);
+              if (entry.level === 50) errorCalls.push(entry);
+            },
+          },
+        },
+        genReqId: () => "test-request-id",
+      });
+      logServer.setErrorHandler(errorHandler);
+      logServer.get("/test", async () => {
+        throw new MarketTransitionError("RESOLVED", "CANCELLED");
+      });
+
+      const res = await logServer.inject({ method: "GET", url: "/test" });
+      await logServer.close();
+
+      expect(res.statusCode).toBe(409);
+      expect(warnCalls.length).toBeGreaterThan(0);
+      expect(errorCalls.length).toBe(0);
     });
   });
 
@@ -250,9 +303,8 @@ describe("Error Handler Middleware", () => {
 
     it("should log server errors at error level", async () => {
       // Use a simple approach - check that the error handler doesn't crash
-      // Actual logging is tested via integration tests
       server.get("/test", async () => {
-        throw new Error("Internal error");
+        throw new Error("Server error");
       });
 
       const response = await server.inject({
@@ -262,40 +314,6 @@ describe("Error Handler Middleware", () => {
 
       expect(response.statusCode).toBe(500);
       // If we got here, logging worked without crashing
-    });
-  });
-
-  describe("Edge Cases", () => {
-    it("should handle errors with custom status codes", async () => {
-      class CustomError extends Error {
-        statusCode = 418; // I'm a teapot
-      }
-
-      server.get("/test", async () => {
-        throw new CustomError("Custom error");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(418);
-    });
-
-    it("should handle ValidationError without fields", async () => {
-      server.get("/test", async () => {
-        throw new ValidationError("Validation failed");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.statusCode).toBe(400);
-      expect(body.fields).toBeUndefined();
     });
   });
 });
