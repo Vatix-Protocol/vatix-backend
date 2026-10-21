@@ -14,12 +14,20 @@ describe("Database Seed", () => {
 
   beforeAll(async () => {
     await acquireDatabaseLock();
-    prisma = getTestPrismaClient();
+    try {
+      prisma = getTestPrismaClient();
+    } catch (error) {
+      await disconnectTestPrisma();
+      throw error;
+    }
   });
 
   afterAll(async () => {
-    await releaseDatabaseLock();
-    await disconnectTestPrisma();
+    try {
+      await releaseDatabaseLock();
+    } finally {
+      await disconnectTestPrisma();
+    }
   });
 
   beforeEach(async () => {

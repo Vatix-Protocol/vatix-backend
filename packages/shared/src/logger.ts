@@ -51,8 +51,12 @@ export class Logger implements ILogger {
   private level: LogLevel;
   private prefix: string;
 
-  constructor(prefix = "", level?: LogLevel) {
-    validatePrefix(prefix);
+  constructor();
+  constructor(prefix: string, level?: LogLevel);
+  constructor(prefix?: string, level?: LogLevel) {
+    if (arguments.length > 0) {
+      validatePrefix(prefix);
+    }
     if (level !== undefined) {
       validateLogLevel(level);
       this.level = level;
@@ -69,7 +73,7 @@ export class Logger implements ILogger {
         this.level = "info";
       }
     }
-    this.prefix = prefix;
+    this.prefix = prefix ?? "";
   }
 
   private shouldLog(level: LogLevel): boolean {

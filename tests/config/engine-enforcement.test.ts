@@ -127,6 +127,22 @@ describe("check-engines helpers", () => {
     expect(result.errors.join(" ")).toMatch(/CI workflow Node major/);
   });
 
+  it("evaluateEngines flags a missing CI Node version", () => {
+    const result = evaluateEngines({
+      packageJson: JSON.stringify({
+        engines: { node: ">=22.0.0", pnpm: ">=10.0.0" },
+      }),
+      nvmrc: "22\n",
+      ciWorkflow: "runs-on: ubuntu-latest",
+      nodeVersion: "22.4.1",
+      pnpmVersion: "10.15.0",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errors).toContain(
+      "CI workflow Node version is missing or unparseable"
+    );
+  });
+
   it("evaluateEngines flags a running pnpm below the engines floor", () => {
     const result = evaluateEngines({
       packageJson: JSON.stringify({

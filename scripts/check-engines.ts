@@ -91,7 +91,9 @@ export function evaluateEngines(inputs: CheckInputs): EngineCheckResult {
       `.nvmrc (Node ${nvmrcMajor}) disagrees with package.json engines.node floor (Node ${engineNodeMajor})`
     );
   }
-  if (!Number.isNaN(ciNodeMajor) && ciNodeMajor !== nvmrcMajor) {
+  if (Number.isNaN(ciNodeMajor)) {
+    errors.push("CI workflow Node version is missing or unparseable");
+  } else if (ciNodeMajor !== nvmrcMajor) {
     errors.push(
       `CI workflow Node major (${ciNodeMajor}) disagrees with .nvmrc (Node ${nvmrcMajor})`
     );

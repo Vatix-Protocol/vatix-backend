@@ -56,6 +56,8 @@ describe("Logger", () => {
   it("throws LoggerValidationError for invalid constructor prefix", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => new Logger(42 as any)).toThrow(LoggerValidationError);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => new Logger(undefined as any)).toThrow(LoggerValidationError);
   });
 
   it("throws LoggerValidationError for invalid explicit log level", () => {
@@ -86,6 +88,8 @@ describe("Logger", () => {
     const parent = new Logger("api", "debug");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(() => parent.child(123 as any)).toThrow(LoggerValidationError);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => parent.child(undefined as any)).toThrow(LoggerValidationError);
   });
 
   it("suppresses messages below the active level", () => {

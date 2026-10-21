@@ -59,4 +59,13 @@ describe("Logger (shared)", () => {
       LoggerValidationError
     );
   });
+
+  it("rejects explicitly undefined constructor prefixes and child names", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => new Logger(undefined as any)).toThrow(LoggerValidationError);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => new Logger("api", "info").child(undefined as any)).toThrow(
+      LoggerValidationError
+    );
+  });
 });

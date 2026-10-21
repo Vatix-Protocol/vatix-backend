@@ -26,8 +26,11 @@ import "dotenv/config";
  *   });
  *
  *   afterAll(async () => {
- *     await releaseDatabaseLock();
- *     await disconnectTestPrisma();
+ *     try {
+ *       await releaseDatabaseLock();
+ *     } finally {
+ *       await disconnectTestPrisma();
+ *     }
  *   });
  *
  *   beforeEach(async () => {
@@ -41,6 +44,8 @@ let lockClient: Client | null = null;
 
 // Advisory lock key for serializing database tests
 const DATABASE_TEST_LOCK_KEY = 1234567890;
+const DATABASE_TEST_LOCK_TIMEOUT_MS = 30_000;
+const DATABASE_TEST_LOCK_RETRY_MS = 100;
 
 /**
  * Validates a database URL format.
@@ -161,12 +166,47 @@ export async function cleanDatabase(client?: PrismaClient): Promise<void> {
  * ensuring the lock persists for the entire test suite duration.
  */
 export async function acquireDatabaseLock(): Promise<void> {
-  // Create a dedicated connection for holding the lock
-  lockClient = new Client({ connectionString: getDatabaseUrl() });
-  await lockClient.connect();
+  if (lockClient) {
+    throw new Error("Database advisory lock is already held");
+  }
 
-  // This will block until the lock is available
-  await lockClient.query(`SELECT pg_advisory_lock(${DATABASE_TEST_LOCK_KEY})`);
+  // Create a dedicated connection for holding the lock
+  const client = new Client({ connectionString: getDatabaseUrl() });
+
+  try {
+    await client.connect();
+
+    const deadline = Date.now() + DATABASE_TEST_LOCK_TIMEOUT_MS;
+    while (true) {
+      const result = await client.query(
+        `SELECT pg_try_advisory_lock(${DATABASE_TEST_LOCK_KEY}) AS acquired`
+      );
+      if (result.rows[0]?.acquired === true) {
+        lockClient = client;
+        return;
+      }
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error(
+          `Timed out after ${DATABASE_TEST_LOCK_TIMEOUT_MS}ms waiting for the database advisory lock`
+        );
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(DATABASE_TEST_LOCK_RETRY_MS, remaining))
+      );
+    }
+  } catch (error) {
+    try {
+      await client.end();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Failed to acquire the database advisory lock and close its connection"
+      );
+    }
+    throw error;
+  }
 }
 
 /**
@@ -176,15 +216,36 @@ export async function acquireDatabaseLock(): Promise<void> {
 export async function releaseDatabaseLock(): Promise<void> {
   if (!lockClient) return;
 
+  const client = lockClient;
+  let unlockError: unknown;
   try {
-    await lockClient.query(
-      `SELECT pg_advisory_unlock(${DATABASE_TEST_LOCK_KEY})`
+    const result = await client.query(
+      `SELECT pg_advisory_unlock(${DATABASE_TEST_LOCK_KEY}) AS unlocked`
     );
-    await lockClient.end();
-  } catch {
-    // Ignore errors during cleanup
+    if (result.rows[0]?.unlocked !== true) {
+      throw new Error("Database advisory lock was not held by its connection");
+    }
+  } catch (error) {
+    unlockError = error;
   }
-  lockClient = null;
+
+  try {
+    await client.end();
+  } catch (endError) {
+    if (unlockError) {
+      throw new AggregateError(
+        [unlockError, endError],
+        "Failed to release the database advisory lock and close its connection"
+      );
+    }
+    throw endError;
+  } finally {
+    lockClient = null;
+  }
+
+  if (unlockError) {
+    throw unlockError;
+  }
 }
 
 /**
@@ -193,26 +254,38 @@ export async function releaseDatabaseLock(): Promise<void> {
  * Automatically releases any held database lock.
  */
 export async function disconnectTestPrisma(): Promise<void> {
-  // Release lock if still held
-  if (lockClient) {
-    try {
-      await lockClient.query(
-        `SELECT pg_advisory_unlock(${DATABASE_TEST_LOCK_KEY})`
-      );
-      await lockClient.end();
-    } catch {
-      // Ignore errors during cleanup
-    }
-    lockClient = null;
+  const cleanupErrors: unknown[] = [];
+
+  try {
+    await releaseDatabaseLock();
+  } catch (error) {
+    cleanupErrors.push(error);
   }
 
   if (prismaInstance) {
-    await prismaInstance.$disconnect();
-    prismaInstance = null;
+    try {
+      await prismaInstance.$disconnect();
+    } catch (error) {
+      cleanupErrors.push(error);
+    } finally {
+      prismaInstance = null;
+    }
   }
 
   if (poolInstance) {
-    await poolInstance.end();
-    poolInstance = null;
+    try {
+      await poolInstance.end();
+    } catch (error) {
+      cleanupErrors.push(error);
+    } finally {
+      poolInstance = null;
+    }
+  }
+
+  if (cleanupErrors.length === 1) {
+    throw cleanupErrors[0];
+  }
+  if (cleanupErrors.length > 1) {
+    throw new AggregateError(cleanupErrors, "Failed to disconnect test database");
   }
 }
