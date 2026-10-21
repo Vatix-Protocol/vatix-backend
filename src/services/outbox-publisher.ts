@@ -29,21 +29,65 @@ const DEFAULT_BATCH_SIZE = 50;
 const DEFAULT_BASE_BACKOFF_MS = 1_000;
 const DEFAULT_MAX_BACKOFF_MS = 60_000;
 
+const DEFAULT_ORPHAN_ATTEMPTS_THRESHOLD = 5;
+const DEFAULT_QUARANTINE_ATTEMPTS_THRESHOLD = 10;
+
+/**
+ * Parses a positive-integer threshold from an env var, failing fast on
+ * invalid input instead of silently falling back to a default.
+ *
+ * @throws Error if the value is present but not a positive integer.
+ */
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(
+      `Invalid ${name}: expected a positive integer, got "${raw}"`
+    );
+  }
+  return parsed;
+}
+
 /**
  * Attempts after which a still-failing row is surfaced via the
  * orphaned-trade-count metric (for alerting). It is NOT abandoned — the
  * publisher keeps retrying with capped exponential backoff indefinitely.
  */
-const ORPHAN_ATTEMPTS_THRESHOLD =
-  Number(process.env.OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD) || 5;
+const ORPHAN_ATTEMPTS_THRESHOLD = parsePositiveIntEnv(
+  "OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD",
+  DEFAULT_ORPHAN_ATTEMPTS_THRESHOLD
+);
 
 /**
  * Attempts after which a permanently failing row is moved to QUARANTINED status.
  * Must be >= ORPHAN_ATTEMPTS_THRESHOLD to ensure alerting is visible before quarantine.
  * In production, this must be enforced (no silent fallback to indefinite retries).
  */
-const QUARANTINE_ATTEMPTS_THRESHOLD =
-  Number(process.env.OUTBOX_QUARANTINE_ATTEMPTS_THRESHOLD) || 10;
+const QUARANTINE_ATTEMPTS_THRESHOLD = parsePositiveIntEnv(
+  "OUTBOX_QUARANTINE_ATTEMPTS_THRESHOLD",
+  DEFAULT_QUARANTINE_ATTEMPTS_THRESHOLD
+);
+
+if (QUARANTINE_ATTEMPTS_THRESHOLD < ORPHAN_ATTEMPTS_THRESHOLD) {
+  throw new Error(
+    `Invalid outbox thresholds: OUTBOX_QUARANTINE_ATTEMPTS_THRESHOLD (${QUARANTINE_ATTEMPTS_THRESHOLD}) ` +
+      `must be >= OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD (${ORPHAN_ATTEMPTS_THRESHOLD})`
+  );
+}
+
+/** Returns the validated outbox attempt thresholds. */
+export function getOutboxThresholds(): {
+  orphanAttemptsThreshold: number;
+  quarantineAttemptsThreshold: number;
+} {
+  return {
+    orphanAttemptsThreshold: ORPHAN_ATTEMPTS_THRESHOLD,
+    quarantineAttemptsThreshold: QUARANTINE_ATTEMPTS_THRESHOLD,
+  };
+}
 
 /** Minimal shape needed to publish + mark a single outbox row. */
 export interface OutboxRow {

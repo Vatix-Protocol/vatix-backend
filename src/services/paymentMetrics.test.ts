@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { PaymentMetricsService } from "./paymentMetrics.js";
+import {
+  paymentOrdersSubmittedTotal,
+  paymentOrdersFilledTotal,
+  paymentOrdersFailedTotal,
+} from "./metrics.js";
 
 describe("PaymentMetricsService", () => {
   let svc: PaymentMetricsService;
@@ -35,6 +40,49 @@ describe("PaymentMetricsService", () => {
     svc.recordSubmitted();
     svc.recordFilled();
     expect(svc.getSnapshot().fillRate).toBe(1);
+  });
+
+  it("clamps fillRate to 1 when fills exceed submissions", () => {
+    svc.recordSubmitted();
+    svc.recordFilled();
+    svc.recordFilled();
+    const snap = svc.getSnapshot();
+    expect(snap.ordersFilled).toBe(2);
+    expect(snap.ordersSubmitted).toBe(1);
+    expect(snap.fillRate).toBe(1);
+  });
+
+  it("clamps fillRate to 1 when fills are recorded with no submissions", () => {
+    svc.recordFilled();
+    svc.recordFilled();
+    const snap = svc.getSnapshot();
+    expect(snap.ordersSubmitted).toBe(0);
+    expect(snap.fillRate).toBeNull();
+  });
+
+  it("fillRate is null when ordersSubmitted is 0 even after recordFilled", () => {
+    svc.recordFilled();
+    expect(svc.getSnapshot().fillRate).toBeNull();
+  });
+
+  // --- prometheus counters ---
+
+  it("increments the Prometheus submitted counter on recordSubmitted", () => {
+    const before = paymentOrdersSubmittedTotal.get();
+    svc.recordSubmitted();
+    expect(paymentOrdersSubmittedTotal.get()).toBe(before + 1);
+  });
+
+  it("increments the Prometheus filled counter on recordFilled", () => {
+    const before = paymentOrdersFilledTotal.get();
+    svc.recordFilled();
+    expect(paymentOrdersFilledTotal.get()).toBe(before + 1);
+  });
+
+  it("increments the Prometheus failed counter on recordFailed", () => {
+    const before = paymentOrdersFailedTotal.get();
+    svc.recordFailed();
+    expect(paymentOrdersFailedTotal.get()).toBe(before + 1);
   });
 
   // --- failure path ---

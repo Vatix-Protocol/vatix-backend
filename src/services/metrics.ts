@@ -162,3 +162,26 @@ export const orderIdempotencyTotal = new client.Counter({
   labelNames: ["outcome"],
   registers: [metricsRegistry],
 });
+
+/**
+ * Payment/order flow counters (#1378). Incremented by
+ * src/services/paymentMetrics.ts alongside its in-process counters so the
+ * payment pipeline is visible on the /metrics scrape endpoint.
+ */
+export const paymentOrdersSubmittedTotal = new client.Counter({
+  name: "vatix_payment_orders_submitted_total",
+  help: "Total payment orders submitted through the payment flow",
+  registers: [metricsRegistry],
+});
+
+export const paymentOrdersFilledTotal = new client.Counter({
+  name: "vatix_payment_orders_filled_total",
+  help: "Total payment orders filled (settled) in the payment flow",
+  registers: [metricsRegistry],
+});
+
+export const paymentOrdersFailedTotal = new client.Counter({
+  name: "vatix_payment_orders_failed_total",
+  help: "Total payment orders that failed in the payment flow",
+  registers: [metricsRegistry],
+});
