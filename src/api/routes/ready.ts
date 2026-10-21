@@ -20,13 +20,15 @@
  *               status is surfaced in the response body for observability
  *               but does NOT drive the HTTP status code.
  *
- * Response shape:
+ * Response shape (documented readiness contract):
  *   {
- *     "ready": boolean,
- *     "dependencies": {
- *       "database":       { "status": "ok" | "error", "error"?: string },
- *       "redis":          { "status": "ok" | "error", "error"?: string },
- *       "indexFreshness": { "status": "ok" | "stale" | "error", "error"?: string }
+ *     "status": "ok" | "unavailable",
+ *     "code": "OK" | "DEPENDENCY_UNAVAILABLE" | "DEPENDENCY_TIMEOUT",
+ *     "correlationId": string,
+ *     "checks": {
+ *       "db":    { "status": "ok" | "unavailable" | "timeout", "error"?: string },
+ *       "redis": { "status": "ok" | "unavailable" | "timeout", "error"?: string },
+ *       "rpc":   { "status": "ok" | "unavailable" | "timeout", "error"?: string }
  *     }
  *   }
  *
