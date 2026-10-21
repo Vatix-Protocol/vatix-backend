@@ -106,11 +106,37 @@ describe("BullmqDlq", () => {
     expect(job.retry).not.toHaveBeenCalled();
   });
 
+  it("retry refuses a job that leaves the failed state after the guard read", async () => {
+    const getState = vi
+      .fn()
+      .mockResolvedValueOnce("failed")
+      .mockResolvedValueOnce("active");
+    const job = makeJob({ getState });
+    const dlq = new BullmqDlq(makeQueue([job]));
+    await expect(dlq.retry("job-1")).rejects.toBeInstanceOf(
+      DlqJobNotFailedError
+    );
+    expect(job.retry).not.toHaveBeenCalled();
+  });
+
   it("discard removes a failed job", async () => {
     const job = makeJob();
     const dlq = new BullmqDlq(makeQueue([job]));
     await dlq.discard("job-1");
     expect(job.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("discard refuses a job that leaves the failed state after the guard read", async () => {
+    const getState = vi
+      .fn()
+      .mockResolvedValueOnce("failed")
+      .mockResolvedValueOnce("active");
+    const job = makeJob({ getState });
+    const dlq = new BullmqDlq(makeQueue([job]));
+    await expect(dlq.discard("job-1")).rejects.toBeInstanceOf(
+      DlqJobNotFailedError
+    );
+    expect(job.remove).not.toHaveBeenCalled();
   });
 
   it("retryAll dry-run reports without retrying", async () => {
