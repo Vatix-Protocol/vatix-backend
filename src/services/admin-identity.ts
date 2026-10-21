@@ -1,7 +1,13 @@
-import { hash, compare } from "bcrypt";
+import { hash, compare, hashSync } from "bcrypt";
 import { PrismaClient } from "../generated/prisma/client/index.js";
 
 const BCRYPT_ROUNDS = 12;
+
+// Precomputed dummy hash used to keep validateCredential on a constant-time
+// path when the identity is missing, revoked, or inactive. Comparing against
+// this hash ensures bcrypt work is always performed, preventing a timing
+// oracle that could enumerate admin identity names.
+const DUMMY_HASH = hashSync("dummy", BCRYPT_ROUNDS);
 
 export class AdminIdentityService {
   constructor(private prisma: PrismaClient) {}
@@ -15,6 +21,7 @@ export class AdminIdentityService {
     });
 
     if (!identity || identity.revokedAt || !identity.active) {
+      await compare(credential, DUMMY_HASH);
       return false;
     }
 

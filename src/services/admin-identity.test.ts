@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { getPrismaClient } from "./prisma.js";
 import { AdminIdentityService } from "./admin-identity.js";
+import * as bcrypt from "bcrypt";
 
 describe("AdminIdentityService", () => {
   let prisma = getPrismaClient();
@@ -14,6 +15,7 @@ describe("AdminIdentityService", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await prisma.adminIdentityAuditLog.deleteMany({});
     await prisma.adminIdentity.deleteMany({});
   });
@@ -63,11 +65,31 @@ describe("AdminIdentityService", () => {
       expect(isValid).toBe(false);
     });
 
+    it("still performs a bcrypt comparison for non-existent identity", async () => {
+      const compareSpy = vi.spyOn(bcrypt, "compare");
+
+      const isValid = await service.validateCredential("nonexistent", "secret");
+
+      expect(isValid).toBe(false);
+      expect(compareSpy).toHaveBeenCalledTimes(1);
+    });
+
     it("returns false for revoked identity", async () => {
       await service.createIdentity("alice", "secret123", "system");
       await service.revokeIdentity("alice", "system");
       const isValid = await service.validateCredential("alice", "secret123");
       expect(isValid).toBe(false);
+    });
+
+    it("still performs a bcrypt comparison for revoked identity", async () => {
+      await service.createIdentity("alice", "secret123", "system");
+      await service.revokeIdentity("alice", "system");
+      const compareSpy = vi.spyOn(bcrypt, "compare");
+
+      const isValid = await service.validateCredential("alice", "secret123");
+
+      expect(isValid).toBe(false);
+      expect(compareSpy).toHaveBeenCalledTimes(1);
     });
 
     it("returns false for inactive identity", async () => {
@@ -81,6 +103,22 @@ describe("AdminIdentityService", () => {
 
       const isValid = await service.validateCredential("bob", "anything");
       expect(isValid).toBe(false);
+    });
+
+    it("still performs a bcrypt comparison for inactive identity", async () => {
+      await prisma.adminIdentity.create({
+        data: {
+          name: "bob",
+          credentialHash: "fakehash",
+          active: false,
+        },
+      });
+      const compareSpy = vi.spyOn(bcrypt, "compare");
+
+      const isValid = await service.validateCredential("bob", "anything");
+
+      expect(isValid).toBe(false);
+      expect(compareSpy).toHaveBeenCalledTimes(1);
     });
   });
 
