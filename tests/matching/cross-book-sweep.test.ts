@@ -113,6 +113,20 @@ describe("cross-book sweep fill scenarios (snapshots)", () => {
     expect(result).toMatchSnapshot();
     expect(noBook.getOrderCount()).toBe(1);
     expect(noBook.getDepth(10).asks[0].price).toBe(0.55);
+
+    // --- New assertions: swept-book post-state ---
+    // Taker qty=70: fully consumes yes-maker-1 (qty=30) then takes 40 from yes-maker-2
+    expect(result.trades).toHaveLength(2);
+    const totalFilled = result.trades.reduce((sum, t) => sum + t.quantity, 0);
+    expect(totalFilled).toBe(70);
+    expect(result.remainingOrder).toBeNull();
+
+    // yes-maker-1 (qty=30) fully consumed → removed from book
+    // yes-maker-2 (qty=50) partially filled: 50 - 40 = 10 remaining
+    const yesDepth = yesBook.getDepth(10);
+    expect(yesDepth.asks).toHaveLength(1);
+    expect(yesDepth.asks[0].price).toBe(0.45);
+    expect(yesDepth.asks[0].quantity).toBe(10);
   });
 
   it("sweeps the NO book across price levels while the YES book stays untouched", () => {
@@ -163,6 +177,20 @@ describe("cross-book sweep fill scenarios (snapshots)", () => {
     expect(result).toMatchSnapshot();
     expect(yesBook.getOrderCount()).toBe(1);
     expect(yesBook.getDepth(10).asks[0].price).toBe(0.6);
+
+    // --- New assertions: swept-book post-state ---
+    // Taker qty=65: fully consumes no-maker-1 (qty=20) then takes 45 from no-maker-2
+    expect(result.trades).toHaveLength(2);
+    const totalFilled = result.trades.reduce((sum, t) => sum + t.quantity, 0);
+    expect(totalFilled).toBe(65);
+    expect(result.remainingOrder).toBeNull();
+
+    // no-maker-1 (qty=20) fully consumed → removed from book
+    // no-maker-2 (qty=60) partially filled: 60 - 45 = 15 remaining
+    const noDepth = noBook.getDepth(10);
+    expect(noDepth.asks).toHaveLength(1);
+    expect(noDepth.asks[0].price).toBe(0.35);
+    expect(noDepth.asks[0].quantity).toBe(15);
   });
 
   it("independently sweeps both YES and NO books for the same market in one run", () => {
@@ -235,5 +263,31 @@ describe("cross-book sweep fill scenarios (snapshots)", () => {
     // Each book only ever produced trades scoped to its own outcome.
     expect(yesResult.trades.every((t) => t.outcome === "YES")).toBe(true);
     expect(noResult.trades.every((t) => t.outcome === "NO")).toBe(true);
+
+    // --- New assertions: YES book post-state ---
+    // yesTaker qty=60: fully consumes yes-maker-1 (qty=40) then takes 20 from yes-maker-2
+    expect(yesResult.trades).toHaveLength(2);
+    const yesFilled = yesResult.trades.reduce((sum, t) => sum + t.quantity, 0);
+    expect(yesFilled).toBe(60);
+    expect(yesResult.remainingOrder).toBeNull();
+
+    // yes-maker-1 (qty=40) fully consumed; yes-maker-2 (qty=40) partial: 40 - 20 = 20 remaining
+    const yesDepth = yesBook.getDepth(10);
+    expect(yesDepth.asks).toHaveLength(1);
+    expect(yesDepth.asks[0].price).toBe(0.55);
+    expect(yesDepth.asks[0].quantity).toBe(20);
+
+    // --- New assertions: NO book post-state ---
+    // noTaker qty=60: fully consumes no-maker-1 (qty=40) then takes 20 from no-maker-2
+    expect(noResult.trades).toHaveLength(2);
+    const noFilled = noResult.trades.reduce((sum, t) => sum + t.quantity, 0);
+    expect(noFilled).toBe(60);
+    expect(noResult.remainingOrder).toBeNull();
+
+    // no-maker-1 (qty=40) fully consumed; no-maker-2 (qty=40) partial: 40 - 20 = 20 remaining
+    const noDepth = noBook.getDepth(10);
+    expect(noDepth.asks).toHaveLength(1);
+    expect(noDepth.asks[0].price).toBe(0.48);
+    expect(noDepth.asks[0].quantity).toBe(20);
   });
 });
