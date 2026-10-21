@@ -8,11 +8,22 @@
  * No user addresses, prices, or private keys are stored — only aggregate counts.
  */
 
+import {
+  paymentOrdersSubmittedTotal,
+  paymentOrdersFilledTotal,
+  paymentOrdersFailedTotal,
+} from './metrics.js';
+
 export interface PaymentMetricsSnapshot {
   ordersSubmitted: number;
   ordersFilled: number;
   ordersFailed: number;
-  /** Ratio of filled to submitted, or null when no orders have been submitted. */
+  /**
+   * Ratio of filled to submitted, or null when no orders have been submitted.
+   * Clamped to the range [0, 1] via `Math.min(1, ordersFilled / ordersSubmitted)`
+   * so that fills recorded without a matching submission (e.g. replays or
+   * settlement-driven fills) cannot produce a nonsensical ratio above 1.
+   */
   fillRate: number | null;
 }
 
@@ -23,14 +34,17 @@ export class PaymentMetricsService {
 
   recordSubmitted(): void {
     this.ordersSubmitted += 1;
+    paymentOrdersSubmittedTotal.inc();
   }
 
   recordFilled(): void {
     this.ordersFilled += 1;
+    paymentOrdersFilledTotal.inc();
   }
 
   recordFailed(): void {
     this.ordersFailed += 1;
+    paymentOrdersFailedTotal.inc();
   }
 
   getSnapshot(): PaymentMetricsSnapshot {
@@ -40,12 +54,16 @@ export class PaymentMetricsService {
       ordersFailed: this.ordersFailed,
       fillRate:
         this.ordersSubmitted > 0
-          ? this.ordersFilled / this.ordersSubmitted
+          ? Math.min(1, this.ordersFilled / this.ordersSubmitted)
           : null,
     };
   }
 
-  /** Reset all counters — useful in tests or after a flush. */
+  /**
+   * Reset all in-process counters — useful in tests or after a flush.
+   * Note: the Prometheus counters are process-lifetime counters and are
+   * intentionally NOT reset here.
+   */
   reset(): void {
     this.ordersSubmitted = 0;
     this.ordersFilled = 0;

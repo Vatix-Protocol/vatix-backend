@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { loadFinalizationConfig } from "./config.js";
+import { logChallengeWindowOverride } from "./main.js";
 
 /**
  * Tests for graceful shutdown input validation in the finalization worker.
@@ -250,5 +252,95 @@ describe("Finalization worker graceful shutdown (#777)", () => {
     expect(order.indexOf("poll-drained")).toBeLessThan(
       order.indexOf("db-disconnected")
     );
+  });
+});
+
+// ── #1377: challenge-window override contract ────────────────────────────────
+describe("Finalization challenge-window override (#1377)", () => {
+  const originalNodeEnv = process.env.NODE_ENV;
+  const originalOracleWindow = process.env.ORACLE_CHALLENGE_WINDOW_SECONDS;
+  const originalFinalizationWindow =
+    process.env.FINALIZATION_CHALLENGE_WINDOW_SECONDS;
+
+  afterEach(() => {
+    if (originalNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = originalNodeEnv;
+    }
+    if (originalOracleWindow === undefined) {
+      delete process.env.ORACLE_CHALLENGE_WINDOW_SECONDS;
+    } else {
+      process.env.ORACLE_CHALLENGE_WINDOW_SECONDS = originalOracleWindow;
+    }
+    if (originalFinalizationWindow === undefined) {
+      delete process.env.FINALIZATION_CHALLENGE_WINDOW_SECONDS;
+    } else {
+      process.env.FINALIZATION_CHALLENGE_WINDOW_SECONDS =
+        originalFinalizationWindow;
+    }
+  });
+
+  function setDriftEnv(nodeEnv: string) {
+    process.env.NODE_ENV = nodeEnv;
+    // On-chain resolution contract window is 86400s; override drifts to 3600s.
+    process.env.ORACLE_CHALLENGE_WINDOW_SECONDS = "86400";
+    process.env.FINALIZATION_CHALLENGE_WINDOW_SECONDS = "3600";
+  }
+
+  it("throws in production when the challenge window drifts from the on-chain window", () => {
+    setDriftEnv("production");
+    expect(() => loadFinalizationConfig()).toThrow();
+  });
+
+  it("accepts the same drift outside production with challengeWindowOverridden=true", () => {
+    setDriftEnv("test");
+    const config = loadFinalizationConfig();
+    expect(config.challengeWindowOverridden).toBe(true);
+    expect(config.challengeWindowSeconds).toBe(3600);
+  });
+
+  it("emits the override warning with both window values and nodeEnv on the dev/test path", () => {
+    setDriftEnv("test");
+    const config = loadFinalizationConfig();
+    expect(config.challengeWindowOverridden).toBe(true);
+
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+
+    logChallengeWindowOverride(config, logger);
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const [message, payload] = logger.warn.mock.calls[0] as [
+      string,
+      Record<string, unknown>
+    ];
+    expect(message).toContain("challenge window");
+    expect(payload).toMatchObject({
+      challengeWindowSeconds: 3600,
+      onChainChallengeWindowSeconds: 86400,
+      nodeEnv: "test",
+    });
+  });
+
+  it("does not emit the override warning when the window matches the on-chain window", () => {
+    process.env.NODE_ENV = "test";
+    process.env.ORACLE_CHALLENGE_WINDOW_SECONDS = "86400";
+    process.env.FINALIZATION_CHALLENGE_WINDOW_SECONDS = "86400";
+
+    const config = loadFinalizationConfig();
+    expect(config.challengeWindowOverridden).toBe(false);
+
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+
+    logChallengeWindowOverride(config, logger);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
