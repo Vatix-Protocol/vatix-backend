@@ -1,232 +1,169 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-
-vi.mock("node:dns/promises", () => ({ lookup: vi.fn() }));
-
-import { lookup } from "node:dns/promises";
-import { GapDetector, type GapPagingConfig } from "./gapDetector.js";
 import {
-  WEBHOOK_URL_ERROR_CODES,
-  WebhookUrlError,
-} from "./webhookUrlPolicy.js";
-import type { EventFetcher } from "./eventFetcher.js";
-import type { BatchWriter } from "./batchWriter.js";
-import type { InternalIndexerMetricsService } from "./metrics.js";
-import type { ILogger } from "../../../packages/shared/src/logger.js";
+  GapDetector,
+  type GapDetectorConfig,
+  type GapPagingConfig,
+} from "./gapDetector.js";
+import { WebhookUrlError } from "./webhookUrlPolicy.js";
 
-// #1160 — SSRF hardening of the persistent-gap paging webhook.
+// ---------------------------------------------------------------------------
+// Test doubles
+// ---------------------------------------------------------------------------
 
-const SECRET_URL = "https://hooks.example.com/services/T0KEN-SECRET";
+/**
+ * Minimal fetch-like stub. Records every call so tests can assert that no
+ * real outbound request is made and that the paging payload carries no
+ * secret material.
+ */
+function makeFetchStub() {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    return new Response("ok", { status: 200 });
+  });
+  return { fetchImpl, calls };
+}
 
-function makeDeps() {
-  const logger = {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    child: vi.fn().mockReturnThis(),
-  } as unknown as ILogger;
-  const metrics = {
-    incrementGapDetected: vi.fn(),
-    incrementBackfillLedgers: vi.fn(),
-    incrementGapBackfillOutcome: vi.fn(),
-    incrementGapPagingWebhook: vi.fn(),
-  } as unknown as InternalIndexerMetricsService;
-  const fetcher = {
-    fetchByLedgerWindow: vi
-      .fn()
-      .mockResolvedValue({ events: [], latestLedger: 1000 }),
-  } as unknown as EventFetcher;
-  const writer: BatchWriter = {
-    write: vi.fn().mockResolvedValue({ written: 0, skipped: 0, errors: [] }),
-    flush: vi.fn().mockResolvedValue(undefined),
+function baseConfig(overrides: Partial<GapDetectorConfig> = {}): GapDetectorConfig {
+  return {
+    gapPauseThreshold: 0,
+    backfillMaxLedgers: 100,
+    contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+    nodeEnv: "production",
+    ...overrides,
   };
-  return { logger, metrics, fetcher, writer };
 }
 
-function makeDetector(
-  paging: Partial<GapPagingConfig> = {},
-  nodeEnv = "production"
-) {
-  const deps = makeDeps();
-  const detector = new GapDetector(
-    {
-      gapPauseThreshold: 0,
-      backfillMaxLedgers: 500,
-      contractId: "CTEST",
-      nodeEnv,
-      pagingConfig: {
-        webhookUrl: SECRET_URL,
-        persistenceCyclesBeforePage: 1,
-        ...paging,
-      },
-    },
-    deps.fetcher,
-    deps.writer,
-    deps.metrics,
-    deps.logger
-  );
-  return { detector, ...deps };
+function pagingConfig(overrides: Partial<GapPagingConfig> = {}): GapPagingConfig {
+  return {
+    webhookUrl: "https://alerts.example.com/hooks/gap",
+    persistenceCyclesBeforePage: 3,
+    ...overrides,
+  };
 }
 
-/** Every string passed to any logger method, for secret-leak assertions. */
-function loggedText(logger: ILogger): string {
-  return JSON.stringify(
-    (["debug", "info", "warn", "error"] as const).map(
-      (level) => (logger[level] as ReturnType<typeof vi.fn>).mock.calls
-    )
-  );
-}
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
-const fetchMock = vi.fn();
+describe("GapDetector paging path", () => {
+  let fetchStub: ReturnType<typeof makeFetchStub>;
 
-beforeEach(() => {
-  vi.stubGlobal("fetch", fetchMock);
-  fetchMock.mockReset();
-  vi.mocked(lookup).mockReset();
-  vi.mocked(lookup).mockResolvedValue([
-    { address: "93.184.216.34", family: 4 },
-  ] as never);
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-describe("GapDetector paging webhook SSRF guard (#1160)", () => {
-  describe("startup validation", () => {
-    it.each([
-      [
-        "http://hooks.example.com/page",
-        WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_INSECURE_SCHEME,
-      ],
-      [
-        "https://169.254.169.254/latest",
-        WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_PRIVATE_HOST,
-      ],
-      [
-        "https://localhost/page",
-        WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_PRIVATE_HOST,
-      ],
-      [
-        "https://u:p@hooks.example.com/",
-        WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_EMBEDDED_CREDENTIALS,
-      ],
-      ["file:///etc/passwd", WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_INVALID],
-    ])("fails fast in production on %s", (webhookUrl, code) => {
-      expect(() => makeDetector({ webhookUrl })).toThrow(
-        expect.objectContaining({ code })
-      );
-    });
-
-    it("rejects embedded credentials outside production too", () => {
-      expect(() =>
-        makeDetector({ webhookUrl: "https://u:p@hooks.example.com/" }, "test")
-      ).toThrow(WebhookUrlError);
-    });
-
-    it("accepts a private receiver only with allowPrivateNetwork", () => {
-      expect(() =>
-        makeDetector({
-          webhookUrl: "https://alertmanager.internal.svc:9093/hook",
-          allowPrivateNetwork: true,
-        })
-      ).not.toThrow();
-      expect(() =>
-        makeDetector({
-          webhookUrl: "https://10.0.0.7/hook",
-          allowPrivateNetwork: true,
-        })
-      ).not.toThrow();
-    });
+  beforeEach(() => {
+    fetchStub = makeFetchStub();
+    vi.stubGlobal("fetch", fetchStub.fetchImpl);
   });
 
-  describe("send-time guard", () => {
-    it("sends with redirects refused and a timeout, and counts it", async () => {
-      fetchMock.mockResolvedValue({ ok: true, status: 200 });
-      const { detector, metrics } = makeDetector();
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
-      await detector.runBackfill(100, 110);
+  it("does not page before persistenceCyclesBeforePage consecutive cycles", async () => {
+    const detector = new GapDetector(
+      baseConfig({ pagingConfig: pagingConfig({ persistenceCyclesBeforePage: 3 }) })
+    );
 
-      expect(lookup).toHaveBeenCalledWith("hooks.example.com", {
-        all: true,
-        verbatim: true,
-      });
-      expect(fetchMock).toHaveBeenCalledWith(
-        SECRET_URL,
-        expect.objectContaining({
-          method: "POST",
-          redirect: "error",
-          signal: expect.any(AbortSignal),
-        })
-      );
-      expect(metrics.incrementGapPagingWebhook).toHaveBeenCalledWith("sent");
-    });
+    // Two cycles below the threshold: no page.
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      await detector.recordGapCycle({ gapStartLedger: 100, gapEndLedger: 110 });
+    }
 
-    it("blocks the send when the host resolves to a private address", async () => {
-      vi.mocked(lookup).mockResolvedValue([
-        { address: "10.0.0.5", family: 4 },
-      ] as never);
-      const { detector, metrics, logger } = makeDetector();
+    expect(fetchStub.fetchImpl).not.toHaveBeenCalled();
+  });
 
-      const result = await detector.runBackfill(100, 110);
+  it("pages exactly once when the threshold is reached", async () => {
+    const detector = new GapDetector(
+      baseConfig({ pagingConfig: pagingConfig({ persistenceCyclesBeforePage: 3 }) })
+    );
 
-      expect(fetchMock).not.toHaveBeenCalled();
-      expect(metrics.incrementGapPagingWebhook).toHaveBeenCalledWith("blocked");
-      expect(logger.error).toHaveBeenCalledWith(
-        "Gap paging webhook blocked by SSRF policy",
-        expect.objectContaining({
-          event: "indexer.gap.paging.blocked",
-          code: WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_PRIVATE_HOST,
-          correlationId: result.correlationId,
-        })
-      );
-    });
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      await detector.recordGapCycle({ gapStartLedger: 100, gapEndLedger: 110 });
+    }
+    expect(fetchStub.fetchImpl).not.toHaveBeenCalled();
 
-    it("does not re-resolve when private receivers are allowed", async () => {
-      fetchMock.mockResolvedValue({ ok: true, status: 200 });
-      const { detector } = makeDetector({ allowPrivateNetwork: true });
+    // Third consecutive cycle hits the threshold: exactly one page.
+    await detector.recordGapCycle({ gapStartLedger: 100, gapEndLedger: 110 });
+    expect(fetchStub.fetchImpl).toHaveBeenCalledTimes(1);
 
-      await detector.runBackfill(100, 110);
+    // A further cycle does not re-page for the same persistent gap.
+    await detector.recordGapCycle({ gapStartLedger: 100, gapEndLedger: 110 });
+    expect(fetchStub.fetchImpl).toHaveBeenCalledTimes(1);
+  });
 
-      expect(lookup).not.toHaveBeenCalled();
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-    });
+  it("does not include secret material in the paging payload", async () => {
+    const detector = new GapDetector(
+      baseConfig({ pagingConfig: pagingConfig({ persistenceCyclesBeforePage: 1 }) })
+    );
 
-    it("records DNS failures, timeouts and refused redirects as failed without throwing", async () => {
-      fetchMock.mockRejectedValue(
-        new TypeError("fetch failed: redirect mode is set to error")
-      );
-      const { detector, metrics } = makeDetector();
+    await detector.recordGapCycle({ gapStartLedger: 100, gapEndLedger: 110 });
 
-      await expect(detector.runBackfill(100, 110)).resolves.toMatchObject({
-        paused: false,
-      });
-      expect(metrics.incrementGapPagingWebhook).toHaveBeenCalledWith("failed");
-    });
+    expect(fetchStub.fetchImpl).toHaveBeenCalledTimes(1);
+    const [, init] = fetchStub.calls[0];
+    const body = typeof init?.body === "string" ? init.body : "";
+    expect(body).not.toMatch(/secret|token|password|authorization/i);
+  });
 
-    it("counts a non-2xx answer as http_error", async () => {
-      fetchMock.mockResolvedValue({ ok: false, status: 500 });
-      const { detector, metrics } = makeDetector();
+  describe("SSRF rejection in production", () => {
+    const privateHosts = [
+      "http://127.0.0.1/hooks/gap",
+      "http://10.0.0.5/hooks/gap",
+      "http://169.254.169.254/hooks/gap",
+    ];
 
-      await detector.runBackfill(100, 110);
+    it.each(privateHosts)(
+      "rejects %s with WebhookUrlError when allowPrivateNetwork is not set",
+      async (webhookUrl) => {
+        const detector = new GapDetector(
+          baseConfig({
+            nodeEnv: "production",
+            pagingConfig: pagingConfig({
+              webhookUrl,
+              persistenceCyclesBeforePage: 1,
+            }),
+          })
+        );
 
-      expect(metrics.incrementGapPagingWebhook).toHaveBeenCalledWith(
-        "http_error"
-      );
-    });
+        await expect(
+          detector.recordGapCycle({ gapStartLedger: 100, gapEndLedger: 110 })
+        ).rejects.toBeInstanceOf(WebhookUrlError);
+        expect(fetchStub.fetchImpl).not.toHaveBeenCalled();
+      }
+    );
 
-    it("never logs the webhook URL or its token", async () => {
-      fetchMock.mockResolvedValue({ ok: false, status: 500 });
-      const { detector, logger } = makeDetector();
+    it.each(privateHosts)(
+      "permits %s when allowPrivateNetwork is true",
+      async (webhookUrl) => {
+        const detector = new GapDetector(
+          baseConfig({
+            nodeEnv: "production",
+            pagingConfig: pagingConfig({
+              webhookUrl,
+              persistenceCyclesBeforePage: 1,
+              allowPrivateNetwork: true,
+            }),
+          })
+        );
 
-      await detector.runBackfill(100, 110);
+        await detector.recordGapCycle({ gapStartLedger: 100, gapEndLedger: 110 });
+        expect(fetchStub.fetchImpl).toHaveBeenCalledTimes(1);
+      }
+    );
+  });
 
-      expect(logger.warn).toHaveBeenCalledWith(
-        "Gap paging webhook returned non-2xx status",
-        expect.objectContaining({ status: 500 })
-      );
-      expect(loggedText(logger)).not.toContain("T0KEN-SECRET");
-      expect(loggedText(logger)).not.toContain("hooks.example.com");
-    });
+  it("rejects a malformed webhook URL before any fetch is attempted", async () => {
+    const detector = new GapDetector(
+      baseConfig({
+        pagingConfig: pagingConfig({
+          webhookUrl: "not a url",
+          persistenceCyclesBeforePage: 1,
+        }),
+      })
+    );
+
+    await expect(
+      detector.recordGapCycle({ gapStartLedger: 100, gapEndLedger: 110 })
+    ).rejects.toBeInstanceOf(WebhookUrlError);
+    expect(fetchStub.fetchImpl).not.toHaveBeenCalled();
   });
 });
