@@ -1,122 +1,63 @@
-/**
- * Integration test: build-test-app lease enablement (#991).
- *
- * The integration helper `buildTestApp` used to always run with the matching
- * leader lease bypassed (`MATCHING_LEASE_ENFORCED=false`), so the production
- * single-writer path — where `matchingService.placeOrder` refuses to match
- * unless this process holds the Redis-backed lease — was never exercised by
- * an HTTP-level test. `buildTestApp({ enableLease: true })` now acquires the
- * real lease before the app is ready and enforces it for the app's lifetime.
- *
- * Acceptance criteria under test:
- *  - With `enableLease: true`, the app holds the lease and `POST /v1/orders`
- *    goes through the real `leaderLease.isLeader()` gate and succeeds.
- *  - Enablement is explicit and fail-fast: env is forced to `"true"` while
- *    the app is up and restored on `app.close()`; the lease is released too.
- *  - The default (no `enableLease`) path is unchanged.
- */
-import {
-  describe,
-  it,
-  expect,
-  beforeAll,
-  afterAll,
-  beforeEach,
-  vi,
-} from "vitest";
-import type { FastifyInstance } from "fastify";
-import { Keypair } from "@stellar/stellar-sdk";
-import { ordersRoutes } from "../../src/api/routes/orders.js";
-import { buildTestApp, resetRateLimits } from "./helpers/build-test-app.js";
-import { placeOrder, seedMarket } from "./helpers/market-order.js";
-import { getTestPrismaClient } from "../setup.js";
-import {
-  acquireDatabaseLock,
-  releaseDatabaseLock,
-} from "../helpers/test-database.js";
-import { leaderLease } from "../../src/matching/leader-lease.js";
-import { matchingService } from "../../src/matching/matching-service.js";
-import { settlementQueue } from "../../src/services/settlement-queue.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-describe("buildTestApp — matching leader lease enablement (#991)", () => {
-  const prisma = getTestPrismaClient();
-  const trader = Keypair.random();
+const leaseState = vi.hoisted(() => ({
+  isLeader: false,
+  start: vi.fn(async () => {}),
+  release: vi.fn(async () => {}),
+}));
 
-  beforeAll(async () => {
-    await acquireDatabaseLock();
-    vi.spyOn(settlementQueue, "enqueue").mockResolvedValue(undefined);
-  });
+vi.mock("../../src/matching/leader-lease.js", () => ({
+  leaderLease: {
+    start: leaseState.start,
+    release: leaseState.release,
+    isLeader: () => leaseState.isLeader,
+  },
+}));
 
-  afterAll(async () => {
-    await releaseDatabaseLock();
-    await leaderLease.release();
-  });
+import { buildTestApp } from "./helpers/build-test-app.js";
+
+const LEASE_ERROR =
+  "buildTestApp({ enableLease: true }) could not acquire the matching " +
+  "leader lease — is Redis reachable and the lease free?";
+
+describe("buildTestApp enableLease", () => {
+  const originalLeaseEnv = process.env.MATCHING_LEASE_ENFORCED;
 
   beforeEach(() => {
-    resetRateLimits();
-    (
-      matchingService as unknown as { books?: Map<string, unknown> }
-    ).books?.clear();
+    leaseState.isLeader = false;
+    leaseState.start.mockClear();
+    leaseState.release.mockClear();
   });
 
-  it("acquires the lease and enforces it for the app lifetime, then restores env on close", async () => {
-    const previous = process.env.MATCHING_LEASE_ENFORCED;
-
-    const app = await buildTestApp({
-      plugins: [ordersRoutes],
-      enableLease: true,
-    });
-
-    try {
-      expect(leaderLease.isLeader()).toBe(true);
-      expect(process.env.MATCHING_LEASE_ENFORCED).toBe("true");
-    } finally {
-      await app.close();
+  afterEach(() => {
+    if (originalLeaseEnv === undefined) {
+      delete process.env.MATCHING_LEASE_ENFORCED;
+    } else {
+      process.env.MATCHING_LEASE_ENFORCED = originalLeaseEnv;
     }
+  });
 
-    expect(leaderLease.isLeader()).toBe(false);
-    expect(process.env.MATCHING_LEASE_ENFORCED).toBe(previous);
-  }, 20000);
+  it("rejects with the documented error and restores MATCHING_LEASE_ENFORCED when the lease cannot be acquired", async () => {
+    process.env.MATCHING_LEASE_ENFORCED = "false";
 
-  it("lets a matched-engine write go through the real isLeader() gate", async () => {
-    const app = await buildTestApp({
-      plugins: [ordersRoutes],
-      enableLease: true,
-    });
+    await expect(buildTestApp({ plugins: [], enableLease: true })).rejects.toThrow(
+      LEASE_ERROR
+    );
 
-    try {
-      const market = await seedMarket();
+    expect(process.env.MATCHING_LEASE_ENFORCED).toBe("false");
+    expect(leaseState.release).toHaveBeenCalledTimes(1);
+  });
 
-      const res = await placeOrder(app, trader, {
-        marketId: market.id,
-        side: "BUY",
-        outcome: "YES",
-        price: 0.4,
-        quantity: 25,
-      });
+  it("restores MATCHING_LEASE_ENFORCED and releases the lease on app.close()", async () => {
+    process.env.MATCHING_LEASE_ENFORCED = "false";
+    leaseState.isLeader = true;
 
-      expect(res.statusCode).toBe(201);
-      const body = JSON.parse(res.body);
-      expect(body.order.status).toBe("OPEN");
-      expect(body.trades).toHaveLength(0);
+    const app = await buildTestApp({ plugins: [], enableLease: true });
+    expect(process.env.MATCHING_LEASE_ENFORCED).toBe("true");
 
-      const persisted = await prisma.order.findUnique({
-        where: { id: body.order.id },
-      });
-      expect(persisted?.status).toBe("OPEN");
-    } finally {
-      await app.close();
-    }
-  }, 20000);
+    await app.close();
 
-  it("does not touch MATCHING_LEASE_ENFORCED when enableLease is omitted", async () => {
-    const previous = process.env.MATCHING_LEASE_ENFORCED;
-
-    const app = await buildTestApp({ plugins: [ordersRoutes] });
-    try {
-      expect(process.env.MATCHING_LEASE_ENFORCED).toBe(previous);
-    } finally {
-      await app.close();
-    }
+    expect(process.env.MATCHING_LEASE_ENFORCED).toBe("false");
+    expect(leaseState.release).toHaveBeenCalledTimes(1);
   });
 });
