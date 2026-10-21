@@ -18,6 +18,7 @@ import {
 } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { openApiSpec } from "../../src/api/openapi.js";
+import { MARKET_LIFECYCLE_STATES } from "@vatix/shared";
 import { testUtils } from "../setup.js";
 
 vi.hoisted(() => {
@@ -124,5 +125,20 @@ describe("#454 — OpenAPI contract: all spec paths are reachable (non-404)", ()
         `${method.toUpperCase()} ${url} returned 404`
       ).not.toBe(404);
     }
+  });
+
+  it("#1402 — /v1/markets status enum matches shared lifecycle states", () => {
+    const marketsPath = (
+      openApiSpec.paths as Record<string, Record<string, unknown>>
+    )["/v1/markets"];
+    expect(marketsPath, "/v1/markets path missing from spec").toBeDefined();
+
+    const getOp = marketsPath.get as Record<string, unknown>;
+    const params = (getOp.parameters ?? []) as Array<Record<string, unknown>>;
+    const statusParam = params.find((p) => p.name === "status");
+    expect(statusParam, "status query parameter missing").toBeDefined();
+
+    const schema = statusParam!.schema as Record<string, unknown>;
+    expect(schema.enum).toEqual([...MARKET_LIFECYCLE_STATES]);
   });
 });
