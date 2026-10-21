@@ -140,15 +140,32 @@ export class BullmqDlq {
     return job;
   }
 
+  /**
+   * Re-validate the job is still `failed` immediately before mutating it.
+   * `requireFailedJob` is a read-then-act guard; between its `getState()` and
+   * the mutation another operator (or a stalled-job recovery) can move the
+   * job out of `failed`. Re-reading here closes that window so a state change
+   * surfaces as `DlqJobNotFailedError` instead of mutating a live job.
+   */
+  private async assertStillFailed(
+    jobId: string,
+    job: DlqJobLike
+  ): Promise<void> {
+    const state = await job.getState();
+    if (state !== "failed") throw new DlqJobNotFailedError(jobId, state);
+  }
+
   /** Re-queue one dead-lettered job through the normal worker path. */
   async retry(jobId: string): Promise<void> {
     const job = await this.requireFailedJob(jobId);
+    await this.assertStillFailed(jobId, job);
     await job.retry("failed");
   }
 
   /** Permanently drop one dead-lettered job. */
   async discard(jobId: string): Promise<void> {
     const job = await this.requireFailedJob(jobId);
+    await this.assertStillFailed(jobId, job);
     await job.remove();
   }
 
