@@ -187,6 +187,7 @@ describe("loadIndexerConfig", () => {
   const INDEXER_ENV = {
     STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
     INDEXER_CONTRACT_ID: "CABC123",
+    INDEXER_NETWORK_ID: "testnet",
   };
 
   it("loads valid indexer config with defaults", () => {
@@ -194,7 +195,7 @@ describe("loadIndexerConfig", () => {
     expect(config.stellarRpcUrl).toBe(INDEXER_ENV.STELLAR_RPC_URL);
     expect(config.contractId).toBe("CABC123");
     expect(config.ledgerWindowSize).toBe(100);
-    expect(config.networkId).toBe("mainnet");
+    expect(config.networkId).toBe("testnet");
     expect(config.cursorKey).toBe("ingestion");
   });
 
@@ -202,13 +203,17 @@ describe("loadIndexerConfig", () => {
     const config = loadIndexerConfig({
       STELLAR_RPC_URL: INDEXER_ENV.STELLAR_RPC_URL,
       MARKET_CONTRACT_ID: "CMARKET",
+      INDEXER_NETWORK_ID: "testnet",
     });
     expect(config.contractId).toBe("CMARKET");
   });
 
   it("throws on missing contract id", () => {
     expect(() =>
-      loadIndexerConfig({ STELLAR_RPC_URL: INDEXER_ENV.STELLAR_RPC_URL })
+      loadIndexerConfig({
+        STELLAR_RPC_URL: INDEXER_ENV.STELLAR_RPC_URL,
+        INDEXER_NETWORK_ID: "testnet",
+      })
     ).toThrow("INDEXER_CONTRACT_ID");
   });
 
@@ -227,60 +232,54 @@ describe("loadIndexerConfig", () => {
       "INDEXER_INGESTION_INTERVAL_MS"
     );
   });
-});
 
-describe("loadOracleWorkerConfig", () => {
-  const ORACLE_WORKER_ENV = {
-    REDIS_URL: "redis://localhost:6379",
-    DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
-  };
+  describe("INDEXER_NETWORK_ID validation", () => {
+    it("throws when INDEXER_NETWORK_ID is absent", () => {
+      const env = {
+        STELLAR_RPC_URL: INDEXER_ENV.STELLAR_RPC_URL,
+        INDEXER_CONTRACT_ID: INDEXER_ENV.INDEXER_CONTRACT_ID,
+      };
+      try {
+        loadIndexerConfig(env);
+        throw new Error("expected to throw");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConfigValidationError);
+        expect((err as ConfigValidationError).variable).toBe(
+          "INDEXER_NETWORK_ID"
+        );
+        expect((err as Error).message).toContain("INDEXER_NETWORK_ID");
+      }
+    });
 
-  it("loads valid oracle worker config with defaults", () => {
-    const config = loadOracleWorkerConfig(ORACLE_WORKER_ENV);
-    expect(config.redisUrl).toBe(ORACLE_WORKER_ENV.REDIS_URL);
-    expect(config.databaseUrl).toBe(ORACLE_WORKER_ENV.DATABASE_URL);
-    expect(config.submissionPollIntervalMs).toBe(5000);
-    expect(config.submissionMaxRetries).toBe(3);
-    expect(config.submissionVisibilityTimeoutMs).toBe(300000);
-    expect(config.logLevel).toBe("info");
-  });
+    it("throws when INDEXER_NETWORK_ID is empty", () => {
+      const env = { ...INDEXER_ENV, INDEXER_NETWORK_ID: "" };
+      expect(() => loadIndexerConfig(env)).toThrow("INDEXER_NETWORK_ID");
+    });
 
-  it("throws on missing REDIS_URL", () => {
-    const env = { ...ORACLE_WORKER_ENV, REDIS_URL: undefined };
-    expect(() => loadOracleWorkerConfig(env)).toThrow("REDIS_URL");
-  });
+    it("throws when INDEXER_NETWORK_ID is unsupported", () => {
+      const env = { ...INDEXER_ENV, INDEXER_NETWORK_ID: "devnet" };
+      try {
+        loadIndexerConfig(env);
+        throw new Error("expected to throw");
+      } catch (err) {
+        expect(err).toBeInstanceOf(ConfigValidationError);
+        expect((err as ConfigValidationError).variable).toBe(
+          "INDEXER_NETWORK_ID"
+        );
+        expect((err as Error).message).toContain("INDEXER_NETWORK_ID");
+      }
+    });
 
-  it("throws on missing DATABASE_URL", () => {
-    const env = { ...ORACLE_WORKER_ENV, DATABASE_URL: undefined };
-    expect(() => loadOracleWorkerConfig(env)).toThrow("DATABASE_URL");
-  });
-
-  it("throws when ORACLE_SUBMISSION_POLL_INTERVAL_MS is below minimum", () => {
-    const env = {
-      ...ORACLE_WORKER_ENV,
-      ORACLE_SUBMISSION_POLL_INTERVAL_MS: "100",
-    };
-    expect(() => loadOracleWorkerConfig(env)).toThrow(
-      "ORACLE_SUBMISSION_POLL_INTERVAL_MS"
-    );
-  });
-});
-
-describe("loadFinalizationConfig", () => {
-  it("loads valid finalization config with defaults", () => {
-    const config = loadFinalizationConfig({});
-    expect(config.intervalMs).toBe(60000);
-    // Defaults to the on-chain window (ORACLE_CHALLENGE_WINDOW_SECONDS), not a stub.
-    expect(config.challengeWindowSeconds).toBe(86400);
-    expect(config.onChainChallengeWindowSeconds).toBe(86400);
-    expect(config.challengeWindowOverridden).toBe(false);
-    expect(config.logLevel).toBe("info");
-  });
-
-  it("throws when FINALIZATION_INTERVAL_MS is below minimum", () => {
-    const env = { FINALIZATION_INTERVAL_MS: "500" };
-    expect(() => loadFinalizationConfig(env)).toThrow(
-      "FINALIZATION_INTERVAL_MS"
-    );
+    it("returns the explicitly supplied supported value", () => {
+      const config = loadIndexerConfig({
+        ...INDEXER_ENV,
+        INDEXER_NETWORK_ID: "mainnet",
+      });
+      expect(config.networkId).toBe("mainnet");
+    });
   });
 });
+
+describe("loadOracleWorkerConfig", () => 
+
+/* … truncated 2021 chars — edit only what you need near the top … */
