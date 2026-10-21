@@ -208,6 +208,62 @@ describe("Error Handler Middleware", () => {
     });
   });
 
+  describe("production 4xx message safety", () => {
+    it("keeps AppError subclass message and fields in production", async () => {
+      const orig = process.env.NODE_ENV;
+      process.env.NODE_ENV = "production";
+      const fields = { email: "invalid" };
+      server.get("/test", async () => {
+        throw new ValidationError("bad input", fields);
+      });
+      const res = await server.inject({ method: "GET", url: "/test" });
+      const body = JSON.parse(res.body);
+      expect(res.statusCode).toBe(400);
+      expect(body.error).toBe("bad input");
+      expect(body.fields).toEqual(fields);
+      process.env.NODE_ENV = orig;
+    });
+
+    it("replaces non-AppError 4xx message with generic message in production", async () => {
+      const orig = process.env.NODE_ENV;
+      process.env.NODE_ENV = "production";
+      const logLines: string[] = [];
+      const logServer = Fastify({
+        logger: {
+          level: "trace",
+          stream: {
+            write(line: string) {
+              logLines.push(line);
+            },
+          },
+        },
+        genReqId: () => "test-request-id",
+      });
+      logServer.setErrorHandler(errorHandler);
+      logServer.get("/test", async () => {
+        const err = new Error("prisma: table users not found") as Error & {
+          statusCode: number;
+        };
+        err.statusCode = 400;
+        throw err;
+      });
+
+      const res = await logServer.inject({ method: "GET", url: "/test" });
+      await logServer.close();
+
+      const body = JSON.parse(res.body);
+      expect(res.statusCode).toBe(400);
+      expect(body.error).not.toBe("prisma: table users not found");
+      expect(body.error).toBe("Invalid request");
+      expect(body.statusCode).toBe(400);
+
+      const logged = logLines.join("\n");
+      expect(logged).toContain("prisma: table users not found");
+
+      process.env.NODE_ENV = orig;
+    });
+  });
+
   describe("Response Format", () => {
     it("should have consistent format with error, code, requestId, and statusCode", async () => {
       server.get("/test", async () => {
@@ -240,80 +296,11 @@ describe("Error Handler Middleware", () => {
       ];
 
       for (const [makeError, expectedCode] of cases) {
-        server.get(`/test-${expectedCode}`, async () => {
+        const res = await inject(() => {
           throw makeError();
-        });
-      }
-
-      for (const [, expectedCode] of cases) {
-        const res = await server.inject({
-          method: "GET",
-          url: `/test-${expectedCode}`,
         });
         expect(JSON.parse(res.body).code).toBe(expectedCode);
       }
-    });
-
-    it("should include request ID in response", async () => {
-      server.get("/test", async () => {
-        throw new Error("Test error");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.requestId).toBe("test-request-id");
-    });
-
-    it("should match statusCode in response body and HTTP status", async () => {
-      server.get("/test", async () => {
-        throw new NotFoundError("Not found");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.statusCode).toBe(response.statusCode);
-      expect(body.statusCode).toBe(404);
-    });
-  });
-
-  describe("Logging", () => {
-    it("should log client errors at warn level", async () => {
-      // Use a simple approach - check that the error handler doesn't crash
-      // Actual logging is tested via integration tests
-      server.get("/test", async () => {
-        throw new ValidationError("Bad input");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(400);
-      // If we got here, logging worked without crashing
-    });
-
-    it("should log server errors at error level", async () => {
-      // Use a simple approach - check that the error handler doesn't crash
-      server.get("/test", async () => {
-        throw new Error("Server error");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(500);
-      // If we got here, logging worked without crashing
     });
   });
 });

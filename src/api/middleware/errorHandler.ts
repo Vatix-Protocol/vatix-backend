@@ -44,6 +44,15 @@ function resolveCode(error: FastifyError | Error): string {
   return "INTERNAL_ERROR";
 }
 
+/**
+ * Whether error.message is authored by the API layer and safe to expose to
+ * clients. Only AppError subclasses (and explicitly handled classes) qualify;
+ * arbitrary upstream messages (Prisma, Stellar SDK, etc.) must not leak.
+ */
+function isSafeToExpose(error: FastifyError | Error): boolean {
+  return error instanceof AppError || error instanceof MarketTransitionError;
+}
+
 export async function errorHandler(
   error: FastifyError | Error,
   request: FastifyRequest,
@@ -68,7 +77,11 @@ export async function errorHandler(
 
   const isProduction = process.env.NODE_ENV === "production";
   const message =
-    isClientError || !isProduction ? error.message : "Internal server error";
+    isProduction && !isSafeToExpose(error)
+      ? isClientError
+        ? "Invalid request"
+        : "Internal server error"
+      : error.message;
 
   const body: ErrorResponse = {
     error: message,
