@@ -5,6 +5,10 @@ export {
   parseResolutionEvents,
 } from "./resolutionParser.js";
 export {
+  parseMarketCreatedEvent,
+  parseMarketCreatedEvents,
+} from "./marketCreatedParser.js";
+export {
   parseEventId,
   generateIdempotencyKey,
   withIdempotencyKey,
