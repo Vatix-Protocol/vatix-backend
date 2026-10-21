@@ -27,6 +27,25 @@ if (!ALLOWED_HOSTS.some((h) => BASE_URL.includes(h))) {
   );
 }
 
+// Guardrail: refuse to run when MARKET_ID is empty. Sending marketId: "" on
+// every order produces 400-class validation rejections that pass the
+// "status is not 5xx" check, making the soak produce meaningless numbers.
+if (!MARKET_ID) {
+  throw new Error(
+    `MARKET_ID is required. Provide it with: ` +
+      `k6 run -e MARKET_ID=<id> scripts/load/order-placement-soak.js`
+  );
+}
+
+// Warning: missing AUTH_HEADER is allowed (some envs don't enforce auth) but
+// the operator should know the run is unauthenticated so results are labelled.
+if (!AUTH_HEADER) {
+  console.warn(
+    "[order-placement-soak] AUTH_HEADER is not set — running unauthenticated. " +
+      "Provide it with: k6 run -e AUTH_HEADER=<token> ... if the target enforces auth."
+  );
+}
+
 export const options = {
   scenarios: {
     order_placement_soak: {
