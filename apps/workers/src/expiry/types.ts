@@ -21,6 +21,11 @@ export interface ExpiryJobResult {
    * truncated by `maxRunMs`. Zero when the run was not truncated.
    */
   unprocessedCount: number;
+  /**
+   * True when the candidate query itself failed, so the run never actually
+   * processed any candidates. Distinguishes a failed run from an empty one.
+   */
+  queryFailed: boolean;
   candidates: ExpiryCandidateResult[];
   startedAt: string;
   completedAt: string;

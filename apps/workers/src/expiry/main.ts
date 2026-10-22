@@ -37,12 +37,23 @@ async function bootstrap(): Promise<void> {
     const pollPromise = (async () => {
       try {
         const result = await job.run();
+        if (result.queryFailed) {
+          logger.warn("Expiry worker poll completed with a failed candidate query", {
+            component: "expiry-worker",
+            totalCandidates: result.totalCandidates,
+            expiredCount: result.expiredCount,
+            erroredCount: result.erroredCount,
+            skippedCount: result.skippedCount,
+            queryFailed: result.queryFailed,
+          });
+        }
         logger.info("Expiry worker poll complete", {
           component: "expiry-worker",
           totalCandidates: result.totalCandidates,
           expiredCount: result.expiredCount,
           erroredCount: result.erroredCount,
           skippedCount: result.skippedCount,
+          queryFailed: result.queryFailed,
         });
       } catch (error) {
         logger.error("Expiry worker poll failed", {
