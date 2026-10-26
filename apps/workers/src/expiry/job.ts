@@ -76,6 +76,7 @@ export class ExpiryJob {
       });
     } catch (error) {
       this.logger.error("Expiry job failed to query candidates", {
+        runId,
         error: error instanceof Error ? error.message : String(error),
       });
       const completedAt = new Date();
@@ -83,7 +84,8 @@ export class ExpiryJob {
         totalCandidates: 0,
         expiredCount: 0,
         skippedCount: 0,
-        erroredCount: 0,
+        erroredCount: 1,
+        queryFailed: true,
         truncated: false,
         unprocessedCount: 0,
         candidates: [],
@@ -168,6 +170,7 @@ export class ExpiryJob {
       expiredCount,
       erroredCount,
       skippedCount,
+      queryFailed: false,
       truncated,
       unprocessedCount,
       candidates: results,

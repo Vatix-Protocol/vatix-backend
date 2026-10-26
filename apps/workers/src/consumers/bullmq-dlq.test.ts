@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   BullmqDlq,
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
   DlqJobNotFoundError,
   DlqJobNotFailedError,
   isDlqQueue,
@@ -83,6 +85,35 @@ describe("BullmqDlq", () => {
     });
   });
 
+  it("list defaults to DEFAULT_LIMIT entries from offset 0", async () => {
+    const jobs = Array.from({ length: DEFAULT_LIMIT + 5 }, (_, i) =>
+      makeJob({ id: `job-${i}` })
+    );
+    const queue = makeQueue(jobs);
+    const dlq = new BullmqDlq(queue);
+    const entries = await dlq.list();
+    expect(entries).toHaveLength(DEFAULT_LIMIT);
+    expect(queue.getFailed).toHaveBeenCalledWith(0, DEFAULT_LIMIT - 1);
+  });
+
+  it("list forwards a non-zero offset to getFailed", async () => {
+    const jobs = Array.from({ length: 10 }, (_, i) =>
+      makeJob({ id: `job-${i}` })
+    );
+    const queue = makeQueue(jobs);
+    const dlq = new BullmqDlq(queue);
+    const entries = await dlq.list({ offset: 5, limit: 3 });
+    expect(queue.getFailed).toHaveBeenCalledWith(5, 7);
+    expect(entries.map((e) => e.jobId)).toEqual(["job-5", "job-6", "job-7"]);
+  });
+
+  it("list clamps an oversized limit to MAX_LIMIT", async () => {
+    const queue = makeQueue([]);
+    const dlq = new BullmqDlq(queue);
+    await dlq.list({ limit: MAX_LIMIT * 10 });
+    expect(queue.getFailed).toHaveBeenCalledWith(0, MAX_LIMIT - 1);
+  });
+
   it("retry re-queues a failed job", async () => {
     const job = makeJob();
     const dlq = new BullmqDlq(makeQueue([job]));
@@ -106,11 +137,37 @@ describe("BullmqDlq", () => {
     expect(job.retry).not.toHaveBeenCalled();
   });
 
+  it("retry refuses a job that leaves the failed state after the guard read", async () => {
+    const getState = vi
+      .fn()
+      .mockResolvedValueOnce("failed")
+      .mockResolvedValueOnce("active");
+    const job = makeJob({ getState });
+    const dlq = new BullmqDlq(makeQueue([job]));
+    await expect(dlq.retry("job-1")).rejects.toBeInstanceOf(
+      DlqJobNotFailedError
+    );
+    expect(job.retry).not.toHaveBeenCalled();
+  });
+
   it("discard removes a failed job", async () => {
     const job = makeJob();
     const dlq = new BullmqDlq(makeQueue([job]));
     await dlq.discard("job-1");
     expect(job.remove).toHaveBeenCalledTimes(1);
+  });
+
+  it("discard refuses a job that leaves the failed state after the guard read", async () => {
+    const getState = vi
+      .fn()
+      .mockResolvedValueOnce("failed")
+      .mockResolvedValueOnce("active");
+    const job = makeJob({ getState });
+    const dlq = new BullmqDlq(makeQueue([job]));
+    await expect(dlq.discard("job-1")).rejects.toBeInstanceOf(
+      DlqJobNotFailedError
+    );
+    expect(job.remove).not.toHaveBeenCalled();
   });
 
   it("retryAll dry-run reports without retrying", async () => {

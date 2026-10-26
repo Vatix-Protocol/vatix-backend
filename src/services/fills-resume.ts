@@ -1,6 +1,6 @@
 import { redis } from "./redis.js";
 import { getPrismaClient } from "./prisma.js";
-import { logger } from "../../../packages/shared/src/logger.js";
+import { logger } from "../../packages/shared/src/logger.js";
 
 /**
  * Fills SSE resume cursor: opaque string representing a point in the trade stream

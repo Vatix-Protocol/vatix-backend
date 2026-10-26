@@ -1,118 +1,107 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { requireEnv } from "./requireEnv.js";
 
-describe("requireEnv", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
+function makeLogger() {
+  return { error: vi.fn() };
+}
 
+describe("requireEnv", () => {
   it("does not exit when all required keys are present", () => {
-    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("process.exit called");
+    const exit = vi.fn();
+    const logger = makeLogger();
+
+    requireEnv(["FOO", "BAR"], {
+      env: { FOO: "hello", BAR: "world" },
+      logger,
+      exit,
     });
 
-    expect(() =>
-      requireEnv(["FOO", "BAR"], { FOO: "hello", BAR: "world" })
-    ).not.toThrow();
-
     expect(exit).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it("exits with code 1 when a single key is missing", () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("process.exit called");
-    });
+    const exit = vi.fn();
+    const logger = makeLogger();
 
-    expect(() => requireEnv(["MISSING_KEY"], {})).toThrow(
-      "process.exit called"
-    );
+    requireEnv(["MISSING_KEY"], { env: {}, logger, exit });
+
     expect(exit).toHaveBeenCalledWith(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      "Missing required environment variables",
+      { missing: ["MISSING_KEY"], count: 1 }
+    );
   });
 
   it("exits with code 1 when multiple keys are missing", () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("process.exit called");
-    });
+    const exit = vi.fn();
+    const logger = makeLogger();
 
-    expect(() =>
-      requireEnv(["KEY_A", "KEY_B", "KEY_C"], { KEY_A: "present" })
-    ).toThrow("process.exit called");
+    requireEnv(["KEY_A", "KEY_B", "KEY_C"], {
+      env: { KEY_A: "present" },
+      logger,
+      exit,
+    });
 
     expect(exit).toHaveBeenCalledWith(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      "Missing required environment variables",
+      { missing: ["KEY_B", "KEY_C"], count: 2 }
+    );
   });
 
-  it("outputs a structured JSON log with appropriate fields and lists exactly which keys are missing", () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("process.exit called");
+  it("reports exactly which keys are missing with structured fields", () => {
+    const exit = vi.fn();
+    const logger = makeLogger();
+
+    requireEnv(["PRESENT", "ABSENT_ONE", "ABSENT_TWO"], {
+      env: { PRESENT: "value" },
+      logger,
+      exit,
     });
 
-    expect(() =>
-      requireEnv(["PRESENT", "ABSENT_ONE", "ABSENT_TWO"], {
-        PRESENT: "value",
-      })
-    ).toThrow();
-
-    const rawMessage: string = errorSpy.mock.calls[0][0];
-    const parsed = JSON.parse(rawMessage);
-
-    expect(parsed).toHaveProperty("ts");
-    expect(parsed.level).toBe("error");
-    expect(parsed.message).toBe("Missing required environment variables");
-    expect(parsed.missing).toEqual(["ABSENT_ONE", "ABSENT_TWO"]);
-    expect(parsed.count).toBe(2);
-  });
-
-  it("outputs structured log with count=1 when only one key is missing", () => {
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("process.exit called");
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    const [message, fields] = logger.error.mock.calls[0];
+    expect(message).toBe("Missing required environment variables");
+    expect(fields).toEqual({
+      missing: ["ABSENT_ONE", "ABSENT_TWO"],
+      count: 2,
     });
-
-    expect(() => requireEnv(["MISSING_KEY"], {})).toThrow();
-
-    const rawMessage: string = errorSpy.mock.calls[0][0];
-    const parsed = JSON.parse(rawMessage);
-
-    expect(parsed).toHaveProperty("ts");
-    expect(parsed.level).toBe("error");
-    expect(parsed.message).toBe("Missing required environment variables");
-    expect(parsed.missing).toEqual(["MISSING_KEY"]);
-    expect(parsed.count).toBe(1);
   });
 
   it("treats an empty-string value as missing", () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("process.exit called");
-    });
+    const exit = vi.fn();
+    const logger = makeLogger();
 
-    expect(() => requireEnv(["EMPTY_KEY"], { EMPTY_KEY: "" })).toThrow(
-      "process.exit called"
-    );
+    requireEnv(["EMPTY_KEY"], { env: { EMPTY_KEY: "" }, logger, exit });
+
     expect(exit).toHaveBeenCalledWith(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      "Missing required environment variables",
+      { missing: ["EMPTY_KEY"], count: 1 }
+    );
   });
 
   it("treats a whitespace-only value as missing", () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("process.exit called");
-    });
+    const exit = vi.fn();
+    const logger = makeLogger();
 
-    expect(() => requireEnv(["BLANK_KEY"], { BLANK_KEY: "   " })).toThrow(
-      "process.exit called"
-    );
+    requireEnv(["BLANK_KEY"], { env: { BLANK_KEY: "   " }, logger, exit });
+
     expect(exit).toHaveBeenCalledWith(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      "Missing required environment variables",
+      { missing: ["BLANK_KEY"], count: 1 }
+    );
   });
 
   it("does not exit when the key list is empty", () => {
-    const exit = vi.spyOn(process, "exit").mockImplementation(() => {
-      throw new Error("process.exit called");
-    });
+    const exit = vi.fn();
+    const logger = makeLogger();
 
-    expect(() => requireEnv([], {})).not.toThrow();
+    requireEnv([], { env: {}, logger, exit });
+
     expect(exit).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
   });
 });

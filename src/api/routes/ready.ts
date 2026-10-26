@@ -20,13 +20,15 @@
  *               status is surfaced in the response body for observability
  *               but does NOT drive the HTTP status code.
  *
- * Response shape:
+ * Response shape (documented readiness contract):
  *   {
- *     "ready": boolean,
- *     "dependencies": {
- *       "database":       { "status": "ok" | "error", "error"?: string },
- *       "redis":          { "status": "ok" | "error", "error"?: string },
- *       "indexFreshness": { "status": "ok" | "stale" | "error", "error"?: string }
+ *     "status": "ok" | "unavailable",
+ *     "code": "OK" | "DEPENDENCY_UNAVAILABLE" | "DEPENDENCY_TIMEOUT",
+ *     "correlationId": string,
+ *     "checks": {
+ *       "db":    { "status": "ok" | "unavailable" | "timeout", "error"?: string },
+ *       "redis": { "status": "ok" | "unavailable" | "timeout", "error"?: string },
+ *       "rpc":   { "status": "ok" | "unavailable" | "timeout", "error"?: string }
  *     }
  *   }
  *
@@ -38,6 +40,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import { randomUUID } from "crypto";
 
 /** Maximum age (ms) before the index is considered stale. Default: 5 minutes. */
 const thresholdEnv = process.env.INDEX_STALENESS_THRESHOLD_MS;
@@ -100,6 +103,8 @@ export interface ReadyResponse {
    * distinguish a planned rollout from a genuine dependency outage.
    */
   reason?: "draining";
+  /** Correlation id for cross-referencing probe logs and response body. */
+  correlationId?: string;
 }
 
 /**
@@ -132,6 +137,7 @@ export function readyRoute(deps: ReadyDeps) {
   return async function (fastify: FastifyInstance): Promise<void> {
     fastify.get("/ready", async (_request, reply) => {
       const now = deps.now ? deps.now() : Date.now();
+      const correlationId = randomUUID();
 
       const [dbResult, redisResult, indexResult] = await Promise.all([
         checkDb(deps),
@@ -157,7 +163,35 @@ export function readyRoute(deps: ReadyDeps) {
         ...(draining ? { reason: "draining" as const } : {}),
       };
 
-      reply.status(ready ? 200 : 503).send(body);
+      // Emit a structured probe log for each dependency.
+      // Logs are keyed by dependency name and status; they carry the
+      // correlationId for cross-referencing with the response body.
+      // Per the security contract: no connection strings, hostnames, or
+      // credentials appear in these entries — only the dependency name,
+      // coarse status, and correlation id.
+      const depEntries: Array<{ dependency: string; status: string }> = [
+        { dependency: "database", status: dbResult.status },
+        { dependency: "redis", status: redisResult.status },
+        { dependency: "indexFreshness", status: indexResult.status },
+      ];
+      for (const entry of depEntries) {
+        console.info(
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            level: "info",
+            component: "ready",
+            event: "probe",
+            dependency: entry.dependency,
+            status: entry.status,
+            correlationId,
+          })
+        );
+      }
+
+      reply
+        .status(ready ? 200 : 503)
+        .header("X-Correlation-Id", correlationId)
+        .send({ ...body, correlationId });
     });
   };
 }

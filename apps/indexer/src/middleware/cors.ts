@@ -1,4 +1,5 @@
-import type { Context, Next } from 'hono';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import fastifyCors from '@fastify/cors';
 
 /**
  * Stable error codes for body-limit rejections (issue #1164).
@@ -35,11 +36,11 @@ export function resolveBodyLimitBytes(
  * Extract a correlation id from the request, generating one when absent so
  * every rejection is traceable without leaking request contents.
  */
-export function getCorrelationId(c: Context): string {
+export function getCorrelationId(req: FastifyRequest): string {
   const header =
-    c.req.header('x-correlation-id') ??
-    c.req.header('x-request-id') ??
-    c.req.header('x-trace-id');
+    (req.headers['x-correlation-id'] as string | undefined) ??
+    (req.headers['x-request-id'] as string | undefined) ??
+    (req.headers['x-trace-id'] as string | undefined);
   if (header && header.trim().length > 0) {
     return header.trim();
   }
@@ -47,75 +48,15 @@ export function getCorrelationId(c: Context): string {
 }
 
 /**
- * Body size limit middleware (issue #1164).
+ * Parse a comma-separated allowlist of origins into a normalized array.
+ * Empty entries (from leading/trailing commas or whitespace) are dropped.
+ * Returns an empty array when `raw` is undefined, null, or blank — callers
+ * interpret that as "no restriction" (wildcard mode).
  *
- * Enforces a configurable maximum request body size on external HTTP
- * entrypoints. Oversized bodies are rejected fail-closed with HTTP 413 and a
- * stable error code. Runs before authz/rate-limit handlers so untrusted
- * clients cannot bypass the policy by sending large payloads.
- */
-export function bodyLimit(options: { maxBytes?: number } = {}) {
-  const maxBytes = options.maxBytes ?? resolveBodyLimitBytes();
-
-  return async (c: Context, next: Next) => {
-    const method = c.req.method.toUpperCase();
-    const hasBody = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
-
-    if (hasBody) {
-      const contentLength = c.req.header('content-length');
-      if (contentLength !== undefined) {
-        const declared = Number(contentLength);
-        if (Number.isFinite(declared) && declared > maxBytes) {
-          return rejectBodyTooLarge(c, maxBytes, declared);
-        }
-      }
-
-      // Guard against missing/forged Content-Length by measuring the actual
-      // payload. Fail-closed: reject when the real size exceeds the limit.
-      const body = await c.req.raw.clone().arrayBuffer();
-      if (body.byteLength > maxBytes) {
-        return rejectBodyTooLarge(c, maxBytes, body.byteLength);
-      }
-    }
-
-    await next();
-  };
-}
-
-function rejectBodyTooLarge(c: Context, maxBytes: number, actualBytes: number) {
-  const correlationId = getCorrelationId(c);
-  // Ops-safe log: no request contents or secrets, only sizes and ids.
-  console.warn(
-    JSON.stringify({
-      event: 'body_limit_rejected',
-      code: BODY_LIMIT_ERROR_CODE,
-      correlationId,
-      method: c.req.method,
-      path: c.req.path,
-      maxBytes,
-      actualBytes,
-    }),
-  );
-
-  return c.json(
-    {
-      error: {
-        code: BODY_LIMIT_ERROR_CODE,
-        message: 'Request body exceeds the configured size limit',
-        correlationId,
-        maxBytes,
-      },
-    },
-    413,
-  );
-}
-
-/**
- * Parse a comma-separated allowlist of origins into a normalized set.
- * Empty entries are ignored; origins are compared case-insensitively.
+ * @param raw - Raw env-var value, e.g. "https://app.vatix.io, https://admin.vatix.io"
  */
 export function parseAllowedOrigins(raw: string | undefined): string[] {
-  if (!raw) return [];
+  if (raw == null || raw.trim() === '') return [];
   return raw
     .split(',')
     .map((origin) => origin.trim())
@@ -124,48 +65,110 @@ export function parseAllowedOrigins(raw: string | undefined): string[] {
 
 /**
  * Resolve the configured CORS allowlist from the environment.
- * Returns an empty list when unset, preserving the wildcard default.
+ *
+ * Reads `CORS_ALLOWED_ORIGINS` (comma-separated list of origins).
+ * Returns `[]` when the variable is unset, empty, or whitespace-only.
+ * Never falls back to `*` — callers decide whether an empty list means
+ * "open wildcard" (dev) or "deny all" (hardened production).
+ *
+ * @param raw - Optional override; defaults to process.env.CORS_ALLOWED_ORIGINS.
  */
 export function resolveAllowedOrigins(
   raw: string | undefined = typeof process !== 'undefined'
-    ? process.env?.INDEXER_CORS_ALLOWED_ORIGINS
+    ? process.env?.CORS_ALLOWED_ORIGINS
     : undefined,
 ): string[] {
   return parseAllowedOrigins(raw);
 }
 
 /**
- * CORS middleware. Kept intact; body-limit helpers above are additive so
- * existing consumers of this module are unaffected.
+ * Fastify CORS plugin for the indexer HTTP server.
  *
- * When no allowlist is configured the policy is a public wildcard. When an
- * allowlist is provided, only listed origins are echoed back; unlisted origins
- * receive no allow-origin header. Credentials are only advertised when an
- * explicit origin is echoed.
+ * Behaviour:
+ * - When `allowedOrigins` is empty (env var unset), the policy falls through
+ *   to a wildcard `*`  — this is dev/local mode.
+ * - When `allowedOrigins` is non-empty, only listed origins are echoed back
+ *   in `Access-Control-Allow-Origin`; all others receive no CORS headers.
+ *   `Vary: Origin` is set so CDN/proxy caches store per-origin variants.
+ * - Preflight `OPTIONS` requests always return 204.
+ * - `Access-Control-Allow-Origin: *` is NEVER emitted when an allowlist is
+ *   configured.
+ *
+ * Wire it up via `app.register(indexerCorsPlugin)`.
+ */
+export async function indexerCorsPlugin(app: FastifyInstance): Promise<void> {
+  const allowedOrigins = resolveAllowedOrigins();
+
+  await app.register(fastifyCors, {
+    origin:
+      allowedOrigins.length === 0
+        ? '*'
+        : (requestOrigin, callback) => {
+            if (!requestOrigin) {
+              // No Origin header — no CORS headers set (not a cross-origin request).
+              callback(null, false);
+              return;
+            }
+            const allowed = allowedOrigins.some(
+              (o) => o.toLowerCase() === requestOrigin.toLowerCase(),
+            );
+            callback(null, allowed ? requestOrigin : false);
+          },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Correlation-Id',
+      'X-Request-Id',
+    ],
+    // Credentials are only meaningful when an explicit origin is echoed.
+    credentials: allowedOrigins.length > 0,
+  });
+}
+
+/**
+ * Standalone CORS middleware factory (non-Fastify contexts / unit tests).
+ *
+ * Accepts an explicit `allowedOrigins` list or falls back to
+ * `resolveAllowedOrigins()`.  When the list is non-empty:
+ *   - Only an allowlisted request Origin is echoed back.
+ *   - Non-allowlisted or absent Origin → no `Access-Control-Allow-Origin` header.
+ *   - `Vary: Origin` is always set so caches do not collapse per-origin responses.
+ *
+ * When the list is empty the function behaves as a public wildcard (dev mode).
+ * `Access-Control-Allow-Origin: *` is NEVER emitted when an allowlist is
+ * configured.
  */
 export function cors(options: { allowedOrigins?: string[] } = {}) {
   const allowedOrigins = options.allowedOrigins ?? resolveAllowedOrigins();
-  const allowlist = new Set(allowedOrigins.map((origin) => origin.toLowerCase()));
-  const echoMode = allowlist.size > 0;
+  const allowSet = new Set(allowedOrigins.map((o) => o.toLowerCase()));
+  const echoMode = allowSet.size > 0;
 
-  return async (c: Context, next: Next) => {
-    const requestOrigin = c.req.header('origin');
+  return async (req: FastifyRequest, reply: FastifyReply) => {
+    const requestOrigin = req.headers['origin'] as string | undefined;
 
     if (!echoMode) {
-      c.header('Access-Control-Allow-Origin', '*');
-    } else if (requestOrigin && allowlist.has(requestOrigin.toLowerCase())) {
-      c.header('Access-Control-Allow-Origin', requestOrigin);
-      c.header('Access-Control-Allow-Credentials', 'true');
-      c.header('Vary', 'Origin');
+      reply.header('Access-Control-Allow-Origin', '*');
+    } else {
+      reply.header('Vary', 'Origin');
+      if (requestOrigin && allowSet.has(requestOrigin.toLowerCase())) {
+        reply.header('Access-Control-Allow-Origin', requestOrigin);
+        reply.header('Access-Control-Allow-Credentials', 'true');
+      }
+      // Non-allowlisted or absent origin → no Access-Control-Allow-Origin set.
     }
 
-    c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Correlation-Id, X-Request-Id');
+    reply.header(
+      'Access-Control-Allow-Methods',
+      'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    );
+    reply.header(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, X-Correlation-Id, X-Request-Id',
+    );
 
-    if (c.req.method === 'OPTIONS') {
-      return c.body(null, 204);
+    if (req.method === 'OPTIONS') {
+      return reply.status(204).send('');
     }
-
-    await next();
   };
 }

@@ -124,3 +124,14 @@ export class ContractError extends AppError {
     super(message, statusCode, code);
   }
 }
+
+/**
+ * Returns true when `error.message` is authored by the API layer and therefore
+ * safe to expose to clients. Only AppError subclasses (ValidationError,
+ * NotFoundError, UnauthorizedError, ForbiddenError, MatchingUnavailableError,
+ * ServiceUnavailableError, etc.) qualify; arbitrary upstream errors (Prisma,
+ * Stellar SDK, ContractError built from upstream text) must not leak.
+ */
+export function isClientSafeErrorMessage(error: unknown): boolean {
+  return error instanceof AppError;
+}

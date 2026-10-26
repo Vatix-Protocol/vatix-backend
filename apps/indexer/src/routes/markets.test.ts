@@ -118,6 +118,61 @@ describe("GET /markets", () => {
     expect(response.statusCode).toBe(400);
   });
 
+  it("returns 400 with an error envelope for a non-numeric limit", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets?limit=abc",
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.code).toBe("MARKETS_INVALID_QUERY");
+    expect(body).toHaveProperty("correlationId");
+    expect(mockPrisma.market.findMany).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 with an error envelope for a negative limit", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets?limit=-1",
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.code).toBe("MARKETS_INVALID_QUERY");
+    expect(body).toHaveProperty("correlationId");
+    expect(mockPrisma.market.findMany).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 with an error envelope for a zero limit", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets?limit=0",
+    });
+
+    expect(response.statusCode).toBe(400);
+    const body = JSON.parse(response.body);
+    expect(body.code).toBe("MARKETS_INVALID_QUERY");
+    expect(body).toHaveProperty("correlationId");
+    expect(mockPrisma.market.findMany).not.toHaveBeenCalled();
+  });
+
+  it("does not forward an empty cursor filter to Prisma", async () => {
+    mockPrisma.market.findMany.mockResolvedValue([]);
+    mockPrisma.market.count.mockResolvedValue(0);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/markets?cursor=",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const findManyArgs = mockPrisma.market.findMany.mock.calls[0]?.[0] as {
+      where?: Record<string, unknown>;
+    };
+    expect(findManyArgs?.where?.id).toBeUndefined();
+  });
+
   it("returns 503 when the database is unavailable", async () => {
     mockPrisma.market.findMany.mockRejectedValue(new Error("DB down"));
 

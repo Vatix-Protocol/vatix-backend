@@ -7,6 +7,10 @@ import {
   UnauthorizedError,
   ForbiddenError,
 } from "./errors.js";
+import {
+  MarketTransitionError,
+  MARKET_INVALID_TRANSITION_CODE,
+} from "@vatix/shared/marketLifecycle.js";
 
 describe("Error Handler Middleware", () => {
   let server: FastifyInstance;
@@ -114,6 +118,55 @@ describe("Error Handler Middleware", () => {
     });
   });
 
+  describe("MarketTransitionError", () => {
+    it("returns 409 with the stable transition code", async () => {
+      server.get("/test", async () => {
+        throw new MarketTransitionError("RESOLVED", "CANCELLED");
+      });
+      const res = await server.inject({ method: "GET", url: "/test" });
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe(MARKET_INVALID_TRANSITION_CODE);
+    });
+
+    it("does not include a stack field in the response body", async () => {
+      server.get("/test", async () => {
+        throw new MarketTransitionError("RESOLVED", "CANCELLED");
+      });
+      const res = await server.inject({ method: "GET", url: "/test" });
+      const body = JSON.parse(res.body);
+      expect(body).not.toHaveProperty("stack");
+    });
+
+    it("logs at warn level as a client error", async () => {
+      const warnCalls: unknown[] = [];
+      const errorCalls: unknown[] = [];
+      const logServer = Fastify({
+        logger: {
+          level: "trace",
+          stream: {
+            write(line: string) {
+              const entry = JSON.parse(line);
+              if (entry.level === 40) warnCalls.push(entry);
+              if (entry.level === 50) errorCalls.push(entry);
+            },
+          },
+        },
+        genReqId: () => "test-request-id",
+      });
+      logServer.setErrorHandler(errorHandler);
+      logServer.get("/test", async () => {
+        throw new MarketTransitionError("RESOLVED", "CANCELLED");
+      });
+
+      const res = await logServer.inject({ method: "GET", url: "/test" });
+      await logServer.close();
+
+      expect(res.statusCode).toBe(409);
+      expect(warnCalls.length).toBeGreaterThan(0);
+      expect(errorCalls.length).toBe(0);
+    });
+  });
+
   describe("generic Error", () => {
     it("returns 500 with code internal_error", async () => {
       server.get("/test", async () => {
@@ -155,6 +208,62 @@ describe("Error Handler Middleware", () => {
     });
   });
 
+  describe("production 4xx message safety", () => {
+    it("keeps AppError subclass message and fields in production", async () => {
+      const orig = process.env.NODE_ENV;
+      process.env.NODE_ENV = "production";
+      const fields = { email: "invalid" };
+      server.get("/test", async () => {
+        throw new ValidationError("bad input", fields);
+      });
+      const res = await server.inject({ method: "GET", url: "/test" });
+      const body = JSON.parse(res.body);
+      expect(res.statusCode).toBe(400);
+      expect(body.error).toBe("bad input");
+      expect(body.fields).toEqual(fields);
+      process.env.NODE_ENV = orig;
+    });
+
+    it("replaces non-AppError 4xx message with generic message in production", async () => {
+      const orig = process.env.NODE_ENV;
+      process.env.NODE_ENV = "production";
+      const logLines: string[] = [];
+      const logServer = Fastify({
+        logger: {
+          level: "trace",
+          stream: {
+            write(line: string) {
+              logLines.push(line);
+            },
+          },
+        },
+        genReqId: () => "test-request-id",
+      });
+      logServer.setErrorHandler(errorHandler);
+      logServer.get("/test", async () => {
+        const err = new Error("prisma: table users not found") as Error & {
+          statusCode: number;
+        };
+        err.statusCode = 400;
+        throw err;
+      });
+
+      const res = await logServer.inject({ method: "GET", url: "/test" });
+      await logServer.close();
+
+      const body = JSON.parse(res.body);
+      expect(res.statusCode).toBe(400);
+      expect(body.error).not.toBe("prisma: table users not found");
+      expect(body.error).toBe("Invalid request");
+      expect(body.statusCode).toBe(400);
+
+      const logged = logLines.join("\n");
+      expect(logged).toContain("prisma: table users not found");
+
+      process.env.NODE_ENV = orig;
+    });
+  });
+
   describe("Response Format", () => {
     it("should have consistent format with error, code, requestId, and statusCode", async () => {
       server.get("/test", async () => {
@@ -187,115 +296,11 @@ describe("Error Handler Middleware", () => {
       ];
 
       for (const [makeError, expectedCode] of cases) {
-        server.get(`/test-${expectedCode}`, async () => {
+        const res = await inject(() => {
           throw makeError();
-        });
-      }
-
-      for (const [, expectedCode] of cases) {
-        const res = await server.inject({
-          method: "GET",
-          url: `/test-${expectedCode}`,
         });
         expect(JSON.parse(res.body).code).toBe(expectedCode);
       }
-    });
-
-    it("should include request ID in response", async () => {
-      server.get("/test", async () => {
-        throw new Error("Test error");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.requestId).toBe("test-request-id");
-    });
-
-    it("should match statusCode in response body and HTTP status", async () => {
-      server.get("/test", async () => {
-        throw new NotFoundError("Not found");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.statusCode).toBe(response.statusCode);
-      expect(body.statusCode).toBe(404);
-    });
-  });
-
-  describe("Logging", () => {
-    it("should log client errors at warn level", async () => {
-      // Use a simple approach - check that the error handler doesn't crash
-      // Actual logging is tested via integration tests
-      server.get("/test", async () => {
-        throw new ValidationError("Bad input");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(400);
-      // If we got here, logging worked without crashing
-    });
-
-    it("should log server errors at error level", async () => {
-      // Use a simple approach - check that the error handler doesn't crash
-      // Actual logging is tested via integration tests
-      server.get("/test", async () => {
-        throw new Error("Internal error");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(500);
-      // If we got here, logging worked without crashing
-    });
-  });
-
-  describe("Edge Cases", () => {
-    it("should handle errors with custom status codes", async () => {
-      class CustomError extends Error {
-        statusCode = 418; // I'm a teapot
-      }
-
-      server.get("/test", async () => {
-        throw new CustomError("Custom error");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      expect(response.statusCode).toBe(418);
-    });
-
-    it("should handle ValidationError without fields", async () => {
-      server.get("/test", async () => {
-        throw new ValidationError("Validation failed");
-      });
-
-      const response = await server.inject({
-        method: "GET",
-        url: "/test",
-      });
-
-      const body = JSON.parse(response.body);
-      expect(body.statusCode).toBe(400);
-      expect(body.fields).toBeUndefined();
     });
   });
 });

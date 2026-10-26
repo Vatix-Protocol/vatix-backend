@@ -38,6 +38,43 @@ export interface MarketOrderBookDto {
 }
 
 /**
+ * JSON Schema (OpenAPI 3.1 dialect) describing the `Market` response body
+ * returned by the `/v1/markets` and `/v1/markets/{id}` endpoints.
+ *
+ * This mirrors `MarketDetailsDto` above and is the single source of truth
+ * consumed by `src/api/openapi.ts`, so the documented response shape cannot
+ * drift from the DTO the routes actually serialize.
+ */
+export const marketSchema = {
+  type: "object",
+  required: [
+    "id",
+    "question",
+    "endTime",
+    "resolutionTime",
+    "oracleAddress",
+    "status",
+    "outcome",
+    "createdAt",
+    "updatedAt",
+  ],
+  properties: {
+    id: { type: "string" },
+    question: { type: "string" },
+    endTime: { type: "string", format: "date-time" },
+    resolutionTime: {
+      type: ["string", "null"],
+      format: "date-time",
+    },
+    oracleAddress: { type: "string" },
+    status: { type: "string" },
+    outcome: { type: ["string", "null"] },
+    createdAt: { type: "string", format: "date-time" },
+    updatedAt: { type: "string", format: "date-time" },
+  },
+} as const;
+
+/**
  * Compute a weak ETag for a market row, used for If-Match concurrency
  * control on market update endpoints.
  *

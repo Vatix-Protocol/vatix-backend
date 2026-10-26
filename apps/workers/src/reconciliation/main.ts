@@ -1,83 +1,101 @@
-import { createWorkerLogger } from "../shared/logger.js";
-import { loadReconciliationConfig } from "./config.js";
+import { createLogger } from "../../../../packages/shared/src/logger.js";
+import { createShutdown } from "@vatix/shared/shutdown.js";
+import { loadConfig } from "./config.js";
 import { ReconciliationJob } from "./job.js";
+import { startHealthServer } from "../health-server.js";
+import {
+  getPrismaClient,
+  disconnectPrisma,
+} from "../../../../src/services/prisma.js";
 
-async function main() {
-  try {
-    const config = loadReconciliationConfig();
-    const logger = createWorkerLogger("reconciliation-worker", config.logLevel);
+async function main(): Promise<void> {
+  const config = loadConfig();
+  const logger = createLogger(config.logLevel);
 
-    if (config.dryRun && process.env.NODE_ENV === "production") {
-      logger.warn(
-        "Reconciliation worker running with RECONCILIATION_DRY_RUN=true in production — no positions will be recovered",
-        { dryRun: true }
-      );
+  logger.info("Starting reconciliation worker", {
+    intervalMs: config.intervalMs,
+    maxRunMs: config.maxRunMs,
+    autoRecoveryEnabled: config.autoRecoveryEnabled,
+  });
+
+  const job = new ReconciliationJob(
+    logger,
+    config.maxRunMs,
+    config.autoRecoveryEnabled
+  );
+
+  const healthServer = startHealthServer({
+    component: "reconciliation-worker",
+    getPrismaClient,
+  });
+
+  let inFlight: Promise<void> | null = null;
+  let interval: NodeJS.Timeout | null = null;
+
+  const poll = (): void => {
+    if (inFlight) {
+      logger.warn("Skipping reconciliation run: previous run still in flight");
+      return;
     }
 
-    logger.info("Reconciliation worker starting", {
-      intervalMs: config.intervalMs,
-      maxRunMs: config.maxRunMs,
-      autoRecoveryEnabled: config.autoRecoveryEnabled,
-      dryRun: config.dryRun,
-    });
-
-    const job = new ReconciliationJob(
-      logger,
-      config.maxRunMs,
-      config.autoRecoveryEnabled
-    );
-
-    let inFlight: Promise<void> | null = null;
-
-    const poll = async () => {
-      // Skip if previous run still in flight
-      if (inFlight) {
-        logger.debug("Previous reconciliation still running, skipping");
-        return;
-      }
-
-      inFlight = job
-        .run(config.dryRun)
-        .then((result) => {
-          logger.info("Reconciliation cycle completed", { ...result });
-        })
-        .catch((error) => {
-          logger.error("Reconciliation cycle failed", { error });
-        })
-        .finally(() => {
-          inFlight = null;
+    inFlight = (async () => {
+      try {
+        const result = await job.run();
+        logger.info("Reconciliation run completed", {
+          totalMarkets: result.totalMarkets,
+          completedMarkets: result.completedMarkets,
+          failedMarkets: result.failedMarkets,
+          driftCount: result.aggregateStats.driftCount,
+          recoveredCount: result.aggregateStats.recoveredCount,
+          dryRun: result.dryRun,
         });
-    };
-
-    const interval = setInterval(poll, config.intervalMs);
-
-    const gracefulShutdown = async () => {
-      logger.info("Shutting down reconciliation worker gracefully");
-      clearInterval(interval);
-
-      if (inFlight) {
-        logger.info("Draining in-flight reconciliation job");
-        try {
-          await inFlight;
-        } catch (error) {
-          logger.error("Error draining in-flight job", { error });
-        }
+      } catch (error) {
+        logger.error("Reconciliation run failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        inFlight = null;
       }
+    })();
+  };
 
-      process.exit(0);
-    };
+  interval = setInterval(poll, config.intervalMs);
+  poll();
 
-    process.on("SIGTERM", gracefulShutdown);
-    process.on("SIGINT", gracefulShutdown);
+  const shutdown = createShutdown(logger, {
+    timeoutMs: 30_000,
+    component: "reconciliation-worker",
+    teardown: [
+      async () => {
+        if (interval) {
+          clearInterval(interval);
+          interval = null;
+        }
+      },
+      async () => {
+        if (inFlight) {
+          await inFlight;
+        }
+      },
+      async () => {
+        await healthServer.close();
+      },
+      async () => {
+        await disconnectPrisma();
+      },
+    ],
+  });
 
-    // Run immediately
-    await poll();
-  } catch (error) {
-    // Fall back to a default-level logger if config failed to load
-    const fallback = createWorkerLogger("reconciliation-worker", undefined);
-    fallback.error("Reconciliation worker startup failed", { error });
-    process.exit(1);
-  }
+  process.on("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
+  process.on("SIGTERM", () => {
+    void shutdown("SIGTERM");
+  });
 }
 
-main();
+main().catch((error) => {
+  // eslint-disable-next-line no-console
+  console.error("Fatal error starting reconciliation worker", error);
+  process.exit(1);
+});

@@ -1,7 +1,18 @@
 import type { PrismaClient } from "../../generated/prisma/client";
-import { checkDbReadiness } from "../../services/dbReadiness";
+import { checkDbReadiness } from "../../services/dbReadiness.js";
+import { redis } from "../../services/redis.js";
 
 export interface ReadyDeps {
+  /**
+   * Throws if the database is unreachable.
+   */
+  checkDatabase(): Promise<void>;
+  /**
+   * Throws if the Redis instance is unreachable.
+   * NOTE: Redis failures set redis.status = "error" in the response but do
+   * NOT change the HTTP status code — Redis is a WARNING-tier dependency.
+   */
+  checkRedis(): Promise<void>;
   /**
    * Returns the instant of the most recent successful ledger ingestion, or
    * `null` when the indexer has never ingested anything (no cursor row).
@@ -26,7 +37,9 @@ export interface ReadyDeps {
 }
 
 export interface CreateReadyDepsOptions {
-  prisma?: Pick<PrismaClient, "indexerCursor">;
+  prisma?: Pick<PrismaClient, "indexerCursor" | "$queryRaw">;
+  checkDatabase?: () => Promise<void>;
+  checkRedis?: () => Promise<void>;
   getLastIndexedAt?: () => Promise<number | null>;
   checkDbReadiness?: (options?: {
     client?: Pick<PrismaClient, "$queryRaw">;
@@ -37,6 +50,21 @@ export interface CreateReadyDepsOptions {
 export function createReadyDeps(options: CreateReadyDepsOptions = {}): ReadyDeps {
   const prisma = options.prisma;
 
+  const checkDatabase =
+    options.checkDatabase ??
+    (async (): Promise<void> => {
+      await checkDbReadiness();
+    });
+
+  const checkRedisImpl =
+    options.checkRedis ??
+    (async (): Promise<void> => {
+      const ok = await redis.healthCheck();
+      if (!ok) {
+        throw new Error("Redis health check failed");
+      }
+    });
+
   const getLastIndexedAt =
     options.getLastIndexedAt ??
     (async (): Promise<number | null> => {
@@ -44,7 +72,7 @@ export function createReadyDeps(options: CreateReadyDepsOptions = {}): ReadyDeps
         return null;
       }
 
-      const cursor = await prisma.indexerCursor.findFirst({
+      const cursor = await (prisma as Pick<PrismaClient, "indexerCursor">).indexerCursor.findFirst({
         orderBy: { updatedAt: "desc" },
         select: { updatedAt: true, cursorValue: true },
       });
@@ -64,5 +92,10 @@ export function createReadyDeps(options: CreateReadyDepsOptions = {}): ReadyDeps
 
   const checkDbReadinessFn = options.checkDbReadiness ?? checkDbReadiness;
 
-  return { getLastIndexedAt, checkDbReadiness: checkDbReadinessFn };
+  return {
+    checkDatabase,
+    checkRedis: checkRedisImpl,
+    getLastIndexedAt,
+    checkDbReadiness: checkDbReadinessFn,
+  };
 }

@@ -1050,7 +1050,7 @@ VALUES ('<candidateId>', '<marketId>', 'ADJUDICATE_CHALLENGE', 'CHALLENGED', 'RE
 #### Step 4: Restart finalization job and re-run
 
 ```bash
-docker restart vatix-finalization-job
+docker restart vatix-finalization-worker
 # or
 pm2 restart finalization
 ```
