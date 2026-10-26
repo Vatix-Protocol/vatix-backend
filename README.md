@@ -284,3 +284,6 @@ governance, and probe safety invariants.
 
 <!-- handsoff-issue-1326 -->
 - #1326: matchOrder: assert maker-price precedence and self-trade handling in the engine suite
+
+<!-- handsoff-issue-1344 -->
+- #1344: tests/integration/helpers/market-order.ts: assert the signed order helper produces a valid signature and rejects a tampered payload
