@@ -1,9 +1,21 @@
 import { defineConfig } from "vitest/config";
 import { config } from "dotenv";
+import { resolve } from "path";
 
 config();
 
+const sharedSrc = resolve(import.meta.dirname, "packages/shared/src");
+
 export default defineConfig({
+  resolve: {
+    alias: {
+      // Resolve `@vatix/shared/...` workspace imports to the TypeScript sources.
+      "@vatix/shared": sharedSrc,
+      // Resolve deep relative imports like `../../../packages/shared/src/logger.js`
+      // that some src/ modules use when not going through the package name.
+      [resolve(import.meta.dirname, "packages/shared/src")]: sharedSrc,
+    },
+  },
   test: {
     globals: true,
     environment: "node",

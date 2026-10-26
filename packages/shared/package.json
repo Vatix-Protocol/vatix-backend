@@ -14,16 +14,28 @@
   "exports": {
     ".": "./src/index.ts",
     "./config": "./src/config.ts",
+    "./config.js": "./src/config.ts",
     "./errors": "./src/errors.ts",
+    "./errors.js": "./src/errors.ts",
     "./logger": "./src/logger.ts",
+    "./logger.js": "./src/logger.ts",
     "./queue-config": "./src/queue-config.ts",
+    "./queue-config.js": "./src/queue-config.ts",
     "./cors": "./src/cors.ts",
+    "./cors.js": "./src/cors.ts",
     "./requireEnv": "./src/requireEnv.ts",
+    "./requireEnv.js": "./src/requireEnv.ts",
     "./shutdown": "./src/shutdown.ts",
+    "./shutdown.js": "./src/shutdown.ts",
     "./signingDomain": "./src/signingDomain.ts",
+    "./signingDomain.js": "./src/signingDomain.ts",
     "./stellarTransport": "./src/stellarTransport.ts",
+    "./stellarTransport.js": "./src/stellarTransport.ts",
     "./logRedactor": "./src/logRedactor.ts",
+    "./logRedactor.js": "./src/logRedactor.ts",
     "./marketLifecycle": "./src/marketLifecycle.ts",
-    "./roles": "./roles.ts"
+    "./marketLifecycle.js": "./src/marketLifecycle.ts",
+    "./roles": "./roles.ts",
+    "./roles.js": "./roles.ts"
   }
 }

@@ -64,6 +64,31 @@ vi.mock("../../src/services/prisma.js", () => ({
   }),
 }));
 
+// Prevent the BullMQ Queue constructor from throwing "Queue name cannot
+// contain :" when outbox-publisher.ts is imported by matching-service.ts.
+vi.mock("../../src/services/settlement-queue.js", () => ({
+  settlementQueue: { add: vi.fn().mockResolvedValue(undefined) },
+  settlementQueueName: vi.fn().mockReturnValue("settlement-trades"),
+}));
+
+// Prevent real Redis connections during unit tests.
+vi.mock("../../src/services/redis.js", () => ({
+  redis: {
+    setOrderBook: vi.fn().mockResolvedValue(undefined),
+    getOrderBook: vi.fn().mockResolvedValue(null),
+  },
+}));
+
+// Prevent real audit-log writes.
+vi.mock("../../src/services/audit.js", () => ({
+  auditService: { logOrderMatch: vi.fn().mockResolvedValue(null) },
+}));
+
+// Prevent the leader-lease from blocking hydration in the test environment.
+vi.mock("../../src/matching/leader-lease.js", () => ({
+  leaderLease: { isLeader: vi.fn().mockReturnValue(true) },
+}));
+
 describe("#449 — hydrateAllActiveMarkets (restart simulation)", () => {
   beforeEach(() => {
     // Clear internal books to simulate a cold start
@@ -185,5 +210,39 @@ describe("#449 — hydrateAllActiveMarkets (restart simulation)", () => {
     const depth = book.getDepth(10);
     expect(depth.bids).toHaveLength(0);
     expect(depth.asks).toHaveLength(0);
+  });
+
+  it("is idempotent: calling twice without clearing leaves identical book depth", async () => {
+    process.env.WARM_MARKETS_ON_STARTUP = "true";
+
+    // First hydration
+    await matchingService.hydrateAllActiveMarkets();
+    const bookAfterOne = (matchingService as any).books.get("market-1:YES");
+    const depthAfterOne = bookAfterOne.getDepth(10);
+
+    // Second hydration — no books.clear() between calls
+    await matchingService.hydrateAllActiveMarkets();
+    const bookAfterTwo = (matchingService as any).books.get("market-1:YES");
+    const depthAfterTwo = bookAfterTwo.getDepth(10);
+
+    // Depth must not accumulate duplicate orders
+    expect(depthAfterTwo.bids).toHaveLength(depthAfterOne.bids.length);
+    expect(depthAfterTwo.asks).toHaveLength(depthAfterOne.asks.length);
+
+    // Values must be identical
+    expect(depthAfterTwo.bids[0].price).toBe(depthAfterOne.bids[0].price);
+    expect(depthAfterTwo.bids[0].quantity).toBe(depthAfterOne.bids[0].quantity);
+    expect(depthAfterTwo.asks[0].price).toBe(depthAfterOne.asks[0].price);
+    expect(depthAfterTwo.asks[0].quantity).toBe(depthAfterOne.asks[0].quantity);
+  });
+
+  it("hydrated_markets metric reflects market count, not call count", async () => {
+    process.env.WARM_MARKETS_ON_STARTUP = "true";
+
+    await matchingService.hydrateAllActiveMarkets();
+    await matchingService.hydrateAllActiveMarkets();
+
+    // Must equal mockMarkets.length (2), not 2 × 2 = 4
+    expect(getHydratedMarketsCount()).toBe(mockMarkets.length);
   });
 });

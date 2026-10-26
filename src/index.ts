@@ -23,6 +23,7 @@ import { registerDeprecatedAliases } from "./api/routes/legacy.js";
 import { getOpenApiSpec } from "./api/openapi.js";
 import { rateLimiter } from "./api/middleware/rateLimiter.js";
 import { requestLogger } from "./api/middleware/logger.js";
+import { getPrismaClient } from "./services/prisma.js";
 import {
   makeGenReqId,
   requestIdMiddleware,
@@ -137,7 +138,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       await v1.register(authRoutes);
       await v1.register(resolutionsRoutes);
       await v1.register(healthRoutes);
-      await v1.register(readyRoute(options.readyDeps ?? createReadyDeps()));
+      await v1.register(readyRoute(options.readyDeps ?? createReadyDeps({ prisma: getPrismaClient() })));
 
       v1.get("/openapi.json", async (_request, reply) => {
         const nodeEnv = process.env.NODE_ENV || "development";
