@@ -80,11 +80,30 @@ export const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Normalizes a key for separator/casing-insensitive matching: lowercases and
+ * collapses hyphens, underscores, and whitespace so that e.g. "api-key",
+ * "API_KEY", and "api key" all normalize to "apikey".
+ */
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[-_\s]+/g, "");
+}
+
+/**
+ * Normalized form of {@link SENSITIVE_KEYS}, built once at module load so that
+ * separator variants of an existing sensitive concept are matched without
+ * requiring a manual entry for each spelling.
+ */
+const NORMALIZED_SENSITIVE_KEYS: ReadonlySet<string> = new Set(
+  Array.from(SENSITIVE_KEYS, normalizeKey)
+);
+
+/**
  * Returns true when the given key should be redacted.
- * Comparison is case-insensitive.
+ * Comparison is case-insensitive and ignores hyphen/underscore/space
+ * separators.
  */
 export function isSensitiveKey(key: string): boolean {
-  return SENSITIVE_KEYS.has(key.toLowerCase());
+  return NORMALIZED_SENSITIVE_KEYS.has(normalizeKey(key));
 }
 
 /**

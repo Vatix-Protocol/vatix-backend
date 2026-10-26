@@ -46,3 +46,15 @@ export async function startHealthServer(
 
   return app;
 }
+
+/**
+ * Close a health server started by `startHealthServer`, tolerating a
+ * `null`/`undefined` handle so callers can safely include it in a teardown
+ * list even when the server failed to start.
+ */
+export async function closeHealthServer(
+  app: FastifyInstance | null | undefined
+): Promise<void> {
+  if (!app) return;
+  await app.close();
+}
