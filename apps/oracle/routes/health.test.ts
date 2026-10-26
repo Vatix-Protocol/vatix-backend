@@ -25,6 +25,11 @@ const failingProbe = (name: string): DependencyProbe => ({
   },
 });
 
+const slowProbe = (name: string): DependencyProbe => ({
+  name,
+  check: () => new Promise(() => {}),
+});
+
 async function buildApp(
   probes: DependencyProbe[],
   extra: { requiredToken?: string; probeTimeoutMs?: number } = {}
@@ -122,15 +127,34 @@ describe("GET /health/ready — readiness (#1116)", () => {
   });
 
   it("times out a hung dependency instead of hanging the probe", async () => {
-    const app = await buildApp(
-      [{ name: "database", check: () => new Promise(() => {}) }],
-      { probeTimeoutMs: 25 }
-    );
+    const app = await buildApp([slowProbe("database")], { probeTimeoutMs: 25 });
 
     const res = await app.inject({ method: "GET", url: "/health/ready" });
 
     expect(res.statusCode).toBe(503);
     expect(res.json().dependencies.database).toBe("unavailable");
+    await app.close();
+  });
+
+  it("reports DEPENDENCY_TIMEOUT when a dependency exceeds its deadline", async () => {
+    const app = await buildApp([slowProbe("database")], { probeTimeoutMs: 25 });
+
+    const res = await app.inject({ method: "GET", url: "/health/ready" });
+
+    expect(res.statusCode).toBe(503);
+    const body = res.json();
+    expect(body.code).toBe(ORACLE_HEALTH_ERROR_CODES.DEPENDENCY_TIMEOUT);
+    expect(body.code).not.toBe(ORACLE_HEALTH_ERROR_CODES.DEPENDENCY_UNAVAILABLE);
+    await app.close();
+  });
+
+  it("reports DEPENDENCY_UNAVAILABLE when a dependency fails fast", async () => {
+    const app = await buildApp([failingProbe("database")], { probeTimeoutMs: 25 });
+
+    const res = await app.inject({ method: "GET", url: "/health/ready" });
+
+    expect(res.statusCode).toBe(503);
+    expect(res.json().code).toBe(ORACLE_HEALTH_ERROR_CODES.DEPENDENCY_UNAVAILABLE);
     await app.close();
   });
 });
@@ -206,6 +230,48 @@ describe("runDependencyProbes (#1116)", () => {
       { correlationId: "corr-2", dependency: "redis" },
       "Oracle readiness dependency unavailable"
     );
+  });
+
+  it("emits a structured log per dependency with name, status and correlation id", async () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const results = await runDependencyProbes(
+      [okProbe("database"), failingProbe("redis")],
+      100,
+      "corr-3",
+      logger
+    );
+
+    expect(results).toEqual({ database: "ok", redis: "unavailable" });
+    expect(logger.info).toHaveBeenCalledWith(
+      { dependency: "database", status: "ok", correlationId: "corr-3" },
+      expect.any(String)
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      { dependency: "redis", status: "unavailable", correlationId: "corr-3" },
+      expect.any(String)
+    );
+  });
+
+  it("logs a timeout outcome without leaking secret material", async () => {
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const results = await runDependencyProbes(
+      [slowProbe("database")],
+      25,
+      "corr-4",
+      logger
+    );
+
+    expect(results).toEqual({ database: "timeout" });
+    expect(logger.warn).toHaveBeenCalledWith(
+      { dependency: "database", status: "timeout", correlationId: "corr-4" },
+      expect.any(String)
+    );
+
+    const serialized = JSON.stringify(logger.warn.mock.calls);
+    expect(serialized).not.toContain("ECONNREFUSED");
+    expect(serialized).not.toContain("10.0.0.5");
+    expect(serialized).not.toContain("hunter2");
+    expect(serialized).not.toContain("password");
   });
 });
 

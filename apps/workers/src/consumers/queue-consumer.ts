@@ -90,8 +90,24 @@ export async function processJob(
     }, config.processingTimeoutMs);
   });
 
+  // Attach a rejection handler to the handler promise before racing so that a
+  // handler which rejects *after* the timeout wins the race does not surface
+  // as an unhandled promise rejection (which can crash the worker under
+  // Node's default `--unhandled-rejections=throw`).
+  const handlerPromise = handler(job).catch((error: unknown) => {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.warn("Job handler rejected after timeout", {
+      jobId: job.id,
+      queue: config.queueName,
+      attempt: job.attempts,
+      error: errorMessage,
+      timestamp: new Date().toISOString(),
+    });
+    // Swallow the late rejection; the timeout path already governs the outcome.
+  });
+
   try {
-    await Promise.race([handler(job), timeoutPromise]);
+    await Promise.race([handlerPromise, timeoutPromise]);
 
     // Handler won the race — cancel the pending timeout.
     if (timeoutHandle !== null) clearTimeout(timeoutHandle);
@@ -121,6 +137,7 @@ export async function processJob(
         processingTimeoutMs: config.processingTimeoutMs,
         durationMs,
         error: errorMessage,
+        outcome: "timeout",
         timestamp: new Date().toISOString(),
       });
     } else if (job.attempts < config.maxAttempts) {
@@ -131,6 +148,7 @@ export async function processJob(
         maxAttempts: config.maxAttempts,
         durationMs,
         error: errorMessage,
+        outcome: "retry",
         timestamp: new Date().toISOString(),
       });
     } else {
@@ -141,6 +159,7 @@ export async function processJob(
         maxAttempts: config.maxAttempts,
         durationMs,
         error: errorMessage,
+        outcome: "terminal",
         timestamp: new Date().toISOString(),
       });
     }
