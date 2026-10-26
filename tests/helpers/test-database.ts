@@ -54,6 +54,8 @@ const DATABASE_TEST_LOCK_RETRY_MS = 100;
  * - Be a non-empty string
  * - Use postgresql:// or postgres:// scheme
  * - Include a hostname
+ * - Include a database name in the path
+ * - Use a numeric port within the valid range (1-65535) when specified
  * @param url - The URL string to validate
  * @returns true if valid, false if invalid
  */
@@ -84,6 +86,22 @@ export function validateDatabaseUrl(url: unknown): boolean {
   // Must include a hostname
   if (!parsed.hostname) {
     return false;
+  }
+
+  // Must include a database name in the path (e.g. "/mydb")
+  if (parsed.pathname.length <= 1) {
+    return false;
+  }
+
+  // Port, when present, must be numeric and within the valid range
+  if (parsed.port !== "") {
+    if (!/^\d+$/.test(parsed.port)) {
+      return false;
+    }
+    const port = Number(parsed.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return false;
+    }
   }
 
   return true;
