@@ -1,9 +1,14 @@
-import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
 
+const repoRoot = join(__dirname, '..', '..');
 const runbookPath = resolve(__dirname, '../../docs/runbooks/incident-runbook.md');
 const runbook = readFileSync(runbookPath, 'utf8');
+
+function readRepoFile(relativePath: string): string {
+  return readFileSync(join(repoRoot, relativePath), 'utf8');
+}
 
 interface SqlBlock {
   sql: string;
@@ -34,6 +39,50 @@ function hasBalancedParentheses(sql: string): boolean {
 }
 
 const STATEMENT_KEYWORD = /\b(SELECT|UPDATE|INSERT|DELETE)\b/i;
+
+function extractComposeContainerNames(compose: string): Set<string> {
+  const names = new Set<string>();
+  const regex = /container_name:\s*(vatix-[a-z-]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(compose)) !== null) {
+    names.add(match[1]);
+  }
+  return names;
+}
+
+function extractComposeServiceNames(compose: string): Set<string> {
+  const names = new Set<string>();
+  const lines = compose.split('\n');
+  let inServices = false;
+  for (const line of lines) {
+    if (/^services:\s*$/.test(line)) {
+      inServices = true;
+      continue;
+    }
+    if (!inServices) {
+      continue;
+    }
+    if (line.length > 0 && !/^\s/.test(line)) {
+      inServices = false;
+      continue;
+    }
+    const match = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
+    if (match) {
+      names.add(match[1]);
+    }
+  }
+  return names;
+}
+
+function extractRunbookContainerNames(text: string): Set<string> {
+  const names = new Set<string>();
+  const regex = /\bvatix-[a-z-]+\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    names.add(match[0]);
+  }
+  return names;
+}
 
 describe('incident runbook', () => {
   it('references the expected container names', () => {
@@ -74,5 +123,33 @@ describe('incident runbook', () => {
         ).toBe(true);
       }
     });
+  });
+
+  it('every container referenced in the runbook is defined in docker-compose.yml', () => {
+    const compose = readRepoFile('docker-compose.yml');
+    const containerNames = extractComposeContainerNames(compose);
+    const serviceNames = extractComposeServiceNames(compose);
+    const knownServices = [...serviceNames].sort();
+    const referenced = extractRunbookContainerNames(runbook);
+
+    const missing = [...referenced].filter(
+      (name) => !containerNames.has(name) && !serviceNames.has(name),
+    );
+
+    expect(
+      missing,
+      `Runbook references containers not defined in docker-compose.yml. ` +
+        `Known services: ${knownServices.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('every container name documented in docs/docker-compose.md is defined in docker-compose.yml', () => {
+    const compose = readRepoFile('docker-compose.yml');
+    const composeDocs = readRepoFile('docs/docker-compose.md');
+    const containerNames = extractComposeContainerNames(compose);
+    const documented = extractRunbookContainerNames(composeDocs);
+    const missing = [...documented].filter((name) => !containerNames.has(name));
+
+    expect(missing).toEqual([]);
   });
 });

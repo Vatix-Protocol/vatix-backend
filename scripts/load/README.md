@@ -24,3 +24,19 @@ k6 run -e BASE_URL=http://localhost:3000 -e MARKET_ID=<id> scripts/load/order-pl
 ```
 
 Target: 100 rps order placement against `POST /v1/orders` for a 30s soak window.
+
+## Reading the results
+
+The soak stub does not sign requests. Against an auth-enforcing or
+tick-size-enforcing environment, every request is expected to be rejected with
+a 4xx before reaching the matching engine. The k6 summary reports these as
+separate named checks:
+
+- `order accepted (2xx)` — the meaningful success signal (order accepted).
+- `order rejected (4xx)` — expected for an unauthenticated local run; shows the
+  rejection rate.
+- `order not server error (non-5xx)` — a 5xx response fails this check.
+
+A run that is entirely rejected by validation/auth/admission control will show
+`order accepted (2xx)` at 0% and `order rejected (4xx)` at 100% — that is a
+rejection, not a clean result.
