@@ -1,82 +1,91 @@
-// k6 stub — order placement soak test (#807, ties to #730)
+// k6 soak stub: order placement against POST /v1/orders.
 //
-// ⚠️  LOCAL USE ONLY. Do NOT point this at a staging/production URL — see
-// scripts/load/README.md. This is a stub: it exercises POST /v1/orders at a
-// steady rate against the local docker-compose stack. It does not yet sign
-// requests with a real Stellar keypair (see scripts/load-test-orders.ts for
-// that flow) — fill in AUTH_HEADER / MARKET_ID before running against an
-// environment that enforces auth.
+// ⚠️ Local use only. Refuses to run unless BASE_URL looks local.
 //
-// Run:
-//   k6 run scripts/load/order-placement-soak.js
-//   k6 run -e BASE_URL=http://localhost:3000 -e MARKET_ID=<id> scripts/load/order-placement-soak.js
+// This stub does NOT sign requests. Against an auth-enforcing or
+// tick-size-enforcing environment, every request is expected to be rejected
+// with a 4xx (validation/auth/admission control) before reaching the matching
+// engine. For an unauthenticated local run:
+//   - 2xx responses are the meaningful success signal (order accepted).
+//   - 4xx responses are expected and are reported as a separate "rejected"
+//     check so the k6 summary shows the rejection rate.
+//   - 5xx responses are always a failure.
+// Signing logic is intentionally out of scope for this stub.
 
-import http from "k6/http";
-import { check, sleep } from "k6";
+import http from 'k6/http';
+import { check } from 'k6';
+import { Trend } from 'k6/metrics';
 
-const BASE_URL = __ENV.BASE_URL || "http://localhost:3000";
-const MARKET_ID = __ENV.MARKET_ID || "";
-const AUTH_HEADER = __ENV.AUTH_HEADER || "";
+const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
+const MARKET_ID = __ENV.MARKET_ID;
+const AUTH_HEADER = __ENV.AUTH_HEADER || '';
 
-// Guardrail: refuse anything that isn't clearly a local target.
-const ALLOWED_HOSTS = ["localhost", "127.0.0.1", "api"];
-if (!ALLOWED_HOSTS.some((h) => BASE_URL.includes(h))) {
+const rejectionTrend = new Trend('order_rejections', true);
+
+const LOCAL_HOSTS = ['localhost', '127.0.0.1', 'api'];
+
+if (!LOCAL_HOSTS.some((host) => BASE_URL.includes(host))) {
   throw new Error(
-    `Refusing to run against non-local BASE_URL="${BASE_URL}". ` +
-      `This script is for local soak testing only — see scripts/load/README.md.`
+    `Refusing to run: BASE_URL (${BASE_URL}) does not look local. ` +
+      'This soak stub is for local use only.',
   );
 }
 
-// Guardrail: refuse to run when MARKET_ID is empty. Sending marketId: "" on
-// every order produces 400-class validation rejections that pass the
-// "status is not 5xx" check, making the soak produce meaningless numbers.
 if (!MARKET_ID) {
   throw new Error(
     `MARKET_ID is required. Provide it with: ` +
-      `k6 run -e MARKET_ID=<id> scripts/load/order-placement-soak.js`
+      `k6 run -e MARKET_ID=<id> scripts/load/order-placement-soak.js`,
   );
 }
 
-// Warning: missing AUTH_HEADER is allowed (some envs don't enforce auth) but
-// the operator should know the run is unauthenticated so results are labelled.
 if (!AUTH_HEADER) {
   console.warn(
-    "[order-placement-soak] AUTH_HEADER is not set — running unauthenticated. " +
-      "Provide it with: k6 run -e AUTH_HEADER=<token> ... if the target enforces auth."
+    '[order-placement-soak] AUTH_HEADER is not set — running unauthenticated. ' +
+      'Provide it with: k6 run -e AUTH_HEADER=<token> ... if the target enforces auth.',
   );
+}
 }
 
 export const options = {
   scenarios: {
-    order_placement_soak: {
-      executor: "constant-arrival-rate",
-      rate: 100, // target: 100 rps
-      timeUnit: "1s",
-      duration: "30s",
+    order_placement: {
+      executor: 'constant-arrival-rate',
+      rate: 100,
+      timeUnit: '1s',
+      duration: '30s',
       preAllocatedVUs: 50,
       maxVUs: 200,
     },
   },
+  thresholds: {
+    http_req_failed: ['rate<0.01'],
+  },
+};
+
+const payload = JSON.stringify({
+  marketId: MARKET_ID,
+  outcome: 'YES',
+  price: 0.5,
+  quantity: 10,
+});
+
+const params = {
+  headers: {
+    'Content-Type': 'application/json',
+    ...(AUTH_HEADER ? { Authorization: AUTH_HEADER } : {}),
+  },
 };
 
 export default function () {
-  const side = Math.random() < 0.5 ? "BUY" : "SELL";
-  const payload = JSON.stringify({
-    marketId: MARKET_ID,
-    outcome: "YES",
-    side,
-    price: 0.5,
-    quantity: 10,
+  const r = http.post(`${BASE_URL}/v1/orders`, payload, params);
+
+  check(r, {
+    'order accepted (2xx)': (res) => res.status >= 200 && res.status < 300,
+    'order rejected (4xx)': (res) => res.status >= 400 && res.status < 500,
+    'order not server error (non-5xx)': (res) => res.status < 500,
   });
 
-  const headers = { "Content-Type": "application/json" };
-  if (AUTH_HEADER) headers["Authorization"] = AUTH_HEADER;
-
-  const res = http.post(`${BASE_URL}/v1/orders`, payload, { headers });
-
-  check(res, {
-    "status is not 5xx": (r) => r.status < 500,
-  });
-
-  sleep(0.01);
+  if (r.status >= 400 && r.status < 500) {
+    rejectionTrend.add(1);
+  }
 }

@@ -86,6 +86,78 @@ describe("backoffMs", () => {
   });
 });
 
+describe("outbox threshold configuration", () => {
+  const ORPHAN_ENV = "OUTBOX_ORPHAN_ATTEMPTS_THRESHOLD";
+  const QUARANTINE_ENV = "OUTBOX_QUARANTINE_ATTEMPTS_THRESHOLD";
+  const originalOrphan = process.env[ORPHAN_ENV];
+  const originalQuarantine = process.env[QUARANTINE_ENV];
+
+  function restoreEnv(key: string, value: string | undefined) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  async function loadModule() {
+    vi.resetModules();
+    return import("./outbox-publisher.js");
+  }
+
+  afterEach(() => {
+    restoreEnv(ORPHAN_ENV, originalOrphan);
+    restoreEnv(QUARANTINE_ENV, originalQuarantine);
+    vi.resetModules();
+  });
+
+  it("accepts valid values and exposes them via getOutboxThresholds()", async () => {
+    process.env[ORPHAN_ENV] = "3";
+    process.env[QUARANTINE_ENV] = "6";
+
+    const mod = await loadModule();
+
+    expect(mod.getOutboxThresholds()).toEqual({
+      orphanAttemptsThreshold: 3,
+      quarantineAttemptsThreshold: 6,
+    });
+  });
+
+  it("throws at module load when quarantine < orphan, naming both env vars", async () => {
+    process.env[ORPHAN_ENV] = "5";
+    process.env[QUARANTINE_ENV] = "3";
+
+    await expect(loadModule()).rejects.toThrow(ORPHAN_ENV);
+    await expect(loadModule()).rejects.toThrow(QUARANTINE_ENV);
+  });
+
+  it("throws at module load for non-numeric values instead of silently defaulting", async () => {
+    process.env[ORPHAN_ENV] = "not-a-number";
+    process.env[QUARANTINE_ENV] = "10";
+
+    await expect(loadModule()).rejects.toThrow(ORPHAN_ENV);
+  });
+
+  it("throws at module load for non-positive values instead of silently defaulting", async () => {
+    process.env[ORPHAN_ENV] = "5";
+    process.env[QUARANTINE_ENV] = "0";
+
+    await expect(loadModule()).rejects.toThrow(QUARANTINE_ENV);
+  });
+
+  it("uses the defaults (5 and 10) when both env vars are unset", async () => {
+    delete process.env[ORPHAN_ENV];
+    delete process.env[QUARANTINE_ENV];
+
+    const mod = await loadModule();
+
+    expect(mod.getOutboxThresholds()).toEqual({
+      orphanAttemptsThreshold: 5,
+      quarantineAttemptsThreshold: 10,
+    });
+  });
+});
+
 describe("publishOutboxRow", () => {
   beforeEach(() => {
     enqueueMock.mockReset();

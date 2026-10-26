@@ -32,7 +32,6 @@ export interface EventFetcherConfig {
 }
 
 // ─── Fetch result ─────────────────────────────────────────────────────────────
-
 export interface FetchEventsResult {
   events: RawChainEvent[];
   latestLedger: number;
@@ -126,6 +125,17 @@ export type NormalizedEventByType<T extends NormalizedEventType> = Extract<
   NormalizedEvent,
   { type: T }
 >;
+
+/**
+ * Compile-time exhaustiveness guard.
+ *
+ * Call in the `default` branch of a switch over a discriminated union so the
+ * compiler flags any newly added variant that was not handled. Has no runtime
+ * dependencies and is safe to use in the ingestion hot path.
+ */
+export function assertNever(value: never): never {
+  throw new Error(`Unexpected value: ${JSON.stringify(value)}`);
+}
 
 // ─── Parse error base ─────────────────────────────────────────────────────────
 

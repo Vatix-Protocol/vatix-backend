@@ -8,6 +8,39 @@ import {
 } from "../../../../src/services/prisma.js";
 import { createShutdown } from "@vatix/shared/shutdown.js";
 
+type FinalizationConfig = ReturnType<typeof loadFinalizationConfig>;
+
+type OverrideLogger = {
+  warn: (message: string, context?: Record<string, unknown>) => void;
+};
+
+/**
+ * Emit the money-path safety warning for a challenge-window override.
+ *
+ * Production rejects a drifting override in loadFinalizationConfig; this
+ * branch only fires for dev/test local stubs, which must never be silent.
+ * Exported so tests can assert the warning fires (and carries the drift
+ * values) only outside production.
+ */
+export function logChallengeWindowOverride(
+  config: FinalizationConfig,
+  logger: OverrideLogger
+): void {
+  if (!config.challengeWindowOverridden) {
+    return;
+  }
+
+  logger.warn(
+    "Finalization challenge window overridden and drifts from the on-chain resolution contract window",
+    {
+      component: "finalization-worker",
+      challengeWindowSeconds: config.challengeWindowSeconds,
+      onChainChallengeWindowSeconds: config.onChainChallengeWindowSeconds,
+      nodeEnv: process.env.NODE_ENV ?? "development",
+    }
+  );
+}
+
 async function bootstrap(): Promise<void> {
   const config = loadFinalizationConfig();
   const logger = createLogger(config.logLevel);
@@ -23,19 +56,7 @@ async function bootstrap(): Promise<void> {
     onChainChallengeWindowSeconds: config.onChainChallengeWindowSeconds,
   });
 
-  // Production rejects a drifting override in loadFinalizationConfig; this
-  // branch only fires for dev/test local stubs, which must never be silent.
-  if (config.challengeWindowOverridden) {
-    logger.warn(
-      "Finalization challenge window overridden and drifts from the on-chain resolution contract window",
-      {
-        component: "finalization-worker",
-        challengeWindowSeconds: config.challengeWindowSeconds,
-        onChainChallengeWindowSeconds: config.onChainChallengeWindowSeconds,
-        nodeEnv: process.env.NODE_ENV ?? "development",
-      }
-    );
-  }
+  logChallengeWindowOverride(config, logger);
 
   let activePollPromise: Promise<void> | null = null;
 

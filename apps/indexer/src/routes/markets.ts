@@ -49,6 +49,115 @@ const restoreParamsSchema = z.object({
 });
 
 /**
+ * Maximum page size accepted by GET /markets.
+ */
+const MARKETS_MAX_LIMIT = 100;
+
+/**
+ * GET /markets
+ *
+ * Query params:
+ *  - `status`: optional market status filter.
+ *  - `cursor`: optional opaque cursor (market id). An empty string is treated
+ *    as absent so we never forward `id: { gt: "" }` to Prisma.
+ *  - `limit`: optional page size. Must be a positive integer within
+ *    MARKETS_MAX_LIMIT; anything else (NaN, negatives, zero, too large) is
+ *    rejected with 400 rather than silently coerced.
+ */
+router.get('/markets', async (req: Request, res: Response) => {
+  const correlationId = randomUUID();
+
+  const rawStatus = req.query.status;
+  const rawCursor = req.query.cursor;
+  const rawLimit = req.query.limit;
+
+  if (rawStatus !== undefined && typeof rawStatus !== 'string') {
+    return fail(
+      res,
+      400,
+      MarketErrorCode.INVALID_INPUT,
+      'Invalid status',
+      correlationId,
+    );
+  }
+
+  if (rawCursor !== undefined && typeof rawCursor !== 'string') {
+    return fail(
+      res,
+      400,
+      MarketErrorCode.INVALID_INPUT,
+      'Invalid cursor',
+      correlationId,
+    );
+  }
+
+  // Empty cursor is treated as absent (documented above).
+  const cursor =
+    typeof rawCursor === 'string' && rawCursor.length > 0
+      ? rawCursor
+      : undefined;
+
+  let limit: number | undefined;
+  if (rawLimit !== undefined) {
+    if (typeof rawLimit !== 'string') {
+      return fail(
+        res,
+        400,
+        MarketErrorCode.INVALID_INPUT,
+        'Invalid limit',
+        correlationId,
+      );
+    }
+    // Explicit integer check: reject NaN, non-integers, negatives, zero, and
+    // values above the documented maximum.
+    const parsedLimit = Number(rawLimit);
+    if (
+      !Number.isInteger(parsedLimit) ||
+      parsedLimit <= 0 ||
+      parsedLimit > MARKETS_MAX_LIMIT
+    ) {
+      return fail(
+        res,
+        400,
+        MarketErrorCode.INVALID_INPUT,
+        'Invalid limit',
+        correlationId,
+      );
+    }
+    limit = parsedLimit;
+  }
+
+  const where: Record<string, unknown> = {};
+  if (rawStatus !== undefined) {
+    where.status = rawStatus;
+  }
+  if (cursor !== undefined) {
+    where.id = { gt: cursor };
+  }
+
+  try {
+    const markets = await db.market.findMany({
+      where,
+      take: limit,
+      orderBy: { id: 'asc' },
+    });
+    return res.status(200).json({ data: markets, correlationId });
+  } catch (err) {
+    logger.error('market.list.failed', {
+      correlationId,
+      error: err instanceof Error ? err.message : 'unknown',
+    });
+    return fail(
+      res,
+      503,
+      MarketErrorCode.DEPENDENCY_UNAVAILABLE,
+      'Markets temporarily unavailable',
+      correlationId,
+    );
+  }
+});
+
+/**
  * POST /admin/markets/:id/restore
  *
  * Restores a previously soft-deleted market. Invariants (see

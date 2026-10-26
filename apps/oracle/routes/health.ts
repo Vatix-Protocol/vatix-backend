@@ -12,7 +12,8 @@
  *   - `GET /health/ready` — readiness. Runs the critical-dependency checks
  *                           (Postgres + Redis — the oracle's only durable and
  *                           queue transports) and returns **503**
- *                           (`DEPENDENCY_UNAVAILABLE`) when any is unavailable,
+ *                           (`DEPENDENCY_UNAVAILABLE` / `DEPENDENCY_TIMEOUT`)
+ *                           when any is unavailable or exceeds its deadline,
  *                           so automation is withheld until they recover.
  *                           Fail-closed: a not-ready oracle must not be treated
  *                           as able to enqueue or submit.
@@ -25,7 +26,8 @@
  *   - Every response carries a correlation id (echoed from `x-correlation-id`
  *     when present) so a probe hit can be stitched to logs.
  *   - Each dependency check is bounded by a timeout, so a hung database cannot
- *     hang the probe (and with it the orchestrator's health checks).
+ *     hang the probe (and with it the orchestrator's health checks). A probe
+ *     that exceeds its deadline is reported as `DEPENDENCY_TIMEOUT`.
  *   - When `ORACLE_HEALTH_TOKEN` is set, `/health/ready` requires a matching
  *     `x-health-token` header (constant-time compare) and answers 401
  *     `UNAUTHORIZED` otherwise — deny-by-default for the privileged surface.
@@ -36,11 +38,14 @@
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { timingSafeEqual } from "crypto";
+import { withTimeout } from "../timeout-utils.js";
 
 /** Stable error codes for probe responses (#1116). */
 export const ORACLE_HEALTH_ERROR_CODES = {
   /** At least one critical dependency is unavailable. */
   DEPENDENCY_UNAVAILABLE: "DEPENDENCY_UNAVAILABLE",
+  /** At least one critical dependency exceeded its probe deadline. */
+  DEPENDENCY_TIMEOUT: "DEPENDENCY_TIMEOUT",
   /** A required probe token was missing or wrong. */
   UNAUTHORIZED: "UNAUTHORIZED",
 } as const;
@@ -49,7 +54,7 @@ export type OracleHealthErrorCode =
   (typeof ORACLE_HEALTH_ERROR_CODES)[keyof typeof ORACLE_HEALTH_ERROR_CODES];
 
 /** Per-dependency probe outcome. Deliberately coarse — never a reason string. */
-export type DependencyStatus = "ok" | "unavailable";
+export type DependencyStatus = "ok" | "unavailable" | "timeout";
 
 /** Minimal logger surface; keeps this module free of a logging dependency. */
 export interface HealthLogger {
@@ -157,9 +162,10 @@ export function defaultDependencyProbes(): DependencyProbe[] {
 
 /**
  * Run every probe concurrently under a per-probe timeout and fail closed: any
- * rejection, thrown error or timeout marks the dependency `"unavailable"`.
+ * rejection, thrown error or timeout marks the dependency `"unavailable"`
+ * (or `"timeout"` when the deadline is exceeded).
  * The underlying error is never surfaced (it can embed connection strings) —
- * only a warn-level log with the dependency name and correlation id.
+ * only a structured log with the dependency name, status and correlation id.
  */
 export async function runDependencyProbes(
   probes: DependencyProbe[],
@@ -171,31 +177,33 @@ export async function runDependencyProbes(
 
   await Promise.all(
     probes.map(async ({ name, check }) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let status: DependencyStatus;
       try {
-        await Promise.race([
-          check(),
-          new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(
-              () => reject(new Error("probe timeout")),
-              timeoutMs
-            );
-          }),
-        ]);
-        results[name] = "ok";
-      } catch {
-        results[name] = "unavailable";
-        logger?.warn(
-          { correlationId, dependency: name },
-          "Oracle readiness dependency unavailable"
-        );
-      } finally {
-        if (timer) clearTimeout(timer);
+        await withTimeout(check(), timeoutMs, `probe:${name}`);
+        status = "ok";
+      } catch (error) {
+        status = isTimeoutError(error) ? "timeout" : "unavailable";
+      }
+      results[name] = status;
+
+      const fields = { dependency: name, status, correlationId };
+      if (status === "ok") {
+        logger?.info(fields, "Oracle readiness dependency ok");
+      } else {
+        logger?.warn(fields, "Oracle readiness dependency not ready");
       }
     })
   );
 
   return results;
+}
+
+/** True when a rejection came from the probe deadline rather than the check. */
+function isTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.name === "TimeoutError" || error.message === "probe timeout")
+  );
 }
 
 export async function healthRoutes(
@@ -221,28 +229,25 @@ export async function healthRoutes(
     });
   });
 
-  // Readiness: fail closed with 503 when any critical dependency is down.
+  // Readiness: fail closed with 503 when a dependency is unavailable or times out.
   fastify.get<{ Reply: ReadinessResponse }>(
     "/health/ready",
     async (request, reply) => {
       const correlationId = correlationIdFor(request);
 
-      if (requiredToken) {
-        const provided = request.headers["x-health-token"];
-        if (!tokensMatch(provided, requiredToken)) {
-          logger?.warn(
-            { correlationId, route: "/health/ready" },
-            "Oracle readiness probe rejected: missing or invalid token"
-          );
-          return reply.status(401).send({
-            status: "degraded" as const,
-            service: serviceName,
-            timestamp: new Date().toISOString(),
-            correlationId,
-            dependencies: {},
-            code: ORACLE_HEALTH_ERROR_CODES.UNAUTHORIZED,
-          });
-        }
+      if (requiredToken && !tokensMatch(request.headers["x-health-token"], requiredToken)) {
+        logger?.warn(
+          { correlationId, route: "/health/ready" },
+          "Oracle readiness unauthorized"
+        );
+        return reply.status(401).send({
+          status: "degraded" as const,
+          service: serviceName,
+          timestamp: new Date().toISOString(),
+          correlationId,
+          dependencies: {},
+          code: ORACLE_HEALTH_ERROR_CODES.UNAUTHORIZED,
+        });
       }
 
       const dependencies = await runDependencyProbes(
@@ -251,25 +256,31 @@ export async function healthRoutes(
         correlationId,
         logger
       );
-      const ready = Object.values(dependencies).every(
-        (status) => status === "ok"
-      );
 
-      const log = ready ? logger?.info.bind(logger) : logger?.warn.bind(logger);
-      log?.(
-        { correlationId, route: "/health/ready", ready, dependencies },
-        ready ? "Oracle readiness ok" : "Oracle readiness failed"
-      );
+      const statuses = Object.values(dependencies);
+      const hasTimeout = statuses.includes("timeout");
+      const hasUnavailable = statuses.includes("unavailable");
 
-      return reply.status(ready ? 200 : 503).send({
-        status: ready ? ("ok" as const) : ("degraded" as const),
+      if (hasTimeout || hasUnavailable) {
+        const code = hasTimeout
+          ? ORACLE_HEALTH_ERROR_CODES.DEPENDENCY_TIMEOUT
+          : ORACLE_HEALTH_ERROR_CODES.DEPENDENCY_UNAVAILABLE;
+        return reply.status(503).send({
+          status: "degraded" as const,
+          service: serviceName,
+          timestamp: new Date().toISOString(),
+          correlationId,
+          dependencies,
+          code,
+        });
+      }
+
+      return reply.status(200).send({
+        status: "ok" as const,
         service: serviceName,
         timestamp: new Date().toISOString(),
         correlationId,
         dependencies,
-        ...(ready
-          ? {}
-          : { code: ORACLE_HEALTH_ERROR_CODES.DEPENDENCY_UNAVAILABLE }),
       });
     }
   );
