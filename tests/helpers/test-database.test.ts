@@ -141,6 +141,28 @@ describe("Test Database Utilities", () => {
       expect(validateDatabaseUrl("postgresql://:pass@/dbname")).toBe(false);
     });
 
+    it("should reject URLs with no database name", () => {
+      expect(validateDatabaseUrl("postgresql://localhost")).toBe(false);
+    });
+
+    it("should reject URLs with an empty database name", () => {
+      expect(validateDatabaseUrl("postgresql://user:pass@localhost/")).toBe(
+        false
+      );
+    });
+
+    it("should reject URLs with a non-numeric port", () => {
+      expect(
+        validateDatabaseUrl("postgresql://user:pass@localhost:abc/db")
+      ).toBe(false);
+    });
+
+    it("should reject URLs with an out-of-range port", () => {
+      expect(
+        validateDatabaseUrl("postgresql://user:pass@localhost:99999/db")
+      ).toBe(false);
+    });
+
     it("should return false (400-equivalent) for invalid input types and formats", () => {
       const invalidInputs = [
         null,

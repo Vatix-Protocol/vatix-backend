@@ -84,6 +84,24 @@ describe("Ready Integration Tests", () => {
     expect(body.dependencies.indexFreshness.status).toBe("stale");
   });
 
+  it("keeps /health liveness-only (200) while /ready fails closed (503) under a stale cursor", async () => {
+    mockFindFirst.mockResolvedValue({
+      networkId: "testnet",
+      cursorKey: "ingestion",
+      cursorValue: "123456",
+      updatedAt: new Date(Date.now() - 10 * 60 * 1000), // 10 min old
+    });
+
+    const healthRes = await app.inject({ method: "GET", url: "/health" });
+    expect(healthRes.statusCode).toBe(200);
+
+    const readyRes = await app.inject({ method: "GET", url: "/v1/ready" });
+    expect(readyRes.statusCode).toBe(503);
+    const body = readyRes.json();
+    expect(body.ready).toBe(false);
+    expect(body.dependencies.indexFreshness.status).toBe("stale");
+  });
+
   it("returns 301 redirect for legacy /readiness endpoint", async () => {
     const res = await app.inject({ method: "GET", url: "/readiness" });
     expect(res.statusCode).toBe(301);
