@@ -18,6 +18,7 @@ import { Trend } from 'k6/metrics';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
 const MARKET_ID = __ENV.MARKET_ID;
+const AUTH_HEADER = __ENV.AUTH_HEADER || '';
 
 const rejectionTrend = new Trend('order_rejections', true);
 
@@ -31,7 +32,18 @@ if (!LOCAL_HOSTS.some((host) => BASE_URL.includes(host))) {
 }
 
 if (!MARKET_ID) {
-  throw new Error('MARKET_ID is required: k6 run -e MARKET_ID=<id> ...');
+  throw new Error(
+    `MARKET_ID is required. Provide it with: ` +
+      `k6 run -e MARKET_ID=<id> scripts/load/order-placement-soak.js`,
+  );
+}
+
+if (!AUTH_HEADER) {
+  console.warn(
+    '[order-placement-soak] AUTH_HEADER is not set — running unauthenticated. ' +
+      'Provide it with: k6 run -e AUTH_HEADER=<token> ... if the target enforces auth.',
+  );
+}
 }
 
 export const options = {
@@ -58,7 +70,10 @@ const payload = JSON.stringify({
 });
 
 const params = {
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    'Content-Type': 'application/json',
+    ...(AUTH_HEADER ? { Authorization: AUTH_HEADER } : {}),
+  },
 };
 
 export default function () {
