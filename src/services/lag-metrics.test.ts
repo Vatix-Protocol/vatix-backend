@@ -6,6 +6,7 @@ import {
   getMetrics,
   resetMetrics,
   LAG_HISTOGRAM_BUCKETS,
+  DEFAULT_SHED_THRESHOLD,
 } from "./lag-metrics.js";
 import { metricsRegistry } from "./metrics.js";
 
@@ -40,13 +41,39 @@ describe("lag-metrics — histogram vs gauge for Grafana alerts (#981)", () => {
     expect(exposition).toContain("# TYPE vatix_admission_shedding gauge");
   });
 
-  it("uses buckets that straddle the default shed threshold (500)", () => {
-    expect(LAG_HISTOGRAM_BUCKETS).toContain(500);
-    expect(Math.min(...LAG_HISTOGRAM_BUCKETS)).toBeLessThan(500);
-    expect(Math.max(...LAG_HISTOGRAM_BUCKETS)).toBeGreaterThan(500);
-    // Buckets must be strictly increasing (prom-client requirement).
-    const sorted = [...LAG_HISTOGRAM_BUCKETS].sort((a, b) => a - b);
-    expect(LAG_HISTOGRAM_BUCKETS).toEqual(sorted);
+  it("uses buckets that straddle the default shed threshold", () => {
+    expect(LAG_HISTOGRAM_BUCKETS).toContain(DEFAULT_SHED_THRESHOLD);
+    expect(Math.min(...LAG_HISTOGRAM_BUCKETS)).toBeLessThan(
+      DEFAULT_SHED_THRESHOLD
+    );
+    expect(Math.max(...LAG_HISTOGRAM_BUCKETS)).toBeGreaterThan(
+      DEFAULT_SHED_THRESHOLD
+    );
+  });
+
+  it("keeps LAG_HISTOGRAM_BUCKETS strictly ascending", () => {
+    for (let i = 1; i < LAG_HISTOGRAM_BUCKETS.length; i++) {
+      expect(LAG_HISTOGRAM_BUCKETS[i]).toBeGreaterThan(
+        LAG_HISTOGRAM_BUCKETS[i - 1]
+      );
+    }
+  });
+
+  it("exposes a le=\"500\" bucket boundary on the registered histogram", async () => {
+    setCurrentLag(DEFAULT_SHED_THRESHOLD);
+
+    const exposition = await metricsRegistry.getSingleMetricAsString(
+      "vatix_settlement_lag"
+    );
+    const bucketLine = exposition
+      .split("\n")
+      .find((line) =>
+        line.startsWith("vatix_settlement_lag_bucket") &&
+        line.includes(`le="${DEFAULT_SHED_THRESHOLD}"`)
+      );
+    expect(bucketLine).toBeDefined();
+    const count = Number(bucketLine!.trim().split(/\s+/).pop());
+    expect(count).toBeGreaterThan(0);
   });
 
   it("setCurrentLag records an observation in the histogram and sets the gauge", async () => {

@@ -25,6 +25,15 @@ export interface ReadyDeps {
    * a fresher instant than actual ingestion progress.
    */
   getLastIndexedAt: () => Promise<number | null>;
+  /**
+   * Probes database readiness. Defaults to the production `checkDbReadiness`
+   * (which resolves the Prisma singleton) but can be overridden so tests can
+   * inject a fake client without a live Postgres.
+   */
+  checkDbReadiness: (options?: {
+    client?: Pick<PrismaClient, "$queryRaw">;
+    timeoutMs?: number;
+  }) => Promise<void>;
 }
 
 export interface CreateReadyDepsOptions {
@@ -32,6 +41,10 @@ export interface CreateReadyDepsOptions {
   checkDatabase?: () => Promise<void>;
   checkRedis?: () => Promise<void>;
   getLastIndexedAt?: () => Promise<number | null>;
+  checkDbReadiness?: (options?: {
+    client?: Pick<PrismaClient, "$queryRaw">;
+    timeoutMs?: number;
+  }) => Promise<void>;
 }
 
 export function createReadyDeps(options: CreateReadyDepsOptions = {}): ReadyDeps {
@@ -77,5 +90,12 @@ export function createReadyDeps(options: CreateReadyDepsOptions = {}): ReadyDeps
       return cursor.updatedAt.getTime();
     });
 
-  return { checkDatabase, checkRedis: checkRedisImpl, getLastIndexedAt };
+  const checkDbReadinessFn = options.checkDbReadiness ?? checkDbReadiness;
+
+  return {
+    checkDatabase,
+    checkRedis: checkRedisImpl,
+    getLastIndexedAt,
+    checkDbReadiness: checkDbReadinessFn,
+  };
 }

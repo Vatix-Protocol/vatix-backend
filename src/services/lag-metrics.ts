@@ -24,10 +24,17 @@ import client from "prom-client";
 import { metricsRegistry } from "./metrics.js";
 
 /**
+ * Default global shed threshold for the lag score. Admission control sheds
+ * order traffic once the lag score reaches this value. Exported so tests and
+ * callers can reference the threshold instead of duplicating the literal.
+ */
+export const DEFAULT_SHED_THRESHOLD = 500;
+
+/**
  * Bucket boundaries for the lag histogram. The lag score is roughly
  * `settlementQueueDepth + outboxUnpublishedCount` (see lag-detector.ts); the
- * global shed threshold defaults to 500, so buckets straddle that with
- * headroom on both sides.
+ * global shed threshold defaults to `DEFAULT_SHED_THRESHOLD` (500), so buckets
+ * straddle that with headroom on both sides.
  */
 export const LAG_HISTOGRAM_BUCKETS = [
   10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000,
