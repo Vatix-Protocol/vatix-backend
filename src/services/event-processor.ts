@@ -186,6 +186,10 @@ export class EventProcessor {
 
       try {
         await handler(event);
+        // Only record the event once the handler has resolved successfully.
+        // If the handler throws, we must NOT touch the persistent store:
+        // otherwise a failed event would be permanently marked as processed
+        // and silently dropped on retry, violating the at-least-once contract.
         this.markSeen(event.id);
         if (this.persistentStore) {
           await this.persistentStore.add(event.id);

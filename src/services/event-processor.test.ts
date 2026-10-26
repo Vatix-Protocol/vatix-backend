@@ -453,5 +453,92 @@ describe("EventProcessor — duplicate event handling", () => {
       expect(result.failed).toBe(1);
       expect(store.ids.has("evt-1")).toBe(false);
     });
+
+    it("reprocesses an event on the next batch after a handler rejection", async () => {
+      const store = makeStore();
+      const processor = new EventProcessor({ persistentStore: store });
+      const event = makeEvent("evt-1", 100);
+
+      const flakyHandler = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("transient error"))
+        .mockResolvedValue(undefined) as MockInstance &
+        ((event: IndexerEvent) => Promise<void>);
+
+      const first = await processor.processBatch([event], flakyHandler);
+      expect(first.failed).toBe(1);
+      expect(first.processed).toBe(0);
+      expect(store.ids.has("evt-1")).toBe(false);
+
+      // Retry the same event on the next batch — the handler runs again and
+      // only then is the id recorded in the durable store.
+      const second = await processor.processBatch([event], flakyHandler);
+      expect(flakyHandler).toHaveBeenCalledTimes(2);
+      expect(second.processed).toBe(1);
+      expect(second.duplicates).toBe(0);
+      expect(store.ids.has("evt-1")).toBe(true);
+    });
+
+    it("calls persistentStore.add exactly once per successfully-processed event id", async () => {
+      const store: EventDedupStore = {
+        has: vi.fn().mockReturnValue(false),
+        add: vi.fn(),
+      };
+      const processor = new EventProcessor({ persistentStore: store });
+      const event = makeEvent("evt-1", 100);
+
+      await processor.processBatch([event], handler);
+      expect(store.add).toHaveBeenCalledTimes(1);
+      expect(store.add).toHaveBeenCalledWith("evt-1");
+
+      // Replaying the same event must not add it again.
+      await processor.processBatch([event], handler);
+      expect(store.add).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Production readiness warning (#1379)
+  // -------------------------------------------------------------------------
+
+  describe("production readiness warning (#1379)", () => {
+    it("emits the warning exactly once with documented fields in production", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      new EventProcessor({ env: { NODE_ENV: "production" } });
+
+      expect(warnSpy).toHaveBeenCalledOnce();
+      const payload = warnSpy.mock.calls[0][0] as unknown as Record<
+        string,
+        unknown
+      >;
+      expect(payload).toMatchObject({
+        component: "EventProcessor",
+        deliverySemantics: "at-least-once",
+      });
+      expect(String(payload.message)).toMatch(/at-least-once/);
+      expect(String(payload.message)).toMatch(/persistent dedup store/i);
+      warnSpy.mockRestore();
+    });
+
+    it("does not warn in production when a persistent store is supplied", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const store: EventDedupStore = { has: () => false, add: () => {} };
+      new EventProcessor({
+        env: { NODE_ENV: "production" },
+        persistentStore: store,
+      });
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it("does not warn when NODE_ENV is not production", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      new EventProcessor({ env: { NODE_ENV: "development" } });
+      new EventProcessor({ env: { NODE_ENV: "test" } });
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
   });
 });
