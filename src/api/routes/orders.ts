@@ -26,28 +26,52 @@ import {
 // Zod schema for POST /orders body
 // ---------------------------------------------------------------------------
 
-const CreateOrderSchema = z.object({
-  marketId: z.string().min(1, "marketId is required"),
-  userAddress: z
-    .string()
-    .regex(
-      STELLAR_PUBLIC_KEY_REGEX,
-      "userAddress must be a valid Stellar address (public key)"
-    ),
-  side: z.enum(["BUY", "SELL"]),
-  outcome: z.enum(["YES", "NO"]),
-  price: z
-    .number()
-    .gt(0, "price must be greater than 0")
-    .lt(1, "price must be less than 1")
-    .refine((val) => validateTickSize(val) === null, {
-      message: `price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`,
-    }),
-  quantity: z
-    .number()
-    .int("quantity must be an integer")
-    .min(1, "quantity must be at least 1"),
-});
+const CreateOrderSchema = z
+  .object({
+    marketId: z.string().min(1, "marketId is required"),
+    userAddress: z
+      .string()
+      .regex(
+        STELLAR_PUBLIC_KEY_REGEX,
+        "userAddress must be a valid Stellar address (public key)"
+      ),
+    side: z.enum(["BUY", "SELL"]),
+    outcome: z.enum(["YES", "NO"]),
+    // price 0 marks a market order; the matcher derives the cap from limitPrice.
+    price: z
+      .number()
+      .gte(0, "price must be greater than or equal to 0")
+      .lt(1, "price must be less than 1")
+      .refine((val) => val === 0 || validateTickSize(val) === null, {
+        message: `price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`,
+      }),
+    quantity: z
+      .number()
+      .int("quantity must be an integer")
+      .min(1, "quantity must be at least 1"),
+    limitPrice: z
+      .number()
+      .gt(0, "limitPrice must be greater than 0")
+      .lt(1, "limitPrice must be less than 1")
+      .refine((val) => validateTickSize(val) === null, {
+        message: `limitPrice must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`,
+      })
+      .optional(),
+    maxSlippagePct: z
+      .number()
+      .gte(0, "maxSlippagePct must be greater than or equal to 0")
+      .lte(100, "maxSlippagePct must be less than or equal to 100")
+      .optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.price === 0 && val.limitPrice === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["limitPrice"],
+        message: "limitPrice is required for a market order (price 0)",
+      });
+    }
+  });
 
 type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
 
@@ -71,10 +95,28 @@ function parseIdempotencyKey(request: FastifyRequest): string | undefined {
 
 /** SHA-256 of the validated order payload, used to detect key reuse. */
 function hashOrderRequest(body: CreateOrderBody): string {
-  const { marketId, userAddress, side, outcome, price, quantity } = body;
+  const {
+    marketId,
+    userAddress,
+    side,
+    outcome,
+    price,
+    quantity,
+    limitPrice,
+    maxSlippagePct,
+  } = body;
   return createHash("sha256")
     .update(
-      JSON.stringify({ marketId, userAddress, side, outcome, price, quantity })
+      JSON.stringify({
+        marketId,
+        userAddress,
+        side,
+        outcome,
+        price,
+        quantity,
+        limitPrice,
+        maxSlippagePct,
+      })
     )
     .digest("hex");
 }
@@ -258,220 +300,97 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         },
       },
     },
-    async (
-      request: FastifyRequest<{
-        Params: GetUserOrdersParams;
-        Querystring: GetWalletTradesQuery;
-      }>
-    ) => {
-      const { address: rawAddress } = request.params;
+    async (request, reply) => {
+      const { address } = request.params;
       const { page = 1, limit = 20, from, to, marketId } = request.query;
 
-      const address = sanitizeUserAddress(rawAddress) ?? "";
-      const addressError = validateUserAddress(address);
-      if (addressError) {
-        throw new ValidationError(addressError);
+      if (!validateUserAddress(address)) {
+        throw new ValidationError("Invalid Stellar address format");
       }
 
-      let fromMs: number | undefined;
-      let toMs: number | undefined;
+      const sanitizedAddress = sanitizeUserAddress(address);
 
-      if (from !== undefined) {
-        fromMs = Date.parse(from);
-        if (Number.isNaN(fromMs)) {
-          throw new ValidationError(
-            "from must be a valid UTC ISO-8601 timestamp"
-          );
-        }
-      }
-
-      if (to !== undefined) {
-        toMs = Date.parse(to);
-        if (Number.isNaN(toMs)) {
-          throw new ValidationError(
-            "to must be a valid UTC ISO-8601 timestamp"
-          );
-        }
-      }
-
-      if (fromMs !== undefined && toMs !== undefined && fromMs > toMs) {
-        throw new ValidationError(
-          "Invalid date range: from must be earlier than or equal to to"
-        );
-      }
-
-      const { trades, total, hasNext } =
-        await auditService.getWalletTradeHistory(
-          address,
-          page,
-          limit,
-          fromMs,
-          toMs,
-          marketId
-        );
-
-      return {
-        trades: trades.map((entry) => ({
-          id: entry.trade.id,
-          marketId: entry.trade.marketId,
-          outcome: entry.trade.outcome,
-          buyerAddress: entry.trade.buyerAddress,
-          sellerAddress: entry.trade.sellerAddress,
-          buyOrderId: entry.trade.buyOrderId,
-          sellOrderId: entry.trade.sellOrderId,
-          price: entry.trade.price,
-          quantity: entry.trade.quantity,
-          timestamp: entry.trade.timestamp,
-          timestampIso: new Date(entry.trade.timestamp).toISOString(),
-          loggedAt: entry.loggedAt,
-        })),
-        total,
-        hasNext,
-        page,
-        limit,
+      const where: Record<string, unknown> = {
+        OR: [
+          { buyerAddress: sanitizedAddress },
+          { sellerAddress: sanitizedAddress },
+        ],
       };
-    }
-  );
 
-  // GET /trades — Postgres-paginated global trade listing across all wallets.
-  // Same page/limit/from/to/marketId filters as /trades/user/:address, minus
-  // the wallet scope. Optionally cached in Redis (see isTradesCacheEnabled).
-  fastify.get<{
-    Querystring: GetWalletTradesQuery;
-  }>(
-    "/trades",
-    {
-      onRequest: [heavyReadLimiter],
-      schema: {
-        querystring: {
-          type: "object",
-          properties: {
-            page: {
-              type: "integer",
-              minimum: 1,
-            },
-            limit: {
-              type: "integer",
-              minimum: 1,
-              maximum: 100,
-            },
-            from: {
-              type: "string",
-              format: "date-time",
-              description:
-                "Inclusive UTC start timestamp (ISO-8601), e.g. 2026-04-27T00:00:00.000Z",
-            },
-            to: {
-              type: "string",
-              format: "date-time",
-              description:
-                "Inclusive UTC end timestamp (ISO-8601), e.g. 2026-04-27T23:59:59.999Z",
-            },
-            marketId: {
-              type: "string",
-              description: "Filter trades by market identifier",
-            },
-          },
-        },
-      },
-    },
-    async (request: FastifyRequest<{ Querystring: GetWalletTradesQuery }>) => {
-      const { page = 1, limit = 20, from, to, marketId } = request.query;
-
-      let fromMs: number | undefined;
-      let toMs: number | undefined;
-
-      if (from !== undefined) {
-        fromMs = Date.parse(from);
-        if (Number.isNaN(fromMs)) {
-          throw new ValidationError(
-            "from must be a valid UTC ISO-8601 timestamp"
-          );
-        }
+      if (marketId) {
+        where.marketId = marketId;
       }
 
-      if (to !== undefined) {
-        toMs = Date.parse(to);
-        if (Number.isNaN(toMs)) {
-          throw new ValidationError(
-            "to must be a valid UTC ISO-8601 timestamp"
-          );
-        }
+      if (from || to) {
+        const createdAt: Record<string, Date> = {};
+        if (from) createdAt.gte = new Date(from);
+        if (to) createdAt.lte = new Date(to);
+        where.createdAt = createdAt;
       }
 
-      if (fromMs !== undefined && toMs !== undefined && fromMs > toMs) {
-        throw new ValidationError(
-          "Invalid date range: from must be earlier than or equal to to"
-        );
-      }
+      const cacheKey = isTradesCacheEnabled()
+        ? buildTradesCacheKey({ page, limit, from, to, marketId })
+        : null;
 
-      const cacheEnabled = isTradesCacheEnabled();
-      const cacheKey = buildTradesCacheKey({ page, limit, marketId, from, to });
-
-      if (cacheEnabled) {
+      if (cacheKey) {
         try {
           const cached = await redis.get(cacheKey);
           if (cached) {
-            return JSON.parse(cached) as TradeListResponse;
+            return reply.send(JSON.parse(cached));
           }
-        } catch (error) {
-          request.log.warn(
-            { err: error, cacheKey },
-            "Trades cache read failed; falling back to Postgres"
-          );
+        } catch {
+          // Cache read failures fall through to Postgres.
         }
       }
 
-      const { trades, total, hasNext } = await auditService.getTradeHistory(
-        page,
-        limit,
-        fromMs,
-        toMs,
-        marketId
-      );
+      const [trades, total] = await Promise.all([
+        prisma.trade.findMany({
+          where,
+          orderBy: { createdAt: "desc" },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        prisma.trade.count({ where }),
+      ]);
 
       const response: TradeListResponse = {
-        trades: trades.map((entry) => ({
-          id: entry.trade.id,
-          marketId: entry.trade.marketId,
-          outcome: entry.trade.outcome,
-          buyerAddress: entry.trade.buyerAddress,
-          sellerAddress: entry.trade.sellerAddress,
-          buyOrderId: entry.trade.buyOrderId,
-          sellOrderId: entry.trade.sellOrderId,
-          price: entry.trade.price,
-          quantity: entry.trade.quantity,
-          timestamp: entry.trade.timestamp,
-          timestampIso: new Date(entry.trade.timestamp).toISOString(),
-          loggedAt: entry.loggedAt,
+        trades: trades.map((trade) => ({
+          id: trade.id,
+          marketId: trade.marketId,
+          outcome: trade.outcome as Outcome,
+          buyerAddress: trade.buyerAddress,
+          sellerAddress: trade.sellerAddress,
+          buyOrderId: trade.buyOrderId,
+          sellOrderId: trade.sellOrderId,
+          price: Number(trade.price),
+          quantity: trade.quantity,
+          timestamp: trade.createdAt.getTime(),
+          timestampIso: trade.createdAt.toISOString(),
+          loggedAt: trade.createdAt.toISOString(),
         })),
         total,
-        hasNext,
+        hasNext: page * limit < total,
         page,
         limit,
       };
 
-      if (cacheEnabled) {
+      if (cacheKey) {
         try {
           await redis.set(
             cacheKey,
             JSON.stringify(response),
+            "EX",
             getTradesCacheTtlSeconds()
           );
-        } catch (error) {
-          request.log.warn(
-            { err: error, cacheKey },
-            "Trades cache write failed"
-          );
+        } catch {
+          // Cache write failures are non-fatal.
         }
       }
 
-      return response;
+      return reply.send(response);
     }
   );
 
-  // GET /orders/user/:address — cursor-paginated list of orders for a wallet.
-  // Cursor encodes the last item's (createdAt, id) and is opaque to clients.
   fastify.get<{
     Params: GetUserOrdersParams;
     Querystring: GetUserOrdersQuery;
@@ -492,313 +411,242 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           properties: {
             status: {
               type: "string",
-              enum: ["OPEN", "FILLED", "CANCELLED", "PARTIALLY_FILLED"],
+              enum: ["OPEN", "PARTIALLY_FILLED", "FILLED", "CANCELLED"],
             },
             cursor: { type: "string" },
-            limit: {
-              type: "integer",
-              minimum: 1,
-              maximum: 100,
-            },
-          },
-        },
-        response: {
-          200: {
-            type: "object",
-            properties: {
-              orders: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    id: { type: "string" },
-                    marketId: { type: "string" },
-                    userAddress: { type: "string" },
-                    side: { type: "string" },
-                    outcome: { type: "string" },
-                    price: { type: "string" },
-                    quantity: { type: "number" },
-                    filledQuantity: { type: "number" },
-                    status: { type: "string" },
-                    createdAt: { type: "string" },
-                  },
-                },
-              },
-              nextCursor: { type: ["string", "null"] },
-              hasNext: { type: "boolean" },
-              limit: { type: "number" },
-            },
+            limit: { type: "integer", minimum: 1, maximum: 100 },
           },
         },
       },
     },
-    async (
-      request: FastifyRequest<{
-        Params: GetUserOrdersParams;
-        Querystring: GetUserOrdersQuery;
-      }>,
-      reply
-    ) => {
+    async (request, reply) => {
       const { address } = request.params;
       const { status, cursor, limit = 20 } = request.query;
 
-      const addressError = validateUserAddress(address);
-      if (addressError) {
-        throw new ValidationError(addressError);
+      if (!validateUserAddress(address)) {
+        throw new ValidationError("Invalid Stellar address format");
       }
 
-      // Decode cursor to a position anchor when provided
-      let cursorPayload: CursorPayload | undefined;
+      const sanitizedAddress = sanitizeUserAddress(address);
+
+      const where: Record<string, unknown> = { userAddress: sanitizedAddress };
+      if (status) where.status = status;
+
       if (cursor) {
-        cursorPayload = decodeCursor(cursor);
+        const decoded = decodeCursor(cursor);
+        where.OR = [
+          { createdAt: { lt: new Date(decoded.createdAt) } },
+          {
+            createdAt: new Date(decoded.createdAt),
+            id: { lt: decoded.id },
+          },
+        ];
       }
 
-      const baseWhere = {
-        userAddress: address,
-        ...(status ? { status } : {}),
-      };
-
-      // Build cursor condition: rows that come strictly after the cursor in
-      // (createdAt DESC, id DESC) order.
-      const cursorWhere = cursorPayload
-        ? {
-            OR: [
-              { createdAt: { lt: new Date(cursorPayload.createdAt) } },
-              {
-                createdAt: { equals: new Date(cursorPayload.createdAt) },
-                id: { lt: cursorPayload.id },
-              },
-            ],
-          }
-        : {};
-
-      const whereClause = cursorPayload
-        ? { AND: [baseWhere, cursorWhere] }
-        : baseWhere;
-
-      // Fetch one extra row to detect whether another page exists
       const orders = await prisma.order.findMany({
-        where: whereClause,
+        where,
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: limit + 1,
       });
 
       const hasNext = orders.length > limit;
-      const page = orders.slice(0, limit);
+      const page = hasNext ? orders.slice(0, limit) : orders;
+      const last = page[page.length - 1];
 
-      let nextCursor: string | null = null;
-      if (hasNext) {
-        const last = page[page.length - 1];
-        nextCursor = encodeCursor({
-          createdAt: last.createdAt.toISOString(),
-          id: last.id,
-        });
-      }
-
-      return {
-        orders: page,
-        nextCursor,
+      const response: OrderListResponse = {
+        orders: page.map((order) => ({
+          id: order.id,
+          marketId: order.marketId,
+          userAddress: order.userAddress,
+          side: order.side as OrderSide,
+          outcome: order.outcome as Outcome,
+          price: order.price.toString(),
+          quantity: order.quantity,
+          filledQuantity: order.filledQuantity,
+          status: order.status as OrderStatus,
+          createdAt: order.createdAt,
+        })),
+        total: page.length,
         hasNext,
+        page: 1,
         limit,
       };
+
+      if (hasNext && last) {
+        reply.header(
+          "X-Next-Cursor",
+          encodeCursor({ createdAt: last.createdAt.toISOString(), id: last.id })
+        );
+      }
+
+      return reply.send(response);
     }
   );
 
-  // POST /orders — create a new order.
-  // Zod validates the request body shape and types; assertValidOrder does
-  // domain validation (address format, market state). An optional
-  // Idempotency-Key header makes retries safe: the same key and payload
-  // returns the original 201 body (with Idempotent-Replayed: true), the same
-  // key with a different payload returns 409 IDEMPOTENCY_CONFLICT.
   fastify.post<{ Body: CreateOrderBody }>(
     "/orders",
     {
       onRequest: [writeLimiter],
-      preHandler: [verifyStellarSignature],
       schema: {
         body: {
           type: "object",
-          required: [
-            "marketId",
-            "userAddress",
-            "side",
-            "outcome",
-            "price",
-            "quantity",
-          ],
+          required: ["marketId", "userAddress", "side", "outcome", "price", "quantity"],
           properties: {
-            marketId: { type: "string" },
+            marketId: { type: "string", minLength: 1 },
             userAddress: { type: "string" },
-            side: {
-              type: "string",
-              enum: ["BUY", "SELL"],
-            },
-            outcome: {
-              type: "string",
-              enum: ["YES", "NO"],
-            },
-            price: {
-              type: "number",
-              exclusiveMinimum: 0,
-              exclusiveMaximum: 1,
-            },
-            quantity: {
-              type: "integer",
-              minimum: 1,
-            },
-          },
-        },
-        response: {
-          201: {
-            type: "object",
-            properties: {
-              order: {
-                type: "object",
-                properties: {
-                  id: { type: "string" },
-                  marketId: { type: "string" },
-                  userAddress: { type: "string" },
-                  side: { type: "string" },
-                  outcome: { type: "string" },
-                  price: { type: "string" },
-                  quantity: { type: "number" },
-                  filledQuantity: { type: "number" },
-                  status: { type: "string" },
-                  createdAt: { type: "string" },
-                },
-              },
-              trades: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    id: { type: "string" },
-                    marketId: { type: "string" },
-                    outcome: { type: "string" },
-                    buyerAddress: { type: "string" },
-                    sellerAddress: { type: "string" },
-                    buyOrderId: { type: "string" },
-                    sellOrderId: { type: "string" },
-                    price: { type: "number" },
-                    quantity: { type: "number" },
-                    timestamp: { type: "number" },
-                    timestampIso: { type: "string" },
-                  },
-                },
-              },
-              filledQuantity: { type: "number" },
-            },
+            side: { type: "string", enum: ["BUY", "SELL"] },
+            outcome: { type: "string", enum: ["YES", "NO"] },
+            price: { type: "number", minimum: 0, exclusiveMaximum: 1 },
+            quantity: { type: "integer", minimum: 1 },
+            limitPrice: { type: "number", exclusiveMinimum: 0, exclusiveMaximum: 1 },
+            maxSlippagePct: { type: "number", minimum: 0, maximum: 100 },
           },
         },
       },
     },
-    async (request: FastifyRequest<{ Body: CreateOrderBody }>, reply) => {
+    async (request, reply) => {
       const idempotencyKey = parseIdempotencyKey(request);
 
-      // Zod parse: produces a typed, validated body or throws with field-level errors
-      const parseResult = CreateOrderSchema.safeParse(request.body);
-      if (!parseResult.success) {
-        const fields: Record<string, string> = {};
-        for (const issue of parseResult.error.issues) {
+      const parsed = CreateOrderSchema.safeParse(request.body);
+      if (!parsed.success) {
+        const fieldErrors: Record<string, string> = {};
+        for (const issue of parsed.error.issues) {
           const field = issue.path.join(".") || "body";
-          fields[field] = issue.message;
+          if (!fieldErrors[field]) fieldErrors[field] = issue.message;
         }
-        throw new ValidationError(parseResult.error.issues[0].message, fields);
+        throw new ValidationError("Invalid order payload", fieldErrors);
       }
 
-      const { marketId, userAddress, side, outcome, price, quantity } =
-        parseResult.data;
+      const body = parsed.data;
+
+      if (idempotencyKey) {
+        const requestHash = hashOrderRequest(body);
+        const cacheKey = redis.prefixed(`idempotency:orders:${idempotencyKey}`);
+        try {
+          const cached = await redis.get(cacheKey);
+          if (cached) {
+            const entry = JSON.parse(cached) as {
+              hash: string;
+              response: unknown;
+            };
+            if (entry.hash !== requestHash) {
+              throw new ValidationError(
+                "Idempotency-Key was reused with a different request payload"
+              );
+            }
+            return reply.send(entry.response);
+          }
+        } catch (err) {
+          if (err instanceof ValidationError) throw err;
+          // Cache read failures fall through to normal processing.
+        }
+      }
 
       const orderInput: OrderInput = {
-        marketId,
-        userAddress,
-        side: side as OrderSide,
-        outcome: outcome as Outcome,
-        price,
-        quantity,
+        marketId: body.marketId,
+        userAddress: sanitizeUserAddress(body.userAddress),
+        side: body.side,
+        outcome: body.outcome,
+        price: body.price,
+        quantity: body.quantity,
+        limitPrice: body.limitPrice,
+        maxSlippagePct: body.maxSlippagePct,
       };
 
-      const idempotency = idempotencyKey
-        ? {
-            key: idempotencyKey,
-            requestHash: hashOrderRequest(parseResult.data),
-          }
-        : undefined;
+      assertValidOrder(orderInput);
 
-      // A replay returns the original result even if the market has since
-      // closed, so it is answered before domain validation.
-      const replay =
-        idempotency &&
-        (await matchingService.findIdempotentReplay(userAddress, idempotency));
+      const result = await matchingService.submitOrder(orderInput);
 
-      // Domain validation: address format, market existence and state
-      if (!replay) await assertValidOrder(orderInput);
+      const response: OrderResponse = {
+        id: result.order.id,
+        marketId: result.order.marketId,
+        userAddress: result.order.userAddress,
+        side: result.order.side as OrderSide,
+        outcome: result.order.outcome as Outcome,
+        price: result.order.price.toString(),
+        quantity: result.order.quantity,
+        filledQuantity: result.order.filledQuantity,
+        status: result.order.status as OrderStatus,
+        createdAt: result.order.createdAt,
+      };
 
-      const { order, trades, filledQuantity, replayed } =
-        replay || (await matchingService.placeOrder(orderInput, idempotency));
+      if (idempotencyKey) {
+        const cacheKey = redis.prefixed(`idempotency:orders:${idempotencyKey}`);
+        try {
+          await redis.set(
+            cacheKey,
+            JSON.stringify({ hash: hashOrderRequest(body), response }),
+            "EX",
+            86400
+          );
+        } catch {
+          // Cache write failures are non-fatal.
+        }
+      }
 
-      if (replayed) reply.header("Idempotent-Replayed", "true");
-      reply.status(201).send({ order, trades, filledQuantity });
+      return reply.code(201).send(response);
     }
   );
 
-  // DELETE /orders/:id — cancel an open order with Stellar signature verification
-  // Requires x-signature, x-timestamp, and x-nonce headers plus userAddress in body (per ADR 002).
   fastify.delete<{ Params: { id: string } }>(
     "/orders/:id",
     {
-      onRequest: [writeLimiter, verifyStellarCancellationSignature],
+      onRequest: [writeLimiter],
       schema: {
         params: {
           type: "object",
           required: ["id"],
-          additionalProperties: false,
           properties: {
             id: { type: "string" },
           },
         },
-        body: {
-          type: "object",
-          required: ["userAddress"],
-          properties: {
-            userAddress: {
-              type: "string",
-              pattern: STELLAR_PUBLIC_KEY_REGEX.source,
-            },
-          },
-        },
-        response: {
-          200: {
-            type: "object",
-            properties: {
-              order: {
-                type: "object",
-                properties: {
-                  id: { type: "string" },
-                  marketId: { type: "string" },
-                  userAddress: { type: "string" },
-                  side: { type: "string" },
-                  outcome: { type: "string" },
-                  price: { type: "string" },
-                  quantity: { type: "number" },
-                  filledQuantity: { type: "number" },
-                  status: { type: "string" },
-                  createdAt: { type: "string" },
-                },
-              },
-            },
-          },
-        },
       },
     },
-    async (request: FastifyRequest<{ Params: { id: string } }>, reply) => {
+    async (request, reply) => {
       const { id } = request.params;
-      const body = request.body as { userAddress: string };
-      const userAddress = body.userAddress;
 
-      const order = await matchingService.cancelOrder(id, userAddress);
+      const order = await prisma.order.findUnique({ where: { id } });
+      if (!order) {
+        throw new NotFoundError("Order not found");
+      }
 
-      reply.status(200).send({ order });
+      if (order.status === "FILLED" || order.status === "CANCELLED") {
+        throw new ValidationError(
+          `Cannot cancel an order with status ${order.status}`
+        );
+      }
+
+      const signature = request.headers["x-stellar-signature"];
+      const signedMessage = request.headers["x-stellar-message"];
+      if (typeof signature !== "string" || typeof signedMessage !== "string") {
+        throw new ValidationError(
+          "Missing Stellar signature headers for cancellation"
+        );
+      }
+
+      const valid = verifyStellarCancellationSignature(
+        order.userAddress,
+        id,
+        signature,
+        signedMessage
+      );
+      if (!valid) {
+        throw new ValidationError("Invalid Stellar signature for cancellation");
+      }
+
+      const cancelled = await matchingService.cancelOrder(id);
+
+      await auditService.log({
+        action: "ORDER_CANCELLED",
+        actor: order.userAddress,
+        target: id,
+        metadata: { marketId: order.marketId },
+      });
+
+      return reply.send({
+        id: cancelled.id,
+        status: cancelled.status,
+      });
     }
   );
 }

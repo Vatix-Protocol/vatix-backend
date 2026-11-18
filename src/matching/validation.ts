@@ -21,7 +21,7 @@ export const MAX_SLIPPAGE = 0.1; // 10 %
  *
  * | Field              | Meaning                                              |
  * |--------------------|------------------------------------------------------|
- * | price              | Omitted (0) — signals this is a market order         |
+ * | price              | Limit price in (0, 1), exclusive — 0 is rejected     |
  * | limitPrice         | Worst acceptable execution price (optional)          |
  * | maxSlippagePct     | Max % deviation from limitPrice (optional, 0–100)   |
  * | allowPartialFill   | When false, reject if full qty cannot be filled      |
@@ -171,8 +171,8 @@ export function validateTickSize(price: number): string | null {
 /**
  * Validates price
  * - Must be a number
- * - 0 is allowed as a market-order sentinel (no resting price)
- * - Otherwise must be > 0 and < 1 (exclusive range), aligned to TICK_SIZE
+ * - Must be > 0 and < 1 (exclusive range), aligned to TICK_SIZE
+ * - 0 is rejected; market orders are expressed via `limitPrice`, not `price`
  */
 export function validatePrice(price: unknown): string | null {
   if (price === null || price === undefined) {
@@ -183,11 +183,8 @@ export function validatePrice(price: unknown): string | null {
     return "Price must be a number";
   }
 
-  // 0 is the market-order sentinel — skip range/tick checks
-  if (price === 0) return null;
-
-  if (price < 0 || price >= 1) {
-    return "Price must be 0 (market order) or between 0 and 1 (exclusive)";
+  if (price <= 0 || price >= 1) {
+    return "Price must be between 0 and 1 (exclusive)";
   }
 
   return validateTickSize(price);
@@ -262,156 +259,6 @@ export function validateMaxSlippagePct(pct: unknown): string | null {
 
 /**
  * Compute the effective worst-case price for a market order given an optional
- * limitPrice and maxSlippagePct.  Returns null when neither bound is set
- * (uncapped market order — production callers SHOULD always supply one).
- *
- * For BUY  the effective cap = limitPrice * (1 + maxSlippagePct / 100)
- * For SELL the effective floor = limitPrice * (1 - maxSlippagePct / 100)
- * Both are clamped to (0, 1) to remain in the valid price range.
- */
-export function computeEffectiveWorstPrice(
-  side: OrderSide,
-  limitPrice: number | undefined,
-  maxSlippagePct: number | undefined
-): number | null {
-  if (limitPrice === undefined) return null;
+ * limitPrice and maxSlippagePct.
 
-  const slipFraction = (maxSlippagePct ?? 0) / 100;
-
-  if (side === "BUY") {
-    return Math.min(0.9999, limitPrice * (1 + slipFraction));
-  } else {
-    return Math.max(0.0001, limitPrice * (1 - slipFraction));
-  }
-}
-
-/**
- * Validates all synchronous order fields
- * Returns aggregated validation result with all errors
- */
-export function validateOrderFields(order: OrderInput): ValidationResult {
-  const errors: Record<string, string> = {};
-
-  const userAddressError = validateUserAddress(order.userAddress);
-  if (userAddressError) {
-    errors.userAddress = userAddressError;
-  }
-
-  const sideError = validateOrderSide(order.side);
-  if (sideError) {
-    errors.side = sideError;
-  }
-
-  const outcomeError = validateOutcome(order.outcome);
-  if (outcomeError) {
-    errors.outcome = outcomeError;
-  }
-
-  const priceError = validatePrice(order.price);
-  if (priceError) {
-    errors.price = priceError;
-  }
-
-  const quantityError = validateQuantity(order.quantity);
-  if (quantityError) {
-    errors.quantity = quantityError;
-  }
-
-  // Validate optional market-order limit/slippage fields
-  if (order.limitPrice !== undefined) {
-    const limitErr = validateLimitPrice(order.limitPrice, order.side);
-    if (limitErr) errors.limitPrice = limitErr;
-  }
-
-  if (order.maxSlippagePct !== undefined) {
-    const slipErr = validateMaxSlippagePct(order.maxSlippagePct);
-    if (slipErr) errors.maxSlippagePct = slipErr;
-  }
-
-  // In production, market orders (price == 0) without a limitPrice are hard-blocked.
-  // In development / test they are allowed to keep the local dev loop frictionless.
-  if (
-    order.price === 0 &&
-    order.limitPrice === undefined &&
-    process.env.NODE_ENV === "production"
-  ) {
-    errors.limitPrice =
-      "Market orders require a limitPrice in production to prevent draining thin books";
-  }
-
-  return {
-    valid: Object.keys(errors).length === 0,
-    errors,
-  };
-}
-
-/**
- * Validates market state from database
- * - Market must exist
- * - Market status must be tradable per the shared lifecycle matrix
- * - Market endTime must be in the future
- */
-export async function validateMarketState(
-  marketId: string
-): Promise<ValidationResult> {
-  const errors: Record<string, string> = {};
-  const prisma = getPrismaClient();
-
-  const market = await prisma.market.findUnique({
-    where: { id: marketId },
-  });
-
-  if (!market || market.deletedAt !== null) {
-    errors.marketId = "Market not found";
-    return { valid: false, errors };
-  }
-
-  if (!isTradable(market.status as MarketLifecycleState)) {
-    errors.marketId = `Market is ${market.status.toLowerCase()}, orders cannot be placed`;
-  }
-
-  if (market.endTime <= new Date()) {
-    errors.marketId = errors.marketId
-      ? `${errors.marketId}; market has ended`
-      : "Market has ended";
-  }
-
-  return {
-    valid: Object.keys(errors).length === 0,
-    errors,
-  };
-}
-
-/**
- * Main validation function
- * - Runs synchronous field validations first (fast path)
- * - If field validations pass, runs market state validation
- * - Returns combined validation result
- */
-export async function validateOrder(
-  order: OrderInput
-): Promise<ValidationResult> {
-  // Run synchronous validations first (fast path)
-  const fieldResult = validateOrderFields(order);
-
-  if (!fieldResult.valid) {
-    return fieldResult;
-  }
-
-  // Only run database validation if field validation passes
-  const marketResult = await validateMarketState(order.marketId);
-
-  return marketResult;
-}
-
-/**
- * Helper that throws OrderValidationError if validation fails
- * Returns void if order is valid
- */
-export async function assertValidOrder(order: OrderInput): Promise<void> {
-  const result = await validateOrder(order);
-
-  if (!result.valid) {
-    throw new OrderValidationError(result.errors);
-  }
-}
+/* … truncated 4301 chars — edit only what you need near the top … */
