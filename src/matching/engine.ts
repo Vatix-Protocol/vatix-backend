@@ -234,13 +234,59 @@ export function matchOrder(
 
       if (!bookOrder) break;
 
-      // Reject self-trade: skip the order if both sides have the same userAddress (#703)
+      // Reject self-trade: skip the resting order if both sides have the same
+      // userAddress (#703, #1455). The resting order is left untouched on the
+      // book so it can match a later opponent.
       if (bookOrder.userAddress === newOrder.userAddress) {
-        // Remove the self-trade order from the book so it doesn't block matching
-        // with other orders at the same price level.
-        const removeCmd = new RemoveOrderCommand(orderBook, bookOrder.id);
-        removeCmd.execute();
-        executedCommands.push(removeCmd);
+        // If the best order is our own and its price can no longer match, no
+        // further order at this or worse price levels can match either, so
+        // stop to avoid spinning forever on a book of only our own orders.
+        if (!canMatch(newOrder.price, bookOrder.price, newOrder.side)) {
+          break;
+        }
+
+        // Skip past our own order without removing it. If the book has no
+        // other order from a different user that can match, stop matching.
+        const nextOrder = orderBook.getNextMatchableOrder(
+          newOrder.userAddress,
+          newOrder.price,
+          newOrder.side
+        );
+
+        if (!nextOrder) break;
+
+        // Match against the next cross-user order directly.
+        const fillQty = Math.min(remainingQty, nextOrder.quantity);
+        const executionPrice = nextOrder.price;
+
+        const trade = createTrade(
+          newOrder,
+          nextOrder,
+          fillQty,
+          executionPrice,
+          timestamp
+        );
+        trades.push(trade);
+        hooks.onTradeFilled?.(trade);
+
+        const newBookOrderQty = nextOrder.quantity - fillQty;
+        let cmd: MatchCommand;
+
+        if (newBookOrderQty === 0) {
+          cmd = new RemoveOrderCommand(orderBook, nextOrder.id);
+        } else {
+          cmd = new UpdateQuantityCommand(
+            orderBook,
+            nextOrder.id,
+            newBookOrderQty,
+            nextOrder.quantity
+          );
+        }
+
+        cmd.execute();
+        executedCommands.push(cmd);
+
+        remainingQty -= fillQty;
         continue;
       }
 
