@@ -4,11 +4,34 @@ import { validatePrice } from '../../src/matching/validation';
 
 const router = Router();
 
-const orderSchema = z.object({
-  side: z.enum(['buy', 'sell']),
-  price: z.number().gt(0).lt(1),
-  quantity: z.number().positive(),
-});
+const orderSchema = z
+  .object({
+    side: z.enum(['buy', 'sell']),
+    price: z.number().gte(0).lt(1),
+    quantity: z.number().positive(),
+    limitPrice: z.number().gt(0).lt(1).optional(),
+    maxSlippagePct: z.number().gte(0).optional(),
+  })
+  .superRefine((order, ctx) => {
+    if (order.price === 0) {
+      if (order.limitPrice === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['limitPrice'],
+          message: 'limitPrice is required for market orders (price 0)',
+        });
+      }
+      return;
+    }
+
+    if (order.limitPrice !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['limitPrice'],
+        message: 'limitPrice is only allowed for market orders (price 0)',
+      });
+    }
+  });
 
 router.post('/orders', (req: Request, res: Response) => {
   const parsed = orderSchema.safeParse(req.body);
