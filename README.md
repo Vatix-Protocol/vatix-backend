@@ -287,3 +287,6 @@ governance, and probe safety invariants.
 
 <!-- handsoff-issue-1344 -->
 - #1344: tests/integration/helpers/market-order.ts: assert the signed order helper produces a valid signature and rejects a tampered payload
+
+<!-- handsoff-issue-1456 -->
+- #1456: Cancelling an order releases collateral with floating point and hides a shortfall
