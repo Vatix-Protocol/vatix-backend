@@ -82,7 +82,7 @@ const CreateOrderSchema = z
     }
   });
 
-type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
+export type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
 
 // ---------------------------------------------------------------------------
 // Idempotency-Key handling for POST /orders (see RATE_LIMIT_POLICY.md)
@@ -95,7 +95,7 @@ const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
  * 400 naming the header, so a create can never be written without a key to
  * replay it under. Malformed values are rejected the same way.
  */
-function parseIdempotencyKey(request: FastifyRequest): string {
+export function parseIdempotencyKey(request: FastifyRequest): string {
   const raw = request.headers["idempotency-key"];
   if (raw === undefined) {
     const message = "Idempotency-Key header is required";
@@ -110,7 +110,7 @@ function parseIdempotencyKey(request: FastifyRequest): string {
 }
 
 /** SHA-256 of the validated order payload, used to detect key reuse. */
-function hashOrderRequest(body: CreateOrderBody): string {
+export function hashOrderRequest(body: CreateOrderBody): string {
   const {
     marketId,
     userAddress,

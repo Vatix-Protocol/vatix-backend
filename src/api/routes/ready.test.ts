@@ -238,4 +238,18 @@ describe("readiness during graceful shutdown (#1140)", () => {
     beginDrain();
     expect(isDraining()).toBe(true);
   });
+
+  it("resetDrainForTests restores 200 after a drain (#1520)", async () => {
+    const server = buildServer(freshDeps);
+
+    beginDrain();
+    const draining = await server.inject({ method: "GET", url: "/v1/ready" });
+    expect(draining.statusCode).toBe(503);
+
+    resetDrainForTests();
+    const restored = await server.inject({ method: "GET", url: "/v1/ready" });
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json().ready).toBe(true);
+    expect(restored.json().reason).toBeUndefined();
+  });
 });

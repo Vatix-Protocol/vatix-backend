@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
 import { Keypair } from "@stellar/stellar-sdk";
-import { ordersRoutes } from "./orders.js";
+import { ordersRoutes, parseIdempotencyKey } from "./orders.js";
 import { errorHandler } from "../middleware/errorHandler.js";
 import {
   ValidationError,
@@ -1226,6 +1226,39 @@ describe("POST /orders idempotency", () => {
 
     expect(response.statusCode).toBe(500);
     expect(mockMatchingService.placeOrder).not.toHaveBeenCalled();
+  });
+});
+
+describe("parseIdempotencyKey", () => {
+  const requestWith = (headers: Record<string, unknown>) =>
+    ({ headers }) as unknown as Parameters<typeof parseIdempotencyKey>[0];
+
+  it("returns undefined when the header is absent", () => {
+    expect(parseIdempotencyKey(requestWith({}))).toBeUndefined();
+  });
+
+  it("rejects a single space", () => {
+    expect(() => parseIdempotencyKey(requestWith({ "idempotency-key": " " }))).toThrow(
+      ValidationError
+    );
+  });
+
+  it("rejects an empty string", () => {
+    expect(() => parseIdempotencyKey(requestWith({ "idempotency-key": "" }))).toThrow(
+      ValidationError
+    );
+  });
+
+  it("rejects a 129-character key", () => {
+    expect(() =>
+      parseIdempotencyKey(requestWith({ "idempotency-key": "a".repeat(129) }))
+    ).toThrow(ValidationError);
+  });
+
+  it("returns a 16-character alphanumeric key unchanged", () => {
+    const key = "Abc123Def456Ghi7";
+    expect(key).toHaveLength(16);
+    expect(parseIdempotencyKey(requestWith({ "idempotency-key": key }))).toBe(key);
   });
 });
 
