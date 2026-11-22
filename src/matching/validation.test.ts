@@ -7,6 +7,7 @@ import {
   validatePrice,
   validateTickSize,
   validateQuantity,
+  validateMaxSlippagePct,
   validateOrderFields,
   validateMarketState,
   validateOrder,
@@ -263,6 +264,34 @@ describe("Order Validation", () => {
     it("should reject null/undefined", () => {
       expect(validateQuantity(null)).toBe("Quantity is required");
       expect(validateQuantity(undefined)).toBe("Quantity is required");
+    });
+  });
+
+  describe("validateMaxSlippagePct", () => {
+    it("should accept 0 (lower boundary)", () => {
+      expect(validateMaxSlippagePct(0)).toBeNull();
+    });
+
+    it("should accept 100 (upper boundary)", () => {
+      expect(validateMaxSlippagePct(100)).toBeNull();
+    });
+
+    it("should reject 101 (above upper boundary)", () => {
+      expect(validateMaxSlippagePct(101)).toBe(
+        "maxSlippagePct must be between 0 and 100"
+      );
+    });
+
+    it("should reject -1 (below lower boundary)", () => {
+      expect(validateMaxSlippagePct(-1)).toBe(
+        "maxSlippagePct must be between 0 and 100"
+      );
+    });
+
+    it("should reject NaN", () => {
+      expect(validateMaxSlippagePct(NaN)).toBe(
+        "maxSlippagePct must be a number"
+      );
     });
   });
 
