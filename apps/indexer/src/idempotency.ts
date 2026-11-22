@@ -94,11 +94,42 @@ export function parseEventId(
       `Invalid Stellar event id format: "${eventId}". Expected "{ledger}-{txIndex}-{eventIndex}".`
     );
   }
-  return {
-    ledger: parseInt(parts[0], 10),
-    txIndex: parseInt(parts[1], 10),
-    eventIndex: parseInt(parts[2], 10),
-  };
+  const [ledger, txIndex, eventIndex] = parts.map((part) =>
+    parseCanonicalSegment(part, eventId)
+  );
+  return { ledger, txIndex, eventIndex };
+}
+
+/**
+ * Parse a single event id segment as a canonical integer.
+ *
+ * The segment must round-trip through BigInt (i.e. `String(BigInt(part))` equals
+ * the segment with leading zeros stripped) and must fit in a JS safe integer.
+ * Anything else (e.g. a 20-digit segment) is rejected rather than silently
+ * truncated by `parseInt`, which would break idempotency key stability.
+ */
+function parseCanonicalSegment(part: string, eventId: string): number {
+  const canonical = part.replace(/^0+(?=\d)/, "");
+  let value: bigint;
+  try {
+    value = BigInt(part);
+  } catch {
+    throw invalidSegment(part, eventId);
+  }
+  if (String(value) !== canonical) {
+    throw invalidSegment(part, eventId);
+  }
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw invalidSegment(part, eventId);
+  }
+  return Number(value);
+}
+
+function invalidSegment(part: string, eventId: string): IdempotencyError {
+  return new IdempotencyError(
+    IdempotencyErrorCode.INVALID_EVENT_ID,
+    `Invalid Stellar event id segment "${part}" in "${eventId}". Expected a canonical integer <= ${Number.MAX_SAFE_INTEGER}.`
+  );
 }
 
 /**

@@ -346,7 +346,16 @@ export class EventFetcher {
     if (last.ledger > endLedger) return undefined;
     // Prefer the response-level cursor; older RPC nodes only expose a
     // per-event paging token. Event ids are valid cursors as a last resort.
-    return page.cursor || (last as any).pagingToken || last.id;
+    // An empty-string cursor is an explicit end-of-page signal, not a
+    // missing value, so it must not fall through to the fallbacks.
+    if (typeof page.cursor === "string") {
+      return page.cursor === "" ? undefined : page.cursor;
+    }
+    const pagingToken = (last as any).pagingToken;
+    if (typeof pagingToken === "string" && pagingToken !== "") {
+      return pagingToken;
+    }
+    return last.id;
   }
 
   /**
