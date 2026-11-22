@@ -552,7 +552,13 @@ export class SettlementWorker {
       outcomeScVal,
       nativeToScVal(payload.buyerAddress, { type: "address" }),
       nativeToScVal(payload.sellerAddress, { type: "address" }),
-      nativeToScVal(priceI128, { type: "i128" }),
+      // Price scale: 7 decimal places (1e7), matching the oracle's
+      // `PriceFetchResult.price` (whole units, non-finite rejected). The
+      // payload carries the same whole-unit decimal string; scale it here
+      // once, immediately before signing.
+      nativeToScVal(BigInt(Math.round(Number(payload.price) * 1e7)), {
+        type: "i128",
+      }),
       nativeToScVal(BigInt(payload.quantity), { type: "i128" }),
     ];
 
