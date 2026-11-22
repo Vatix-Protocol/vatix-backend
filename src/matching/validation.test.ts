@@ -234,6 +234,16 @@ describe("Order Validation", () => {
       expect(validateTickSize(0.333)).toBe(msg);
     });
 
+    it("should accept 0.50", () => {
+      expect(validateTickSize(0.5)).toBeNull();
+    });
+
+    it("should reject 0.015", () => {
+      expect(validateTickSize(0.015)).toBe(
+        `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`
+      );
+    });
+
     it("should correctly handle IEEE-754 edge cases (0.51, 0.97, 0.03)", () => {
       expect(validateTickSize(0.51)).toBeNull();
       expect(validateTickSize(0.97)).toBeNull();
