@@ -90,4 +90,9 @@ describe("market lifecycle predicates", () => {
     expect(isMarketStatus("active")).toBe(false);
     expect(isMarketStatus(undefined)).toBe(false);
   });
+
+  it("rejects an unknown market status", () => {
+    expect(isMarketStatus("EXPIRED")).toBe(false);
+    expect(isMarketStatus("ACTIVE")).toBe(true);
+  });
 });
