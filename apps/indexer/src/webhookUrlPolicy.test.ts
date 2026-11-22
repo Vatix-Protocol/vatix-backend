@@ -46,6 +46,14 @@ describe("isPrivateAddress", () => {
       expect(isPrivateAddress(address)).toBe(false);
     }
   );
+
+  it("treats the cloud metadata address 169.254.169.254 as private", () => {
+    expect(isPrivateAddress("169.254.169.254")).toBe(true);
+  });
+
+  it("treats the public resolver 8.8.8.8 as non-private", () => {
+    expect(isPrivateAddress("8.8.8.8")).toBe(false);
+  });
 });
 
 describe("validateWebhookUrl", () => {
