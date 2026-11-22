@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import type { Outcome } from "../types/index.js";
 import type { OrderInput } from "./validation.js";
-import { computeEffectiveWorstPrice } from "./validation.js";
+import { computeEffectiveWorstPrice, normalizePriceToDecimalString } from "./validation.js";
 import { OrderBook } from "./orderbook.js";
 import {
   matchOrder,
@@ -618,7 +618,7 @@ class MatchingService {
               userAddress: input.userAddress,
               side: input.side,
               outcome: input.outcome,
-              price: input.price.toString(),
+              price: normalizePriceToDecimalString(input.price, input.priceRaw),
               quantity: input.quantity,
               filledQuantity: takerFilledQuantity,
               status: takerStatus,

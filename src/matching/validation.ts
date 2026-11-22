@@ -34,6 +34,12 @@ export interface OrderInput {
   side: OrderSide;
   outcome: Outcome;
   price: number;
+  /**
+   * Raw decimal text of `price` as supplied by the client (#1484). When
+   * present and valid it is persisted verbatim instead of the lossy
+   * `Number.prototype.toString()` rendering.
+   */
+  priceRaw?: string;
   quantity: number;
   /** Optional worst-case execution price for market orders (BUY cap / SELL floor). */
   limitPrice?: number;
@@ -185,6 +191,44 @@ export function validateTickSize(price: number): string | null {
     return `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`;
   }
   return null;
+}
+
+/**
+ * Normalizes an order price to the exact decimal string that must be stored
+ * (#1484). `Number.prototype.toString()` is lossy for values such as 0.1
+ * (it can yield "0.10000000000000001" after arithmetic), so the raw decimal
+ * text supplied by the client is preferred whenever it is a valid tick-aligned
+ * price. Otherwise the value is quantized to the 0.01 tick and rendered as a
+ * plain decimal string (never exponential notation).
+ *
+ * @param price - A number already confirmed to be in [0, 1) and tick-aligned.
+ * @param rawPrice - The raw decimal text from the request, if available.
+ * @returns The decimal string to persist (e.g. "0.10").
+ */
+export function normalizePriceToDecimalString(
+  price: number,
+  rawPrice?: string | null
+): string {
+  if (typeof rawPrice === "string") {
+    const trimmed = rawPrice.trim();
+    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+      const parsed = Number(trimmed);
+      if (
+        Number.isFinite(parsed) &&
+        parsed === price &&
+        (parsed === 0 || validateTickSize(parsed) === null)
+      ) {
+        return trimmed;
+      }
+    }
+  }
+
+  // Quantize to the tick using integer arithmetic, then render as a plain
+  // decimal string with two fractional digits (scale 2).
+  const ticks = Math.round(price / TICK_SIZE);
+  const whole = Math.floor(ticks / 100);
+  const fraction = ticks % 100;
+  return `${whole}.${String(fraction).padStart(2, "0")}`;
 }
 
 /**
