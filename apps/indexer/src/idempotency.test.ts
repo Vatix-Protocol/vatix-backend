@@ -5,6 +5,7 @@ import {
   withIdempotencyKey,
   insertIfNew,
   insertAllIfNew,
+  IdempotencyErrorCode,
 } from "./idempotency.js";
 import type {
   NormalizedTrade,
@@ -79,17 +80,38 @@ describe("parseEventId", () => {
     expect(r.eventIndex).toBe(50);
   });
 
-  it("throws on wrong number of segments", () => {
-    expect(() => parseEventId("42-1")).toThrow();
-    expect(() => parseEventId("42-1-3-9")).toThrow();
+  it("returns ledger as a number for a valid id", () => {
+    const r = parseEventId("0000000042-0000000001-0000000003");
+    expect(r.ledger).toBe(42);
+    expect(typeof r.ledger).toBe("number");
   });
 
-  it("throws on non-numeric segments", () => {
-    expect(() => parseEventId("0000000042-0000000001-XXXXXXXXXX")).toThrow();
+  it("throws INVALID_EVENT_ID on a two-segment id", () => {
+    expect(() => parseEventId("0000000042-0000000001")).toThrow(
+      expect.objectContaining({ code: IdempotencyErrorCode.INVALID_EVENT_ID })
+    );
   });
 
-  it("throws on empty string", () => {
-    expect(() => parseEventId("")).toThrow();
+  it("throws INVALID_EVENT_ID on wrong number of segments", () => {
+    for (const bad of ["42-1", "42-1-3-9"]) {
+      expect(() => parseEventId(bad)).toThrow(
+        expect.objectContaining({ code: IdempotencyErrorCode.INVALID_EVENT_ID })
+      );
+    }
+  });
+
+  it("throws INVALID_EVENT_ID on non-numeric segments", () => {
+    expect(() =>
+      parseEventId("0000000042-0000000001-XXXXXXXXXX")
+    ).toThrow(
+      expect.objectContaining({ code: IdempotencyErrorCode.INVALID_EVENT_ID })
+    );
+  });
+
+  it("throws INVALID_EVENT_ID on empty string", () => {
+    expect(() => parseEventId("")).toThrow(
+      expect.objectContaining({ code: IdempotencyErrorCode.INVALID_EVENT_ID })
+    );
   });
 });
 
