@@ -583,7 +583,10 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         allowPartialFill: body.allowPartialFill,
       };
 
-      assertValidOrder(orderInput);
+      // Pre-existing bug (unrelated to #1539): this call wasn't awaited, so
+      // a rejected validation promise never blocked order placement below —
+      // fixed here since it directly blocks assertValidOrder's purpose.
+      await assertValidOrder(orderInput);
 
       const result = await matchingService.placeOrder(
         orderInput,
