@@ -13,12 +13,11 @@
  *     stops routing traffic to this instance while it recovers.
  *
  * Dependency criticality tiers:
- *   CRITICAL  — DB, index freshness: must be ok for 200.
- *   WARNING   — Redis: blips are expected; a Redis outage must NOT kill pods
- *               (the service degrades gracefully — rate-limit windows reset,
- *               order-book cache misses fall through to Postgres). Redis
- *               status is surfaced in the response body for observability
- *               but does NOT drive the HTTP status code.
+ *   CRITICAL  — DB, Redis, index freshness: must be ok for 200.
+ *   Redis is CRITICAL: a Redis outage (or a check that exceeds its deadline)
+ *   makes this instance report NOT ready so the load balancer stops routing
+ *   traffic to it. Redis status is surfaced in the response body for
+ *   observability and drives the HTTP status code.
  *
  * Response shape (documented readiness contract):
  *   {
@@ -33,8 +32,8 @@
  *   }
  *
  * HTTP status:
- *   200 — all CRITICAL dependencies healthy (Redis may be degraded)
- *   503 — one or more CRITICAL dependencies failed
+ *   200 — all CRITICAL dependencies healthy (DB, Redis, index freshness)
+ *   503 — one or more CRITICAL dependencies failed (including Redis timeouts)
  *
  * @module src/api/routes/ready
  */
@@ -94,7 +93,7 @@ export interface ReadyResponse {
   ready: boolean;
   dependencies: {
     database: DependencyResult;
-    /** Redis is a WARNING-tier dependency — degraded Redis does NOT block readiness. */
+    /** Redis is a CRITICAL-tier dependency — a failure blocks readiness. */
     redis: DependencyResult;
     indexFreshness: DependencyResult;
   };
@@ -115,9 +114,9 @@ export interface ReadyDeps {
   /** Throws if the database is unreachable. */
   checkDatabase(): Promise<void>;
   /**
-   * Throws if the Redis instance is unreachable.
-   * NOTE: Redis failures set redis.status = "error" in the response but do
-   * NOT change the HTTP status code — Redis is a WARNING-tier dependency.
+   * Throws if the Redis instance is unreachable or the check exceeds its
+   * deadline. Redis is a CRITICAL dependency: a failure here makes `/ready`
+   * return 503.
    */
   checkRedis(): Promise<void>;
   /**
@@ -151,7 +150,10 @@ export function readyRoute(deps: ReadyDeps) {
       // can tell a planned drain from a real outage.
       const draining = isDraining();
       const ready =
-        !draining && dbResult.status === "ok" && indexResult.status === "ok";
+        !draining &&
+        dbResult.status === "ok" &&
+        redisResult.status === "ok" &&
+        indexResult.status === "ok";
 
       const body: ReadyResponse = {
         ready,
