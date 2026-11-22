@@ -129,8 +129,57 @@ describe("PriceFetcher provider allowlist (#1149)", () => {
     ).toThrow(PriceProviderNotAllowedError);
   });
 
-  it("warns in production when no allowlist is configured", () => {
+  it("fails closed at construction in production when no allowlist is configured", () => {
     vi.stubEnv("NODE_ENV", "production");
+    const logger = makeLogger();
+    const fetchFn = vi.fn(async () => 42_000);
+
+    expect(
+      () =>
+        new PriceFetcher(logger, {
+          assetId: "BTC",
+          timeoutMs: 1000,
+          primaryProvider: { name: "coingecko", fetchFn },
+        })
+    ).toThrow(PriceProviderAllowlistInvalidError);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("fails closed at construction in production when the allowlist is empty", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(PRICE_PROVIDER_ALLOWLIST_ENV_VAR, "   ");
+    const logger = makeLogger();
+
+    expect(
+      () =>
+        new PriceFetcher(logger, {
+          assetId: "BTC",
+          timeoutMs: 1000,
+          primaryProvider: { name: "coingecko", fetchFn: async () => 42_000 },
+        })
+    ).toThrow(PriceProviderAllowlistInvalidError);
+  });
+
+  it("never fetches from a named provider that is not on the list", async () => {
+    const logger = makeLogger();
+    const fetchFn = vi.fn(async () => 42_000);
+    const fetcher = new PriceFetcher(logger, {
+      assetId: "BTC",
+      timeoutMs: 1000,
+      primaryProvider: { name: "coingecko", fetchFn },
+      allowedProviders: ["coingecko"],
+    }) as any;
+
+    fetcher.primaryProvider.name = "evil-feed";
+
+    await expect(fetcher.fetchPrice()).rejects.toBeInstanceOf(
+      PriceProviderNotAllowedError
+    );
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("allows construction outside production when no allowlist is configured", () => {
+    vi.stubEnv("NODE_ENV", "test");
     const logger = makeLogger();
 
     const fetcher = new PriceFetcher(logger, {
@@ -140,10 +189,6 @@ describe("PriceFetcher provider allowlist (#1149)", () => {
     });
 
     expect(fetcher).toBeDefined();
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("allowlist is not configured"),
-      expect.anything()
-    );
   });
 
   describe("parseProviderAllowlist", () => {

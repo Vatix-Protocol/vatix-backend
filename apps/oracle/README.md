@@ -39,6 +39,13 @@ Stellar network passphrase (`#978`). Two further rules apply:
   `expectedPublicKey` argument). In production, verifying without a pinned
   signer throws `ORACLE_SIGNATURE_TRUSTED_SIGNER_REQUIRED` rather than
   trusting the report's own key.
+- **Legacy envelopes** — `version: 1` (or a missing `version`) signatures
+  predate the network-passphrase binding and are rejected with
+  `ORACLE_SIGNATURE_LEGACY_REJECTED` regardless of `NODE_ENV` (an unset
+  `NODE_ENV` fails closed). Only the explicit migration flag
+  `ORACLE_ALLOW_LEGACY_SIGNATURES=true` accepts them, and every acceptance is
+  logged (`oracle.legacy_signature_verified`). Unset the flag once the
+  migration window closes (#1473).
 
 Set `ORACLE_SIGNER_PUBLIC_KEY` in every deployed environment (signer and
 verifier alike). A malformed value fails closed, and when

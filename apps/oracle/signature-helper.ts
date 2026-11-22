@@ -14,7 +14,9 @@
  *      (`ORACLE_SIGNER_PUBLIC_KEY` or an explicit `expectedPublicKey`).
  *      In production an unpinned signer fails closed rather than trusting the
  *      report's self-declared `publicKey`.
- *   4. Legacy (pre-#978) envelopes are rejected outright in production.
+ *   4. Legacy (pre-#978) envelopes are rejected unless the explicit
+ *      `ORACLE_ALLOW_LEGACY_SIGNATURES` migration flag is enabled (#1473).
+ *      Fails closed when `NODE_ENV` is unset.
  *
  * @module apps/oracle/signature-helper
  */
@@ -236,10 +238,29 @@ export function resolveTrustedSignerPublicKey(
 }
 
 /**
+ * Environment variable that explicitly opts into accepting legacy (v1)
+ * signatures during a migration window (#1473). Any value other than
+ * `true`/`1` leaves legacy signatures rejected.
+ */
+export const LEGACY_SIGNATURE_MIGRATION_FLAG =
+  "ORACLE_ALLOW_LEGACY_SIGNATURES";
+
+/**
+ * True only when the explicit legacy-signature migration flag is enabled.
+ * Absent, empty, or unrecognized values keep legacy signatures rejected.
+ */
+export function isLegacySignatureMigrationEnabled(
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  const raw = env[LEGACY_SIGNATURE_MIGRATION_FLAG]?.trim().toLowerCase();
+  return raw === "true" || raw === "1";
+}
+
+/**
  * Reproduces the pre-#978 canonical string: domain-separated but **not**
  * network-separated. Exists only so legacy reports can be recognized and,
- * outside production, verified during a migration window. Never used for
- * new signatures.
+ * with the explicit migration flag enabled, verified during a migration
+ * window. Never used for new signatures.
  */
 function legacyCanonicalise(payload: ResolutionPayload): string {
   return JSON.stringify({
@@ -335,12 +356,13 @@ export interface VerifyResolutionOptions {
  *
  * Legacy (`version: 1` or missing `version`) reports are signatures that
  * predate #978's network-passphrase binding and are vulnerable to
- * cross-network replay (a testnet signature also verifies on mainnet). In
- * `NODE_ENV=production` these are rejected outright — `verifyResolutionReport`
- * throws `LegacySignatureRejectedError` rather than silently falling back to
- * the weaker legacy check. Outside production, legacy reports are still
- * verified (using the pre-#978 canonical form) so a migration window can
- * validate old signatures, but a warning is logged every time.
+ * cross-network replay (a testnet signature also verifies on mainnet). They
+ * are rejected outright — `verifyResolutionReport` throws
+ * `LegacySignatureRejectedError` — unless the explicit migration flag
+ * `ORACLE_ALLOW_LEGACY_SIGNATURES` is enabled (#1473). `NODE_ENV` no longer
+ * widens acceptance: an unset `NODE_ENV` fails closed. When the flag is
+ * enabled, legacy reports are verified with the pre-#978 canonical form and a
+ * warning is logged every time.
  *
  * ## Trusted signer pinning (#1113)
  *
@@ -366,7 +388,8 @@ export interface VerifyResolutionOptions {
  * @returns `true` when the signature is valid, the payload is unmodified, and
  *   the signer is trusted.
  * @throws {LegacySignatureRejectedError} If `report` is a legacy (v1)
- *   signature and `NODE_ENV=production`.
+ *   signature and the `ORACLE_ALLOW_LEGACY_SIGNATURES` migration flag is not
+ *   enabled (the default, including when `NODE_ENV` is unset).
  * @throws {OracleSignatureError} `ORACLE_SIGNATURE_TRUSTED_SIGNER_REQUIRED`
  *   when signer pinning is required but no trusted signer is configured, and
  *   `ORACLE_SIGNATURE_INVALID_TRUSTED_SIGNER` when the configured trusted
@@ -382,10 +405,13 @@ export function verifyResolutionReport(
   }
 
   // Legacy envelope check runs first: a pre-#978 report is rejected on its
-  // own merits in production, independent of the signer policy below.
+  // own merits, independent of the signer policy below. Only the explicit
+  // migration flag accepts a v1 signature (#1473) — NODE_ENV never does, and
+  // an unset NODE_ENV fails closed.
   const { expectedPublicKey, env = process.env } = options;
   const isLegacy = report.version === undefined || report.version === 1;
-  if (isLegacy && env.NODE_ENV === "production") {
+  const allowLegacy = isLegacySignatureMigrationEnabled(env);
+  if (isLegacy && !allowLegacy) {
     throw new LegacySignatureRejectedError(report.payload.marketId);
   }
   const trustedSigner = expectedPublicKey ?? resolveTrustedSignerPublicKey(env);
@@ -424,12 +450,14 @@ export function verifyResolutionReport(
   }
 
   if (isLegacy) {
-    // Non-production only: the production rejection already happened above.
+    // Only reachable with the explicit migration flag enabled; the default
+    // rejection already happened above.
     console.warn(
-      "Verifying legacy v1 oracle signature (no network passphrase binding) — cross-network replay risk",
+      "Verifying legacy v1 oracle signature (no network passphrase binding) — cross-network replay risk; accepted only because the legacy-signature migration flag is enabled",
       {
         marketId: report.payload.marketId,
         event: "oracle.legacy_signature_verified",
+        flag: LEGACY_SIGNATURE_MIGRATION_FLAG,
       }
     );
     try {
