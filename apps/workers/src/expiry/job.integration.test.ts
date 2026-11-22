@@ -298,4 +298,63 @@ describe("ExpiryJob Integration Tests", () => {
 
     await prisma.market.delete({ where: { id: market.id } });
   });
+
+  it("should keep markets ending inside the clock skew tolerance ACTIVE", async () => {
+    const clockSkewToleranceMs = 5 * 60 * 1000;
+    const toleranceJob = new ExpiryJob(prisma, mockLogger as any, {
+      clockSkewToleranceMs,
+    });
+
+    const inWindowEndTime = new Date(Date.now() - clockSkewToleranceMs / 2);
+    const beyondToleranceEndTime = new Date(
+      Date.now() - clockSkewToleranceMs * 2
+    );
+
+    const inWindowMarket = await prisma.market.create({
+      data: {
+        question: "Inside clock skew tolerance?",
+        endTime: inWindowEndTime,
+        resolutionTime: null,
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
+        status: "ACTIVE",
+      },
+    });
+
+    const beyondToleranceMarket = await prisma.market.create({
+      data: {
+        question: "Older than clock skew tolerance?",
+        endTime: beyondToleranceEndTime,
+        resolutionTime: null,
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
+        status: "ACTIVE",
+      },
+    });
+
+    const result = await toleranceJob.run();
+
+    expect(
+      result.candidates.find((c) => c.marketId === inWindowMarket.id)
+    ).toBeUndefined();
+
+    const stillActive = await prisma.market.findUnique({
+      where: { id: inWindowMarket.id },
+    });
+    expect(stillActive?.status).toBe("ACTIVE");
+
+    const expiredResult = result.candidates.find(
+      (c) => c.marketId === beyondToleranceMarket.id
+    );
+    expect(expiredResult?.status).toBe("expired");
+
+    const expiredMarket = await prisma.market.findUnique({
+      where: { id: beyondToleranceMarket.id },
+    });
+    expect(expiredMarket?.status).toBe("CANCELLED");
+
+    await prisma.market.deleteMany({
+      where: { id: { in: [inWindowMarket.id, beyondToleranceMarket.id] } },
+    });
+  });
 });
