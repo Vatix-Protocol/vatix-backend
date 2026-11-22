@@ -56,8 +56,25 @@ function toMarketDto(market: Market): MarketDetailsDto {
   };
 }
 
+/**
+ * Compare two decimal price strings without going through floating point.
+ * Returns a negative number if a < b, positive if a > b, 0 if equal.
+ */
+function compareDecimalStrings(a: string, b: string): number {
+  const [aWhole, aFrac = ""] = a.split(".");
+  const [bWhole, bFrac = ""] = b.split(".");
+  const aInt = BigInt(aWhole || "0");
+  const bInt = BigInt(bWhole || "0");
+  if (aInt !== bInt) return aInt < bInt ? -1 : 1;
+  const width = Math.max(aFrac.length, bFrac.length);
+  const aScaled = BigInt((aFrac || "").padEnd(width, "0") || "0");
+  const bScaled = BigInt((bFrac || "").padEnd(width, "0") || "0");
+  if (aScaled === bScaled) return 0;
+  return aScaled < bScaled ? -1 : 1;
+}
+
 function createDepthLevel(
-  price: number,
+  price: string,
   outcome: Outcome,
   totalQuantity: number,
   orderCount: number
@@ -226,7 +243,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         string,
         {
           side: "BUY" | "SELL";
-          price: number;
+          price: string;
           outcome: Outcome;
           totalQuantity: number;
           orderCount: number;
@@ -237,7 +254,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
         const remainingQuantity = order.quantity - order.filledQuantity;
         if (remainingQuantity <= 0) continue;
 
-        const price = Number(order.price);
+        const price = order.price.toString();
         const key = `${order.side}:${order.outcome}:${price}`;
         const existing = orderBookLevels.get(key);
 
@@ -259,7 +276,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
 
       const bids = depthEntries
         .filter((entry) => entry.side === "BUY")
-        .sort((a, b) => b.price - a.price)
+        .sort((a, b) => compareDecimalStrings(b.price, a.price))
         .map((entry) =>
           createDepthLevel(
             entry.price,
@@ -271,7 +288,7 @@ export async function marketsRoutes(fastify: FastifyInstance) {
 
       const asks = depthEntries
         .filter((entry) => entry.side === "SELL")
-        .sort((a, b) => a.price - b.price)
+        .sort((a, b) => compareDecimalStrings(a.price, b.price))
         .map((entry) =>
           createDepthLevel(
             entry.price,

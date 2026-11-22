@@ -23,7 +23,8 @@ export interface MarketDetailsDto {
 }
 
 export interface OrderBookLevelDto {
-  price: number;
+  /** Decimal price as an exact string (e.g. "0.12345678"). */
+  price: string;
   outcome: Outcome;
   totalQuantity: number;
   orderCount: number;

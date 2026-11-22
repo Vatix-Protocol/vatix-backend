@@ -42,15 +42,18 @@ export function loadExpiryConfig(): ExpiryWorkerConfig {
   );
   const logLevel = parseLogLevel(process.env.LOG_LEVEL);
 
-  // Containers run on schedulers/nodes whose clocks are not guaranteed to be
-  // NTP-synced to the same tolerance as the Stellar ledger. Default to a 5s
-  // grace period in every environment so a fast host clock cannot silently
-  // expire markets ahead of the actual ledger close time.
-  const clockSkewToleranceMs = parseInt(
-    process.env.EXPIRY_CLOCK_SKEW_TOLERANCE_MS ??
-      String(DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS),
-    10
-  );
+  // Production containers run on schedulers/nodes whose clocks are not
+  // guaranteed to be NTP-synced to the same tolerance as the Stellar
+  // ledger. Default to a 5s grace period in production so a fast host
+  // clock cannot silently expire markets ahead of the actual ledger close
+  // time; local/dev/test default to 0 for deterministic behavior.
+  //
+  // The value is resolved from the shared helper in `@vatix/shared`
+  // (marketLifecycle) so the API order-validation path
+  // (`src/matching/validation.ts`) uses the exact same tolerance. Setting
+  // EXPIRY_CLOCK_SKEW_TOLERANCE_MS=0 is an explicit operator choice and is
+  // honoured as-is (no tolerance on either path).
+  const clockSkewToleranceMs = resolveClockSkewToleranceMs(process.env);
 
   if (!Number.isFinite(intervalMs) || intervalMs < 1000) {
     throw new Error(
