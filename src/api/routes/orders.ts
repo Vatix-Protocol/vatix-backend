@@ -13,6 +13,7 @@ import { redis } from "../../services/redis.js";
 import { matchingService } from "../../matching/matching-service.js";
 import {
   validateUserAddress,
+  isValidStellarPublicKey,
   sanitizeUserAddress,
   assertValidOrder,
   validateTickSize,
@@ -38,7 +39,10 @@ const CreateOrderSchema = z
       .regex(
         STELLAR_PUBLIC_KEY_REGEX,
         "userAddress must be a valid Stellar address (public key)"
-      ),
+      )
+      .refine(isValidStellarPublicKey, {
+        message: "userAddress must be a valid Stellar address (public key)",
+      }),
     side: z.enum(["BUY", "SELL"]),
     outcome: z.enum(["YES", "NO"]),
     // price 0 marks a market order; the matcher derives the cap from limitPrice.
@@ -85,10 +89,17 @@ type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
-/** Returns the optional Idempotency-Key header, rejecting malformed values. */
-function parseIdempotencyKey(request: FastifyRequest): string | undefined {
+/**
+ * Returns the mandatory Idempotency-Key header (#1461). A missing header is a
+ * 400 naming the header, so a create can never be written without a key to
+ * replay it under. Malformed values are rejected the same way.
+ */
+function parseIdempotencyKey(request: FastifyRequest): string {
   const raw = request.headers["idempotency-key"];
-  if (raw === undefined) return undefined;
+  if (raw === undefined) {
+    const message = "Idempotency-Key header is required";
+    throw new ValidationError(message, { "Idempotency-Key": message });
+  }
   if (typeof raw !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(raw)) {
     const message =
       "Idempotency-Key must be 1-128 characters of A-Z, a-z, 0-9, '_', '-', '.', ':'";
@@ -522,6 +533,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       }
 
       const body = parsed.data;
+      const requestHash = hashOrderRequest(body);
 
       if (idempotencyKey) {
         const requestHash = hashOrderRequest(body);
@@ -547,6 +559,11 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           if (err instanceof IdempotencyConflictError) throw err;
           // Cache read failures fall through to normal processing.
         }
+      }
+        }
+      } catch (err) {
+        if (err instanceof ValidationError) throw err;
+        // Cache read failures fall through to normal processing.
       }
 
       const orderInput: OrderInput = {

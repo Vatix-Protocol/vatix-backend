@@ -9,8 +9,8 @@
  *     while the HTTP server is up. Does NOT check DB or Redis — a DB blip
  *     must not cause a pod restart; use GET /v1/ready for that.
  *   - Readiness (GET /v1/ready): process can serve valid data.  Returns
- *     503 when a critical dependency (DB, index freshness) is unavailable
- *     so the load balancer stops routing traffic to this instance.
+ *     503 when a critical dependency (DB, Redis, index freshness) is
+ *     unavailable so the load balancer stops routing traffic to this instance.
  *
  * Response shape:
  *   {
