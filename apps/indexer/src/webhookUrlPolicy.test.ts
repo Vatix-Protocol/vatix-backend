@@ -46,6 +46,14 @@ describe("isPrivateAddress", () => {
       expect(isPrivateAddress(address)).toBe(false);
     }
   );
+
+  it("treats the cloud metadata address 169.254.169.254 as private", () => {
+    expect(isPrivateAddress("169.254.169.254")).toBe(true);
+  });
+
+  it("treats the public resolver 8.8.8.8 as non-private", () => {
+    expect(isPrivateAddress("8.8.8.8")).toBe(false);
+  });
 });
 
 describe("validateWebhookUrl", () => {
@@ -77,6 +85,19 @@ describe("validateWebhookUrl", () => {
     expect(() =>
       validateWebhookUrl("http://localhost:9093/hook", { nodeEnv: "test" })
     ).not.toThrow();
+  });
+
+  it("rejects http://alerts.example.com/hook in production", () => {
+    expect(
+      codeOf(() => validateWebhookUrl("http://alerts.example.com/hook", PROD))
+    ).toBe(WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_INSECURE_SCHEME);
+  });
+
+  it("accepts http://alerts.example.com/hook when nodeEnv is test", () => {
+    expect(
+      validateWebhookUrl("http://alerts.example.com/hook", { nodeEnv: "test" })
+        .href
+    ).toBe("http://alerts.example.com/hook");
   });
 
   it("rejects embedded credentials in every environment", () => {
