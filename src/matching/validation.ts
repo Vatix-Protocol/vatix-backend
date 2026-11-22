@@ -8,9 +8,14 @@ import {
 } from "../../packages/shared/src/marketLifecycle.js";
 
 /**
- * Maximum fraction of the order quantity that may be left unfilled when
- * `allowPartialFill` is false (i.e. the order must fully execute or be
- * rejected).  Expressed as a value in [0, 1].
+ * Maximum slippage fraction applied to a market order's `limitPrice` when the
+ * caller supplies a `limitPrice` but omits `maxSlippagePct`.  Expressed as a
+ * fraction in [0, 1] (0.1 = 10 %).
+ *
+ * The resulting worst-case price is inclusive: a BUY may execute at up to
+ * `limitPrice * (1 + MAX_SLIPPAGE)` and a SELL down to
+ * `limitPrice * (1 - MAX_SLIPPAGE)`; a fill exactly on that boundary is
+ * allowed, anything beyond it is not.
  */
 export const MAX_SLIPPAGE = 0.1; // 10 %
 
@@ -349,5 +354,33 @@ export function validateMaxSlippagePct(pct: unknown): string | null {
 /**
  * Compute the effective worst-case price for a market order given an optional
  * limitPrice and maxSlippagePct.
+ *
+ * - No limitPrice: returns null (caller falls back to the book extremes).
+ * - limitPrice without maxSlippagePct: the documented MAX_SLIPPAGE fraction is
+ *   enforced, so the tolerance is never unbounded.
+ * - Both supplied: maxSlippagePct (0–100 %) wins over MAX_SLIPPAGE.
+ *
+ * The returned bound is inclusive: a BUY may fill at exactly
+ * `limitPrice * (1 + slippage)` and a SELL at exactly
+ * `limitPrice * (1 - slippage)`.
+ */
+export function computeEffectiveWorstPrice(
+  side: OrderSide,
+  limitPrice?: number,
+  maxSlippagePct?: number
+): number | null {
+  if (limitPrice === undefined || limitPrice === null) return null;
 
-/* … truncated 4301 chars — edit only what you need near the top … */
+  const slippageFraction =
+    maxSlippagePct === undefined || maxSlippagePct === null
+      ? MAX_SLIPPAGE
+      : maxSlippagePct / 100;
+
+  const worstPrice =
+    side === "BUY"
+      ? limitPrice * (1 + slippageFraction)
+      : limitPrice * (1 - slippageFraction);
+
+  // Prices live in (0, 1); clamp so a wide tolerance cannot escape the range.
+  return Math.min(Math.max(worstPrice, 0), 1);
+}
