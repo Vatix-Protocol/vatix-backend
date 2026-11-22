@@ -85,6 +85,19 @@ describe("validateWebhookUrl", () => {
     ).toBe(WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_EMBEDDED_CREDENTIALS);
   });
 
+  it("rejects a URL with userinfo and never echoes the credential", () => {
+    try {
+      validateWebhookUrl("https://user:secret@hooks.example.com/", PROD);
+      expect.unreachable();
+    } catch (err) {
+      expect(err).toBeInstanceOf(WebhookUrlError);
+      expect((err as WebhookUrlError).code).toBe(
+        WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_EMBEDDED_CREDENTIALS
+      );
+      expect((err as Error).message).not.toContain("secret");
+    }
+  });
+
   it.each([
     "https://localhost/hook",
     "https://api.localhost/hook",

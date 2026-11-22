@@ -344,6 +344,9 @@ export class EventFetcher {
     const last = page.events[page.events.length - 1];
     if (!last || page.events.length < this.config.pageLimit) return undefined;
     if (last.ledger > endLedger) return undefined;
+    // An explicitly empty response-level cursor is an intentional stop
+    // signal from the RPC node; do not fall through to the per-event token.
+    if (page.cursor === "") return undefined;
     // Prefer the response-level cursor; older RPC nodes only expose a
     // per-event paging token. Event ids are valid cursors as a last resort.
     // An empty-string cursor is an explicit end-of-page signal, not a
