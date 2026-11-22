@@ -266,9 +266,12 @@ export class PriceFetcher {
   private readonly fallbackProvider?: PriceProviderConfig;
   /**
    * Allowlist of permitted provider names (#1149). Empty means "no allowlist
-   * configured" — documented as not recommended for production.
+   * configured" — only reachable outside production, where it is not
+   * recommended (#1476).
    */
-  private readonly allowedProviders: readonly string[];
+  private allowedProviders: readonly string[];
+  /** Whether the allowlist must be enforced (always in production). */
+  private readonly allowlistRequired: boolean;
 
   constructor(
     private readonly logger: ILogger,
@@ -290,6 +293,7 @@ export class PriceFetcher {
     }
 
     const isProduction = process.env.NODE_ENV === "production";
+    this.allowlistRequired = isProduction;
 
     if (config.primaryProvider) {
       this.primaryProvider = config.primaryProvider;
@@ -310,7 +314,7 @@ export class PriceFetcher {
 
     // Allowlist is resolved and enforced at construction time so a
     // misconfigured deploy fails fast rather than quietly serving prices from
-    // an unapproved feed (#1149).
+    // an unapproved feed (#1149, #1476).
     this.allowedProviders = resolveProviderAllowlist(
       config.allowedProviders,
       process.env[PRICE_PROVIDER_ALLOWLIST_ENV_VAR]
@@ -318,29 +322,56 @@ export class PriceFetcher {
 
     if (this.allowedProviders.length === 0) {
       if (isProduction) {
-        // Loud but non-fatal: hard-failing would break existing production
-        // deploys on upgrade, and the docs/SECURITY guidance is to pin
-        // providers. Operators get an alertable warning instead.
-        this.logger.warn(
-          "Price provider allowlist is not configured — every provider name is currently accepted. " +
-            `Set ${PRICE_PROVIDER_ALLOWLIST_ENV_VAR} to enforce deny-by-default (#1149).`,
+        // Fail closed (#1476): a production deploy without an allowlist would
+        // accept every provider name, so refuse to construct at all rather
+        // than silently disabling the policy.
+        this.logger.error(
+          "Price provider allowlist is not configured — refusing to construct in production. " +
+            `Set ${PRICE_PROVIDER_ALLOWLIST_ENV_VAR} to enforce deny-by-default (#1476).`,
           { assetId: this.config.assetId }
         );
-      }
-    } else {
-      this.assertProviderAllowed(
-        this.primaryProvider.name,
-        "primary",
-        "startup"
-      );
-      if (this.fallbackProvider) {
-        this.assertProviderAllowed(
-          this.fallbackProvider.name,
-          "fallback",
-          "startup"
+        throw new PriceProviderAllowlistInvalidError(
+          `Price provider allowlist is not configured in NODE_ENV=production — set ${PRICE_PROVIDER_ALLOWLIST_ENV_VAR}`
         );
       }
     }
+
+    this.assertProviderAllowed(this.primaryProvider.name, "primary", "startup");
+    if (this.fallbackProvider) {
+      this.assertProviderAllowed(
+        this.fallbackProvider.name,
+        "fallback",
+        "startup"
+      );
+    }
+  }
+
+  /**
+   * Re-read the allowlist from the environment immediately before a fetch
+   * (#1476). An explicit config allowlist still wins; otherwise the operator
+   * switch is re-evaluated so a revoked provider is denied without a restart.
+   * A broken value fails closed via `PriceProviderAllowlistInvalidError`.
+   */
+  private refreshAllowlist(): void {
+    if (this.config.allowedProviders !== undefined) {
+      return;
+    }
+    const refreshed = resolveProviderAllowlist(
+      undefined,
+      process.env[PRICE_PROVIDER_ALLOWLIST_ENV_VAR]
+    );
+    if (refreshed.length === 0 && this.allowlistRequired) {
+      // Fail closed (#1476): the allowlist was removed after construction.
+      this.logger.error(
+        "Price provider allowlist is not configured — refusing to fetch in production. " +
+          `Set ${PRICE_PROVIDER_ALLOWLIST_ENV_VAR} to enforce deny-by-default (#1476).`,
+        { assetId: this.config.assetId }
+      );
+      throw new PriceProviderAllowlistInvalidError(
+        `Price provider allowlist is not configured in NODE_ENV=production — set ${PRICE_PROVIDER_ALLOWLIST_ENV_VAR}`
+      );
+    }
+    this.allowedProviders = refreshed;
   }
 
   /**
@@ -358,6 +389,16 @@ export class PriceFetcher {
     requestId: string
   ): void {
     if (this.allowedProviders.length === 0) {
+      if (this.allowlistRequired) {
+        this.logger.warn("Price provider denied by allowlist", {
+          assetId: this.config.assetId,
+          provider,
+          tier,
+          requestId,
+          reason: "allowlist_not_configured",
+        });
+        throw new PriceProviderNotAllowedError(provider, tier, requestId);
+      }
       return;
     }
 
@@ -383,6 +424,11 @@ export class PriceFetcher {
   async fetchPrice(): Promise<PriceFetchResult> {
     const requestId = randomUUID();
 
+    // Deny-by-default, re-checked per fetch (#1149, #1476): the allowlist is
+    // re-read from the environment here so a revoked provider is denied even
+    // if it was allowed at construction time.
+    this.refreshAllowlist();
+
     this.logger.info("Initiating price fetch", {
       assetId: this.config.assetId,
       timeoutMs: this.config.timeoutMs,
@@ -390,7 +436,6 @@ export class PriceFetcher {
       allowlistEnforced: this.allowedProviders.length > 0,
     });
 
-    // Deny-by-default, re-checked per fetch (#1149).
     this.assertProviderAllowed(this.primaryProvider.name, "primary", requestId);
 
     try {
