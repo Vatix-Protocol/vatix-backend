@@ -143,15 +143,47 @@ function addFixedPoint(a: string, b: string): string {
   return `${sign}${wholeOut}.${fracOut}`;
 }
 
+/** Collateral fixed-point scale used for cost arithmetic (1e8 stroops). */
+const COLLATERAL_PRECISION = 100_000_000n;
+/** On-chain raw amounts carry 7 implicit decimal places (1e7). */
+const ONCHAIN_RAW_SCALE = 10_000_000n;
+
+/**
+ * Parse a decimal string (e.g. "0.10", "-1.5") into integer stroops (1e8).
+ * All arithmetic on cost is done in stroops so no floating point is involved.
+ */
+function decimalStringToStroops(value: string): bigint {
+  const trimmed = value.trim();
+  const negative = trimmed.startsWith("-");
+  const abs = negative ? trimmed.slice(1) : trimmed;
+  const [whole = "0", frac = ""] = abs.split(".");
+  const stroops =
+    BigInt(whole || "0") * COLLATERAL_PRECISION +
+    BigInt(frac.padEnd(8, "0").slice(0, 8) || "0");
+  return negative ? -stroops : stroops;
+}
+
+/** Format integer stroops (1e8) back to an 8-decimal fixed-point string. */
+function stroopsToFixedPoint(stroops: bigint): string {
+  const sign = stroops < 0n ? "-" : "";
+  const abs = stroops < 0n ? -stroops : stroops;
+  const wholeOut = abs / COLLATERAL_PRECISION;
+  const fracOut = (abs % COLLATERAL_PRECISION).toString().padStart(8, "0");
+  return `${sign}${wholeOut}.${fracOut}`;
+}
+
 /**
  * Compute the non-stale locked collateral for a wallet on a list of markets
  * by querying both CLOB and indexed (on-chain) trades.
+ *
+ * Cost is accumulated in integer stroops (1e8) to avoid floating-point drift;
+ * callers serialize the result with `stroopsToFixedPoint`.
  */
 async function getCalculatedCollateralMap(
   prisma: ReturnType<typeof getPrismaClient>,
   wallet: string,
   marketIds: string[]
-): Promise<Map<string, number>> {
+): Promise<Map<string, bigint>> {
   if (marketIds.length === 0) {
     return new Map();
   }
@@ -171,15 +203,17 @@ async function getCalculatedCollateralMap(
     }),
   ]);
 
-  const marketCollateralMap = new Map<string, number>();
+  const marketCollateralMap = new Map<string, bigint>();
   const processedTrades = new Set<string>();
 
   for (const trade of clobTrades) {
     const key = `${trade.buyOrderId}:${trade.sellOrderId}`;
     processedTrades.add(key);
 
-    const cost = Number(trade.price) * trade.quantity;
-    const current = marketCollateralMap.get(trade.marketId) ?? 0;
+    // price is Decimal(10, 8); quantity is an integer number of shares.
+    const cost =
+      decimalStringToStroops(trade.price.toString()) * BigInt(trade.quantity);
+    const current = marketCollateralMap.get(trade.marketId) ?? 0n;
     if (trade.buyerAddress === wallet) {
       marketCollateralMap.set(trade.marketId, current + cost);
     } else if (trade.sellerAddress === wallet) {
@@ -194,10 +228,13 @@ async function getCalculatedCollateralMap(
     }
     processedTrades.add(key);
 
-    const price = Number(trade.priceRaw) / 10_000_000;
-    const quantity = Number(trade.quantityRaw);
-    const cost = price * quantity;
-    const current = marketCollateralMap.get(trade.marketId) ?? 0;
+    // priceRaw is scaled by 1e7; quantityRaw is an integer share count.
+    const cost =
+      (BigInt(trade.priceRaw) *
+        BigInt(trade.quantityRaw) *
+        COLLATERAL_PRECISION) /
+      ONCHAIN_RAW_SCALE;
+    const current = marketCollateralMap.get(trade.marketId) ?? 0n;
 
     const isBuyer =
       (trade.direction === "buy" && trade.traderAddress === wallet) ||
@@ -331,7 +368,7 @@ export default async function positionsRouter(server: FastifyInstance) {
         const computedCollateral = collateralMap.get(position.marketId);
         const lockedCollateral =
           computedCollateral !== undefined
-            ? computedCollateral.toFixed(8)
+            ? stroopsToFixedPoint(computedCollateral)
             : position.lockedCollateral.toString();
 
         const base: WalletExposureRow = {
@@ -474,7 +511,7 @@ export default async function positionsRouter(server: FastifyInstance) {
       const market = position.market as any;
       const lockedCollateral =
         computedCollateral !== undefined
-          ? computedCollateral.toFixed(8)
+          ? stroopsToFixedPoint(computedCollateral)
           : position.lockedCollateral.toString();
 
       const exposure: WalletExposureRow = {
