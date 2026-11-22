@@ -794,6 +794,28 @@ class MatchingService {
 
             const newFilledQty = makerOrder.filledQuantity + trade.quantity;
 
+            // Capacity guard (#1542): `trade.quantity` was chosen by
+            // `matchOrder()` against the in-memory book *before* this
+            // transaction opened and locked-by-version the maker row above.
+            // That book can be stale relative to the fresh `makerOrder` read
+            // — e.g. another instance's transaction committed a fill against
+            // this same maker in between. The `version`/`status` match in
+            // the conditional update below only proves this read is the
+            // current row; it does NOT prove `trade.quantity` still fits in
+            // whatever capacity remained at that current version. Without
+            // this check, two takers racing for the same resting quantity
+            // could each have their transaction's fresh read land *after*
+            // the other's commit and still blindly add their own stale
+            // `trade.quantity` on top, pushing `filledQuantity` past
+            // `quantity` instead of the second one failing outright.
+            if (newFilledQty > makerOrder.quantity) {
+              throw new OrderConflictError(
+                `Maker order ${maker} has only ${
+                  makerOrder.quantity - makerOrder.filledQuantity
+                } remaining, which is less than the ${trade.quantity} this match requires; the in-memory book was stale, please retry`
+              );
+            }
+
             let makerStatus: "OPEN" | "PARTIALLY_FILLED" | "FILLED";
             if (newFilledQty === 0) {
               makerStatus = "OPEN";

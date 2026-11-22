@@ -733,6 +733,120 @@ describe("MatchingService", () => {
     });
   });
 
+  describe("placeOrder maker fill capacity guard (#1542)", () => {
+    const orderInput = {
+      marketId: "market-1",
+      userAddress: "GUSER1234567890123456789012345678901234567890123456",
+      side: "BUY" as const,
+      outcome: "YES" as const,
+      price: 0.5,
+      quantity: 10,
+    };
+
+    beforeEach(() => {
+      mockPrismaClient.market.findUnique.mockResolvedValue({
+        id: "market-1",
+        status: "ACTIVE",
+        deletedAt: null,
+        endTime: new Date(Date.now() + 60_000),
+      });
+      mockPrismaClient.order.findMany.mockResolvedValue([]);
+      mockTx.order.create.mockImplementation(async ({ data }: any) => data);
+    });
+
+    /**
+     * `matchOrder` is fully mocked in this file, so it never calls
+     * `hooks.onTradeFilled` itself — this just hands placeOrder a trade
+     * against a fixed maker id. Neither `buyOrderId` nor `sellOrderId` can
+     * equal the taker's randomly generated order id, so placeOrder's
+     * `maker = trade.buyOrderId === orderId ? trade.sellOrderId : trade.buyOrderId`
+     * always resolves `maker` to `buyOrderId` here.
+     */
+    function mockSingleMakerTrade(quantity: number) {
+      (matchOrder as any).mockReturnValueOnce({
+        trades: [
+          {
+            id: "trade-1",
+            marketId: orderInput.marketId,
+            outcome: orderInput.outcome,
+            buyerAddress: orderInput.userAddress,
+            sellerAddress: "GMAKER123456789012345678901234567890123456789012",
+            buyOrderId: "maker-order-1",
+            sellOrderId: "taker-order-placeholder",
+            price: orderInput.price,
+            quantity,
+            timestamp: Date.now(),
+          },
+        ],
+        remainingOrder: null,
+        positionDeltas: [],
+      });
+    }
+
+    it("rejects the fill instead of pushing the maker's filledQuantity past quantity (stale in-memory book)", async () => {
+      // Maker order has only 5 units of remaining capacity (quantity 10,
+      // already filled 5), but the stale in-memory book led matchOrder to
+      // plan a 10-unit fill against it.
+      mockTx.order.findUnique.mockResolvedValue({
+        quantity: 10,
+        filledQuantity: 5,
+        status: "PARTIALLY_FILLED",
+        version: 3,
+      });
+      mockSingleMakerTrade(10);
+
+      await expect(matchingService.placeOrder(orderInput)).rejects.toThrow(
+        OrderConflictError
+      );
+      // Must never have written the over-capacity fill.
+      expect(mockTx.order.updateMany).not.toHaveBeenCalled();
+    });
+
+    it("surfaces a stable error code for the capacity conflict", async () => {
+      mockTx.order.findUnique.mockResolvedValue({
+        quantity: 10,
+        filledQuantity: 5,
+        status: "PARTIALLY_FILLED",
+        version: 3,
+      });
+      mockSingleMakerTrade(10);
+
+      const error = await matchingService
+        .placeOrder(orderInput)
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(OrderConflictError);
+      expect(error.statusCode).toBe(409);
+    });
+
+    it("allows a fill that exactly consumes the maker's remaining capacity", async () => {
+      mockTx.order.findUnique.mockResolvedValue({
+        quantity: 10,
+        filledQuantity: 0,
+        status: "OPEN",
+        version: 0,
+      });
+      mockSingleMakerTrade(10);
+
+      await expect(
+        matchingService.placeOrder(orderInput)
+      ).resolves.toBeDefined();
+
+      expect(mockTx.order.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: "maker-order-1",
+          version: 0,
+          status: { in: ["OPEN", "PARTIALLY_FILLED"] },
+        },
+        data: {
+          filledQuantity: 10,
+          status: "FILLED",
+          version: { increment: 1 },
+        },
+      });
+    });
+  });
+
   describe("orderbook_hydrated_markets gauge (#746)", () => {
     it("reflects the current in-memory book count after hydration", async () => {
       mockPrismaClient.market.findMany.mockResolvedValue([{ id: "market-9" }]);

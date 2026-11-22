@@ -234,6 +234,18 @@ export class FinalizationJob {
           // Adjudicate challenges by checking if a competing PROPOSED candidate
           // with higher confidence exists. If so, reject this candidate (challenge
           // upheld). Otherwise, accept it and finalize (challenge denied).
+          //
+          // `challengeDenied` makes the "no better competitor" outcome an
+          // explicit, named decision rather than something the accept path
+          // below merely inherits by falling out of this `if` unchallenged
+          // (#1550). The accept path asserts on this flag instead of just
+          // trusting that every way of reaching it already implies denial —
+          // so a future edit to the upheld-challenge branch above that adds
+          // another way to fall through here (without an explicit `return`)
+          // is caught by the assertion below instead of silently finalizing
+          // a challenge that was never actually adjudicated.
+          let challengeDenied = false;
+
           if (locked.status === "CHALLENGED") {
             const competing = await tx.resolutionCandidate.findFirst({
               where: {
@@ -280,9 +292,20 @@ export class FinalizationJob {
               txState.challengeRejected = true;
               return;
             }
+
+            // Challenge denied: no competing PROPOSED candidate with higher
+            // confidence exists, so this CHALLENGED row is eligible to be
+            // finalized below.
+            challengeDenied = true;
           }
 
-          // ── Finalize PROPOSED or CHALLENGED (challenge denied) ──────────
+          // ── Finalize PROPOSED or denied-CHALLENGED candidates ───────────
+          // Reachable only for a PROPOSED candidate, or a CHALLENGED one
+          // whose challenge was just explicitly denied above — never merely
+          // because execution fell out of the `if` block (#1550).
+          if (locked.status !== "PROPOSED" && !challengeDenied) {
+            throw new CandidateNotEligibleError(candidate.id, locked.status);
+          }
           await tx.resolution.create({
             data: {
               marketId: candidate.marketId,
