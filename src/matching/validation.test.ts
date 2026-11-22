@@ -90,6 +90,24 @@ describe("Order Validation", () => {
         "User address must be a string"
       );
     });
+
+    it("should reject non-string values", () => {
+      expect(validateUserAddress(123 as unknown as string)).toBe(
+        "User address must be a string"
+      );
+      expect(validateUserAddress({} as unknown as string)).toBe(
+        "User address must be a string"
+      );
+      expect(validateUserAddress([] as unknown as string)).toBe(
+        "User address must be a string"
+      );
+    });
+
+    it("should accept an address matching ^G[A-Z2-7]{55}$", () => {
+      const address = "G" + "A".repeat(55);
+      expect(address).toMatch(/^G[A-Z2-7]{55}$/);
+      expect(validateUserAddress(address)).toBeNull();
+    });
   });
 
   describe("validateOrderSide", () => {
