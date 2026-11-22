@@ -69,13 +69,21 @@ export class PriceFetcherValidationError extends Error {
  * closed: no stale/default price is ever returned in place of a real one.
  */
 export class AllPriceProvidersFailedError extends Error {
+  /**
+   * Stable, machine-readable code. The outer message deliberately carries no
+   * provider error text, URL, or headers (#1474) — those may contain secrets
+   * and belong only on `cause`, which is never serialized into the message.
+   */
+  readonly code = "ALL_PRICE_PROVIDERS_FAILED";
+
   constructor(assetId: string, requestId: string, cause?: unknown) {
     super(
-      `All price providers failed for asset ${assetId} (requestId=${requestId}): ${
-        cause instanceof Error ? cause.message : String(cause)
-      }`
+      `All price providers failed for asset ${assetId} (requestId=${requestId}, code=ALL_PRICE_PROVIDERS_FAILED)`
     );
     this.name = "AllPriceProvidersFailedError";
+    if (cause !== undefined) {
+      this.cause = cause;
+    }
   }
 }
 

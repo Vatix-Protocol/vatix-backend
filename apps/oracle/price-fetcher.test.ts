@@ -159,6 +159,31 @@ describe("PriceFetcher", () => {
       );
     });
 
+    it("does not leak provider error text, URLs, or secrets into the outer message", async () => {
+      const cause = new Error("https://example.test/?key=secret");
+      const fetcher = new PriceFetcher(mockLogger, {
+        assetId: "BTC",
+        timeoutMs: 1000,
+        primaryProvider: {
+          name: "coingecko",
+          fetchFn: async () => {
+            throw cause;
+          },
+        },
+      });
+
+      const error = await fetcher.fetchPrice().catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(AllPriceProvidersFailedError);
+      const outer = error as AllPriceProvidersFailedError;
+      expect(outer.message).not.toContain("secret");
+      expect(outer.message).not.toContain("https://");
+      expect(outer.message).toContain("BTC");
+      expect(outer.message).toMatch(/requestId=[0-9a-f-]{36}/);
+      expect(outer.message).toContain("ALL_PRICE_PROVIDERS_FAILED");
+      expect(outer.cause).toBe(cause);
+    });
+
     it("requires an explicit primaryProvider in production instead of using the local stub", () => {
       vi.stubEnv("NODE_ENV", "production");
 
