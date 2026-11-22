@@ -12,7 +12,8 @@ export interface LedgerOrder {
   id: string;
   userAddress: string;
   side: OrderSide;
-  price: number;
+  /** Decimal price string as persisted (never a float, see #1487). */
+  price: string;
   quantity: number;
   filledQuantity: number;
   status: "OPEN" | "FILLED" | "CANCELLED" | "PARTIALLY_FILLED";
@@ -22,7 +23,8 @@ export interface LedgerTrade {
   buyOrderId: string;
   sellOrderId: string;
   quantity: number;
-  price: number;
+  /** Decimal price string as persisted (never a float, see #1487). */
+  price: string;
 }
 
 export interface DepthSnapshot {
