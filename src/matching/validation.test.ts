@@ -190,6 +190,24 @@ describe("Order Validation", () => {
       expect(validatePrice(undefined)).toBe("Price is required");
     });
 
+    it("should reject NaN and non-numbers with the number message", () => {
+      expect(validatePrice(NaN)).toBe("Price must be a number");
+      expect(validatePrice("0.5")).toBe("Price must be a number");
+      expect(validatePrice(true)).toBe("Price must be a number");
+      expect(validatePrice([])).toBe("Price must be a number");
+    });
+
+    it("should reject 1 and -0.5 with the exclusive range message", () => {
+      expect(validatePrice(1)).toBe("Price must be between 0 and 1 (exclusive)");
+      expect(validatePrice(-0.5)).toBe(
+        "Price must be between 0 and 1 (exclusive)"
+      );
+    });
+
+    it("should accept 0.5", () => {
+      expect(validatePrice(0.5)).toBeNull();
+    });
+
     it("should reject price not aligned to tick size", () => {
       expect(validatePrice(0.505)).toBe(
         `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`
