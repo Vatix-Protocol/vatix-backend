@@ -657,16 +657,31 @@ class MatchingService {
             )
           : input.price;
 
+      // A market order (price === 0) with no limitPrice/maxSlippagePct has no
+      // bound at all. The previous fallback to the book extremes (0.9999 for
+      // BUY, 0.0001 for SELL) let it walk the *entire* book — the comment
+      // above it said this was "permitted only in dev", but nothing here
+      // actually checked NODE_ENV, so every environment got the unbounded
+      // walk (#1525). Reject it before matchOrder is ever invoked, in every
+      // environment, closing the gap for any in-process caller that reaches
+      // placeOrder directly (the HTTP route's own validateOrderFields /
+      // assertValidOrder gate already rejects this earlier, but that must
+      // not be the only guard).
+      if (input.price === 0 && effectiveWorstPrice === null) {
+        throw new ValidationError(
+          "Market order requires limitPrice — no default worst-case price is substituted"
+        );
+      }
+
       const takerOrder: MatchingOrder = {
         id: orderId,
         userAddress: input.userAddress,
         side: input.side,
         // Market orders pass effectiveWorstPrice as their matching price so
-        // canMatch() naturally stops at the caller's tolerance boundary.
-        // When no limit/slippage was specified effectiveWorstPrice is null
-        // and we fall back to the market-order extremes (1 for BUY, 0 for
-        // SELL) so the order walks the whole book — permitted only in dev.
-        price: effectiveWorstPrice ?? (input.side === "BUY" ? 0.9999 : 0.0001),
+        // canMatch() naturally stops at the caller's tolerance boundary. A
+        // missing limit is rejected above, so effectiveWorstPrice is never
+        // null here.
+        price: effectiveWorstPrice as number,
         quantity: input.quantity,
         marketId: input.marketId,
         outcome: input.outcome,

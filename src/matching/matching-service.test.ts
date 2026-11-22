@@ -389,6 +389,88 @@ describe("MatchingService", () => {
     });
   });
 
+  describe("placeOrder rejects an unbounded market order in every environment (#1525)", () => {
+    const activeMarket = {
+      id: "market-1",
+      status: "ACTIVE" as const,
+      deletedAt: null,
+      endTime: new Date(Date.now() + 86_400_000),
+    };
+
+    beforeEach(() => {
+      mockPrismaClient.market.findUnique.mockResolvedValue(activeMarket);
+      mockPrismaClient.order.findMany.mockResolvedValue([]);
+    });
+
+    afterEach(() => {
+      delete process.env.NODE_ENV;
+    });
+
+    it.each(["production", "development", undefined])(
+      "rejects a market order (price 0) with no limitPrice/maxSlippagePct before matchOrder runs, NODE_ENV=%s",
+      async (nodeEnv) => {
+        if (nodeEnv === undefined) {
+          delete process.env.NODE_ENV;
+        } else {
+          process.env.NODE_ENV = nodeEnv;
+        }
+
+        const marketOrderInput = {
+          marketId: "market-1",
+          userAddress: "GUSER1234567890123456789012345678901234567890123456",
+          side: "BUY" as const,
+          outcome: "YES" as const,
+          price: 0,
+          quantity: 10,
+          // No limitPrice, no maxSlippagePct: nothing to derive a bound from.
+        };
+
+        await expect(
+          matchingService.placeOrder(marketOrderInput)
+        ).rejects.toThrow(ValidationError);
+        expect(matchOrder).not.toHaveBeenCalled();
+        // Rejected before the transactional write path too.
+        expect(mockPrismaClient.$transaction).not.toHaveBeenCalled();
+      }
+    );
+
+    it("still matches a market order that supplies a limitPrice (bounded, not the 0.9999/0.0001 extreme)", async () => {
+      mockTx.order.create.mockResolvedValue({
+        id: "order-bounded",
+        marketId: "market-1",
+        userAddress: "GUSER1234567890123456789012345678901234567890123456",
+        side: "BUY",
+        outcome: "YES",
+        price: "0.5",
+        quantity: 10,
+        filledQuantity: 0,
+        status: "OPEN",
+      });
+
+      const boundedMarketOrderInput = {
+        marketId: "market-1",
+        userAddress: "GUSER1234567890123456789012345678901234567890123456",
+        side: "BUY" as const,
+        outcome: "YES" as const,
+        price: 0,
+        limitPrice: 0.5,
+        quantity: 10,
+      };
+
+      await expect(
+        matchingService.placeOrder(boundedMarketOrderInput)
+      ).resolves.toBeDefined();
+      expect(matchOrder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          // computeEffectiveWorstPrice(BUY, 0.5, undefined) = 0.5 * 1.1 = 0.55
+          price: 0.55,
+        }),
+        expect.anything(),
+        expect.anything()
+      );
+    });
+  });
+
   describe("placeOrder leader re-check inside the mutex (#956)", () => {
     const orderInput = {
       marketId: "market-1",

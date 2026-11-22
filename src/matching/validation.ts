@@ -403,3 +403,131 @@ export function computeEffectiveWorstPrice(
   // Prices live in (0, 1); clamp so a wide tolerance cannot escape the range.
   return Math.min(Math.max(worstPrice, 0), 1);
 }
+
+/**
+ * Validates all static (non-DB) fields of an order input and returns every
+ * failure found, keyed by field name.
+ *
+ * `price === 0` is the market-order sentinel (see `OrderInput.price`) and is
+ * exempt from the normal (0, 1) range check — but a market order with no
+ * `limitPrice` has no bound at all, so that combination is rejected here,
+ * in every environment (#1525), rather than left for the matching engine to
+ * silently substitute a default worst-case price.
+ */
+export function validateOrderFields(input: OrderInput): ValidationResult {
+  const errors: Record<string, string> = {};
+
+  if (typeof input.marketId !== "string" || input.marketId.length === 0) {
+    errors.marketId = "marketId is required";
+  }
+
+  const userAddressErr = validateUserAddress(input.userAddress);
+  if (userAddressErr) errors.userAddress = userAddressErr;
+
+  const sideErr = validateOrderSide(input.side);
+  if (sideErr) errors.side = sideErr;
+
+  const outcomeErr = validateOutcome(input.outcome);
+  if (outcomeErr) errors.outcome = outcomeErr;
+
+  if (input.price === 0) {
+    // Market-order sentinel: skip the (0, 1) exclusive-range check that
+    // would otherwise reject it.
+  } else {
+    const priceErr = validatePrice(input.price);
+    if (priceErr) errors.price = priceErr;
+  }
+
+  const quantityErr = validateQuantity(input.quantity);
+  if (quantityErr) errors.quantity = quantityErr;
+
+  const limitPriceErr = validateLimitPrice(
+    input.limitPrice,
+    input.side,
+    input.maxSlippagePct
+  );
+  if (limitPriceErr) errors.limitPrice = limitPriceErr;
+
+  if (
+    input.price === 0 &&
+    input.limitPrice === undefined &&
+    !errors.limitPrice
+  ) {
+    errors.limitPrice =
+      "limitPrice is required for a market order (price 0) — no default worst-case price is substituted, in any environment";
+  }
+
+  return { valid: Object.keys(errors).length === 0, errors };
+}
+
+/**
+ * Validates that a market exists, is active, and has not ended.
+ * Mirrors the checks `MatchingService.placeOrder` re-applies under its
+ * per-book mutex (#792/#951) — this is the route-level pre-check referenced
+ * there, run before the mutex wait so an obviously-bad market is rejected
+ * without ever contending for the book lock.
+ */
+export async function validateMarketState(
+  marketId: string
+): Promise<ValidationResult> {
+  const prisma = getPrismaClient();
+  const market = await prisma.market.findUnique({ where: { id: marketId } });
+
+  if (!market || market.deletedAt !== null) {
+    return { valid: false, errors: { marketId: "Market not found" } };
+  }
+
+  if (market.status === "RESOLVED") {
+    return {
+      valid: false,
+      errors: { marketId: "Market is resolved and no longer accepting orders" },
+    };
+  }
+
+  if (market.status === "CANCELLED") {
+    return {
+      valid: false,
+      errors: {
+        marketId: "Market is cancelled and no longer accepting orders",
+      },
+    };
+  }
+
+  if (market.endTime.getTime() <= Date.now()) {
+    return {
+      valid: false,
+      errors: {
+        marketId: "Market has ended and is no longer accepting orders",
+      },
+    };
+  }
+
+  return { valid: true, errors: {} };
+}
+
+/**
+ * Full order validation: static field checks first (no DB access — a
+ * malformed payload never reaches Postgres), then market-state checks.
+ */
+export async function validateOrder(
+  input: OrderInput
+): Promise<ValidationResult> {
+  const fieldResult = validateOrderFields(input);
+  if (!fieldResult.valid) {
+    return fieldResult;
+  }
+
+  return validateMarketState(input.marketId);
+}
+
+/**
+ * Validates an order and throws `OrderValidationError` (carrying every
+ * failing field on `.fields`) when invalid. Resolves with no value when the
+ * order is valid.
+ */
+export async function assertValidOrder(input: OrderInput): Promise<void> {
+  const result = await validateOrder(input);
+  if (!result.valid) {
+    throw new OrderValidationError(result.errors);
+  }
+}

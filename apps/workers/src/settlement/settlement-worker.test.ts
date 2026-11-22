@@ -9,6 +9,7 @@ import {
 } from "./settlement-worker.js";
 import type { QueueJob } from "../consumers/queue-consumer.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
+import { nativeToScVal } from "@stellar/stellar-sdk";
 
 // ---------------------------------------------------------------------------
 // Stellar SDK mock — variables hoisted via vi.hoisted so they are accessible
@@ -860,6 +861,82 @@ describe("SettlementWorker — Stellar SDK invoke (executeOnChain)", () => {
 
       // maxRetries: 3 => 1 initial attempt + 3 retries = 4 calls total.
       expect(mockGetAccount).toHaveBeenCalledTimes(4);
+    });
+  });
+
+  describe("price/quantity converted before any RPC call (#1526)", () => {
+    it("does not call getAccount when quantity is scientific notation (passes Zod's Number check, fails BigInt)", async () => {
+      // Number("1e2") === 100, which satisfies the payload schema's
+      // `Number.isInteger(...) && Number(...) > 0` check, but `BigInt("1e2")`
+      // throws a SyntaxError. Converting quantity before the RPC call turns
+      // this into a classified, non-retryable validation failure instead of
+      // a raw BigInt exception after an account lookup was already spent.
+      const job: QueueJob = {
+        id: "job-stellar-bad-quantity",
+        attempts: 1,
+        payload: {
+          tradeId: "trade-bad-quantity",
+          marketId: "market-001",
+          outcome: "YES",
+          buyOrderId: "buy-1",
+          sellOrderId: "sell-1",
+          buyerAddress: "GBUYER111111111111111111111111111111111111111111111111",
+          sellerAddress: "GSELLER11111111111111111111111111111111111111111111111",
+          price: "0.65",
+          quantity: "1e2",
+          timestamp: "1700000000000",
+        },
+      };
+
+      const processPromise = stellarWorker.process(job);
+      const expectation = expect(processPromise).rejects.toThrow();
+      await vi.runAllTimersAsync();
+      await expectation;
+
+      expect(mockGetAccount).not.toHaveBeenCalled();
+      expect(mockSendTransaction).not.toHaveBeenCalled();
+      expect(logger.info).toHaveBeenCalledWith(
+        "Settlement job error classified",
+        expect.objectContaining({
+          tradeId: "trade-bad-quantity",
+          errorCode: "INVALID_PAYLOAD",
+        })
+      );
+    });
+
+    it("still submits settle_trade with the exact converted price and quantity for a valid payload", async () => {
+      const job: QueueJob = {
+        id: "job-stellar-good-quantity",
+        attempts: 1,
+        payload: {
+          tradeId: "trade-good-quantity",
+          marketId: "market-001",
+          outcome: "YES",
+          buyOrderId: "buy-1",
+          sellOrderId: "sell-1",
+          buyerAddress: "GBUYER111111111111111111111111111111111111111111111111",
+          sellerAddress: "GSELLER11111111111111111111111111111111111111111111111",
+          price: "0.1234567",
+          quantity: "100",
+          timestamp: "1700000000000",
+        },
+      };
+
+      const processPromise = stellarWorker.process(job);
+      await vi.runAllTimersAsync();
+      await processPromise;
+
+      expect(mockGetAccount).toHaveBeenCalled();
+      // price="0.1234567" -> exact i128 1234567n (no binary-float rounding),
+      // quantity="100" -> exact i128 100n.
+      const mockNativeToScVal = nativeToScVal as unknown as ReturnType<
+        typeof vi.fn
+      >;
+      expect(mockNativeToScVal).toHaveBeenCalledWith(1234567n, {
+        type: "i128",
+      });
+      expect(mockNativeToScVal).toHaveBeenCalledWith(100n, { type: "i128" });
+      expect(mockSendTransaction).toHaveBeenCalled();
     });
   });
 });
