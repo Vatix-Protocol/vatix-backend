@@ -13,6 +13,7 @@ import {
   assertValidOrder,
   OrderValidationError,
   TICK_SIZE,
+  MAX_ORDER_QUANTITY,
   type OrderInput,
 } from "./validation.js";
 
@@ -250,6 +251,21 @@ describe("Order Validation", () => {
 
     it("should reject NaN", () => {
       expect(validateQuantity(NaN)).toBe("Quantity must be a number");
+    });
+
+    it("should reject non-finite numbers", () => {
+      expect(validateQuantity(Infinity)).toBe("Quantity must be a number");
+      expect(validateQuantity(-Infinity)).toBe("Quantity must be a number");
+      expect(validateQuantity(Number.MAX_VALUE)).toBe(
+        "Quantity must be a number",
+      );
+    });
+
+    it("should reject values above the maximum storable integer", () => {
+      expect(validateQuantity(MAX_ORDER_QUANTITY)).toBeNull();
+      expect(validateQuantity(MAX_ORDER_QUANTITY + 1)).toBe(
+        `Quantity must be at most ${MAX_ORDER_QUANTITY}`,
+      );
     });
 
     it("should reject null/undefined", () => {

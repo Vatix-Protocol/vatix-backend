@@ -191,15 +191,24 @@ export function validatePrice(price: unknown): string | null {
 }
 
 /**
+ * Largest quantity the `Order.quantity` column can store.
+ * `Order.quantity` is a Prisma `Int` (PostgreSQL `INTEGER`, 32-bit signed),
+ * so the maximum storable value is 2^31 - 1 = 2147483647.
+ */
+export const MAX_ORDER_QUANTITY = 2_147_483_647;
+
+/**
  * Validates quantity
- * - Must be a positive integer
+ * - Must be a finite number
+ * - Must be an integer (checked before the range check)
+ * - Must be > 0 and <= MAX_ORDER_QUANTITY
  */
 export function validateQuantity(quantity: unknown): string | null {
   if (quantity === null || quantity === undefined) {
     return "Quantity is required";
   }
 
-  if (typeof quantity !== "number" || Number.isNaN(quantity)) {
+  if (typeof quantity !== "number" || !Number.isFinite(quantity)) {
     return "Quantity must be a number";
   }
 
@@ -209,6 +218,10 @@ export function validateQuantity(quantity: unknown): string | null {
 
   if (quantity <= 0) {
     return "Quantity must be positive";
+  }
+
+  if (quantity > MAX_ORDER_QUANTITY) {
+    return `Quantity must be at most ${MAX_ORDER_QUANTITY}`;
   }
 
   return null;
