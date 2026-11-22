@@ -130,6 +130,21 @@ describe("generateIdempotencyKey", () => {
     expect(generateIdempotencyKey(e).key).toBe(generateIdempotencyKey(e).key);
   });
 
+  it("returns identical keys and components for the same contract id and event id", () => {
+    const eventId = "0000000042-0000000001-0000000003";
+    const first = generateIdempotencyKey(makeEvent(eventId));
+    const second = generateIdempotencyKey(makeEvent(eventId));
+
+    expect(first.key).toBe(second.key);
+    expect(first.components).toEqual(second.components);
+    expect(first.components).toEqual({
+      contractId: CONTRACT,
+      ledger: 42,
+      txIndex: 1,
+      eventIndex: 3,
+    });
+  });
+
   it("produces different keys for different ledgers", () => {
     const k1 = generateIdempotencyKey(
       makeEvent("0000000042-0000000001-0000000003")
