@@ -93,7 +93,7 @@ Polls for `ACTIVE` markets with `endTime <= now()` and transitions them to `CANC
 | -------------------------------- | ------------------------------ | ---------------------------------------------------------------- |
 | `EXPIRY_WORKER_INTERVAL_MS`      | `60000`                        | How often the job runs (ms). Minimum 1000.                       |
 | `EXPIRY_WORKER_MAX_RUN_MS`       | `30000`                        | Max wall-clock time (ms) per poll before stopping. 0 = unlimited |
-| `EXPIRY_CLOCK_SKEW_TOLERANCE_MS` | `5000` in production, else `0` | Grace period after `endTime` before a market is expired          |
+| `EXPIRY_CLOCK_SKEW_TOLERANCE_MS` | `5000` (`DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS`) | Grace period after `endTime` before a market is expired. Must be `> 0` in production; omitting it uses the 5000ms default. |
 | `LOG_LEVEL`                      | `info`                         | Log verbosity: `debug` \| `info` \| `warn` \| `error`.           |
 
 **Signals**: each poll logs `Expiry job completed` with `totalCandidates`, `expiredCount`,

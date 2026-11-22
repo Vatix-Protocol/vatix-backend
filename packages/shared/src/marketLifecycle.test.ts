@@ -39,6 +39,18 @@ describe("market lifecycle transitions", () => {
     expect(() => assertTransition(from, to)).toThrow(MarketTransitionError);
   });
 
+  it("does not allow RESOLVED to transition back to ACTIVE", () => {
+    expect(canTransition("RESOLVED", "ACTIVE")).toBe(false);
+  });
+
+  it("allows ACTIVE to transition to RESOLVED", () => {
+    expect(canTransition("ACTIVE", "RESOLVED")).toBe(true);
+  });
+
+  it("does not allow ACTIVE to transition to itself", () => {
+    expect(canTransition("ACTIVE", "ACTIVE")).toBe(false);
+  });
+
   it("reports a stable error code and both endpoints", () => {
     try {
       assertTransition("RESOLVED", "ACTIVE");
@@ -77,5 +89,10 @@ describe("market lifecycle predicates", () => {
     expect(isMarketStatus("ACTIVE")).toBe(true);
     expect(isMarketStatus("active")).toBe(false);
     expect(isMarketStatus(undefined)).toBe(false);
+  });
+
+  it("rejects an unknown market status", () => {
+    expect(isMarketStatus("EXPIRED")).toBe(false);
+    expect(isMarketStatus("ACTIVE")).toBe(true);
   });
 });

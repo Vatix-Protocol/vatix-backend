@@ -1,5 +1,10 @@
 import type { PrismaClient } from "../../generated/prisma/client";
-import { checkDbReadiness } from "../../services/dbReadiness.js";
+import {
+  checkDbReadiness,
+  DEFAULT_READINESS_TIMEOUT_MS,
+  makeError,
+  type DbReadinessError,
+} from "../../services/dbReadiness.js";
 import { redis } from "../../services/redis.js";
 
 export interface ReadyDeps {
@@ -8,9 +13,9 @@ export interface ReadyDeps {
    */
   checkDatabase(): Promise<void>;
   /**
-   * Throws if the Redis instance is unreachable.
-   * NOTE: Redis failures set redis.status = "error" in the response but do
-   * NOT change the HTTP status code — Redis is a WARNING-tier dependency.
+   * Throws if the Redis instance is unreachable or the check exceeds its
+   * deadline. Redis is a CRITICAL dependency: a failure here makes `/ready`
+   * return 503.
    */
   checkRedis(): Promise<void>;
   /**
@@ -59,9 +64,32 @@ export function createReadyDeps(options: CreateReadyDepsOptions = {}): ReadyDeps
   const checkRedisImpl =
     options.checkRedis ??
     (async (): Promise<void> => {
-      const ok = await redis.healthCheck();
-      if (!ok) {
-        throw new Error("Redis health check failed");
+      // Bounded deadline: a hung Redis must fail readiness (503) rather than
+      // leave the probe hanging until the orchestrator's own timeout.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(makeError("DEPENDENCY_TIMEOUT"));
+        }, DEFAULT_READINESS_TIMEOUT_MS);
+      });
+
+      try {
+        const ok = await Promise.race([redis.healthCheck(), timeout]);
+        if (!ok) {
+          throw makeError("DEPENDENCY_UNAVAILABLE");
+        }
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          (error as DbReadinessError).code === "DEPENDENCY_TIMEOUT"
+        ) {
+          throw error;
+        }
+        throw makeError("DEPENDENCY_UNAVAILABLE", error);
+      } finally {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+        }
       }
     });
 

@@ -4,6 +4,7 @@ import {
   signResolutionReport,
   verifyResolutionReport,
   LegacySignatureRejectedError,
+  OracleSignatureError,
   CURRENT_SIGNATURE_VERSION,
 } from "./signature-helper.js";
 import type {
@@ -166,6 +167,22 @@ describe("verifyResolutionReport", () => {
 
     expect(verifyResolutionReport(tampered)).toBe(false);
   });
+
+  it("returns false (without throwing) when signed by an untrusted second key", () => {
+    const untrusted = Keypair.random();
+    const report = signResolutionReport(basePayload, untrusted.secret());
+
+    expect(() =>
+      verifyResolutionReport(report, undefined, {
+        expectedPublicKey: testKeypair.publicKey(),
+      })
+    ).not.toThrow();
+    expect(
+      verifyResolutionReport(report, undefined, {
+        expectedPublicKey: testKeypair.publicKey(),
+      })
+    ).toBe(false);
+  });
 });
 
 describe("signature envelope versioning (#993)", () => {
@@ -273,5 +290,48 @@ describe("signature envelope versioning (#993)", () => {
     expect(() => verifyResolutionReport(downgraded)).toThrow(
       LegacySignatureRejectedError
     );
+  });
+});
+
+describe("legacy signatures are the only relaxed path (#1498)", () => {
+  const MAINNET = "Public Global Stellar Network ; September 2015";
+  const PRODUCTION_ENV = {
+    NODE_ENV: "production",
+    SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+    ORACLE_SIGNER_PUBLIC_KEY: testKeypair.publicKey(),
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("rejects a v1 signature in production", () => {
+    const legacy = signLegacyReport(basePayload, testKeypair);
+
+    expect(() =>
+      verifyResolutionReport(legacy, MAINNET, { env: PRODUCTION_ENV })
+    ).toThrow(LegacySignatureRejectedError);
+  });
+
+  it("accepts a current-version report signed by the pinned key in production", () => {
+    const report = signResolutionReport(basePayload, SECRET, MAINNET);
+
+    expect(report.version).toBe(CURRENT_SIGNATURE_VERSION);
+    expect(verifyResolutionReport(report, MAINNET, { env: PRODUCTION_ENV })).toBe(
+      true
+    );
+  });
+
+  it("fails closed in production when no signer is pinned", () => {
+    const report = signResolutionReport(basePayload, SECRET, MAINNET);
+
+    expect(() =>
+      verifyResolutionReport(report, MAINNET, {
+        env: {
+          NODE_ENV: "production",
+          SOROBAN_NETWORK_PASSPHRASE: MAINNET,
+        },
+      })
+    ).toThrow(OracleSignatureError);
   });
 });

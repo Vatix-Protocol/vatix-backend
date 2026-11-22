@@ -52,11 +52,15 @@ export interface PriceFetcherConfig {
  */
 export interface PriceFetchResult {
   /**
-   * The upstream price as a decimal string, exactly as the provider returned
-   * it (e.g. `"0.1"` stays `"0.1"`). Never a JavaScript `number` — callers
-   * must sign/format this string directly instead of converting it (#1475).
+   * Price as a plain decimal number in whole units (e.g. `0.42`), *not*
+   * pre-scaled. The on-chain scale is 7 decimal places (Stellar stroop-style
+   * fixed point, `1e7`): the settlement worker multiplies this value by `1e7`
+   * and rounds to an `i128` before signing `settle_trade`. Non-finite values
+   * (`NaN`, `Infinity`, `-Infinity`) — as well as zero and negatives — are
+   * rejected with `PriceProviderInvalidPriceError` before a result is ever
+   * returned, so a signed price is always a finite, positive number.
    */
-  price: string;
+  price: number;
   /** Which provider tier produced this price: "primary" or "fallback". */
   source: PriceSource;
   /** Attribution metadata — provider name and correlation id for forensics. */

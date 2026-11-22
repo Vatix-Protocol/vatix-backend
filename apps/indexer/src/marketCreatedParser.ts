@@ -3,6 +3,7 @@ import type { RawChainEvent } from "./types.js";
 import { MarketCreatedParseError } from "./types.js";
 import type { NormalizedMarketCreated } from "./types.js";
 import type { Telemetry } from "./telemetry.js";
+import { MARKET_QUESTION_MAX_LENGTH } from "@vatix/shared/marketLifecycle.js";
 
 /**
  * Soroban's #[contractevent] macro derives the topic symbol by snake_casing
@@ -21,7 +22,7 @@ const MARKET_CREATED_TOPIC = "market_created_event";
  * actually stored/validated, corrupting UI display and any downstream
  * consumer that assumes indexer state mirrors chain state 1:1.
  */
-const MAX_QUESTION_LENGTH = 499;
+const MAX_QUESTION_LENGTH = MARKET_QUESTION_MAX_LENGTH;
 
 /**
  * Stable error codes for MarketCreated parsing. These are part of the

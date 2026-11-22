@@ -2,13 +2,18 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { getPrismaClient } from "../../services/prisma.js";
-import { ValidationError, NotFoundError } from "../middleware/errors.js";
+import {
+  ValidationError,
+  NotFoundError,
+  IdempotencyConflictError,
+} from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
 import { auditService } from "../../services/audit.js";
 import { redis } from "../../services/redis.js";
 import { matchingService } from "../../matching/matching-service.js";
 import {
   validateUserAddress,
+  isValidStellarPublicKey,
   sanitizeUserAddress,
   assertValidOrder,
   validateTickSize,
@@ -34,7 +39,10 @@ const CreateOrderSchema = z
       .regex(
         STELLAR_PUBLIC_KEY_REGEX,
         "userAddress must be a valid Stellar address (public key)"
-      ),
+      )
+      .refine(isValidStellarPublicKey, {
+        message: "userAddress must be a valid Stellar address (public key)",
+      }),
     side: z.enum(["BUY", "SELL"]),
     outcome: z.enum(["YES", "NO"]),
     // price 0 marks a market order; the matcher derives the cap from limitPrice.
@@ -62,6 +70,7 @@ const CreateOrderSchema = z
       .gte(0, "maxSlippagePct must be greater than or equal to 0")
       .lte(100, "maxSlippagePct must be less than or equal to 100")
       .optional(),
+    allowPartialFill: z.boolean().optional(),
   })
   .superRefine((val, ctx) => {
     if (val.price === 0 && val.limitPrice === undefined) {
@@ -73,7 +82,7 @@ const CreateOrderSchema = z
     }
   });
 
-type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
+export type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
 
 // ---------------------------------------------------------------------------
 // Idempotency-Key handling for POST /orders (see RATE_LIMIT_POLICY.md)
@@ -81,10 +90,17 @@ type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
-/** Returns the optional Idempotency-Key header, rejecting malformed values. */
-function parseIdempotencyKey(request: FastifyRequest): string | undefined {
+/**
+ * Returns the mandatory Idempotency-Key header (#1461). A missing header is a
+ * 400 naming the header, so a create can never be written without a key to
+ * replay it under. Malformed values are rejected the same way.
+ */
+export function parseIdempotencyKey(request: FastifyRequest): string {
   const raw = request.headers["idempotency-key"];
-  if (raw === undefined) return undefined;
+  if (raw === undefined) {
+    const message = "Idempotency-Key header is required";
+    throw new ValidationError(message, { "Idempotency-Key": message });
+  }
   if (typeof raw !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(raw)) {
     const message =
       "Idempotency-Key must be 1-128 characters of A-Z, a-z, 0-9, '_', '-', '.', ':'";
@@ -94,7 +110,7 @@ function parseIdempotencyKey(request: FastifyRequest): string | undefined {
 }
 
 /** SHA-256 of the validated order payload, used to detect key reuse. */
-function hashOrderRequest(body: CreateOrderBody): string {
+export function hashOrderRequest(body: CreateOrderBody): string {
   const {
     marketId,
     userAddress,
@@ -104,6 +120,7 @@ function hashOrderRequest(body: CreateOrderBody): string {
     quantity,
     limitPrice,
     maxSlippagePct,
+    allowPartialFill,
   } = body;
   return createHash("sha256")
     .update(
@@ -116,6 +133,7 @@ function hashOrderRequest(body: CreateOrderBody): string {
         quantity,
         limitPrice,
         maxSlippagePct,
+        allowPartialFill,
       })
     )
     .digest("hex");
@@ -233,7 +251,8 @@ export interface TradeEntry {
   sellerAddress: string;
   buyOrderId: string;
   sellOrderId: string;
-  price: number;
+  /** Exact decimal price string as stored (never a lossy `Number`). */
+  price: string;
   quantity: number;
   timestamp: number;
   /** `timestamp` normalized to an ISO-8601 UTC string. */
@@ -362,7 +381,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           sellerAddress: trade.sellerAddress,
           buyOrderId: trade.buyOrderId,
           sellOrderId: trade.sellOrderId,
-          price: Number(trade.price),
+          price: trade.price.toString(),
           quantity: trade.quantity,
           timestamp: trade.createdAt.getTime(),
           timestampIso: trade.createdAt.toISOString(),
@@ -500,6 +519,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
             quantity: { type: "integer", minimum: 1 },
             limitPrice: { type: "number", exclusiveMinimum: 0, exclusiveMaximum: 1 },
             maxSlippagePct: { type: "number", minimum: 0, maximum: 100 },
+            allowPartialFill: { type: "boolean" },
           },
         },
       },
@@ -518,6 +538,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       }
 
       const body = parsed.data;
+      const requestHash = hashOrderRequest(body);
 
       if (idempotencyKey) {
         const requestHash = hashOrderRequest(body);
@@ -530,16 +551,24 @@ export async function ordersRoutes(fastify: FastifyInstance) {
               response: unknown;
             };
             if (entry.hash !== requestHash) {
-              throw new ValidationError(
-                "Idempotency-Key was reused with a different request payload"
-              );
+              throw new IdempotencyConflictError();
             }
-            return reply.send(entry.response);
+            // Exact replay: same key, same payload — return the original body
+            // with 200 and flag it as a replay.
+            return reply
+              .code(200)
+              .header("Idempotent-Replayed", "true")
+              .send(entry.response);
           }
         } catch (err) {
-          if (err instanceof ValidationError) throw err;
+          if (err instanceof IdempotencyConflictError) throw err;
           // Cache read failures fall through to normal processing.
         }
+      }
+        }
+      } catch (err) {
+        if (err instanceof ValidationError) throw err;
+        // Cache read failures fall through to normal processing.
       }
 
       const orderInput: OrderInput = {
@@ -551,11 +580,21 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         quantity: body.quantity,
         limitPrice: body.limitPrice,
         maxSlippagePct: body.maxSlippagePct,
+        allowPartialFill: body.allowPartialFill,
       };
 
       assertValidOrder(orderInput);
 
-      const result = await matchingService.submitOrder(orderInput);
+      const result = await matchingService.placeOrder(
+        orderInput,
+        idempotencyKey
+          ? { key: idempotencyKey, requestHash: hashOrderRequest(body) }
+          : undefined
+      );
+
+      // The replay state is only known once the matching service has answered:
+      // an exact replay returns the stored result instead of placing a new order.
+      const replayed = result.replayed === true;
 
       const response: OrderResponse = {
         id: result.order.id,
@@ -582,6 +621,13 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         } catch {
           // Cache write failures are non-fatal.
         }
+      }
+
+      if (replayed) {
+        return reply
+          .code(200)
+          .header("Idempotent-Replayed", "true")
+          .send(response);
       }
 
       return reply.code(201).send(response);

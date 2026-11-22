@@ -7,6 +7,7 @@ import {
 import { MarketCreatedParseError } from "./types.js";
 import type { RawChainEvent } from "./types.js";
 import type { Telemetry } from "./telemetry.js";
+import { MARKET_QUESTION_MAX_LENGTH } from "@vatix/shared/marketLifecycle.js";
 
 // ─── Real XDR fixtures, matching contracts/market/src/events.rs ────────────
 //
@@ -129,17 +130,17 @@ describe("parseMarketCreatedChainEvent", () => {
     ).toXDR("base64");
   }
 
-  it("accepts a question exactly at the 499-char contract cap", () => {
-    const question = "Q".repeat(499);
+  it("accepts a question exactly at the shared MARKET_QUESTION_MAX_LENGTH cap", () => {
+    const question = "Q".repeat(MARKET_QUESTION_MAX_LENGTH);
     const m = parseMarketCreatedChainEvent(
       makeEvent({ valueXdr: makeValueXdrWithQuestion(question) })
     );
     expect(m.question).toBe(question);
-    expect(m.question).toHaveLength(499);
+    expect(m.question).toHaveLength(MARKET_QUESTION_MAX_LENGTH);
   });
 
-  it("throws MarketCreatedParseError when question exceeds the 499-char contract cap", () => {
-    const question = "Q".repeat(500);
+  it("throws MarketCreatedParseError when question exceeds the shared cap", () => {
+    const question = "Q".repeat(MARKET_QUESTION_MAX_LENGTH + 1);
     expect(() =>
       parseMarketCreatedChainEvent(
         makeEvent({ valueXdr: makeValueXdrWithQuestion(question) })
@@ -156,7 +157,9 @@ describe("parseMarketCreatedChainEvent", () => {
       expect.fail("should have thrown");
     } catch (err) {
       expect((err as MarketCreatedParseError).message).toContain("600");
-      expect((err as MarketCreatedParseError).message).toContain("499");
+      expect((err as MarketCreatedParseError).message).toContain(
+        String(MARKET_QUESTION_MAX_LENGTH)
+      );
     }
   });
 });

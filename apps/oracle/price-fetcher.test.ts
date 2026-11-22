@@ -108,6 +108,31 @@ describe("PriceFetcher", () => {
       );
     });
 
+    it("does not resolve a stale price when both providers reject (#1500)", async () => {
+      const primaryFetch = vi.fn(async () => {
+        throw new Error("primary down");
+      });
+      const fallbackFetch = vi.fn(async () => {
+        throw new Error("fallback down");
+      });
+
+      const fetcher = new PriceFetcher(mockLogger, {
+        assetId: "BTC",
+        timeoutMs: 1000,
+        primaryProvider: { name: "coingecko", fetchFn: primaryFetch },
+        fallbackProvider: { name: "pyth", fetchFn: fallbackFetch },
+      });
+
+      const error = await fetcher.fetchPrice().then(
+        () => null,
+        (err: unknown) => err
+      );
+
+      expect(error).toBeInstanceOf(AllPriceProvidersFailedError);
+      expect(primaryFetch).toHaveBeenCalledTimes(1);
+      expect(fallbackFetch).toHaveBeenCalledTimes(1);
+    });
+
     it("fails closed when primary fails and no fallback is configured", async () => {
       const fetcher = new PriceFetcher(mockLogger, {
         assetId: "BTC",
