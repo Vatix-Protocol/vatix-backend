@@ -47,6 +47,10 @@ describe("isPrivateAddress", () => {
     }
   );
 
+  it("does not classify hostnames such as localhost", () => {
+    expect(isPrivateAddress("localhost")).toBe(false);
+  });
+
   it("treats the cloud metadata address 169.254.169.254 as private", () => {
     expect(isPrivateAddress("169.254.169.254")).toBe(true);
   });
