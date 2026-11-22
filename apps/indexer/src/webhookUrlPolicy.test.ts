@@ -46,6 +46,10 @@ describe("isPrivateAddress", () => {
       expect(isPrivateAddress(address)).toBe(false);
     }
   );
+
+  it("does not classify hostnames such as localhost", () => {
+    expect(isPrivateAddress("localhost")).toBe(false);
+  });
 });
 
 describe("validateWebhookUrl", () => {

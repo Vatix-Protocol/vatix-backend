@@ -72,7 +72,15 @@ for (const [network, prefix] of [
   BLOCKED_RANGES.addSubnet(network, prefix, "ipv6");
 }
 
-/** True for loopback, private, link-local, multicast and reserved addresses. */
+/**
+ * True for loopback, private, link-local, multicast and reserved addresses.
+ *
+ * Only IP literals are classified: anything that is not a valid IPv4/IPv6
+ * string (e.g. `"localhost"`, `"internal.example"`) returns `false`. Do not
+ * call this with a hostname — use {@link validateWebhookUrl} for a static
+ * URL check or {@link assertWebhookHostIsPublic} for the send-time DNS check,
+ * both of which handle hostnames (including `localhost`).
+ */
 export function isPrivateAddress(address: string): boolean {
   const family = isIP(address);
   if (family === 0) return false;
