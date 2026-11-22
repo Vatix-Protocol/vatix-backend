@@ -235,11 +235,15 @@ export function validateQuantity(quantity: unknown): string | null {
 
 /**
  * Validates an optional limit price for market orders.
- * When supplied it must satisfy the same constraints as a regular limit price.
+ * When supplied it must satisfy the same constraints as a regular limit price,
+ * plus the side-specific bound: a BUY limit is a cap on the execution price and
+ * must stay below 1 after slippage, while a SELL limit is a floor and must stay
+ * above 0 after slippage.
  */
 export function validateLimitPrice(
   limitPrice: unknown,
-  side: OrderSide
+  side: OrderSide,
+  maxSlippagePct?: unknown
 ): string | null {
   if (limitPrice === undefined || limitPrice === null) return null;
 
@@ -253,6 +257,28 @@ export function validateLimitPrice(
 
   const tickErr = validateTickSize(limitPrice);
   if (tickErr) return `limitPrice: ${tickErr}`;
+
+  const slippageErr = validateMaxSlippagePct(maxSlippagePct);
+  if (slippageErr) return slippageErr;
+
+  const slippage =
+    typeof maxSlippagePct === "number" && !Number.isNaN(maxSlippagePct)
+      ? maxSlippagePct / 100
+      : 0;
+
+  if (side === "BUY") {
+    // Worst-case execution price for a BUY is limitPrice * (1 + slippage).
+    if (limitPrice * (1 + slippage) >= 1) {
+      return "limitPrice must be below 1 after slippage for a BUY order";
+    }
+  } else if (side === "SELL") {
+    // Worst-case execution price for a SELL is limitPrice * (1 - slippage).
+    if (limitPrice * (1 - slippage) <= 0) {
+      return "limitPrice must be above 0 after slippage for a SELL order";
+    }
+  } else {
+    return "side must be 'BUY' or 'SELL'";
+  }
 
   return null;
 }
