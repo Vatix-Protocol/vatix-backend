@@ -256,6 +256,19 @@ describe("Order Validation", () => {
       expect(validateQuantity(null)).toBe("Quantity is required");
       expect(validateQuantity(undefined)).toBe("Quantity is required");
     });
+
+    it.each([
+      { input: 0, expected: "Quantity must be positive" },
+      { input: -1, expected: "Quantity must be positive" },
+      { input: 1.5, expected: "Quantity must be an integer" },
+      { input: NaN, expected: "Quantity must be a number" },
+      { input: 1, expected: null },
+    ])(
+      "should return $expected for $input",
+      ({ input, expected }: { input: number; expected: string | null }) => {
+        expect(validateQuantity(input)).toBe(expected);
+      }
+    );
   });
 
   describe("validateOrderFields", () => {
