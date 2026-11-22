@@ -2,6 +2,7 @@ import { Decimal } from "@prisma/client/runtime/client.js";
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type { ExpiryJobResult, ExpiryCandidateResult } from "./types.js";
+import { DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS } from "./config.js";
 
 /** Collateral amounts are stored with 8 fractional digits (Decimal(20, 8)). */
 const COLLATERAL_DECIMALS = 8;
@@ -34,6 +35,7 @@ export interface ExpiryJobConfig {
    * actually reaches it, causing the job to cancel orders and lock in
    * expiry on a market that is not actually expired on-chain yet. A
    * market is only treated as a candidate once `endTime <= now - tolerance`.
+   * Defaults to `DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS` (5000ms), never 0.
    */
   clockSkewToleranceMs?: number;
 }
@@ -66,7 +68,8 @@ export class ExpiryJob {
     config: ExpiryJobConfig
   ) {
     this.maxRunMs = config.maxRunMs ?? 0;
-    this.clockSkewToleranceMs = config.clockSkewToleranceMs ?? 0;
+    this.clockSkewToleranceMs =
+      config.clockSkewToleranceMs ?? DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS;
   }
 
   async run(): Promise<ExpiryJobResult> {
