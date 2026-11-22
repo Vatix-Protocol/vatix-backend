@@ -31,7 +31,7 @@ import {
 // Zod schema for POST /orders body
 // ---------------------------------------------------------------------------
 
-const CreateOrderSchema = z
+export const CreateOrderSchema = z
   .object({
     marketId: z.string().min(1, "marketId is required"),
     userAddress: z

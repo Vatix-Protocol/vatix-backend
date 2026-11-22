@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { nativeToScVal } from "@stellar/stellar-sdk";
 import {
   SettlementWorker,
   type SettlementWorkerConfig,
@@ -696,6 +697,33 @@ describe("SettlementWorker — Stellar SDK invoke (executeOnChain)", () => {
     expect(mockSendTransaction).toHaveBeenCalled();
   });
 
+  it("encodes an integer quantity as an i128 argument, not a truncated float (#1534)", async () => {
+    const job: QueueJob = {
+      id: "job-stellar-qty-i128",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-qty-i128",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-q",
+        sellOrderId: "sell-q",
+        buyerAddress: "GBUYER111111111111111111111111111111111111111111111111",
+        sellerAddress: "GSELLER11111111111111111111111111111111111111111111111",
+        price: "0.50",
+        quantity: "1",
+        timestamp: "1700000006000",
+      },
+    };
+
+    const processPromise = stellarWorker.process(job);
+    await vi.runAllTimersAsync();
+    await processPromise;
+
+    // The quantity argument is `BigInt(payload.quantity)` encoded as an i128
+    // — a real bigint, never a JS number that could silently lose precision.
+    expect(nativeToScVal).toHaveBeenCalledWith(1n, { type: "i128" });
+  });
+
   it("logs settlement confirmed after successful on-chain confirmation", async () => {
     const job: QueueJob = {
       id: "job-stellar-3",
@@ -977,6 +1005,50 @@ describe("SettlementWorker — payload validation", () => {
     };
 
     await expect(worker.process(job)).rejects.toThrow("invalid payload");
+  });
+
+  it("rejects a fractional quantity instead of truncating it via BigInt (#1534)", async () => {
+    const job: QueueJob = {
+      id: "job-val-qty-fractional",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-val-qty-fractional",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "0.50",
+        quantity: "1.5",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).rejects.toThrow("invalid payload");
+    expect(redisClient.setnx).not.toHaveBeenCalled();
+  });
+
+  it("rejects a negative quantity instead of truncating it via BigInt (#1534)", async () => {
+    const job: QueueJob = {
+      id: "job-val-qty-negative",
+      attempts: 1,
+      payload: {
+        tradeId: "trade-val-qty-negative",
+        marketId: "market-001",
+        outcome: "YES",
+        buyOrderId: "buy-1",
+        sellOrderId: "sell-1",
+        buyerAddress: "GBUYER",
+        sellerAddress: "GSELLER",
+        price: "0.50",
+        quantity: "-1",
+        timestamp: "1700000000000",
+      },
+    };
+
+    await expect(worker.process(job)).rejects.toThrow("invalid payload");
+    expect(redisClient.setnx).not.toHaveBeenCalled();
   });
 
   it("proceeds normally when all payload fields are valid", async () => {
