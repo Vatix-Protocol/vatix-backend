@@ -18,7 +18,13 @@ export type PriceSource = "primary" | "fallback";
 export interface PriceProviderConfig {
   /** Attribution label, e.g. "coingecko", "pyth". Never a secret. */
   name: string;
-  fetchFn: () => Promise<number>;
+  /**
+   * Fetch the upstream price as a decimal string (e.g. `"0.1"`), never a
+   * JavaScript `number` (#1475). The string is carried through to
+   * `PriceFetchResult.price` verbatim so no binary floating-point rounding
+   * happens at the edge before signing.
+   */
+  fetchFn: () => Promise<string>;
 }
 
 export interface PriceFetcherConfig {
@@ -45,7 +51,12 @@ export interface PriceFetcherConfig {
  * Result of a price fetch, always carrying source attribution.
  */
 export interface PriceFetchResult {
-  price: number;
+  /**
+   * The upstream price as a decimal string, exactly as the provider returned
+   * it (e.g. `"0.1"` stays `"0.1"`). Never a JavaScript `number` — callers
+   * must sign/format this string directly instead of converting it (#1475).
+   */
+  price: string;
   /** Which provider tier produced this price: "primary" or "fallback". */
   source: PriceSource;
   /** Attribution metadata — provider name and correlation id for forensics. */
@@ -216,7 +227,39 @@ function resolveProviderAllowlist(
   return parseProviderAllowlist(envAllowlist);
 }
 
-const DEFAULT_STUB_PRICE = 100.5;
+const DEFAULT_STUB_PRICE = "100.5";
+
+/**
+ * Canonical decimal-string form of a price, or `null` when the value is not a
+ * finite, positive decimal. Accepts a decimal string (the supported form) and,
+ * for backwards compatibility with in-process providers, a finite `number`
+ * which is converted once via `String()` — never the other way around.
+ */
+function normalizePriceString(raw: unknown): string | null {
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw) || raw <= 0) {
+      return null;
+    }
+    return String(raw);
+  }
+
+  if (typeof raw !== "string") {
+    return null;
+  }
+
+  const trimmed = raw.trim();
+  // Plain decimal notation only: no exponents, no NaN/Infinity, no hex.
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    return null;
+  }
+
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  return trimmed;
+}
 
 export class PriceFetcher {
   private readonly primaryProvider: PriceProviderConfig;
@@ -418,7 +461,7 @@ export class PriceFetcher {
   }
 
   private buildResult(
-    price: number,
+    price: string,
     source: PriceSource,
     provider: string,
     requestId: string
@@ -427,10 +470,15 @@ export class PriceFetcher {
     // negative price must never be reported as a successful fetch — it is
     // treated as a provider failure so fail-over (and ultimately fail-closed)
     // semantics apply instead of persisting a bogus price.
-    this.assertValidPrice(price, source, provider, requestId);
+    const normalizedPrice = this.assertValidPrice(
+      price,
+      source,
+      provider,
+      requestId
+    );
 
     const result: PriceFetchResult = {
-      price,
+      price: normalizedPrice,
       source,
       sourceMetadata: { provider, requestId },
       fetchedAt: new Date().toISOString(),
@@ -441,7 +489,7 @@ export class PriceFetcher {
       requestId,
       source,
       provider,
-      price,
+      price: normalizedPrice,
     });
 
     return result;
@@ -453,14 +501,19 @@ export class PriceFetcher {
    * primary/fallback try blocks, so a bogus price is treated exactly like a
    * provider outage: fail over, and if no provider produces a sane price,
    * fail closed with `AllPriceProvidersFailedError`.
+   *
+   * Returns the price as a decimal string, unchanged from the provider's
+   * value (#1475) — no `Number` round-trip at the edge.
    */
   private assertValidPrice(
-    price: number,
+    price: string,
     source: PriceSource,
     provider: string,
     requestId: string
-  ): void {
-    if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) {
+  ): string {
+    const normalized = normalizePriceString(price);
+
+    if (normalized === null) {
       this.logger.warn("Price provider returned an invalid price", {
         assetId: this.config.assetId,
         requestId,
@@ -470,8 +523,9 @@ export class PriceFetcher {
         // provider must not be able to inject arbitrary text into our logs.
         priceType: typeof price,
         priceFinite: typeof price === "number" && Number.isFinite(price),
-      });
-      throw new PriceProviderInvalidPriceError(provider, source, requestId);
+      });      throw new PriceProviderInvalidPriceError(provider, source, requestId);
     }
+
+    return normalized;
   }
 }
