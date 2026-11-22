@@ -8,11 +8,18 @@ import { auditChainGapTotal } from "./metrics.js";
 /**
  * Audit log entry for a trade execution
  */
+/**
+ * Trade as stored in an audit snapshot. `price` is kept as the exact decimal
+ * string from the source row (never a lossy `Number`) so snapshots and their
+ * hashes round-trip losslessly.
+ */
+export type AuditTradeSnapshot = Omit<Trade, "price"> & { price: string };
+
 export interface AuditLogEntry {
   /** Unique sequential ID from Redis Stream */
   id: string;
   /** Trade details */
-  trade: Trade;
+  trade: AuditTradeSnapshot;
   /** ISO timestamp when logged */
   loggedAt: string;
 }
@@ -270,7 +277,7 @@ export class AuditService {
         sellerAddress: row.sellerAddress,
         buyOrderId: row.buyOrderId,
         sellOrderId: row.sellOrderId,
-        price: Number(row.price),
+        price: row.price.toString(),
         quantity: row.quantity,
         timestamp: row.tradedAt.getTime(),
       },
@@ -339,7 +346,7 @@ export class AuditService {
         sellerAddress: row.sellerAddress,
         buyOrderId: row.buyOrderId,
         sellOrderId: row.sellOrderId,
-        price: Number(row.price),
+        price: row.price.toString(),
         quantity: row.quantity,
         timestamp: row.tradedAt.getTime(),
       },
@@ -459,7 +466,7 @@ export class AuditService {
       data[fields[i]] = fields[i + 1];
     }
 
-    const trade: Trade = {
+    const trade: AuditTradeSnapshot = {
       id: data.tradeId,
       marketId: data.marketId,
       outcome: data.outcome as "YES" | "NO",
@@ -467,7 +474,7 @@ export class AuditService {
       sellerAddress: data.sellerAddress,
       buyOrderId: data.buyOrderId,
       sellOrderId: data.sellOrderId,
-      price: parseFloat(data.price),
+      price: data.price,
       quantity: parseInt(data.quantity, 10),
       timestamp: parseInt(data.timestamp, 10),
     };

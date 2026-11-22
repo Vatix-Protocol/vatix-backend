@@ -1,6 +1,7 @@
 import type { Outcome, OrderSide } from "../types/index.js";
 import type { Order as BookOrder } from "./orderbook.js";
 import { OrderBook } from "./orderbook.js";
+import { canMatchTicks, parsePriceToTicks } from "./price.js";
 
 export interface MatchingOrder {
   id: string;
@@ -107,16 +108,23 @@ function outcomeToNumber(outcome: Outcome): number {
   return outcome === "YES" ? 0 : 1;
 }
 
+/**
+ * Price-crossing check for `matchOrder`.
+ *
+ * Prices are compared as exact integer ticks (see `./price.ts`, #1487) rather
+ * than as floats, so a decimal price such as `0.30000000000000004` cannot
+ * cross a level it should not (or vice versa).
+ */
 function canMatch(
   takerPrice: number,
   makerPrice: number,
   takerSide: OrderSide
 ): boolean {
-  if (takerSide === "BUY") {
-    return makerPrice <= takerPrice;
-  } else {
-    return makerPrice >= takerPrice;
-  }
+  return canMatchTicks(
+    parsePriceToTicks(String(takerPrice)),
+    parsePriceToTicks(String(makerPrice)),
+    takerSide
+  );
 }
 
 function generateTradeId(

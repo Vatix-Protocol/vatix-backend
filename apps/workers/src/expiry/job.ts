@@ -1,6 +1,29 @@
+import { Decimal } from "@prisma/client/runtime/client.js";
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type { ExpiryJobResult, ExpiryCandidateResult } from "./types.js";
+import { DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS } from "./config.js";
+
+/** Collateral amounts are stored with 8 fractional digits (Decimal(20, 8)). */
+const COLLATERAL_DECIMALS = 8;
+const ONE = new Decimal(1);
+const ZERO = new Decimal(0);
+
+/**
+ * Thrown inside the expiry transaction when an open order cannot have its
+ * collateral released (missing position row or position shortfall). Rolls
+ * back the transaction so the market is not flipped to a terminal status.
+ */
+class OrderCollateralReleaseError extends Error {
+  constructor(
+    readonly orderId: string,
+    readonly reason: "missing_position" | "position_shortfall",
+    message: string
+  ) {
+    super(message);
+    this.name = "OrderCollateralReleaseError";
+  }
+}
 
 export interface ExpiryJobConfig {
   maxRunMs?: number;
@@ -12,6 +35,7 @@ export interface ExpiryJobConfig {
    * actually reaches it, causing the job to cancel orders and lock in
    * expiry on a market that is not actually expired on-chain yet. A
    * market is only treated as a candidate once `endTime <= now - tolerance`.
+   * Defaults to `DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS` (5000ms), never 0.
    */
   clockSkewToleranceMs?: number;
 }
@@ -44,7 +68,8 @@ export class ExpiryJob {
     config: ExpiryJobConfig
   ) {
     this.maxRunMs = config.maxRunMs ?? 0;
-    this.clockSkewToleranceMs = config.clockSkewToleranceMs ?? 0;
+    this.clockSkewToleranceMs =
+      config.clockSkewToleranceMs ?? DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS;
   }
 
   async run(): Promise<ExpiryJobResult> {
@@ -122,7 +147,21 @@ export class ExpiryJob {
         const result = await this.expireMarket(market.id, now);
         results.push(result);
       } catch (error) {
-        if (error instanceof MarketNotEligibleError) {
+        if (error instanceof OrderCollateralReleaseError) {
+          this.logger.error("Expiry job aborted: order collateral not released", {
+            marketId: market.id,
+            orderId: error.orderId,
+            reason: error.reason,
+            error: error.message,
+          });
+          results.push({
+            marketId: market.id,
+            status: "errored",
+            ordersCount: 0,
+            collateralReleased: 0,
+            errorMessage: error.message,
+          });
+        } else if (error instanceof MarketNotEligibleError) {
           this.logger.debug("Market not eligible for expiry", {
             marketId: market.id,
           });
@@ -209,23 +248,18 @@ export class ExpiryJob {
         },
       });
 
-      let totalCollateralReleased = 0;
+      let totalCollateralReleased = new Decimal(0);
 
       for (const order of openOrders) {
-        const remainingQty = order.quantity - order.filledQuantity;
+        const remainingQty = new Decimal(order.quantity - order.filledQuantity);
+        const price = new Decimal(order.price.toString());
         const collateralPerUnit =
-          order.side === "BUY" ? Number(order.price) : 1 - Number(order.price);
-        const collateralToRelease =
-          Math.round(collateralPerUnit * remainingQty * 1e8) / 1e8;
+          order.side === "BUY" ? price : ONE.minus(price);
+        const collateralToRelease = collateralPerUnit
+          .times(remainingQty)
+          .toDecimalPlaces(COLLATERAL_DECIMALS, Decimal.ROUND_HALF_UP);
 
-        totalCollateralReleased += collateralToRelease;
-
-        await tx.order.update({
-          where: { id: order.id },
-          data: { status: "CANCELLED" },
-        });
-
-        if (collateralToRelease > 0) {
+        if (collateralToRelease.greaterThan(ZERO)) {
           const position = await tx.userPosition.findUnique({
             where: {
               marketId_userAddress: {
@@ -235,34 +269,63 @@ export class ExpiryJob {
             },
           });
 
-          if (position) {
-            const newLocked = Math.max(
-              0,
-              Number(position.lockedCollateral) - collateralToRelease
+          if (!position) {
+            throw new OrderCollateralReleaseError(
+              order.id,
+              "missing_position",
+              `Order ${order.id} has no position row for ${order.userAddress}; cannot release ${collateralToRelease.toString()} collateral`
             );
-            await tx.userPosition.update({
-              where: {
-                marketId_userAddress: {
-                  marketId,
-                  userAddress: order.userAddress,
-                },
-              },
-              data: { lockedCollateral: newLocked },
-            });
           }
+
+          const lockedCollateral = new Decimal(
+            position.lockedCollateral.toString()
+          );
+          if (lockedCollateral.lessThan(collateralToRelease)) {
+            throw new OrderCollateralReleaseError(
+              order.id,
+              "position_shortfall",
+              `Order ${order.id} position lockedCollateral ${lockedCollateral.toString()} is less than collateral to release ${collateralToRelease.toString()}`
+            );
+          }
+
+          const newLocked = lockedCollateral
+            .minus(collateralToRelease)
+            .toDecimalPlaces(COLLATERAL_DECIMALS, Decimal.ROUND_HALF_UP);
+
+          await tx.userPosition.update({
+            where: {
+              marketId_userAddress: {
+                marketId,
+                userAddress: order.userAddress,
+              },
+            },
+            data: { lockedCollateral: newLocked },
+          });
+
+          // Only count collateral that was actually persisted.
+          totalCollateralReleased = totalCollateralReleased.plus(
+            collateralToRelease
+          );
         }
+
+        await tx.order.update({
+          where: { id: order.id },
+          data: { status: "CANCELLED" },
+        });
       }
 
+      // A market that simply reached endTime is EXPIRED, not CANCELLED: an
+      // operator cancel must stay distinguishable from a natural expiry (#1478).
       await tx.market.update({
         where: { id: marketId },
-        data: { status: "CANCELLED" },
+        data: { status: "EXPIRED" },
       });
 
       return {
         marketId,
         status: "expired",
         ordersCount: openOrders.length,
-        collateralReleased: totalCollateralReleased,
+        collateralReleased: totalCollateralReleased.toNumber(),
       };
     });
   }

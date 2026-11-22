@@ -45,6 +45,15 @@ export interface PriceFetcherConfig {
  * Result of a price fetch, always carrying source attribution.
  */
 export interface PriceFetchResult {
+  /**
+   * Price as a plain decimal number in whole units (e.g. `0.42`), *not*
+   * pre-scaled. The on-chain scale is 7 decimal places (Stellar stroop-style
+   * fixed point, `1e7`): the settlement worker multiplies this value by `1e7`
+   * and rounds to an `i128` before signing `settle_trade`. Non-finite values
+   * (`NaN`, `Infinity`, `-Infinity`) — as well as zero and negatives — are
+   * rejected with `PriceProviderInvalidPriceError` before a result is ever
+   * returned, so a signed price is always a finite, positive number.
+   */
   price: number;
   /** Which provider tier produced this price: "primary" or "fallback". */
   source: PriceSource;

@@ -80,7 +80,7 @@ describe("Audit Service", () => {
       expect(entry.trade.outcome).toBe(testTrade.outcome);
       expect(entry.trade.buyerAddress).toBe(testTrade.buyerAddress);
       expect(entry.trade.sellerAddress).toBe(testTrade.sellerAddress);
-      expect(entry.trade.price).toBe(testTrade.price);
+      expect(entry.trade.price).toBe(testTrade.price.toString());
       expect(entry.trade.quantity).toBe(testTrade.quantity);
     });
   });
@@ -230,15 +230,15 @@ describe("Audit Service", () => {
       const logs = await auditService.getAuditLog(testMarketId, 1);
 
       expect(logs[0].id).toBe(entryId);
-      expect(logs[0].trade.price).toBe(0.55);
+      expect(logs[0].trade.price).toBe("0.55");
 
       // Even if we try to log same trade with different price, it's a new entry
       await auditService.logOrderMatch({ ...testTrade, price: 0.99 });
 
       const allLogs = await auditService.getAuditLog(testMarketId, 10);
       expect(allLogs.length).toBe(2);
-      expect(allLogs[0].trade.price).toBe(0.55); // Original unchanged
-      expect(allLogs[1].trade.price).toBe(0.99); // New entry
+      expect(allLogs[0].trade.price).toBe("0.55"); // Original unchanged
+      expect(allLogs[1].trade.price).toBe("0.99"); // New entry
     });
   });
 });

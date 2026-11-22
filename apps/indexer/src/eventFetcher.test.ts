@@ -98,6 +98,31 @@ describe("EventFetcher", () => {
     expect(server.getEvents).toHaveBeenCalledTimes(2);
   });
 
+  it("stops paging when the page cursor is an empty string", async () => {
+    const page1 = [makeEvent(10, "a"), makeEvent(11, "b")];
+    const server = {
+      getEvents: vi.fn(async () => ({
+        events: page1,
+        latestLedger: 100,
+        cursor: "",
+      })),
+    };
+
+    const fetcher = new EventFetcher(
+      { rpcUrl: "https://rpc.example.com", contractId: "CTEST", pageLimit: 2 },
+      telemetry
+    );
+    injectMockRpc(fetcher, server);
+
+    const result = await fetcher.fetchByLedgerWindow({
+      startLedger: 10,
+      endLedger: 12,
+    });
+
+    expect(result.events).toHaveLength(2);
+    expect(server.getEvents).toHaveBeenCalledTimes(1);
+  });
+
   it("retries on transient error then succeeds", async () => {
     const mockServer = {
       getEvents: vi

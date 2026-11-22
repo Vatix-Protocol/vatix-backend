@@ -1,3 +1,4 @@
+import { StrKey } from "@stellar/stellar-sdk";
 import { ValidationError } from "../api/middleware/errors.js";
 import { getPrismaClient } from "../services/prisma.js";
 import type { OrderSide, Outcome } from "../types/index.js";
@@ -7,9 +8,14 @@ import {
 } from "../../packages/shared/src/marketLifecycle.js";
 
 /**
- * Maximum fraction of the order quantity that may be left unfilled when
- * `allowPartialFill` is false (i.e. the order must fully execute or be
- * rejected).  Expressed as a value in [0, 1].
+ * Maximum slippage fraction applied to a market order's `limitPrice` when the
+ * caller supplies a `limitPrice` but omits `maxSlippagePct`.  Expressed as a
+ * fraction in [0, 1] (0.1 = 10 %).
+ *
+ * The resulting worst-case price is inclusive: a BUY may execute at up to
+ * `limitPrice * (1 + MAX_SLIPPAGE)` and a SELL down to
+ * `limitPrice * (1 - MAX_SLIPPAGE)`; a fill exactly on that boundary is
+ * allowed, anything beyond it is not.
  */
 export const MAX_SLIPPAGE = 0.1; // 10 %
 
@@ -33,6 +39,12 @@ export interface OrderInput {
   side: OrderSide;
   outcome: Outcome;
   price: number;
+  /**
+   * Raw decimal text of `price` as supplied by the client (#1484). When
+   * present and valid it is persisted verbatim instead of the lossy
+   * `Number.prototype.toString()` rendering.
+   */
+  priceRaw?: string;
   quantity: number;
   /** Optional worst-case execution price for market orders (BUY cap / SELL floor). */
   limitPrice?: number;
@@ -113,7 +125,25 @@ export function validateUserAddress(address: string): string | null {
     return "User address must be a valid Stellar public key (G + 55 base32 chars)";
   }
 
+  // Length/prefix/charset checks above are fast rejects; the strkey decode
+  // (base32 + CRC16-XModem checksum) is what proves the address is real.
+  if (!isValidStellarPublicKey(address)) {
+    return "User address must be a valid Stellar public key (G + 55 base32 chars)";
+  }
+
   return null;
+}
+
+/**
+ * True when `address` decodes as a Stellar account id strkey, including its
+ * checksum. Never throws.
+ */
+export function isValidStellarPublicKey(address: string): boolean {
+  try {
+    return StrKey.isValidEd25519PublicKey(address);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -155,6 +185,12 @@ export function validateOutcome(outcome: unknown): string | null {
 export const TICK_SIZE = 0.01;
 
 /**
+ * Smallest representable order price. Used as the floor for SELL worst-price
+ * clamps so a 100 % slippage tolerance never yields a non-positive price.
+ */
+export const MIN_PRICE = 0.0001;
+
+/**
  * Validates that a price aligns to the minimum tick size.
  * Uses rounded integer arithmetic to avoid IEEE-754 floating-point drift.
  *
@@ -166,6 +202,44 @@ export function validateTickSize(price: number): string | null {
     return `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`;
   }
   return null;
+}
+
+/**
+ * Normalizes an order price to the exact decimal string that must be stored
+ * (#1484). `Number.prototype.toString()` is lossy for values such as 0.1
+ * (it can yield "0.10000000000000001" after arithmetic), so the raw decimal
+ * text supplied by the client is preferred whenever it is a valid tick-aligned
+ * price. Otherwise the value is quantized to the 0.01 tick and rendered as a
+ * plain decimal string (never exponential notation).
+ *
+ * @param price - A number already confirmed to be in [0, 1) and tick-aligned.
+ * @param rawPrice - The raw decimal text from the request, if available.
+ * @returns The decimal string to persist (e.g. "0.10").
+ */
+export function normalizePriceToDecimalString(
+  price: number,
+  rawPrice?: string | null
+): string {
+  if (typeof rawPrice === "string") {
+    const trimmed = rawPrice.trim();
+    if (/^\d+(\.\d+)?$/.test(trimmed)) {
+      const parsed = Number(trimmed);
+      if (
+        Number.isFinite(parsed) &&
+        parsed === price &&
+        (parsed === 0 || validateTickSize(parsed) === null)
+      ) {
+        return trimmed;
+      }
+    }
+  }
+
+  // Quantize to the tick using integer arithmetic, then render as a plain
+  // decimal string with two fractional digits (scale 2).
+  const ticks = Math.round(price / TICK_SIZE);
+  const whole = Math.floor(ticks / 100);
+  const fraction = ticks % 100;
+  return `${whole}.${String(fraction).padStart(2, "0")}`;
 }
 
 /**
@@ -191,15 +265,24 @@ export function validatePrice(price: unknown): string | null {
 }
 
 /**
+ * Largest quantity the `Order.quantity` column can store.
+ * `Order.quantity` is a Prisma `Int` (PostgreSQL `INTEGER`, 32-bit signed),
+ * so the maximum storable value is 2^31 - 1 = 2147483647.
+ */
+export const MAX_ORDER_QUANTITY = 2_147_483_647;
+
+/**
  * Validates quantity
- * - Must be a positive integer
+ * - Must be a finite number
+ * - Must be an integer (checked before the range check)
+ * - Must be > 0 and <= MAX_ORDER_QUANTITY
  */
 export function validateQuantity(quantity: unknown): string | null {
   if (quantity === null || quantity === undefined) {
     return "Quantity is required";
   }
 
-  if (typeof quantity !== "number" || Number.isNaN(quantity)) {
+  if (typeof quantity !== "number" || !Number.isFinite(quantity)) {
     return "Quantity must be a number";
   }
 
@@ -211,16 +294,24 @@ export function validateQuantity(quantity: unknown): string | null {
     return "Quantity must be positive";
   }
 
+  if (quantity > MAX_ORDER_QUANTITY) {
+    return `Quantity must be at most ${MAX_ORDER_QUANTITY}`;
+  }
+
   return null;
 }
 
 /**
  * Validates an optional limit price for market orders.
- * When supplied it must satisfy the same constraints as a regular limit price.
+ * When supplied it must satisfy the same constraints as a regular limit price,
+ * plus the side-specific bound: a BUY limit is a cap on the execution price and
+ * must stay below 1 after slippage, while a SELL limit is a floor and must stay
+ * above 0 after slippage.
  */
 export function validateLimitPrice(
   limitPrice: unknown,
-  side: OrderSide
+  side: OrderSide,
+  maxSlippagePct?: unknown
 ): string | null {
   if (limitPrice === undefined || limitPrice === null) return null;
 
@@ -234,6 +325,28 @@ export function validateLimitPrice(
 
   const tickErr = validateTickSize(limitPrice);
   if (tickErr) return `limitPrice: ${tickErr}`;
+
+  const slippageErr = validateMaxSlippagePct(maxSlippagePct);
+  if (slippageErr) return slippageErr;
+
+  const slippage =
+    typeof maxSlippagePct === "number" && !Number.isNaN(maxSlippagePct)
+      ? maxSlippagePct / 100
+      : 0;
+
+  if (side === "BUY") {
+    // Worst-case execution price for a BUY is limitPrice * (1 + slippage).
+    if (limitPrice * (1 + slippage) >= 1) {
+      return "limitPrice must be below 1 after slippage for a BUY order";
+    }
+  } else if (side === "SELL") {
+    // Worst-case execution price for a SELL is limitPrice * (1 - slippage).
+    if (limitPrice * (1 - slippage) <= 0) {
+      return "limitPrice must be above 0 after slippage for a SELL order";
+    }
+  } else {
+    return "side must be 'BUY' or 'SELL'";
+  }
 
   return null;
 }
@@ -260,5 +373,33 @@ export function validateMaxSlippagePct(pct: unknown): string | null {
 /**
  * Compute the effective worst-case price for a market order given an optional
  * limitPrice and maxSlippagePct.
+ *
+ * - No limitPrice: returns null (caller falls back to the book extremes).
+ * - limitPrice without maxSlippagePct: the documented MAX_SLIPPAGE fraction is
+ *   enforced, so the tolerance is never unbounded.
+ * - Both supplied: maxSlippagePct (0–100 %) wins over MAX_SLIPPAGE.
+ *
+ * The returned bound is inclusive: a BUY may fill at exactly
+ * `limitPrice * (1 + slippage)` and a SELL at exactly
+ * `limitPrice * (1 - slippage)`.
+ */
+export function computeEffectiveWorstPrice(
+  side: OrderSide,
+  limitPrice?: number | null,
+  maxSlippagePct?: number | null
+): number | null {
+  if (limitPrice === undefined || limitPrice === null) return null;
 
-/* … truncated 4301 chars — edit only what you need near the top … */
+  const slippageFraction =
+    maxSlippagePct === undefined || maxSlippagePct === null
+      ? MAX_SLIPPAGE
+      : maxSlippagePct / 100;
+
+  const worstPrice =
+    side === "BUY"
+      ? limitPrice * (1 + slippageFraction)
+      : limitPrice * (1 - slippageFraction);
+
+  // Prices live in (0, 1); clamp so a wide tolerance cannot escape the range.
+  return Math.min(Math.max(worstPrice, 0), 1);
+}

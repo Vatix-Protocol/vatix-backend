@@ -207,7 +207,7 @@ export class FillsResumeService {
       side: "BUY" | "SELL";
       orderId: string;
       counterpartyAddress: string;
-      price: number;
+      price: string;
       quantity: number;
       tradedAt: Date;
       streamId: FillsResumeCursor;
@@ -249,7 +249,7 @@ export class FillsResumeService {
           trade.buyerAddress === wallet
             ? trade.sellerAddress
             : trade.buyerAddress,
-        price: Number(trade.price),
+        price: trade.price.toString(),
         quantity: trade.quantity,
         tradedAt: trade.tradedAt,
         streamId: `${trade.tradedAt.getTime()}-0` as FillsResumeCursor,
