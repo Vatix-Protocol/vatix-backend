@@ -3,7 +3,12 @@ export interface Order {
   id: string;
   userAddress: string;
   side: "bid" | "ask";
-  price: number;
+  /**
+   * Price as a decimal string exactly as stored (#1482). Never round-trip a
+   * price through `Number` on the load path: a non-binary decimal such as
+   * "0.1" must be matched and executed at that same decimal.
+   */
+  price: string;
   quantity: number;
   timestamp: number;
   marketId: string;
@@ -12,16 +17,60 @@ export interface Order {
 
 // Price level in the order book containing all orders at that price
 interface PriceLevel {
-  price: number;
+  price: string;
   orders: Order[];
   totalQuantity: number;
 }
 
 // Depth information for a price level
 export interface DepthLevel {
-  price: number;
+  price: string;
   quantity: number;
   orderCount: number;
+}
+
+/**
+ * Compares two decimal price strings numerically without converting them to
+ * binary floating point (#1482). Handles optional signs, differing integer
+ * widths and differing fractional widths ("0.1" vs "0.10" compare equal).
+ */
+export function comparePriceStrings(a: string, b: string): number {
+  const parse = (value: string): { neg: boolean; int: string; frac: string } => {
+    const trimmed = value.trim();
+    const neg = trimmed.startsWith("-");
+    const unsigned = neg || trimmed.startsWith("+") ? trimmed.slice(1) : trimmed;
+    const [intPart = "0", fracPart = ""] = unsigned.split(".");
+    return {
+      neg,
+      int: intPart.replace(/^0+(?=\d)/, "") || "0",
+      frac: fracPart.replace(/0+$/, ""),
+    };
+  };
+
+  const left = parse(a);
+  const right = parse(b);
+
+  const leftIsZero = left.int === "0" && left.frac === "";
+  const rightIsZero = right.int === "0" && right.frac === "";
+  if (leftIsZero && rightIsZero) return 0;
+  if (leftIsZero) return right.neg ? 1 : -1;
+  if (rightIsZero) return left.neg ? -1 : 1;
+  if (left.neg !== right.neg) return left.neg ? -1 : 1;
+
+  const magnitude = (() => {
+    if (left.int.length !== right.int.length) {
+      return left.int.length < right.int.length ? -1 : 1;
+    }
+    if (left.int !== right.int) return left.int < right.int ? -1 : 1;
+
+    const width = Math.max(left.frac.length, right.frac.length);
+    const leftFrac = left.frac.padEnd(width, "0");
+    const rightFrac = right.frac.padEnd(width, "0");
+    if (leftFrac === rightFrac) return 0;
+    return leftFrac < rightFrac ? -1 : 1;
+  })();
+
+  return left.neg ? -magnitude : magnitude;
 }
 
 // High-performance order book implementation using sorted price levels
@@ -39,11 +88,11 @@ export class OrderBook {
   private marketId: string;
   private outcome: number;
 
-  private bidLevels: Map<number, PriceLevel> = new Map();
-  private askLevels: Map<number, PriceLevel> = new Map();
+  private bidLevels: Map<string, PriceLevel> = new Map();
+  private askLevels: Map<string, PriceLevel> = new Map();
 
-  private bidPrices: number[] = []; // Sorted high to low
-  private askPrices: number[] = []; // Sorted low to high
+  private bidPrices: string[] = []; // Sorted high to low
+  private askPrices: string[] = []; // Sorted low to high
 
   private orderMap: Map<string, Order> = new Map();
 
@@ -233,7 +282,7 @@ export class OrderBook {
   }
 
   // Get all orders at a specific price level
-  getOrdersAtPrice(side: "bid" | "ask", price: number): Order[] {
+  getOrdersAtPrice(side: "bid" | "ask", price: string): Order[] {
     const levels = side === "bid" ? this.bidLevels : this.askLevels;
     const level = levels.get(price);
     return level ? [...level.orders] : [];
@@ -264,7 +313,9 @@ export class OrderBook {
       return null;
     }
 
-    return bestAsk.price - bestBid.price;
+    // Display-only metric: the spread is derived from the exact decimal
+    // strings, but reported as a number for the existing API shape.
+    return Number(bestAsk.price) - Number(bestBid.price);
   }
 
   /**
@@ -324,8 +375,8 @@ export class OrderBook {
   // Insert price into sorted array maintaining order
   // Bids: high to low, Asks: low to high
   private insertPrice(
-    prices: number[],
-    price: number,
+    prices: string[],
+    price: string,
     descending: boolean
   ): void {
     let left = 0;
@@ -333,7 +384,8 @@ export class OrderBook {
 
     while (left < right) {
       const mid = Math.floor((left + right) / 2);
-      const comparison = descending ? prices[mid] > price : prices[mid] < price;
+      const order = comparePriceStrings(prices[mid], price);
+      const comparison = descending ? order > 0 : order < 0;
 
       if (comparison) {
         left = mid + 1;

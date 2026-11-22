@@ -1,5 +1,7 @@
 import { BlockList, isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 
 /**
  * SSRF guard for the outbound gap-paging webhook (#1160).
@@ -158,18 +160,19 @@ const defaultLookup: HostLookup = (hostname) =>
   dnsLookup(hostname, { all: true, verbatim: true });
 
 /**
- * Send-time check: resolve the host and reject if any address is private,
- * so a public-looking hostname cannot point (or be re-pointed) at an
- * internal service. No-op where the policy allows private hosts.
+ * Resolves the host once and returns the addresses that passed the
+ * private-host check, so the caller can pin the connection to exactly those
+ * addresses instead of letting the HTTP client resolve the name again
+ * (DNS-rebinding TOCTOU, #1470).
  *
  * @throws {WebhookUrlError}
  */
-export async function assertWebhookHostIsPublic(
+export async function resolvePublicWebhookAddresses(
   url: URL,
   options: WebhookUrlPolicyOptions = {},
   lookup: HostLookup = defaultLookup
-): Promise<void> {
-  if (!enforcesPublicHost(options)) return;
+): Promise<ReadonlyArray<{ address: string }>> {
+  if (!enforcesPublicHost(options)) return [];
 
   const host = url.hostname.replace(/^\[|\]$/g, "");
   const addresses = isIP(host) ? [{ address: host }] : await lookup(host);
@@ -182,4 +185,93 @@ export async function assertWebhookHostIsPublic(
       "Webhook URL host resolves to a private, loopback or link-local address"
     );
   }
+  return addresses;
+}
+
+/**
+ * Builds a `lookup` callback for `node:http`/`node:https` that only ever
+ * returns the already-validated addresses, so the connection cannot be
+ * re-resolved to a different (private) address after the check (#1470).
+ */
+export function pinnedLookup(
+  addresses: ReadonlyArray<{ address: string }>
+): (
+  hostname: string,
+  options: { all?: boolean },
+  callback: (
+    error: NodeJS.ErrnoException | null,
+    address: string | ReadonlyArray<{ address: string; family: number }>,
+    family?: number
+  ) => void
+) => void {
+  const pinned = addresses.map(({ address }) => ({
+    address,
+    family: isIP(address) === 6 ? 6 : 4,
+  }));
+  return (_hostname, options, callback) => {
+    if (options?.all) {
+      callback(null, pinned);
+      return;
+    }
+    callback(null, pinned[0].address, pinned[0].family);
+  };
+}
+
+/**
+ * POSTs a JSON payload to the webhook with redirects disabled and the
+ * connection pinned to the addresses that passed the private-host check, so
+ * no second DNS lookup can redirect the request to an internal service
+ * (#1470). Resolves with the response status code.
+ *
+ * @throws {WebhookUrlError} when the host is not public.
+ */
+export async function postWebhookJson(
+  url: URL,
+  payload: unknown,
+  options: WebhookUrlPolicyOptions = {},
+  timeoutMs = 5000,
+  lookup: HostLookup = defaultLookup
+): Promise<number> {
+  const addresses = await resolvePublicWebhookAddresses(url, options, lookup);
+  const body = JSON.stringify(payload);
+  const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+
+  return new Promise<number>((resolve, reject) => {
+    const req = send(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+        // Pin the connection to the validated addresses; never re-resolve.
+        ...(addresses.length > 0 ? { lookup: pinnedLookup(addresses) } : {}),
+      },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      }
+    );
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error("Webhook request timed out"));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+/**
+ * Send-time check: resolve the host and reject if any address is private,
+ * so a public-looking hostname cannot point (or be re-pointed) at an
+ * internal service. No-op where the policy allows private hosts.
+ *
+ * @throws {WebhookUrlError}
+ */
+export async function assertWebhookHostIsPublic(
+  url: URL,
+  options: WebhookUrlPolicyOptions = {},
+  lookup: HostLookup = defaultLookup
+): Promise<void> {
+  await resolvePublicWebhookAddresses(url, options, lookup);
 }
