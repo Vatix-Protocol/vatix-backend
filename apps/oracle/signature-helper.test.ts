@@ -167,6 +167,22 @@ describe("verifyResolutionReport", () => {
 
     expect(verifyResolutionReport(tampered)).toBe(false);
   });
+
+  it("returns false (without throwing) when signed by an untrusted second key", () => {
+    const untrusted = Keypair.random();
+    const report = signResolutionReport(basePayload, untrusted.secret());
+
+    expect(() =>
+      verifyResolutionReport(report, undefined, {
+        expectedPublicKey: testKeypair.publicKey(),
+      })
+    ).not.toThrow();
+    expect(
+      verifyResolutionReport(report, undefined, {
+        expectedPublicKey: testKeypair.publicKey(),
+      })
+    ).toBe(false);
+  });
 });
 
 describe("signature envelope versioning (#993)", () => {
