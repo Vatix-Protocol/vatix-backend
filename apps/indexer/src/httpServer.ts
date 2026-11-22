@@ -258,6 +258,21 @@ export function readinessCheckFromProbe(probe: DependencyProbe): ReadinessCheck 
 }
 
 /**
+ * Registers the liveness route. Liveness is deliberately dependency-free: it
+ * returns 200 while the process is alive and the event loop is responsive, so
+ * a DB/Redis/RPC outage never triggers a restart storm (README behavior
+ * table). It must never run readiness checks.
+ */
+export function registerLivenessRoute(app: FastifyInstance): void {
+  app.get("/health", async (_request, reply) => {
+    return reply.code(200).send({
+      status: "ok",
+      correlationId: globalThis.crypto.randomUUID(),
+    });
+  });
+}
+
+/**
  * Options for the readiness route. `probes` are the same dependency probes
  * used at startup; they are re-evaluated on every request so a dependency
  * that degrades after boot is reflected in the probe result.
@@ -297,9 +312,10 @@ export function registerReadinessRoute(
 }
 
 /**
- * Builds the indexer HTTP server. When `readiness` options are supplied the
- * `/ready` route is registered so orchestrators can distinguish a live
- * process from one whose ingestion dependencies are usable.
+ * Builds the indexer HTTP server. `/health` (liveness) is always registered;
+ * when `readiness` options are supplied the `/ready` route is registered too
+ * so orchestrators can distinguish a live process from one whose ingestion
+ * dependencies are usable.
  */
 export function buildIndexerHttpServer(options: {
   registry?: Registry;
@@ -308,6 +324,7 @@ export function buildIndexerHttpServer(options: {
   const app = fastify({ logger: false });
   app.register(indexerCorsPlugin);
   app.register(marketsRoutes);
+  registerLivenessRoute(app);
   if (options.readiness) {
     registerReadinessRoute(app, options.readiness);
   }

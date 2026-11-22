@@ -168,6 +168,53 @@ describe("buildIndexerHttpServer", () => {
     await app.close();
   });
 
+  // Issue #1519: regression coverage for the README behavior table. A throwing
+  // database double must not affect liveness (/health stays 200) but must fail
+  // readiness closed (/ready returns 503).
+  describe("with a throwing database double", () => {
+    const throwingDatabase = {
+      name: "db",
+      check: async () => {
+        throw new Error(
+          "connect ECONNREFUSED postgres://user:secret@10.0.0.5:5432/vatix"
+        );
+      },
+    };
+
+    it("returns 200 from /health (liveness) and never targets /ready", async () => {
+      const app = await buildIndexerHttpServer({
+        readiness: { probes: [throwingDatabase] },
+      });
+      await app.ready();
+
+      const response = await app.inject({ method: "GET", url: "/health" });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.status).toBe("ok");
+      expect(body.checks).toBeUndefined();
+
+      await app.close();
+    });
+
+    it("returns 503 from /ready (readiness) with the same double", async () => {
+      const app = await buildIndexerHttpServer({
+        readiness: { probes: [throwingDatabase] },
+      });
+      await app.ready();
+
+      const response = await app.inject({ method: "GET", url: "/ready" });
+
+      expect(response.statusCode).toBe(503);
+      const body = response.json();
+      expect(body.ready).toBe(false);
+      expect(body.code).toBe("NOT_READY");
+      expect(body.checks).toEqual({ db: "unavailable" });
+
+      await app.close();
+    });
+  });
+
   // Issue #1097: data routes require x-principal.  Untrusted clients
   // without a principal are rejected with 401 UNAUTHORIZED so they
   // cannot bypass the rate-limit policy.

@@ -42,3 +42,82 @@ describe("ExpiryJob", () => {
     expect(result.skippedCount).toBe(0);
   });
 });
+
+const mockLogger = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+};
+
+/**
+ * Minimal Prisma stub: two ACTIVE candidates with no resting orders. The
+ * first market expires normally; the second must be left untouched once the
+ * maxRunMs budget is spent.
+ */
+function makeExpiryPrisma(markets: Array<{ id: string; endTime: Date }>) {
+  const marketUpdate = vi.fn().mockResolvedValue({});
+  const prisma = {
+    market: {
+      findMany: vi.fn().mockResolvedValue(markets),
+      findUnique: vi.fn().mockImplementation(async ({ where }) => {
+        const market = markets.find((m) => m.id === where.id);
+        return market ? { ...market, status: "ACTIVE", deletedAt: null } : null;
+      }),
+      update: marketUpdate,
+    },
+    order: {
+      findMany: vi.fn().mockResolvedValue([]),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    userPosition: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    $transaction: vi.fn().mockImplementation(async (fn: any) => fn(prisma)),
+  };
+  return { prisma, marketUpdate };
+}
+
+describe("ExpiryJob maxRunMs", () => {
+  it("stops after the first market when maxRunMs is exceeded", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const pastEndTime = new Date(1_000_000 - 60 * 1000);
+      const markets = [
+        { id: "market-1", endTime: pastEndTime },
+        { id: "market-2", endTime: pastEndTime },
+      ];
+      const { prisma, marketUpdate } = makeExpiryPrisma(markets);
+
+      // Advance the fake clock past the budget while the first market is
+      // being expired, so the check trips before the second market.
+      prisma.order.findMany.mockImplementation(async () => {
+        await vi.advanceTimersByTimeAsync(150);
+        return [];
+      });
+
+      const job = new ExpiryJob(prisma as any, mockLogger as any, {
+        maxRunMs: 100,
+      });
+      const result = await job.run();
+
+      expect(result.truncated).toBe(true);
+      expect(result.unprocessedCount).toBe(1);
+      expect(result.expiredCount).toBe(1);
+      expect(result.candidates).toHaveLength(1);
+      expect(result.candidates[0]?.marketId).toBe("market-1");
+
+      // The second market was never transitioned out of ACTIVE.
+      const updatedIds = marketUpdate.mock.calls.map((call) => call[0].where.id);
+      expect(updatedIds).toEqual(["market-1"]);
+
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("exceeded maxRunMs"),
+        expect.objectContaining({ maxRunMs: 100, remainingCandidates: 1 }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

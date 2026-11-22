@@ -16,6 +16,13 @@ interface WalletExposureRow {
   noShares: number;
   netExposure: number;
   lockedCollateral: string;
+  /** Raw on-chain price (7 decimals) as an exact 8-decimal fixed-point string.
+   *  Derived from `IndexedTrade.priceRaw` with integer arithmetic only. */
+  priceRaw?: string;
+  /** Raw on-chain quantity (integer shares) as an exact 8-decimal fixed-point
+   *  string. Derived from `IndexedTrade.quantityRaw` with integer arithmetic
+   *  only, so values past 2^53 are preserved. */
+  quantityRaw?: string;
   isSettled: boolean;
   updatedAt: Date;
   /** Realized PnL for settled positions (unit: shares * price, i.e. collateral units).
@@ -143,15 +150,82 @@ function addFixedPoint(a: string, b: string): string {
   return `${sign}${wholeOut}.${fracOut}`;
 }
 
+/** Collateral fixed-point scale used for cost arithmetic (1e8 stroops). */
+const COLLATERAL_PRECISION = 100_000_000n;
+/**
+ * On-chain raw amounts carry 7 implicit decimal places (1e7).
+ * Confirmed against the indexer writer: `apps/indexer/src/tradeParser.ts`
+ * stores `priceRaw`/`quantityRaw` as the raw ScvI128 bigints (serialized to
+ * `String` in `IndexedTrade`), and `docs/indexer-event-mapping.md` documents
+ * `price` as "7 decimal places (5 000 000 = 0.5)" with `quantity` an integer
+ * share count. Raw values are therefore never converted through `Number`.
+ */
+const ONCHAIN_RAW_SCALE = 10_000_000n;
+
+/**
+ * Parse a decimal string (e.g. "0.10", "-1.5") into integer stroops (1e8).
+ * All arithmetic on cost is done in stroops so no floating point is involved.
+ */
+function decimalStringToStroops(value: string): bigint {
+  const trimmed = value.trim();
+  const negative = trimmed.startsWith("-");
+  const abs = negative ? trimmed.slice(1) : trimmed;
+  const [whole = "0", frac = ""] = abs.split(".");
+  const stroops =
+    BigInt(whole || "0") * COLLATERAL_PRECISION +
+    BigInt(frac.padEnd(8, "0").slice(0, 8) || "0");
+  return negative ? -stroops : stroops;
+}
+
+/**
+ * Parse a raw on-chain integer (decimal string or bigint) without going
+ * through `Number`, so values past 2^53 are preserved exactly.
+ */
+function parseRawInteger(value: string | bigint): bigint {
+  return typeof value === "bigint" ? value : BigInt(value.trim());
+}
+
+/**
+ * Scale a raw on-chain integer (7 decimals) to collateral stroops (8 decimals)
+ * using integer division only. Truncates any sub-stroop remainder.
+ */
+function rawToStroops(value: string | bigint): bigint {
+  return (parseRawInteger(value) * COLLATERAL_PRECISION) / ONCHAIN_RAW_SCALE;
+}
+
+/** Format integer stroops (1e8) back to an 8-decimal fixed-point string. */
+function stroopsToFixedPoint(stroops: bigint): string {
+  const sign = stroops < 0n ? "-" : "";
+  const abs = stroops < 0n ? -stroops : stroops;
+  const wholeOut = abs / COLLATERAL_PRECISION;
+  const fracOut = (abs % COLLATERAL_PRECISION).toString().padStart(8, "0");
+  return `${sign}${wholeOut}.${fracOut}`;
+}
+
+/**
+ * Format a raw on-chain integer (7 decimals) as an 8-decimal fixed-point
+ * string, using integer division only. Raw values are returned exactly —
+ * a `quantityRaw` of 9007199254740993 yields "9007199254740993.00000000".
+ */
+function rawToFixedPoint(value: string | bigint): string {
+  return stroopsToFixedPoint(rawToStroops(value));
+}
+
 /**
  * Compute the non-stale locked collateral for a wallet on a list of markets
  * by querying both CLOB and indexed (on-chain) trades.
+ *
+ * Cost is accumulated in integer stroops (1e8) to avoid floating-point drift;
+ * callers serialize the result with `stroopsToFixedPoint`.
  */
 async function getCalculatedCollateralMap(
   prisma: ReturnType<typeof getPrismaClient>,
   wallet: string,
   marketIds: string[]
-): Promise<Map<string, number>> {
+): Promise<{
+  marketCollateralMap: Map<string, bigint>;
+  rawFieldsMap: Map<string, { priceRaw: string; quantityRaw: string }>;
+}> {
   if (marketIds.length === 0) {
     return new Map();
   }
@@ -171,15 +245,18 @@ async function getCalculatedCollateralMap(
     }),
   ]);
 
-  const marketCollateralMap = new Map<string, number>();
+  const marketCollateralMap = new Map<string, bigint>();
   const processedTrades = new Set<string>();
+  const rawFieldsMap = new Map<string, { priceRaw: string; quantityRaw: string }>();
 
   for (const trade of clobTrades) {
     const key = `${trade.buyOrderId}:${trade.sellOrderId}`;
     processedTrades.add(key);
 
-    const cost = Number(trade.price) * trade.quantity;
-    const current = marketCollateralMap.get(trade.marketId) ?? 0;
+    // price is Decimal(10, 8); quantity is an integer number of shares.
+    const cost =
+      decimalStringToStroops(trade.price.toString()) * BigInt(trade.quantity);
+    const current = marketCollateralMap.get(trade.marketId) ?? 0n;
     if (trade.buyerAddress === wallet) {
       marketCollateralMap.set(trade.marketId, current + cost);
     } else if (trade.sellerAddress === wallet) {
@@ -194,10 +271,18 @@ async function getCalculatedCollateralMap(
     }
     processedTrades.add(key);
 
-    const price = Number(trade.priceRaw) / 10_000_000;
-    const quantity = Number(trade.quantityRaw);
-    const cost = price * quantity;
-    const current = marketCollateralMap.get(trade.marketId) ?? 0;
+    // priceRaw is scaled by 1e7; quantityRaw is an integer share count.
+    // Both stay as bigints end-to-end — never `Number` — so raw values past
+    // 2^53 are not collapsed.
+    const cost =
+      rawToStroops(trade.priceRaw) * parseRawInteger(trade.quantityRaw);
+    const current = marketCollateralMap.get(trade.marketId) ?? 0n;
+
+    // Expose the raw on-chain integers exactly (no `Number` conversion).
+    rawFieldsMap.set(trade.marketId, {
+      priceRaw: rawToFixedPoint(trade.priceRaw),
+      quantityRaw: rawToFixedPoint(trade.quantityRaw),
+    });
 
     const isBuyer =
       (trade.direction === "buy" && trade.traderAddress === wallet) ||
@@ -214,7 +299,7 @@ async function getCalculatedCollateralMap(
     }
   }
 
-  return marketCollateralMap;
+  return { marketCollateralMap, rawFieldsMap };
 }
 
 export default async function positionsRouter(server: FastifyInstance) {
@@ -320,18 +405,15 @@ export default async function positionsRouter(server: FastifyInstance) {
           midPriceMap.set(marketId, null);
         }
       }
-      const collateralMap = await getCalculatedCollateralMap(
-        prisma,
-        wallet,
-        marketIds
-      );
+      const { marketCollateralMap: collateralMap, rawFieldsMap } =
+        await getCalculatedCollateralMap(prisma, wallet, marketIds);
 
       const exposures: WalletExposureRow[] = positions.map((position) => {
         const market = position.market as any;
         const computedCollateral = collateralMap.get(position.marketId);
         const lockedCollateral =
           computedCollateral !== undefined
-            ? computedCollateral.toFixed(8)
+            ? stroopsToFixedPoint(computedCollateral)
             : position.lockedCollateral.toString();
 
         const base: WalletExposureRow = {
@@ -341,6 +423,7 @@ export default async function positionsRouter(server: FastifyInstance) {
           noShares: position.noShares,
           netExposure: position.yesShares - position.noShares,
           lockedCollateral,
+          ...rawFieldsMap.get(position.marketId),
           isSettled: position.isSettled,
           updatedAt: position.updatedAt,
         };
@@ -474,7 +557,7 @@ export default async function positionsRouter(server: FastifyInstance) {
       const market = position.market as any;
       const lockedCollateral =
         computedCollateral !== undefined
-          ? computedCollateral.toFixed(8)
+          ? stroopsToFixedPoint(computedCollateral)
           : position.lockedCollateral.toString();
 
       const exposure: WalletExposureRow = {

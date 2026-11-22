@@ -7,12 +7,16 @@ import {
   validatePrice,
   validateTickSize,
   validateQuantity,
+  validateMaxSlippagePct,
+  computeEffectiveWorstPrice,
+  MAX_SLIPPAGE,
   validateOrderFields,
   validateMarketState,
   validateOrder,
   assertValidOrder,
   OrderValidationError,
   TICK_SIZE,
+  MAX_ORDER_QUANTITY,
   type OrderInput,
 } from "./validation.js";
 
@@ -90,51 +94,59 @@ describe("Order Validation", () => {
         "User address must be a string"
       );
     });
+
+    it("should reject non-string values", () => {
+      expect(validateUserAddress(123 as unknown as string)).toBe(
+        "User address must be a string"
+      );
+      expect(validateUserAddress({} as unknown as string)).toBe(
+        "User address must be a string"
+      );
+      expect(validateUserAddress([] as unknown as string)).toBe(
+        "User address must be a string"
+      );
+    });
+
+    it("should accept an address matching ^G[A-Z2-7]{55}$", () => {
+      const address = "G" + "A".repeat(55);
+      expect(address).toMatch(/^G[A-Z2-7]{55}$/);
+      expect(validateUserAddress(address)).toBeNull();
+    });
   });
 
   describe("validateOrderSide", () => {
-    it("should accept BUY", () => {
-      expect(validateOrderSide("BUY")).toBeNull();
-    });
+    const cases: Array<[string, unknown, string | null]> = [
+      ["null", null, "Order side is required"],
+      ["undefined", undefined, "Order side is required"],
+      ["BUY", "BUY", null],
+      ["SELL", "SELL", null],
+      ["lowercase buy", "buy", "Order side must be 'BUY' or 'SELL'"],
+      ["lowercase sell", "sell", "Order side must be 'BUY' or 'SELL'"],
+      ["YES (wrong enum)", "YES", "Order side must be 'BUY' or 'SELL'"],
+      ["MAYBE", "MAYBE", "Order side must be 'BUY' or 'SELL'"],
+      ["empty string", "", "Order side must be 'BUY' or 'SELL'"],
+    ];
 
-    it("should accept SELL", () => {
-      expect(validateOrderSide("SELL")).toBeNull();
-    });
-
-    it("should reject other strings", () => {
-      expect(validateOrderSide("buy")).toBe(
-        "Order side must be 'BUY' or 'SELL'"
-      );
-      expect(validateOrderSide("HOLD")).toBe(
-        "Order side must be 'BUY' or 'SELL'"
-      );
-      expect(validateOrderSide("")).toBe("Order side must be 'BUY' or 'SELL'");
-    });
-
-    it("should reject null/undefined", () => {
-      expect(validateOrderSide(null)).toBe("Order side is required");
-      expect(validateOrderSide(undefined)).toBe("Order side is required");
+    it.each(cases)("should handle %s", (_label, input, expected) => {
+      expect(validateOrderSide(input)).toBe(expected);
     });
   });
 
   describe("validateOutcome", () => {
-    it("should accept YES", () => {
-      expect(validateOutcome("YES")).toBeNull();
-    });
+    const cases: Array<[string, unknown, string | null]> = [
+      ["null", null, "Outcome is required"],
+      ["undefined", undefined, "Outcome is required"],
+      ["YES", "YES", null],
+      ["NO", "NO", null],
+      ["lowercase yes", "yes", "Outcome must be 'YES' or 'NO'"],
+      ["lowercase no", "no", "Outcome must be 'YES' or 'NO'"],
+      ["buy (wrong enum)", "buy", "Outcome must be 'YES' or 'NO'"],
+      ["MAYBE", "MAYBE", "Outcome must be 'YES' or 'NO'"],
+      ["empty string", "", "Outcome must be 'YES' or 'NO'"],
+    ];
 
-    it("should accept NO", () => {
-      expect(validateOutcome("NO")).toBeNull();
-    });
-
-    it("should reject other strings", () => {
-      expect(validateOutcome("yes")).toBe("Outcome must be 'YES' or 'NO'");
-      expect(validateOutcome("MAYBE")).toBe("Outcome must be 'YES' or 'NO'");
-      expect(validateOutcome("")).toBe("Outcome must be 'YES' or 'NO'");
-    });
-
-    it("should reject null/undefined", () => {
-      expect(validateOutcome(null)).toBe("Outcome is required");
-      expect(validateOutcome(undefined)).toBe("Outcome is required");
+    it.each(cases)("should handle %s", (_label, input, expected) => {
+      expect(validateOutcome(input)).toBe(expected);
     });
   });
 
@@ -189,6 +201,24 @@ describe("Order Validation", () => {
       expect(validatePrice(undefined)).toBe("Price is required");
     });
 
+    it("should reject NaN and non-numbers with the number message", () => {
+      expect(validatePrice(NaN)).toBe("Price must be a number");
+      expect(validatePrice("0.5")).toBe("Price must be a number");
+      expect(validatePrice(true)).toBe("Price must be a number");
+      expect(validatePrice([])).toBe("Price must be a number");
+    });
+
+    it("should reject 1 and -0.5 with the exclusive range message", () => {
+      expect(validatePrice(1)).toBe("Price must be between 0 and 1 (exclusive)");
+      expect(validatePrice(-0.5)).toBe(
+        "Price must be between 0 and 1 (exclusive)"
+      );
+    });
+
+    it("should accept 0.5", () => {
+      expect(validatePrice(0.5)).toBeNull();
+    });
+
     it("should reject price not aligned to tick size", () => {
       expect(validatePrice(0.505)).toBe(
         `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`
@@ -213,6 +243,16 @@ describe("Order Validation", () => {
       expect(validateTickSize(0.125)).toBe(msg);
       expect(validateTickSize(0.505)).toBe(msg);
       expect(validateTickSize(0.333)).toBe(msg);
+    });
+
+    it("should accept 0.50", () => {
+      expect(validateTickSize(0.5)).toBeNull();
+    });
+
+    it("should reject 0.015", () => {
+      expect(validateTickSize(0.015)).toBe(
+        `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`
+      );
     });
 
     it("should correctly handle IEEE-754 edge cases (0.51, 0.97, 0.03)", () => {
@@ -252,9 +292,116 @@ describe("Order Validation", () => {
       expect(validateQuantity(NaN)).toBe("Quantity must be a number");
     });
 
+    it("should reject non-finite numbers", () => {
+      expect(validateQuantity(Infinity)).toBe("Quantity must be a number");
+      expect(validateQuantity(-Infinity)).toBe("Quantity must be a number");
+      expect(validateQuantity(Number.MAX_VALUE)).toBe(
+        "Quantity must be a number",
+      );
+    });
+
+    it("should reject values above the maximum storable integer", () => {
+      expect(validateQuantity(MAX_ORDER_QUANTITY)).toBeNull();
+      expect(validateQuantity(MAX_ORDER_QUANTITY + 1)).toBe(
+        `Quantity must be at most ${MAX_ORDER_QUANTITY}`,
+      );
+    });
+
     it("should reject null/undefined", () => {
       expect(validateQuantity(null)).toBe("Quantity is required");
       expect(validateQuantity(undefined)).toBe("Quantity is required");
+    });
+
+    it.each([
+      { input: 0, expected: "Quantity must be positive" },
+      { input: -1, expected: "Quantity must be positive" },
+      { input: 1.5, expected: "Quantity must be an integer" },
+      { input: NaN, expected: "Quantity must be a number" },
+      { input: 1, expected: null },
+    ])(
+      "should return $expected for $input",
+      ({ input, expected }: { input: number; expected: string | null }) => {
+        expect(validateQuantity(input)).toBe(expected);
+      }
+    );
+  });
+
+  describe("computeEffectiveWorstPrice", () => {
+    it("returns null when no limitPrice is supplied", () => {
+      expect(computeEffectiveWorstPrice("BUY", undefined, 5)).toBeNull();
+    });
+
+    it("enforces MAX_SLIPPAGE when maxSlippagePct is omitted", () => {
+      expect(MAX_SLIPPAGE).toBe(0.1);
+      // BUY: limitPrice * (1 + MAX_SLIPPAGE)
+      expect(computeEffectiveWorstPrice("BUY", 0.5)).toBeCloseTo(0.55, 10);
+      // SELL: limitPrice * (1 - MAX_SLIPPAGE)
+      expect(computeEffectiveWorstPrice("SELL", 0.5)).toBeCloseTo(0.45, 10);
+    });
+
+    it("prefers an explicit maxSlippagePct over MAX_SLIPPAGE", () => {
+      expect(computeEffectiveWorstPrice("BUY", 0.5, 20)).toBeCloseTo(0.6, 10);
+      expect(computeEffectiveWorstPrice("SELL", 0.5, 20)).toBeCloseTo(0.4, 10);
+    });
+
+    it("treats the enforced remainder as inclusive", () => {
+      const buyBound = computeEffectiveWorstPrice("BUY", 0.5);
+      const sellBound = computeEffectiveWorstPrice("SELL", 0.5);
+      // A fill exactly on the boundary is within tolerance.
+      expect(0.5 * (1 + MAX_SLIPPAGE) <= buyBound!).toBe(true);
+      expect(0.5 * (1 - MAX_SLIPPAGE) >= sellBound!).toBe(true);
+    });
+
+    it("clamps the bound into (0, 1)", () => {
+      expect(computeEffectiveWorstPrice("BUY", 0.99, 100)).toBe(1);
+      expect(computeEffectiveWorstPrice("SELL", 0.01, 100)).toBe(0);
+    });
+  });
+
+  describe("validateMaxSlippagePct", () => {
+    it("accepts 0 and 100 inclusive", () => {
+      expect(validateMaxSlippagePct(0)).toBeNull();
+      expect(validateMaxSlippagePct(100)).toBeNull();
+    });
+
+    it("rejects out-of-range and non-numeric values", () => {
+      expect(validateMaxSlippagePct(-1)).toBe(
+        "maxSlippagePct must be between 0 and 100"
+      );
+      expect(validateMaxSlippagePct(101)).toBe(
+        "maxSlippagePct must be between 0 and 100"
+      );
+      expect(validateMaxSlippagePct("5")).toBe(
+        "maxSlippagePct must be a number"
+      );
+    });
+  });
+
+  describe("validateMaxSlippagePct", () => {
+    it("should accept 0 (lower boundary)", () => {
+      expect(validateMaxSlippagePct(0)).toBeNull();
+    });
+
+    it("should accept 100 (upper boundary)", () => {
+      expect(validateMaxSlippagePct(100)).toBeNull();
+    });
+
+    it("should reject 101 (above upper boundary)", () => {
+      expect(validateMaxSlippagePct(101)).toBe(
+        "maxSlippagePct must be between 0 and 100"
+      );
+    });
+
+    it("should reject -1 (below lower boundary)", () => {
+      expect(validateMaxSlippagePct(-1)).toBe(
+        "maxSlippagePct must be between 0 and 100"
+      );
+    });
+
+    it("should reject NaN", () => {
+      expect(validateMaxSlippagePct(NaN)).toBe(
+        "maxSlippagePct must be a number"
+      );
     });
   });
 

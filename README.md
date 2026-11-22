@@ -11,7 +11,7 @@ live-but-not-ready process from a dead one.
 | Endpoint  | Semantics | Success | Failure |
 |-----------|-----------|---------|---------|
 | `/health` | **Liveness.** Returns `200` while the process is alive and the event loop is responsive. It does **not** check dependencies. | `200` | `500` only if the process itself is wedged |
-| `/ready`  | **Readiness.** Returns `200` only when every critical dependency (DB, Redis, RPC) is reachable. Fails **closed** with `503` when any dependency is unavailable. | `200` | `503` |
+| `/ready`  | **Readiness.** Returns `200` only when every critical dependency (DB, Redis, RPC) is reachable — a Redis failure or timeout also yields `503`. Fails **closed** with `503` when any dependency is unavailable. | `200` | `503` |
 
 ### Readiness response contract
 
@@ -36,6 +36,10 @@ Stable error codes:
 - `OK` — all critical dependencies reachable.
 - `DEPENDENCY_UNAVAILABLE` — at least one critical dependency is down.
 - `DEPENDENCY_TIMEOUT` — a dependency check exceeded its deadline.
+
+Redis is a critical dependency: a failed or timed-out Redis check makes
+`/ready` return `503` with `checks.redis` set to `unavailable` / `timeout`.
+`/health` never calls Redis.
 
 ### Security & observability
 

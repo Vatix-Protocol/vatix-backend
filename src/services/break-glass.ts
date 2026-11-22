@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "crypto";
+import { Decimal } from "@prisma/client/runtime/client.js";
 import type { PrismaClient } from "../generated/prisma/client/index.js";
 import type { ILogger } from "../../packages/shared/src/logger.js";
 import { matchingService } from "../matching/matching-service.js";
@@ -18,7 +19,7 @@ export interface BreakGlassResult {
   beforeStatus: string;
   afterStatus: string;
   ordersCancelled: number;
-  collateralReleased: number;
+  collateralReleased: Decimal;
   auditId: string;
 }
 
@@ -137,7 +138,7 @@ export class BreakGlassService {
         beforeStatus: result.beforeStatus,
         afterStatus: result.afterStatus,
         ordersCancelled: result.ordersCancelled,
-        collateralReleased: result.collateralReleased,
+        collateralReleased: result.collateralReleased.toString(),
       },
     });
 
@@ -168,7 +169,7 @@ export class BreakGlassService {
       beforeStatus,
       afterStatus: updated.status,
       ordersCancelled: 0,
-      collateralReleased: 0,
+      collateralReleased: new Decimal(0),
       requestId,
     });
 
@@ -178,7 +179,7 @@ export class BreakGlassService {
       beforeStatus,
       afterStatus: updated.status,
       ordersCancelled: 0,
-      collateralReleased: 0,
+      collateralReleased: new Decimal(0),
       auditId,
     };
   }
@@ -193,7 +194,7 @@ export class BreakGlassService {
   ): Promise<BreakGlassResult> {
     const beforeStatus = market.status;
     let ordersCancelled = 0;
-    let collateralReleased = 0;
+    let collateralReleased = new Decimal(0);
 
     await this.prisma.$transaction(async (tx) => {
       // Get all resting orders
@@ -208,14 +209,20 @@ export class BreakGlassService {
       });
 
       for (const order of orders) {
-        // Calculate collateral to release
-        const remainingQty = order.quantity - order.filledQuantity;
+        // Calculate collateral to release using exact decimal arithmetic.
+        // `quantity`/`filledQuantity` are integer share counts and `price` is a
+        // Decimal(10, 8) column, so the product is exact — no float rounding.
+        const remainingQty = new Decimal(order.quantity).minus(
+          new Decimal(order.filledQuantity)
+        );
+        const price = new Decimal(order.price.toString());
         const collateralPerUnit =
-          order.side === "BUY" ? Number(order.price) : 1 - Number(order.price);
-        const collateralToRelease =
-          Math.round(collateralPerUnit * remainingQty * 1e8) / 1e8;
+          order.side === "BUY" ? price : new Decimal(1).minus(price);
+        const collateralToRelease = collateralPerUnit
+          .times(remainingQty)
+          .toDecimalPlaces(8);
 
-        collateralReleased += collateralToRelease;
+        collateralReleased = collateralReleased.plus(collateralToRelease);
 
         // Cancel order
         await tx.order.update({
@@ -224,7 +231,7 @@ export class BreakGlassService {
         });
 
         // Release collateral
-        if (collateralToRelease > 0) {
+        if (collateralToRelease.greaterThan(0)) {
           const position = await tx.userPosition.findUnique({
             where: {
               marketId_userAddress: {
@@ -235,10 +242,18 @@ export class BreakGlassService {
           });
 
           if (position) {
-            const newLocked = Math.max(
-              0,
-              Number(position.lockedCollateral) - collateralToRelease
-            );
+            // Never release more than is actually locked, but record the
+            // amount actually subtracted (which may be less than the computed
+            // release when the position is short).
+            const locked = new Decimal(position.lockedCollateral.toString());
+            const newLocked = locked.minus(collateralToRelease);
+            const actualRelease = newLocked.lessThan(0)
+              ? locked
+              : collateralToRelease;
+            const clampedLocked = newLocked.lessThan(0)
+              ? new Decimal(0)
+              : newLocked;
+
             await tx.userPosition.update({
               where: {
                 marketId_userAddress: {
@@ -246,8 +261,12 @@ export class BreakGlassService {
                   userAddress: order.userAddress,
                 },
               },
-              data: { lockedCollateral: newLocked },
+              data: { lockedCollateral: clampedLocked },
             });
+
+            collateralReleased = collateralReleased
+              .minus(collateralToRelease)
+              .plus(actualRelease);
           }
         }
 
@@ -305,7 +324,7 @@ export class BreakGlassService {
       beforeStatus,
       afterStatus: updated.status,
       ordersCancelled: 0,
-      collateralReleased: 0,
+      collateralReleased: new Decimal(0),
       requestId,
     });
 
@@ -315,7 +334,7 @@ export class BreakGlassService {
       beforeStatus,
       afterStatus: updated.status,
       ordersCancelled: 0,
-      collateralReleased: 0,
+      collateralReleased: new Decimal(0),
       auditId,
     };
   }
@@ -330,7 +349,7 @@ export class BreakGlassService {
     beforeStatus: string;
     afterStatus: string;
     ordersCancelled: number;
-    collateralReleased: number;
+    collateralReleased: Decimal;
     requestId: string;
   }): Promise<string> {
     const audit = await this.prisma.adminAction.create({

@@ -9,6 +9,18 @@ export interface ExpiryWorkerConfig {
 
 const VALID_LOG_LEVELS = new Set<LogLevel>(["debug", "info", "warn", "error"]);
 
+/**
+ * Default grace period (ms) applied after a market's `endTime` before the
+ * expiry worker treats it as expired. Guards against a host clock running
+ * fast relative to the Stellar ledger close time: without it, a market whose
+ * `endTime` is still in the future on-chain could be cancelled early.
+ *
+ * Non-zero in every environment (issue #1480) so dev/test exercise the same
+ * skew behaviour as production. Override with
+ * `EXPIRY_CLOCK_SKEW_TOLERANCE_MS`.
+ */
+export const DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS = 5000;
+
 function parseLogLevel(raw: string | undefined): LogLevel {
   const level = (raw ?? "info").toLowerCase();
   if (!VALID_LOG_LEVELS.has(level as LogLevel)) {
@@ -35,13 +47,13 @@ export function loadExpiryConfig(): ExpiryWorkerConfig {
   // ledger. Default to a 5s grace period in production so a fast host
   // clock cannot silently expire markets ahead of the actual ledger close
   // time; local/dev/test default to 0 for deterministic behavior.
-  const defaultClockSkewToleranceMs =
-    process.env.NODE_ENV === "production" ? 5000 : 0;
-  const clockSkewToleranceMs = parseInt(
-    process.env.EXPIRY_CLOCK_SKEW_TOLERANCE_MS ??
-      String(defaultClockSkewToleranceMs),
-    10
-  );
+  //
+  // The value is resolved from the shared helper in `@vatix/shared`
+  // (marketLifecycle) so the API order-validation path
+  // (`src/matching/validation.ts`) uses the exact same tolerance. Setting
+  // EXPIRY_CLOCK_SKEW_TOLERANCE_MS=0 is an explicit operator choice and is
+  // honoured as-is (no tolerance on either path).
+  const clockSkewToleranceMs = resolveClockSkewToleranceMs(process.env);
 
   if (!Number.isFinite(intervalMs) || intervalMs < 1000) {
     throw new Error(
@@ -56,6 +68,13 @@ export function loadExpiryConfig(): ExpiryWorkerConfig {
   if (!Number.isFinite(clockSkewToleranceMs) || clockSkewToleranceMs < 0) {
     throw new Error(
       `EXPIRY_CLOCK_SKEW_TOLERANCE_MS must be >= 0, got: ${clockSkewToleranceMs}`
+    );
+  }
+
+  if (process.env.NODE_ENV === "production" && clockSkewToleranceMs === 0) {
+    throw new Error(
+      "EXPIRY_CLOCK_SKEW_TOLERANCE_MS must be > 0 in production; " +
+        `omit it to use the default of ${DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS}ms`
     );
   }
 

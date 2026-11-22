@@ -8,10 +8,13 @@
  *
  *   ACTIVE ──► RESOLVED   (finalization accepts a resolution candidate)
  *      │
- *      └────► CANCELLED   (admin/operator cancels the market, or the expiry
- *                          worker expires it once endTime has passed)
+ *      ├────► CANCELLED   (admin/operator cancels the market)
+ *      │
+ *      └────► EXPIRED     (expiry worker: endTime passed naturally)
  *
- * RESOLVED and CANCELLED are terminal: nothing may leave them.
+ * RESOLVED, CANCELLED and EXPIRED are terminal: nothing may leave them.
+ * EXPIRED is distinct from CANCELLED so a market that simply ran out of time
+ * is never recorded as an operator cancel (#1478). Neither state is tradable.
  *
  * Note: expiry and operator cancel share one status today. The expiry job
  * writes CANCELLED (there is no separate EXPIRED state), so a market that
@@ -19,7 +22,12 @@
  * by status alone.
  */
 
-export const MARKET_STATUSES = ["ACTIVE", "RESOLVED", "CANCELLED"] as const;
+export const MARKET_STATUSES = [
+  "ACTIVE",
+  "RESOLVED",
+  "CANCELLED",
+  "EXPIRED",
+] as const;
 
 export type MarketLifecycleState = (typeof MARKET_STATUSES)[number];
 
@@ -36,9 +44,10 @@ export const MARKET_QUESTION_MAX_LENGTH = 500;
 export const MARKET_TRANSITIONS: Readonly<
   Record<MarketLifecycleState, readonly MarketLifecycleState[]>
 > = {
-  ACTIVE: ["RESOLVED", "CANCELLED"],
+  ACTIVE: ["RESOLVED", "CANCELLED", "EXPIRED"],
   RESOLVED: [],
   CANCELLED: [],
+  EXPIRED: [],
 };
 
 /** States a market may be created in. */
@@ -55,6 +64,57 @@ export const TRADABLE_MARKET_STATUSES: readonly MarketLifecycleState[] = [
 export const RESOLVABLE_MARKET_STATUSES: readonly MarketLifecycleState[] = [
   "ACTIVE",
 ];
+
+/**
+ * Clock-skew tolerance (ms) applied when deciding whether a market has ended.
+ *
+ * Single source of truth shared by the expiry worker
+ * (`apps/workers/src/expiry/job.ts`, env `EXPIRY_CLOCK_SKEW_TOLERANCE_MS`) and
+ * the API order validation path (`src/matching/validation.ts`), so both paths
+ * agree on when `endTime` has actually passed. A market is only treated as
+ * ended once `endTime <= now - tolerance`.
+ *
+ * Defaults to 5s in production (host clocks are not guaranteed to be
+ * NTP-synced to the Stellar ledger) and 0 elsewhere for deterministic
+ * behaviour. An explicit `EXPIRY_CLOCK_SKEW_TOLERANCE_MS=0` is a deliberate
+ * operator choice and is honoured as-is.
+ */
+export const DEFAULT_CLOCK_SKEW_TOLERANCE_MS = 5000;
+
+/** Env var that overrides {@link DEFAULT_CLOCK_SKEW_TOLERANCE_MS}. */
+export const CLOCK_SKEW_TOLERANCE_ENV = "EXPIRY_CLOCK_SKEW_TOLERANCE_MS";
+
+/**
+ * Resolve the shared clock-skew tolerance (ms) from the environment.
+ * Throws on a non-numeric or negative value so a misconfiguration fails
+ * closed instead of silently disabling the tolerance.
+ */
+export function resolveClockSkewToleranceMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const fallback =
+    env.NODE_ENV === "production" ? DEFAULT_CLOCK_SKEW_TOLERANCE_MS : 0;
+  const raw = env[CLOCK_SKEW_TOLERANCE_ENV];
+  const parsed = raw === undefined || raw === "" ? fallback : Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(
+      `${CLOCK_SKEW_TOLERANCE_ENV} must be a finite number >= 0, got: ${raw}`
+    );
+  }
+  return parsed;
+}
+
+/**
+ * True when `endTime` has passed by more than `toleranceMs`, i.e. the market
+ * is past its end time plus the clock-skew tolerance.
+ */
+export function isPastEndTime(
+  endTime: Date,
+  nowMs: number,
+  toleranceMs: number
+): boolean {
+  return endTime.getTime() <= nowMs - toleranceMs;
+}
 
 /** Stable error code emitted for every illegal transition. */
 export const MARKET_INVALID_TRANSITION_CODE = "market_invalid_transition";
