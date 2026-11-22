@@ -82,7 +82,9 @@ type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
 /** Returns the optional Idempotency-Key header, rejecting malformed values. */
-function parseIdempotencyKey(request: FastifyRequest): string | undefined {
+export function parseIdempotencyKey(
+  request: FastifyRequest
+): string | undefined {
   const raw = request.headers["idempotency-key"];
   if (raw === undefined) return undefined;
   if (typeof raw !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(raw)) {
