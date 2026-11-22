@@ -8,12 +8,21 @@
  *
  *   ACTIVE ──► RESOLVED   (finalization accepts a resolution candidate)
  *      │
- *      └────► CANCELLED   (admin cancels the market)
+ *      ├────► CANCELLED   (admin cancels the market)
+ *      │
+ *      └────► EXPIRED     (expiry worker: endTime passed naturally)
  *
- * RESOLVED and CANCELLED are terminal: nothing may leave them.
+ * RESOLVED, CANCELLED and EXPIRED are terminal: nothing may leave them.
+ * EXPIRED is distinct from CANCELLED so a market that simply ran out of time
+ * is never recorded as an operator cancel (#1478). Neither state is tradable.
  */
 
-export const MARKET_STATUSES = ["ACTIVE", "RESOLVED", "CANCELLED"] as const;
+export const MARKET_STATUSES = [
+  "ACTIVE",
+  "RESOLVED",
+  "CANCELLED",
+  "EXPIRED",
+] as const;
 
 export type MarketLifecycleState = (typeof MARKET_STATUSES)[number];
 
@@ -30,9 +39,10 @@ export const MARKET_QUESTION_MAX_LENGTH = 500;
 export const MARKET_TRANSITIONS: Readonly<
   Record<MarketLifecycleState, readonly MarketLifecycleState[]>
 > = {
-  ACTIVE: ["RESOLVED", "CANCELLED"],
+  ACTIVE: ["RESOLVED", "CANCELLED", "EXPIRED"],
   RESOLVED: [],
   CANCELLED: [],
+  EXPIRED: [],
 };
 
 /** States a market may be created in. */
