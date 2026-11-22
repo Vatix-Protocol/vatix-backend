@@ -238,4 +238,64 @@ describe("ExpiryJob Integration Tests", () => {
 
     await prisma.market.delete({ where: { id: market.id } });
   });
+
+  it("should ignore a soft-deleted market and leave its orders OPEN", async () => {
+    const pastEndTime = new Date(Date.now() - 60 * 1000);
+
+    const market = await prisma.market.create({
+      data: {
+        question: "Soft-deleted market should not expire?",
+        endTime: pastEndTime,
+        resolutionTime: null,
+        oracleAddress:
+          "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALQ",
+        status: "ACTIVE",
+        deletedAt: new Date(),
+      },
+    });
+
+    const userAddress =
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+    await prisma.userPosition.create({
+      data: {
+        marketId: market.id,
+        userAddress,
+        yesShares: 0,
+        noShares: 0,
+        lockedCollateral: 500,
+      },
+    });
+
+    const order = await prisma.order.create({
+      data: {
+        marketId: market.id,
+        userAddress,
+        side: "BUY",
+        outcome: "YES",
+        price: 0.5,
+        quantity: 1000,
+        filledQuantity: 0,
+        status: "OPEN",
+      },
+    });
+
+    const result = await job.run();
+
+    expect(
+      result.candidates.find((c) => c.marketId === market.id)
+    ).toBeUndefined();
+
+    const updatedMarket = await prisma.market.findUnique({
+      where: { id: market.id },
+    });
+    expect(updatedMarket?.status).toBe("ACTIVE");
+
+    const updatedOrder = await prisma.order.findUnique({
+      where: { id: order.id },
+    });
+    expect(updatedOrder?.status).toBe("OPEN");
+
+    await prisma.market.delete({ where: { id: market.id } });
+  });
 });
