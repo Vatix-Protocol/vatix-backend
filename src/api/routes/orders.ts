@@ -9,6 +9,7 @@ import { redis } from "../../services/redis.js";
 import { matchingService } from "../../matching/matching-service.js";
 import {
   validateUserAddress,
+  isValidStellarPublicKey,
   sanitizeUserAddress,
   assertValidOrder,
   validateTickSize,
@@ -34,7 +35,10 @@ const CreateOrderSchema = z
       .regex(
         STELLAR_PUBLIC_KEY_REGEX,
         "userAddress must be a valid Stellar address (public key)"
-      ),
+      )
+      .refine(isValidStellarPublicKey, {
+        message: "userAddress must be a valid Stellar address (public key)",
+      }),
     side: z.enum(["BUY", "SELL"]),
     outcome: z.enum(["YES", "NO"]),
     // price 0 marks a market order; the matcher derives the cap from limitPrice.

@@ -1,3 +1,4 @@
+import { StrKey } from "@stellar/stellar-sdk";
 import { ValidationError } from "../api/middleware/errors.js";
 import { getPrismaClient } from "../services/prisma.js";
 import type { OrderSide, Outcome } from "../types/index.js";
@@ -113,7 +114,25 @@ export function validateUserAddress(address: string): string | null {
     return "User address must be a valid Stellar public key (G + 55 base32 chars)";
   }
 
+  // Length/prefix/charset checks above are fast rejects; the strkey decode
+  // (base32 + CRC16-XModem checksum) is what proves the address is real.
+  if (!isValidStellarPublicKey(address)) {
+    return "User address must be a valid Stellar public key (G + 55 base32 chars)";
+  }
+
   return null;
+}
+
+/**
+ * True when `address` decodes as a Stellar account id strkey, including its
+ * checksum. Never throws.
+ */
+export function isValidStellarPublicKey(address: string): boolean {
+  try {
+    return StrKey.isValidEd25519PublicKey(address);
+  } catch {
+    return false;
+  }
 }
 
 /**
