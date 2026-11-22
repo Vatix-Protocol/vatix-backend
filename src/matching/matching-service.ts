@@ -32,6 +32,9 @@ import {
   orderIdempotencyTotal,
 } from "../services/metrics.js";
 import { leaderLease } from "./leader-lease.js";
+import { Logger } from "@vatix/shared/logger.js";
+
+const logger = new Logger("matching-service");
 
 export interface PlaceOrderResult {
   order: any;
@@ -575,18 +578,15 @@ class MatchingService {
       // commands on the book, or the remaining order was never added).
       const allowPartial = input.allowPartialFill !== false; // default true
       if (!allowPartial && takerFilledQuantity < input.quantity) {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            component: "matching-service",
-            action: "market_order_partial_fill_rejected",
-            marketId: input.marketId,
-            outcome: input.outcome,
-            side: input.side,
-            quantity: input.quantity,
-            filledQuantity: takerFilledQuantity,
-          })
-        );
+        logger.warn("market_order_partial_fill_rejected", {
+          event: "market_order_partial_fill_rejected",
+          orderId,
+          marketId: input.marketId,
+          outcome: input.outcome,
+          side: input.side,
+          quantity: input.quantity,
+          filledQuantity: takerFilledQuantity,
+        });
         // Roll back the in-memory book changes from the partial match
         this.invalidateBook(input.marketId, input.outcome);
         throw new ValidationError(
