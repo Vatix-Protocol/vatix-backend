@@ -311,9 +311,11 @@ export class ExpiryJob {
         });
       }
 
+      // A market that simply reached endTime is EXPIRED, not CANCELLED: an
+      // operator cancel must stay distinguishable from a natural expiry (#1478).
       await tx.market.update({
         where: { id: marketId },
-        data: { status: "CANCELLED" },
+        data: { status: "EXPIRED" },
       });
 
       return {
