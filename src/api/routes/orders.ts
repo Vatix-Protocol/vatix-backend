@@ -81,10 +81,17 @@ type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
 
-/** Returns the optional Idempotency-Key header, rejecting malformed values. */
-function parseIdempotencyKey(request: FastifyRequest): string | undefined {
+/**
+ * Returns the mandatory Idempotency-Key header (#1461). A missing header is a
+ * 400 naming the header, so a create can never be written without a key to
+ * replay it under. Malformed values are rejected the same way.
+ */
+function parseIdempotencyKey(request: FastifyRequest): string {
   const raw = request.headers["idempotency-key"];
-  if (raw === undefined) return undefined;
+  if (raw === undefined) {
+    const message = "Idempotency-Key header is required";
+    throw new ValidationError(message, { "Idempotency-Key": message });
+  }
   if (typeof raw !== "string" || !IDEMPOTENCY_KEY_PATTERN.test(raw)) {
     const message =
       "Idempotency-Key must be 1-128 characters of A-Z, a-z, 0-9, '_', '-', '.', ':'";
@@ -518,28 +525,26 @@ export async function ordersRoutes(fastify: FastifyInstance) {
       }
 
       const body = parsed.data;
+      const requestHash = hashOrderRequest(body);
 
-      if (idempotencyKey) {
-        const requestHash = hashOrderRequest(body);
-        const cacheKey = redis.prefixed(`idempotency:orders:${idempotencyKey}`);
-        try {
-          const cached = await redis.get(cacheKey);
-          if (cached) {
-            const entry = JSON.parse(cached) as {
-              hash: string;
-              response: unknown;
-            };
-            if (entry.hash !== requestHash) {
-              throw new ValidationError(
-                "Idempotency-Key was reused with a different request payload"
-              );
-            }
-            return reply.send(entry.response);
+      const cacheKey = redis.prefixed(`idempotency:orders:${idempotencyKey}`);
+      try {
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+          const entry = JSON.parse(cached) as {
+            hash: string;
+            response: unknown;
+          };
+          if (entry.hash !== requestHash) {
+            throw new ValidationError(
+              "Idempotency-Key was reused with a different request payload"
+            );
           }
-        } catch (err) {
-          if (err instanceof ValidationError) throw err;
-          // Cache read failures fall through to normal processing.
+          return reply.send(entry.response);
         }
+      } catch (err) {
+        if (err instanceof ValidationError) throw err;
+        // Cache read failures fall through to normal processing.
       }
 
       const orderInput: OrderInput = {
