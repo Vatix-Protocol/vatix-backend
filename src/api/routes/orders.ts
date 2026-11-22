@@ -73,7 +73,7 @@ const CreateOrderSchema = z
     }
   });
 
-type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
+export type CreateOrderBody = z.infer<typeof CreateOrderSchema>;
 
 // ---------------------------------------------------------------------------
 // Idempotency-Key handling for POST /orders (see RATE_LIMIT_POLICY.md)
@@ -96,7 +96,7 @@ export function parseIdempotencyKey(
 }
 
 /** SHA-256 of the validated order payload, used to detect key reuse. */
-function hashOrderRequest(body: CreateOrderBody): string {
+export function hashOrderRequest(body: CreateOrderBody): string {
   const {
     marketId,
     userAddress,
