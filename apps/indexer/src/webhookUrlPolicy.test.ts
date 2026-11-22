@@ -79,6 +79,19 @@ describe("validateWebhookUrl", () => {
     ).not.toThrow();
   });
 
+  it("rejects http://alerts.example.com/hook in production", () => {
+    expect(
+      codeOf(() => validateWebhookUrl("http://alerts.example.com/hook", PROD))
+    ).toBe(WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_INSECURE_SCHEME);
+  });
+
+  it("accepts http://alerts.example.com/hook when nodeEnv is test", () => {
+    expect(
+      validateWebhookUrl("http://alerts.example.com/hook", { nodeEnv: "test" })
+        .href
+    ).toBe("http://alerts.example.com/hook");
+  });
+
   it("rejects embedded credentials in every environment", () => {
     expect(
       codeOf(() => validateWebhookUrl("https://user:secret@hooks.example.com/"))
