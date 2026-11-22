@@ -6,6 +6,16 @@
  * finalization worker all guard their writes with these helpers instead of
  * encoding ad-hoc status checks, so the matrix cannot drift per service.
  *
+ * The two functions every caller must call instead of comparing a status
+ * string by hand are:
+ *   - `isTradable(status)`   — may orders be placed/matched against this market?
+ *   - `canTransition(from, to)` — is this status change legal?
+ * Both are re-exported from the package barrel (`@vatix/shared`) as well as
+ * this module's own subpath (`@vatix/shared/marketLifecycle`), so a caller
+ * never has a reason to redefine either one locally; `marketLifecycle.test.ts`
+ * asserts the barrel re-export is the same function object as this module's,
+ * not a second copy that could drift from it.
+ *
  *   ACTIVE ──► RESOLVED   (finalization accepts a resolution candidate)
  *      │
  *      ├────► CANCELLED   (admin/operator cancels the market)

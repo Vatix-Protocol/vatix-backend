@@ -1,3 +1,4 @@
+import { Decimal } from "@prisma/client/runtime/client.js";
 import type { PrismaClient } from "../../../../src/generated/prisma/client/index.js";
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type {
@@ -7,6 +8,9 @@ import type {
 import { isChallengeWindowOpen } from "../../../../src/oracle/challengeWindow.js";
 import { RESOLVABLE_MARKET_STATUSES } from "../../../../packages/shared/src/marketLifecycle.js";
 import { lockResolutionCandidateOrThrow } from "./resolutionLock.js";
+
+/** Zero confidence, used when a candidate has no reported score. */
+const ZERO_CONFIDENCE = new Decimal(0);
 
 /**
  * Configuration for a single FinalizationJob run.
@@ -23,6 +27,20 @@ export interface FinalizationJobConfig {
    * amount of time.  Set to 0 to disable (no time limit).  Default: 0.
    */
   maxRunMs?: number;
+  /**
+   * Grace period (ms) subtracted from the challenge-window cutoff before
+   * comparing against a candidate's `createdAt` (#1546). Guards against the
+   * host container clock running fast relative to the Stellar ledger: if the
+   * host clock is ahead, `Date.now()` can cross the challenge-window cutoff
+   * before the ledger has actually held the candidate in PROPOSED for
+   * `challengeWindowSeconds`, finalizing it early. A candidate is only
+   * eligible once `createdAt <= now - challengeWindowSeconds*1000 - tolerance`.
+   * Uses the same tolerance the expiry worker applies to `endTime`
+   * (`resolveClockSkewToleranceMs` in `@vatix/shared/marketLifecycle`), so
+   * both paths agree on how much the host clock is allowed to drift.
+   * Defaults to 0 (no tolerance) when omitted.
+   */
+  clockSkewToleranceMs?: number;
 }
 
 export interface FinalizationCandidate {
@@ -31,7 +49,14 @@ export interface FinalizationCandidate {
   proposedOutcome: boolean;
   source: string;
   status: "PROPOSED" | "CHALLENGED";
-  confidenceScore: number | null;
+  /**
+   * Decimal(5,4) column, kept as a Prisma `Decimal` all the way through the
+   * adjudication comparison (#1547). Converting it with `Number()` before
+   * comparing can make two close-but-distinct scores (e.g. `0.10` and
+   * `0.10000000000000002`) compare equal, or sort differently from the
+   * `orderBy: confidenceScore` the competing-candidate query just used.
+   */
+  confidenceScore: Decimal | null;
   createdAt: Date;
 }
 
@@ -76,6 +101,7 @@ class CandidateNotEligibleError extends Error {
 export class FinalizationJob {
   private readonly challengeWindowSeconds: number;
   private readonly maxRunMs: number;
+  private readonly clockSkewToleranceMs: number;
 
   constructor(
     private readonly prisma: PrismaClient,
@@ -84,6 +110,7 @@ export class FinalizationJob {
   ) {
     this.challengeWindowSeconds = config.challengeWindowSeconds;
     this.maxRunMs = config.maxRunMs ?? 0;
+    this.clockSkewToleranceMs = config.clockSkewToleranceMs ?? 0;
   }
 
   async run(): Promise<FinalizationJobResult> {
@@ -97,12 +124,16 @@ export class FinalizationJob {
     }
 
     const startedAt = new Date();
+    // Subtracting the tolerance as well as the window makes the cutoff
+    // stricter (further in the past): a fast host clock cannot shrink the
+    // effective challenge window below `challengeWindowSeconds` (#1546).
     const windowCutoff = new Date(
-      Date.now() - this.challengeWindowSeconds * 1000
+      Date.now() - this.challengeWindowSeconds * 1000 - this.clockSkewToleranceMs
     );
 
     this.logger.info("Finalization job started", {
       challengeWindowSeconds: this.challengeWindowSeconds,
+      clockSkewToleranceMs: this.clockSkewToleranceMs,
       windowCutoff: windowCutoff.toISOString(),
     });
 
@@ -173,11 +204,14 @@ export class FinalizationJob {
       // before finalizing.  This is a defense-in-depth check against clock
       // skew or concurrent schedule edge cases; the query-level
       // `createdAt: { lte: windowCutoff }` filter is the primary gate.
+      // `now` is pushed back by the same tolerance as the query cutoff
+      // (#1546): a fast host clock must not make this check pass any sooner
+      // than the real ledger clock would.
       if (
         isChallengeWindowOpen(
           candidate.createdAt,
           this.challengeWindowSeconds,
-          new Date()
+          new Date(Date.now() - this.clockSkewToleranceMs)
         )
       ) {
         this.logger.info("Candidate still within challenge window — skipping", {
@@ -245,14 +279,14 @@ export class FinalizationJob {
               select: { id: true, confidenceScore: true },
             });
 
-            const challengeScore = candidate.confidenceScore
-              ? Number(candidate.confidenceScore)
-              : 0;
-            const competingScore = competing?.confidenceScore
-              ? Number(competing.confidenceScore)
-              : 0;
+            // Decimal(5,4) columns compared as Decimal, not as JavaScript
+            // numbers (#1547): converting with `Number()` first can make two
+            // close-but-distinct scores compare equal, or sort differently
+            // from the `orderBy: confidenceScore` the query above just used.
+            const challengeScore = candidate.confidenceScore ?? ZERO_CONFIDENCE;
+            const competingScore = competing?.confidenceScore ?? ZERO_CONFIDENCE;
 
-            if (competing && competingScore > challengeScore) {
+            if (competing && competingScore.greaterThan(challengeScore)) {
               // Challenge upheld: reject this candidate
               await tx.resolutionCandidate.update({
                 where: { id: candidate.id },

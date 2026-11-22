@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { Decimal } from "@prisma/client/runtime/client.js";
 import { FinalizationJob, FinalizationValidationError } from "./job.js";
 import type { FinalizationJobConfig, FinalizationCandidate } from "./job.js";
 import type {
@@ -952,6 +953,237 @@ describe("FinalizationJob", () => {
         "Finalization job exceeded maxRunMs, stopping early",
         expect.anything()
       );
+    });
+  });
+
+  describe("challenge adjudication compares Decimal confidence scores, not Number() (#1547)", () => {
+    function makeChallengeTx(competingConfidenceScore: Decimal | null) {
+      const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
+      const marketUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+      const updateCandidate = vi.fn().mockResolvedValue({});
+      const positionUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
+      const auditLogCreate = vi.fn().mockResolvedValue({});
+      const queryRaw = vi
+        .fn()
+        .mockResolvedValue([{ id: "locked-row", status: "CHALLENGED" }]);
+      const findFirst = vi.fn().mockResolvedValue(
+        competingConfidenceScore === null
+          ? null
+          : { id: "competing-1", confidenceScore: competingConfidenceScore }
+      );
+
+      const tx = {
+        resolution: { create },
+        market: { updateMany: marketUpdateMany },
+        resolutionCandidate: { update: updateCandidate, findFirst },
+        userPosition: { updateMany: positionUpdateMany },
+        resolutionAuditLog: { create: auditLogCreate },
+        $queryRaw: queryRaw,
+      };
+
+      return { tx, create, updateCandidate, findFirst, auditLogCreate };
+    }
+
+    function makePrismaForTx(
+      candidates: FinalizationCandidate[],
+      tx: Record<string, unknown>
+    ) {
+      const transaction = vi
+        .fn()
+        .mockImplementation(
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(tx)
+        );
+      return {
+        resolutionCandidate: {
+          findMany: vi.fn().mockResolvedValue(candidates),
+        },
+        $transaction: transaction,
+      } as unknown as PrismaClient;
+    }
+
+    it("upholds the challenge when the competing score is a greater Decimal that Number() would round down to equal", async () => {
+      // Both values collapse to the exact same double once passed through
+      // Number(): the pre-#1547 bug compared them as equal (so the
+      // challenge was never upheld) even though the competing score is
+      // strictly greater as a Decimal.
+      const challengeScore = new Decimal("0.10");
+      const competingScore = new Decimal("0.10000000000000002");
+      expect(Number(competingScore.toString())).toBe(
+        Number(challengeScore.toString())
+      );
+      expect(competingScore.greaterThan(challengeScore)).toBe(true);
+
+      const candidate = makeCandidate({
+        id: "cand-challenged",
+        marketId: "mkt-1",
+        confidenceScore: challengeScore,
+      });
+      const { tx, updateCandidate, auditLogCreate, create } =
+        makeChallengeTx(competingScore);
+      const prisma = makePrismaForTx([candidate], tx);
+
+      await new FinalizationJob(prisma, makeLogger(), makeConfig(3600)).run();
+
+      // Challenge upheld: this candidate is rejected, not accepted, and no
+      // Resolution/market update happens for it.
+      expect(updateCandidate).toHaveBeenCalledWith({
+        where: { id: "cand-challenged" },
+        data: { status: "REJECTED" },
+      });
+      expect(auditLogCreate).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          candidateId: "cand-challenged",
+          marketId: "mkt-1",
+          action: "ADJUDICATE_CHALLENGE",
+          beforeStatus: "CHALLENGED",
+          afterStatus: "REJECTED",
+        }),
+      });
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it("finalizes the challenged candidate when no competing score is strictly greater", async () => {
+      const score = new Decimal("0.75");
+      const candidate = makeCandidate({
+        id: "cand-challenged-2",
+        marketId: "mkt-2",
+        confidenceScore: score,
+      });
+      // Competing score is equal, not greater — the challenge is denied.
+      const { tx, create, updateCandidate } = makeChallengeTx(
+        new Decimal("0.75")
+      );
+      const prisma = makePrismaForTx([candidate], tx);
+
+      await new FinalizationJob(prisma, makeLogger(), makeConfig(3600)).run();
+
+      expect(create).toHaveBeenCalled();
+      expect(updateCandidate).toHaveBeenCalledWith({
+        where: { id: "cand-challenged-2" },
+        data: { status: "ACCEPTED" },
+      });
+    });
+
+    it("treats a null confidence score as zero on both sides of the comparison", async () => {
+      const candidate = makeCandidate({
+        id: "cand-challenged-3",
+        marketId: "mkt-3",
+        confidenceScore: null,
+      });
+      // No competing candidate at all — nothing to compare against.
+      const { tx, create, updateCandidate } = makeChallengeTx(null);
+      const prisma = makePrismaForTx([candidate], tx);
+
+      await new FinalizationJob(prisma, makeLogger(), makeConfig(3600)).run();
+
+      expect(create).toHaveBeenCalled();
+      expect(updateCandidate).toHaveBeenCalledWith({
+        where: { id: "cand-challenged-3" },
+        data: { status: "ACCEPTED" },
+      });
+    });
+  });
+
+  describe("clock-skew tolerance for the challenge window (#1546)", () => {
+    const FIXED_NOW = new Date("2026-01-01T01:00:00.000Z");
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("skips a candidate whose window closed less than the tolerance ago", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(FIXED_NOW);
+
+      const challengeWindowSeconds = 3600;
+      const clockSkewToleranceMs = 5000;
+      // The window closed 1 ms ago by challengeWindowSeconds alone — a
+      // pre-#1546 host clock would finalize this immediately.
+      const createdAt = new Date(
+        FIXED_NOW.getTime() - challengeWindowSeconds * 1000 - 1
+      );
+      const candidate = makeCandidate({
+        id: "cand-skew",
+        marketId: "mkt-skew",
+        createdAt,
+      });
+      const prisma = makePrisma([candidate]);
+      const logger = makeLogger();
+
+      const result = await new FinalizationJob(prisma, logger, {
+        challengeWindowSeconds,
+        clockSkewToleranceMs,
+      }).run();
+
+      expect(result.finalizedCount).toBe(0);
+      expect(result.skippedCount).toBe(1);
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-skew",
+        marketId: "mkt-skew",
+        status: "skipped",
+      });
+    });
+
+    it("still finalizes once both challengeWindowSeconds and the tolerance have elapsed", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(FIXED_NOW);
+
+      const challengeWindowSeconds = 3600;
+      const clockSkewToleranceMs = 5000;
+      const createdAt = new Date(
+        FIXED_NOW.getTime() -
+          challengeWindowSeconds * 1000 -
+          clockSkewToleranceMs -
+          1
+      );
+      const candidate = makeCandidate({
+        id: "cand-skew-2",
+        marketId: "mkt-skew-2",
+        createdAt,
+      });
+      const prisma = makePrisma([candidate]);
+
+      const result = await new FinalizationJob(prisma, makeLogger(), {
+        challengeWindowSeconds,
+        clockSkewToleranceMs,
+      }).run();
+
+      expect(result.finalizedCount).toBe(1);
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-skew-2",
+        marketId: "mkt-skew-2",
+        status: "finalized",
+      });
+    });
+
+    it("defaults clockSkewToleranceMs to 0 when omitted, preserving prior behavior", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(FIXED_NOW);
+
+      const challengeWindowSeconds = 3600;
+      const createdAt = new Date(
+        FIXED_NOW.getTime() - challengeWindowSeconds * 1000 - 1
+      );
+      const candidate = makeCandidate({
+        id: "cand-no-skew-config",
+        marketId: "mkt-no-skew-config",
+        createdAt,
+      });
+      const prisma = makePrisma([candidate]);
+
+      // No clockSkewToleranceMs supplied — same as before #1546.
+      const result = await new FinalizationJob(
+        prisma,
+        makeLogger(),
+        makeConfig(challengeWindowSeconds)
+      ).run();
+
+      expect(result.finalizedCount).toBe(1);
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-no-skew-config",
+        status: "finalized",
+      });
     });
   });
 });

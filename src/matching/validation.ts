@@ -4,6 +4,8 @@ import { getPrismaClient } from "../services/prisma.js";
 import type { OrderSide, Outcome } from "../types/index.js";
 import {
   isTradable,
+  isPastEndTime,
+  resolveClockSkewToleranceMs,
   type MarketLifecycleState,
 } from "../../packages/shared/src/marketLifecycle.js";
 
@@ -191,14 +193,44 @@ export const TICK_SIZE = 0.01;
 export const MIN_PRICE = 0.0001;
 
 /**
+ * Parses a price into its integer tick count (1-99 inclusive) — the
+ * canonical representation of a tick-aligned price (#1541).
+ *
+ * This deliberately does NOT divide the binary float by `TICK_SIZE` and
+ * compare the result against a tolerance: that approach accepts values that
+ * are not actually two-decimal numbers. `0.300000000000001` is a distinct
+ * double from `0.3`, but `0.300000000000001 / 0.01` rounds to `30`, and
+ * `30 * 0.01` lands within any reasonable epsilon of the original value — so
+ * a float-division check happily accepts a price with a third decimal digit.
+ *
+ * Instead this parses `price.toString()` — the shortest decimal string that
+ * round-trips to the same double, i.e. exactly what the caller "meant" by
+ * this number — and requires it to have at most two fractional digits. Two
+ * different computations that land on the exact same double always produce
+ * the exact same string, so this is deterministic regardless of how the
+ * caller arrived at the number.
+ *
+ * @param price - A number expected to be in (0, 1).
+ * @returns The integer tick (1-99), or null when `price` is not aligned to
+ *   exactly two decimal places or is outside (0, 1).
+ */
+export function parsePriceTicks(price: number): number | null {
+  if (!Number.isFinite(price) || price <= 0 || price >= 1) return null;
+
+  const match = /^0\.(\d{1,2})$/.exec(price.toString());
+  if (!match) return null;
+
+  const tick = Number.parseInt(match[1].padEnd(2, "0"), 10);
+  return tick >= 1 && tick <= 99 ? tick : null;
+}
+
+/**
  * Validates that a price aligns to the minimum tick size.
- * Uses rounded integer arithmetic to avoid IEEE-754 floating-point drift.
  *
  * @param price - A number already confirmed to be in (0, 1).
  */
 export function validateTickSize(price: number): string | null {
-  const ticks = Math.round(price / TICK_SIZE);
-  if (Math.abs(ticks * TICK_SIZE - price) > 1e-9) {
+  if (parsePriceTicks(price) === null) {
     return `Price must be a multiple of ${TICK_SIZE} (e.g. 0.01, 0.50, 0.99)`;
   }
   return null;
@@ -234,9 +266,17 @@ export function normalizePriceToDecimalString(
     }
   }
 
-  // Quantize to the tick using integer arithmetic, then render as a plain
-  // decimal string with two fractional digits (scale 2).
-  const ticks = Math.round(price / TICK_SIZE);
+  // Store the integer tick, not the raw binary float (#1541): a market
+  // order's price is 0 (not tick-aligned, and intentionally outside
+  // parsePriceTicks' (0, 1) range), everything else must already be
+  // tick-aligned by the time this is called (the API layer validates with
+  // `validateTickSize` first).
+  const ticks = price === 0 ? 0 : parsePriceTicks(price);
+  if (ticks === null) {
+    throw new RangeError(
+      `price ${price} is not aligned to the ${TICK_SIZE} tick size`
+    );
+  }
   const whole = Math.floor(ticks / 100);
   const fraction = ticks % 100;
   return `${whole}.${String(fraction).padStart(2, "0")}`;
@@ -402,4 +442,113 @@ export function computeEffectiveWorstPrice(
 
   // Prices live in (0, 1); clamp so a wide tolerance cannot escape the range.
   return Math.min(Math.max(worstPrice, 0), 1);
+}
+
+/**
+ * Validates every field of an `OrderInput` in isolation (no DB access).
+ * Returns every field error found, not just the first, so a caller can
+ * surface them all at once instead of round-tripping one at a time.
+ */
+export function validateOrderFields(order: OrderInput): ValidationResult {
+  const errors: Record<string, string> = {};
+
+  const userAddressError = validateUserAddress(order.userAddress);
+  if (userAddressError) errors.userAddress = userAddressError;
+
+  const sideError = validateOrderSide(order.side);
+  if (sideError) errors.side = sideError;
+
+  const outcomeError = validateOutcome(order.outcome);
+  if (outcomeError) errors.outcome = outcomeError;
+
+  const priceError = validatePrice(order.price);
+  if (priceError) errors.price = priceError;
+
+  const quantityError = validateQuantity(order.quantity);
+  if (quantityError) errors.quantity = quantityError;
+
+  // Only meaningful once `side` is known to be valid; validateLimitPrice
+  // itself reports an error for the degenerate case.
+  const limitPriceError = validateLimitPrice(
+    order.limitPrice,
+    order.side,
+    order.maxSlippagePct
+  );
+  if (limitPriceError) errors.limitPrice = limitPriceError;
+
+  // Avoid reporting the same underlying problem twice: validateLimitPrice
+  // already validates maxSlippagePct when a limitPrice is present.
+  if (!limitPriceError) {
+    const maxSlippagePctError = validateMaxSlippagePct(order.maxSlippagePct);
+    if (maxSlippagePctError) errors.maxSlippagePct = maxSlippagePctError;
+  }
+
+  return { valid: Object.keys(errors).length === 0, errors };
+}
+
+/**
+ * Validates that the target market exists and can still accept this order:
+ * not past its end time (with the shared clock-skew tolerance applied, so
+ * this agrees with the expiry worker on when `endTime` has actually passed)
+ * and in a status `isTradable` reports as tradable — the single source of
+ * truth for "is this market open for orders," never an ad-hoc status string
+ * comparison here.
+ */
+export async function validateMarketState(
+  marketId: string
+): Promise<ValidationResult> {
+  const prisma = getPrismaClient();
+  const market = await prisma.market.findUnique({ where: { id: marketId } });
+
+  if (!market) {
+    return { valid: false, errors: { marketId: "Market not found" } };
+  }
+
+  const status = market.status as MarketLifecycleState;
+
+  if (!isTradable(status)) {
+    return {
+      valid: false,
+      errors: {
+        marketId: `Market is ${status.toLowerCase()}; orders cannot be placed`,
+      },
+    };
+  }
+
+  const toleranceMs = resolveClockSkewToleranceMs();
+  if (isPastEndTime(market.endTime, Date.now(), toleranceMs)) {
+    return {
+      valid: false,
+      errors: { marketId: "Market has ended; orders cannot be placed" },
+    };
+  }
+
+  return { valid: true, errors: {} };
+}
+
+/**
+ * Full order validation: field-level checks first (no DB access), then the
+ * market-state check. Field errors short-circuit before the DB is touched,
+ * so a malformed request never costs a query.
+ */
+export async function validateOrder(
+  order: OrderInput
+): Promise<ValidationResult> {
+  const fieldResult = validateOrderFields(order);
+  if (!fieldResult.valid) {
+    return fieldResult;
+  }
+
+  return validateMarketState(order.marketId);
+}
+
+/**
+ * Validates `order` and throws `OrderValidationError` (carrying every field
+ * error found) when it is invalid. Resolves with no value when valid.
+ */
+export async function assertValidOrder(order: OrderInput): Promise<void> {
+  const result = await validateOrder(order);
+  if (!result.valid) {
+    throw new OrderValidationError(result.errors);
+  }
 }
