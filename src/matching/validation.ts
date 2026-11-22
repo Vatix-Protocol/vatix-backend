@@ -185,6 +185,12 @@ export function validateOutcome(outcome: unknown): string | null {
 export const TICK_SIZE = 0.01;
 
 /**
+ * Smallest representable order price. Used as the floor for SELL worst-price
+ * clamps so a 100 % slippage tolerance never yields a non-positive price.
+ */
+export const MIN_PRICE = 0.0001;
+
+/**
  * Validates that a price aligns to the minimum tick size.
  * Uses rounded integer arithmetic to avoid IEEE-754 floating-point drift.
  *
@@ -379,8 +385,8 @@ export function validateMaxSlippagePct(pct: unknown): string | null {
  */
 export function computeEffectiveWorstPrice(
   side: OrderSide,
-  limitPrice?: number,
-  maxSlippagePct?: number
+  limitPrice?: number | null,
+  maxSlippagePct?: number | null
 ): number | null {
   if (limitPrice === undefined || limitPrice === null) return null;
 

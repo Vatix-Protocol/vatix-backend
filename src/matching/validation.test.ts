@@ -94,51 +94,59 @@ describe("Order Validation", () => {
         "User address must be a string"
       );
     });
+
+    it("should reject non-string values", () => {
+      expect(validateUserAddress(123 as unknown as string)).toBe(
+        "User address must be a string"
+      );
+      expect(validateUserAddress({} as unknown as string)).toBe(
+        "User address must be a string"
+      );
+      expect(validateUserAddress([] as unknown as string)).toBe(
+        "User address must be a string"
+      );
+    });
+
+    it("should accept an address matching ^G[A-Z2-7]{55}$", () => {
+      const address = "G" + "A".repeat(55);
+      expect(address).toMatch(/^G[A-Z2-7]{55}$/);
+      expect(validateUserAddress(address)).toBeNull();
+    });
   });
 
   describe("validateOrderSide", () => {
-    it("should accept BUY", () => {
-      expect(validateOrderSide("BUY")).toBeNull();
-    });
+    const cases: Array<[string, unknown, string | null]> = [
+      ["null", null, "Order side is required"],
+      ["undefined", undefined, "Order side is required"],
+      ["BUY", "BUY", null],
+      ["SELL", "SELL", null],
+      ["lowercase buy", "buy", "Order side must be 'BUY' or 'SELL'"],
+      ["lowercase sell", "sell", "Order side must be 'BUY' or 'SELL'"],
+      ["YES (wrong enum)", "YES", "Order side must be 'BUY' or 'SELL'"],
+      ["MAYBE", "MAYBE", "Order side must be 'BUY' or 'SELL'"],
+      ["empty string", "", "Order side must be 'BUY' or 'SELL'"],
+    ];
 
-    it("should accept SELL", () => {
-      expect(validateOrderSide("SELL")).toBeNull();
-    });
-
-    it("should reject other strings", () => {
-      expect(validateOrderSide("buy")).toBe(
-        "Order side must be 'BUY' or 'SELL'"
-      );
-      expect(validateOrderSide("HOLD")).toBe(
-        "Order side must be 'BUY' or 'SELL'"
-      );
-      expect(validateOrderSide("")).toBe("Order side must be 'BUY' or 'SELL'");
-    });
-
-    it("should reject null/undefined", () => {
-      expect(validateOrderSide(null)).toBe("Order side is required");
-      expect(validateOrderSide(undefined)).toBe("Order side is required");
+    it.each(cases)("should handle %s", (_label, input, expected) => {
+      expect(validateOrderSide(input)).toBe(expected);
     });
   });
 
   describe("validateOutcome", () => {
-    it("should accept YES", () => {
-      expect(validateOutcome("YES")).toBeNull();
-    });
+    const cases: Array<[string, unknown, string | null]> = [
+      ["null", null, "Outcome is required"],
+      ["undefined", undefined, "Outcome is required"],
+      ["YES", "YES", null],
+      ["NO", "NO", null],
+      ["lowercase yes", "yes", "Outcome must be 'YES' or 'NO'"],
+      ["lowercase no", "no", "Outcome must be 'YES' or 'NO'"],
+      ["buy (wrong enum)", "buy", "Outcome must be 'YES' or 'NO'"],
+      ["MAYBE", "MAYBE", "Outcome must be 'YES' or 'NO'"],
+      ["empty string", "", "Outcome must be 'YES' or 'NO'"],
+    ];
 
-    it("should accept NO", () => {
-      expect(validateOutcome("NO")).toBeNull();
-    });
-
-    it("should reject other strings", () => {
-      expect(validateOutcome("yes")).toBe("Outcome must be 'YES' or 'NO'");
-      expect(validateOutcome("MAYBE")).toBe("Outcome must be 'YES' or 'NO'");
-      expect(validateOutcome("")).toBe("Outcome must be 'YES' or 'NO'");
-    });
-
-    it("should reject null/undefined", () => {
-      expect(validateOutcome(null)).toBe("Outcome is required");
-      expect(validateOutcome(undefined)).toBe("Outcome is required");
+    it.each(cases)("should handle %s", (_label, input, expected) => {
+      expect(validateOutcome(input)).toBe(expected);
     });
   });
 
@@ -364,6 +372,34 @@ describe("Order Validation", () => {
         "maxSlippagePct must be between 0 and 100"
       );
       expect(validateMaxSlippagePct("5")).toBe(
+        "maxSlippagePct must be a number"
+      );
+    });
+  });
+
+  describe("validateMaxSlippagePct", () => {
+    it("should accept 0 (lower boundary)", () => {
+      expect(validateMaxSlippagePct(0)).toBeNull();
+    });
+
+    it("should accept 100 (upper boundary)", () => {
+      expect(validateMaxSlippagePct(100)).toBeNull();
+    });
+
+    it("should reject 101 (above upper boundary)", () => {
+      expect(validateMaxSlippagePct(101)).toBe(
+        "maxSlippagePct must be between 0 and 100"
+      );
+    });
+
+    it("should reject -1 (below lower boundary)", () => {
+      expect(validateMaxSlippagePct(-1)).toBe(
+        "maxSlippagePct must be between 0 and 100"
+      );
+    });
+
+    it("should reject NaN", () => {
+      expect(validateMaxSlippagePct(NaN)).toBe(
         "maxSlippagePct must be a number"
       );
     });
