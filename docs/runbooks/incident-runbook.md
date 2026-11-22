@@ -20,6 +20,7 @@ This runbook provides step-by-step guidance for responding to common backend inc
 - [Incident 6: Queue Backlog (Settlement / Oracle Submission)](#incident-6-queue-backlog-settlement--oracle-submission)
 - [Incident 7: Stuck CHALLENGED Resolution Candidates](#incident-7-stuck-challenged-resolution-candidates)
 - [Incident 8: Duplicate Settlement / Finalization Race](#incident-8-duplicate-settlement--finalization-race)
+- [Incident 9: Expiry Worker Cancelling Markets Early (Clock Skew)](#incident-9-expiry-worker-cancelling-markets-early-clock-skew)
 - [Post-Incident Process](#post-incident-process)
 - [Useful Commands & Queries](#useful-commands--queries)
 - [Contact & Resources](#contact--resources)
@@ -1153,6 +1154,48 @@ curl -s localhost:9090/metrics | grep vatix_oracle_submission_ambiguous_total
 - [ ] Alert: `vatix_finalization_lock_failures_total` rate > 0 over 5m
 - [ ] Alert: `vatix_settlement_job_stalled_total` rate > 0 sustained over 10m
 - [ ] Dashboard: `vatix_settlement_error_quarantined_total` by `code`, reviewed weekly for signing/config issues that need a human fix rather than a retry
+
+---
+
+## Incident 9: Expiry Worker Cancelling Markets Early (Clock Skew)
+
+**Symptoms**: markets transition `ACTIVE → CANCELLED` while their `endTime` is
+still in the future on-chain; `Expiry job started` logs show
+`clockSkewToleranceMs: 0` or a value smaller than the observed host/ledger skew.
+
+**Cause**: the expiry worker only expires a market once
+`endTime <= now - clockSkewToleranceMs`. If the tolerance is `0` (or too small)
+and the host clock runs fast relative to the Stellar ledger close time, markets
+are cancelled before the ledger reaches `endTime`.
+
+**Default**: `EXPIRY_CLOCK_SKEW_TOLERANCE_MS` defaults to
+`DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS` = **5000 ms** in every environment
+(`apps/workers/src/expiry/config.ts`). The default is never `0`. In production a
+value of `0` fails startup; omit the variable to use the default.
+
+#### Step 1: Confirm
+
+```bash
+# Compare host clock with ledger close time
+date -u
+curl -s https://horizon.stellar.org/ | jq '.history_latest_ledger, .core_latest_ledger'
+# Check the tolerance the worker actually loaded
+grep -o '"clockSkewToleranceMs":[0-9]*' <expiry-worker-logs> | tail -1
+```
+
+#### Step 2: Remediation
+
+- Unset `EXPIRY_CLOCK_SKEW_TOLERANCE_MS` (or set it to `5000`) and restart the
+  expiry worker; startup logs the effective `clockSkewToleranceMs`.
+- If the skew is larger than 5s, fix NTP on the node first, then raise the
+  tolerance deliberately and record the value in the PR.
+- Markets cancelled early must be reviewed manually — do not flip them back to
+  `ACTIVE` without confirming on-chain state.
+
+### Prevention
+
+- [ ] Alert: expiry worker startup log with `clockSkewToleranceMs: 0`
+- [ ] Alert: node clock offset > 1s (NTP monitoring)
 
 ---
 

@@ -38,6 +38,46 @@ const STELLAR_RPC_RETRY_CONFIG = {
   maxDelayMs: 5_000,
 };
 
+/** Number of decimal places in the on-chain i128 price representation. */
+const PRICE_DECIMALS = 7;
+const PRICE_SCALE = 10n ** BigInt(PRICE_DECIMALS);
+
+/** Matches a plain non-negative decimal string, e.g. "0.1", "12", "3.1415926". */
+const DECIMAL_PRICE_PATTERN = /^\d+(?:\.\d+)?$/;
+
+/**
+ * Converts a decimal price string to a 7-decimal fixed-point i128 using integer
+ * arithmetic only — no binary floating point is involved, so values such as
+ * "0.1" convert exactly to 1000000n (#1479).
+ *
+ * Throws when the string is not a plain decimal number, has more than
+ * `PRICE_DECIMALS` fractional digits (which would silently lose precision), or
+ * is not strictly positive.
+ */
+export function decimalPriceToI128(price: string): bigint {
+  const trimmed = price.trim();
+  if (!DECIMAL_PRICE_PATTERN.test(trimmed)) {
+    throw new Error(`invalid payload — price is not a decimal number: ${price}`);
+  }
+
+  const [wholePart, fractionPart = ""] = trimmed.split(".");
+  if (fractionPart.length > PRICE_DECIMALS) {
+    throw new Error(
+      `invalid payload — price has more than ${PRICE_DECIMALS} decimal places: ${price}`
+    );
+  }
+
+  const scaled =
+    BigInt(wholePart) * PRICE_SCALE +
+    BigInt(fractionPart.padEnd(PRICE_DECIMALS, "0") || "0");
+
+  if (scaled <= 0n) {
+    throw new Error(`invalid payload — price must be positive: ${price}`);
+  }
+
+  return scaled;
+}
+
 /**
  * Zod schema used to validate the raw job payload before processing.
  * Any field that is missing, empty, or of the wrong type causes the job to be
@@ -56,9 +96,19 @@ const SettlementPayloadSchema = z.object({
   price: z
     .string()
     .min(1, "price is required")
-    .refine((v) => Number.isFinite(Number(v)) && Number(v) > 0, {
-      message: "price must be a positive numeric string",
-    }),
+    .refine(
+      (v) => {
+        try {
+          decimalPriceToI128(v);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      {
+        message: `price must be a positive decimal string with at most ${PRICE_DECIMALS} decimal places`,
+      }
+    ),
   quantity: z
     .string()
     .min(1, "quantity is required")
@@ -469,6 +519,10 @@ export class SettlementWorker {
   private async executeOnChain(payload: SettlementJobPayload): Promise<string> {
     const { rpcUrl, contractId, networkPassphrase, signerSecret } =
       this.stellarConfig!;
+
+    // Convert the decimal price to its 7-decimal i128 form before any RPC
+    // call so a non-numeric price fails fast without touching the network.
+    const priceI128 = decimalPriceToI128(payload.price);
 
     const keypair = Keypair.fromSecret(signerSecret);
     const server = new StellarRpc.Server(rpcUrl);

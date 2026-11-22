@@ -280,6 +280,266 @@ describe("loadIndexerConfig", () => {
   });
 });
 
-describe("loadOracleWorkerConfig", () => 
+describe("loadOracleWorkerConfig", () => {
+  const ORACLE_ENV = {
+    REDIS_URL: "redis://localhost:6379",
+    DATABASE_URL: "postgresql://user:pass@localhost:5432/db",
+  };
 
-/* … truncated 2021 chars — edit only what you need near the top … */
+  it("loads valid oracle worker config with defaults", () => {
+    const config = loadOracleWorkerConfig(ORACLE_ENV);
+    expect(config.submissionPollIntervalMs).toBe(5000);
+    expect(config.submissionMaxRetries).toBe(3);
+    expect(config.submissionVisibilityTimeoutMs).toBe(300_000);
+    expect(config.logLevel).toBe("info");
+    expect(config.redisUrl).toBe(ORACLE_ENV.REDIS_URL);
+    expect(config.databaseUrl).toBe(ORACLE_ENV.DATABASE_URL);
+  });
+
+  it("honours explicit oracle worker overrides", () => {
+    const config = loadOracleWorkerConfig({
+      ...ORACLE_ENV,
+      ORACLE_SUBMISSION_POLL_INTERVAL_MS: "2000",
+      ORACLE_SUBMISSION_MAX_RETRIES: "5",
+      ORACLE_SUBMISSION_VISIBILITY_TIMEOUT_MS: "60000",
+      ORACLE_SUBMISSION_LOG_LEVEL: "debug",
+    });
+    expect(config.submissionPollIntervalMs).toBe(2000);
+    expect(config.submissionMaxRetries).toBe(5);
+    expect(config.submissionVisibilityTimeoutMs).toBe(60_000);
+    expect(config.logLevel).toBe("debug");
+  });
+
+  it("throws when ORACLE_SUBMISSION_POLL_INTERVAL_MS is below minimum", () => {
+    const env = { ...ORACLE_ENV, ORACLE_SUBMISSION_POLL_INTERVAL_MS: "10" };
+    expect(() => loadOracleWorkerConfig(env)).toThrow(
+      "ORACLE_SUBMISSION_POLL_INTERVAL_MS"
+    );
+  });
+
+  it("throws on invalid ORACLE_SUBMISSION_LOG_LEVEL", () => {
+    const env = { ...ORACLE_ENV, ORACLE_SUBMISSION_LOG_LEVEL: "verbose" };
+    expect(() => loadOracleWorkerConfig(env)).toThrow(
+      "ORACLE_SUBMISSION_LOG_LEVEL"
+    );
+  });
+
+  it("throws on missing REDIS_URL", () => {
+    expect(() =>
+      loadOracleWorkerConfig({ DATABASE_URL: ORACLE_ENV.DATABASE_URL })
+    ).toThrow("REDIS_URL");
+  });
+
+  it("throws on missing DATABASE_URL", () => {
+    expect(() =>
+      loadOracleWorkerConfig({ REDIS_URL: ORACLE_ENV.REDIS_URL })
+    ).toThrow("DATABASE_URL");
+  });
+
+  it("throws on a non-postgres DATABASE_URL", () => {
+    const env = { ...ORACLE_ENV, DATABASE_URL: "mysql://localhost:3306/db" };
+    expect(() => loadOracleWorkerConfig(env)).toThrow("DATABASE_URL");
+  });
+});
+
+describe("loadFinalizationConfig", () => {
+  it("defaults the challenge window to the on-chain window", () => {
+    const config = loadFinalizationConfig({});
+    expect(config.intervalMs).toBe(60_000);
+    expect(config.onChainChallengeWindowSeconds).toBe(86_400);
+    expect(config.challengeWindowSeconds).toBe(86_400);
+    expect(config.challengeWindowOverridden).toBe(false);
+    expect(config.logLevel).toBe("info");
+  });
+
+  it("uses ORACLE_CHALLENGE_WINDOW_SECONDS as the canonical window", () => {
+    const config = loadFinalizationConfig({
+      ORACLE_CHALLENGE_WINDOW_SECONDS: "3600",
+    });
+    expect(config.onChainChallengeWindowSeconds).toBe(3600);
+    expect(config.challengeWindowSeconds).toBe(3600);
+    expect(config.challengeWindowOverridden).toBe(false);
+  });
+
+  it("allows a dev/test override and flags it", () => {
+    const config = loadFinalizationConfig({
+      ORACLE_CHALLENGE_WINDOW_SECONDS: "3600",
+      FINALIZATION_CHALLENGE_WINDOW_SECONDS: "60",
+    });
+    expect(config.challengeWindowSeconds).toBe(60);
+    expect(config.onChainChallengeWindowSeconds).toBe(3600);
+    expect(config.challengeWindowOverridden).toBe(true);
+  });
+
+  it("rejects a production override that drifts from the on-chain window", () => {
+    const env = {
+      NODE_ENV: "production",
+      ORACLE_CHALLENGE_WINDOW_SECONDS: "3600",
+      FINALIZATION_CHALLENGE_WINDOW_SECONDS: "60",
+    };
+    expect(() => loadFinalizationConfig(env)).toThrow(
+      "FINALIZATION_CHALLENGE_WINDOW_SECONDS"
+    );
+  });
+
+  it("accepts a production override that matches the on-chain window", () => {
+    const config = loadFinalizationConfig({
+      NODE_ENV: "production",
+      ORACLE_CHALLENGE_WINDOW_SECONDS: "3600",
+      FINALIZATION_CHALLENGE_WINDOW_SECONDS: "3600",
+    });
+    expect(config.challengeWindowSeconds).toBe(3600);
+    expect(config.challengeWindowOverridden).toBe(false);
+  });
+
+  it("throws when FINALIZATION_INTERVAL_MS is below minimum", () => {
+    expect(() =>
+      loadFinalizationConfig({ FINALIZATION_INTERVAL_MS: "10" })
+    ).toThrow("FINALIZATION_INTERVAL_MS");
+  });
+
+  it("throws on invalid FINALIZATION_LOG_LEVEL", () => {
+    expect(() =>
+      loadFinalizationConfig({ FINALIZATION_LOG_LEVEL: "verbose" })
+    ).toThrow("FINALIZATION_LOG_LEVEL");
+  });
+});
+
+describe("loadBaseConfig optional fields", () => {
+  it("applies documented defaults", () => {
+    const config = loadBaseConfig(BASE_ENV);
+    expect(config.bodyLimitBytes).toBe(65536);
+    expect(config.stellarNetwork).toBe("testnet");
+    expect(config.stellarHorizonUrl).toBe(
+      "https://horizon-testnet.stellar.org"
+    );
+    expect(config.oracleChallengeWindowSeconds).toBe(86400);
+    expect(config.auditStreamMaxlen).toBe(100_000);
+    expect(config.rateLimiting.global).toEqual({
+      windowMs: 60_000,
+      maxRequests: 100,
+    });
+    expect(config.rateLimiting.heavy).toEqual({
+      windowMs: 60_000,
+      maxRequests: 20,
+    });
+    expect(config.rateLimiting.write).toEqual({
+      windowMs: 60_000,
+      maxRequests: 10,
+    });
+  });
+
+  it("defaults CORS origins for development", () => {
+    const config = loadBaseConfig(BASE_ENV);
+    expect(config.corsAllowedOrigins).toEqual([
+      "http://localhost:3000",
+      "http://localhost:5173",
+    ]);
+  });
+
+  it("parses a comma-separated CORS_ALLOWED_ORIGINS list", () => {
+    const config = loadBaseConfig({
+      ...BASE_ENV,
+      CORS_ALLOWED_ORIGINS: "https://a.example, https://b.example",
+    });
+    expect(config.corsAllowedOrigins).toEqual([
+      "https://a.example",
+      "https://b.example",
+    ]);
+  });
+
+  it("rejects insecure CORS origins in production", () => {
+    const env = {
+      ...BASE_ENV,
+      NODE_ENV: "production",
+      CORS_ALLOWED_ORIGINS: "http://a.example",
+    };
+    expect(() => loadBaseConfig(env)).toThrow("CORS");
+  });
+
+  it("throws on a non-postgres DATABASE_URL", () => {
+    const env = { ...BASE_ENV, DATABASE_URL: "mysql://localhost:3306/db" };
+    expect(() => loadBaseConfig(env)).toThrow("DATABASE_URL");
+  });
+
+  it("throws on a non-redis REDIS_URL", () => {
+    const env = { ...BASE_ENV, REDIS_URL: "http://localhost:6379" };
+    expect(() => loadBaseConfig(env)).toThrow("REDIS_URL");
+  });
+
+  it("throws on a non-http STELLAR_RPC_URL", () => {
+    const env = { ...BASE_ENV, STELLAR_RPC_URL: "ftp://rpc.example" };
+    expect(() => loadBaseConfig(env)).toThrow("STELLAR_RPC_URL");
+  });
+
+  it("throws on a non-positive BODY_LIMIT_BYTES", () => {
+    const env = { ...BASE_ENV, BODY_LIMIT_BYTES: "0" };
+    expect(() => loadBaseConfig(env)).toThrow("BODY_LIMIT_BYTES");
+  });
+
+  it("throws on a non-positive AUDIT_STREAM_MAXLEN", () => {
+    const env = { ...BASE_ENV, AUDIT_STREAM_MAXLEN: "-1" };
+    expect(() => loadBaseConfig(env)).toThrow("AUDIT_STREAM_MAXLEN");
+  });
+});
+
+describe("loadIndexerConfig optional fields", () => {
+  const INDEXER_ENV = {
+    STELLAR_RPC_URL: "https://soroban-testnet.stellar.org",
+    INDEXER_CONTRACT_ID: "CABC123",
+    INDEXER_NETWORK_ID: "testnet",
+  };
+
+  it("applies documented defaults", () => {
+    const config = loadIndexerConfig(INDEXER_ENV);
+    expect(config.nodeEnv).toBe("development");
+    expect(config.ingestionIntervalMs).toBe(5000);
+    expect(config.batchSize).toBe(100);
+    expect(config.checkpointFlushEveryBatches).toBe(10);
+    expect(config.logLevel).toBe("info");
+    expect(config.gapPauseThreshold).toBe(1000);
+    expect(config.backfillMaxLedgers).toBe(500);
+  });
+
+  it("honours explicit overrides", () => {
+    const config = loadIndexerConfig({
+      ...INDEXER_ENV,
+      INDEXER_INGESTION_INTERVAL_MS: "1000",
+      INDEXER_LEDGER_WINDOW_SIZE: "50",
+      INDEXER_BATCH_SIZE: "25",
+      INDEXER_CURSOR_KEY: "custom",
+      INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES: "5",
+      INDEXER_LOG_LEVEL: "warn",
+      INDEXER_GAP_PAUSE_THRESHOLD: "0",
+      INDEXER_BACKFILL_MAX_LEDGERS: "100",
+    });
+    expect(config.ingestionIntervalMs).toBe(1000);
+    expect(config.ledgerWindowSize).toBe(50);
+    expect(config.batchSize).toBe(25);
+    expect(config.cursorKey).toBe("custom");
+    expect(config.checkpointFlushEveryBatches).toBe(5);
+    expect(config.logLevel).toBe("warn");
+    expect(config.gapPauseThreshold).toBe(0);
+    expect(config.backfillMaxLedgers).toBe(100);
+  });
+
+  it("throws when INDEXER_LEDGER_WINDOW_SIZE exceeds max", () => {
+    const env = { ...INDEXER_ENV, INDEXER_LEDGER_WINDOW_SIZE: "5000" };
+    expect(() => loadIndexerConfig(env)).toThrow("INDEXER_LEDGER_WINDOW_SIZE");
+  });
+
+  it("throws when INDEXER_BATCH_SIZE exceeds max", () => {
+    const env = { ...INDEXER_ENV, INDEXER_BATCH_SIZE: "1000" };
+    expect(() => loadIndexerConfig(env)).toThrow("INDEXER_BATCH_SIZE");
+  });
+
+  it("throws on a negative INDEXER_GAP_PAUSE_THRESHOLD", () => {
+    const env = { ...INDEXER_ENV, INDEXER_GAP_PAUSE_THRESHOLD: "-1" };
+    expect(() => loadIndexerConfig(env)).toThrow("INDEXER_GAP_PAUSE_THRESHOLD");
+  });
+
+  it("throws on a non-positive INDEXER_BACKFILL_MAX_LEDGERS", () => {
+    const env = { ...INDEXER_ENV, INDEXER_BACKFILL_MAX_LEDGERS: "0" };
+    expect(() => loadIndexerConfig(env)).toThrow("INDEXER_BACKFILL_MAX_LEDGERS");
+  });
+});
