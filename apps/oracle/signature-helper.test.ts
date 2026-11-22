@@ -192,11 +192,68 @@ describe("signature envelope versioning (#993)", () => {
     );
   });
 
-  it("still verifies a legacy signature outside production", () => {
+  it("rejects a legacy signature when NODE_ENV is unset (fail closed)", () => {
+    vi.stubEnv("NODE_ENV", undefined);
+    vi.stubEnv("ORACLE_ALLOW_LEGACY_SIGNATURES", undefined);
+    const legacy = signLegacyReport(basePayload, testKeypair);
+
+    expect(() => verifyResolutionReport(legacy)).toThrow(
+      LegacySignatureRejectedError
+    );
+  });
+
+  it("rejects a legacy signature in development without the migration flag", () => {
     vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("ORACLE_ALLOW_LEGACY_SIGNATURES", undefined);
+    const legacy = signLegacyReport(basePayload, testKeypair);
+
+    expect(() => verifyResolutionReport(legacy)).toThrow(
+      LegacySignatureRejectedError
+    );
+  });
+
+  it("accepts a legacy signature only with the explicit migration flag", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("ORACLE_ALLOW_LEGACY_SIGNATURES", "true");
     const legacy = signLegacyReport(basePayload, testKeypair);
 
     expect(verifyResolutionReport(legacy)).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("legacy v1 oracle signature"),
+      expect.objectContaining({ event: "oracle.legacy_signature_verified" })
+    );
+  });
+
+  it("accepts a legacy signature with the migration flag even in production", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(
+      "SOROBAN_NETWORK_PASSPHRASE",
+      "Public Global Stellar Network ; September 2015"
+    );
+    vi.stubEnv("ORACLE_SIGNER_PUBLIC_KEY", testKeypair.publicKey());
+    vi.stubEnv("ORACLE_ALLOW_LEGACY_SIGNATURES", "true");
+    const legacy = signLegacyReport(basePayload, testKeypair);
+
+    expect(verifyResolutionReport(legacy)).toBe(true);
+  });
+
+  it("verifies a current-version signature with the pinned key", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv(
+      "SOROBAN_NETWORK_PASSPHRASE",
+      "Public Global Stellar Network ; September 2015"
+    );
+    vi.stubEnv("ORACLE_SIGNER_PUBLIC_KEY", testKeypair.publicKey());
+    vi.stubEnv("ORACLE_ALLOW_LEGACY_SIGNATURES", undefined);
+    const report = signResolutionReport(
+      basePayload,
+      SECRET,
+      "Public Global Stellar Network ; September 2015"
+    );
+
+    expect(verifyResolutionReport(report)).toBe(true);
   });
 
   it("rejects a current (v2) signature verified as if it were legacy-tampered to v1", () => {
@@ -205,6 +262,7 @@ describe("signature envelope versioning (#993)", () => {
       "SOROBAN_NETWORK_PASSPHRASE",
       "Public Global Stellar Network ; September 2015"
     );
+    vi.stubEnv("ORACLE_ALLOW_LEGACY_SIGNATURES", undefined);
     const report = signResolutionReport(
       basePayload,
       SECRET,
