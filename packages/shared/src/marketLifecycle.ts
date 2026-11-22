@@ -8,9 +8,15 @@
  *
  *   ACTIVE ──► RESOLVED   (finalization accepts a resolution candidate)
  *      │
- *      └────► CANCELLED   (admin cancels the market)
+ *      └────► CANCELLED   (admin/operator cancels the market, or the expiry
+ *                          worker expires it once endTime has passed)
  *
  * RESOLVED and CANCELLED are terminal: nothing may leave them.
+ *
+ * Note: expiry and operator cancel share one status today. The expiry job
+ * writes CANCELLED (there is no separate EXPIRED state), so a market that
+ * reached its endTime and one an operator cancelled are indistinguishable
+ * by status alone.
  */
 
 export const MARKET_STATUSES = ["ACTIVE", "RESOLVED", "CANCELLED"] as const;
