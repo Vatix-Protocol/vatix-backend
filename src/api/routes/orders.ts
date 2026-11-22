@@ -233,7 +233,8 @@ export interface TradeEntry {
   sellerAddress: string;
   buyOrderId: string;
   sellOrderId: string;
-  price: number;
+  /** Exact decimal price string as stored (never a lossy `Number`). */
+  price: string;
   quantity: number;
   timestamp: number;
   /** `timestamp` normalized to an ISO-8601 UTC string. */
@@ -362,7 +363,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           sellerAddress: trade.sellerAddress,
           buyOrderId: trade.buyOrderId,
           sellOrderId: trade.sellOrderId,
-          price: Number(trade.price),
+          price: trade.price.toString(),
           quantity: trade.quantity,
           timestamp: trade.createdAt.getTime(),
           timestampIso: trade.createdAt.toISOString(),
