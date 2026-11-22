@@ -9,13 +9,11 @@ import { parseTradeEvents } from "./tradeParser.js";
 import { parseResolutionEvents } from "./resolutionParser.js";
 import { parseCollateralDepositedEvents } from "./collateralDepositedParser.js";
 import { parseMarketCreatedEvents } from "./marketCreatedParser.js";
-import { withIdempotencyKey } from "./idempotency.js";
 import {
-  TradeParseError,
-  ResolutionParseError,
-  CollateralDepositedParseError,
-  MarketCreatedParseError,
-} from "./types.js";
+  withIdempotencyKey,
+  generateIdempotencyKey,
+} from "./idempotency.js";
+import type { RawChainEvent } from "./types.js";
 import { GapDetector, type GapPagingConfig } from "./gapDetector.js";
 
 /**
@@ -313,6 +311,264 @@ export class PollingIngestionLoop implements IngestionLoop {
     if (
       !force &&
       this.successfulBatchesSinceLastCheckpoint <
-        this.checkpointFlushE
+        this.checkpointFlushEveryBatches
+    ) {
+      return;
+    }
 
-/* … truncated 5324 chars — edit only what you need near the top … */
+    const cursorToPersist = this.cursor;
+    try {
+      await this.storage.saveCursor(cursorToPersist);
+      this.successfulBatchesSinceLastCheckpoint = 0;
+    } catch (error) {
+      const correlationId = this.buildCorrelationId(
+        Number(cursorToPersist) || 0
+      );
+      this.metrics.incrementIngestionErrors?.("checkpoint_commit_failed");
+      this.logger.error(
+        "Checkpoint commit failed — cursor not advanced",
+        {
+          event: "indexer.checkpoint.commit_failed",
+          code: CHECKPOINT_COMMIT_FAILED,
+          correlationId,
+          attemptedCursor: cursorToPersist,
+          error: error instanceof Error ? error.message : String(error),
+        }
+      );
+      throw new CheckpointCommitError(
+        "Failed to persist checkpoint cursor",
+        correlationId,
+        { cause: error }
+      );
+    }
+  }
+
+  /**
+   * Runs a single ingestion batch: fetch the next ledger window, parse every
+   * supported event type, stamp idempotency keys, write the batch, and report
+   * the cursor the checkpoint may advance to.
+   *
+   * The returned `batchWriteSucceeded` flag is the atomicity guard: the caller
+   * only advances the cursor when it is true.
+   */
+  private async ingestFromCursor(
+    cursor: string | null
+  ): Promise<IngestionBatchResult> {
+    const parsedCursor = cursor === null ? 0 : Number(cursor);
+    const cursorIsValid = Number.isFinite(parsedCursor) && parsedCursor >= 0;
+    if (!cursorIsValid) {
+      this.logger.warn(
+        "Stale or corrupted cursor detected — resetting to ledger 0",
+        { cursor, action: "reset_to_zero" }
+      );
+    }
+    const safeCurrentSequence = cursorIsValid ? parsedCursor : 0;
+
+    if (this.deps.ledgerWindowSize < 1) {
+      this.logger.error("Invalid ledgerWindowSize — must be >= 1", {
+        ledgerWindowSize: this.deps.ledgerWindowSize,
+      });
+      return {
+        nextCursor: String(safeCurrentSequence),
+        lastIndexedLedgerSequence: safeCurrentSequence,
+        batchWriteSucceeded: false,
+      };
+    }
+
+    const startLedger = safeCurrentSequence + 1;
+    const endLedger = safeCurrentSequence + this.deps.ledgerWindowSize;
+
+    const fetchSpan = this.telemetry.startSpan("indexer.fetch", {
+      startLedger: String(startLedger),
+      endLedger: String(endLedger),
+    });
+    let events: RawChainEvent[];
+    let latestLedger: number;
+    try {
+      const fetched = await this.deps.eventFetcher.fetchByLedgerWindow({
+        startLedger,
+        endLedger,
+      });
+      events = fetched.events;
+      latestLedger = fetched.latestLedger;
+    } finally {
+      fetchSpan.end();
+    }
+
+    this.metrics.setLatestNetworkLedgerSequence(latestLedger);
+
+    // Reorg detection: compare the network tip against the last known tip.
+    const latestInfo = await this.deps.eventFetcher.getLatestLedgerInfo();
+    const reorgDetected =
+      this.lastKnownLatestLedger !== null &&
+      (latestInfo.sequence < this.lastKnownLatestLedger ||
+        (latestInfo.sequence === this.lastKnownLatestLedger &&
+          this.lastKnownLatestHash !== null &&
+          latestInfo.hash !== this.lastKnownLatestHash));
+
+    if (reorgDetected) {
+      const rewindDepth =
+        this.deps.ledgerWindowSize * REORG_REWIND_DEPTH_MULTIPLIER;
+      const rewound = Math.max(0, safeCurrentSequence - rewindDepth);
+      this.logger.warn("Chain reorganisation detected — rewinding cursor", {
+        event: "indexer.reorg.detected",
+        previousLatestLedger: this.lastKnownLatestLedger,
+        latestLedger: latestInfo.sequence,
+        previousHash: this.lastKnownLatestHash,
+        latestHash: latestInfo.hash,
+        rewoundCursor: rewound,
+      });
+      this.lastKnownLatestLedger = latestInfo.sequence;
+      this.lastKnownLatestHash = latestInfo.hash;
+      try {
+        await this.storage.saveLedgerHash(latestInfo.hash);
+      } catch {
+        this.logger.warn("Failed to persist ledger hash after reorg", {});
+      }
+      return {
+        nextCursor: String(rewound),
+        lastIndexedLedgerSequence: rewound,
+        batchWriteSucceeded: false,
+      };
+    }
+
+    this.lastKnownLatestLedger = latestInfo.sequence;
+    this.lastKnownLatestHash = latestInfo.hash;
+    try {
+      await this.storage.saveLedgerHash(latestInfo.hash);
+    } catch {
+      this.logger.warn("Failed to persist ledger hash", {});
+    }
+
+    const parseSpan = this.telemetry.startSpan("indexer.parse", {
+      eventCount: String(events.length),
+    });
+    const records: BatchRecord[] = [];
+    try {
+      const { trades, errors: tradeErrors } = parseTradeEvents(events);
+      for (const err of tradeErrors) {
+        this.metrics.incrementParseError("trade");
+        this.logger.warn("Trade parse error — skipping event", {
+          eventId: err.eventId,
+          error: err.message,
+        });
+      }
+      const { resolutions, errors: resolutionErrors } =
+        parseResolutionEvents(events);
+      for (const err of resolutionErrors) {
+        this.metrics.incrementParseError("resolution");
+        this.logger.warn("Resolution parse error — skipping event", {
+          eventId: err.eventId,
+          error: err.message,
+        });
+      }
+      const { deposits, errors: depositErrors } =
+        parseCollateralDepositedEvents(events);
+      for (const err of depositErrors) {
+        this.metrics.incrementParseError("collateral_deposited");
+        this.logger.warn("Collateral deposit parse error — skipping event", {
+          eventId: err.eventId,
+          error: err.message,
+        });
+      }
+      const { markets, errors: marketErrors } =
+        parseMarketCreatedEvents(events);
+      for (const err of marketErrors) {
+        this.metrics.incrementParseError("market_created");
+        this.logger.warn("Market created parse error — skipping event", {
+          eventId: err.eventId,
+          error: err.message,
+        });
+      }
+
+      records.push(
+        ...markets.map((market): BatchRecord => ({
+          kind: "market_created",
+          data: withIdempotencyKey(market),
+        })),
+        ...trades.map((trade): BatchRecord => ({
+          kind: "trade",
+          data: withIdempotencyKey(trade),
+        })),
+        ...resolutions.map((resolution): BatchRecord => ({
+          kind: "resolution",
+          data: withIdempotencyKey(resolution),
+        })),
+        ...deposits.map((deposit): BatchRecord => ({
+          kind: "collateral_deposited",
+          data: withIdempotencyKey(deposit),
+        }))
+      );
+    } finally {
+      parseSpan.end();
+    }
+
+    const parsedEventIds = new Set(
+      records.map((record) => record.data.idempotencyKey)
+    );
+    for (const event of events) {
+      let key: string;
+      try {
+        key = generateIdempotencyKey(event).key;
+      } catch {
+        continue;
+      }
+      if (!parsedEventIds.has(key)) {
+        this.logger.warn("Unknown event type — no matching parser found", {
+          eventId: event.id,
+          ledger: event.ledger,
+        });
+      }
+    }
+
+    const nextCursor = String(endLedger);
+    const writeSpan = this.telemetry.startSpan("indexer.write", {
+      recordCount: String(records.length),
+      nextCursor,
+    });
+    let batchWriteSucceeded = true;
+    try {
+      const writeResult = await this.deps.batchWriter.write(records);
+      if (writeResult.errors.length > 0) {
+        batchWriteSucceeded = false;
+        this.logger.error("Batch write completed with errors", {
+          event: "indexer.batch.write_errors",
+          written: writeResult.written,
+          skipped: writeResult.skipped,
+          writeErrors: writeResult.errors.length,
+        });
+      }
+    } catch (error) {
+      batchWriteSucceeded = false;
+      this.logger.error("Batch write failed", {
+        event: "indexer.batch.write_failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      writeSpan.end();
+    }
+
+    return {
+      nextCursor,
+      lastIndexedLedgerSequence: endLedger,
+      batchWriteSucceeded,
+    };
+  }
+
+  private emitHeartbeat(): void {
+    const latestIndexed = this.metrics.getLatestIndexedLedgerSequence();
+    this.logger.info("Indexer ingestion heartbeat", {
+      event: "indexer.heartbeat",
+      cursor: this.cursor,
+      latestIndexedLedgerSequence: latestIndexed,
+      latestNetworkLedgerSequence:
+        this.metrics.getLatestNetworkLedgerSequence(),
+      lag: this.metrics.getLag(),
+      batchesSinceLastHeartbeat: this.batchesSinceLastHeartbeat,
+      lastHeartbeatLedgerSequence: this.lastHeartbeatLedgerSequence,
+      metrics: this.metrics.toLogFields(),
+    });
+    this.batchesSinceLastHeartbeat = 0;
+    this.lastHeartbeatLedgerSequence = latestIndexed;
+  }
+}

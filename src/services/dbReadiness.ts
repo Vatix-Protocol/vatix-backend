@@ -3,6 +3,9 @@ import type { PrismaClient } from "@prisma/client";
 
 export type DbReadinessErrorCode = "DEPENDENCY_TIMEOUT" | "DEPENDENCY_UNAVAILABLE";
 
+/** Default deadline (ms) for a single readiness dependency check. */
+export const DEFAULT_READINESS_TIMEOUT_MS = 2000;
+
 export interface DbReadinessError extends Error {
   code: DbReadinessErrorCode;
   cause?: unknown;
@@ -13,9 +16,9 @@ export interface DbReadinessOptions {
   timeoutMs?: number;
 }
 
-const DEFAULT_TIMEOUT_MS = 2000;
+const DEFAULT_TIMEOUT_MS = DEFAULT_READINESS_TIMEOUT_MS;
 
-function makeError(code: DbReadinessErrorCode, cause?: unknown): DbReadinessError {
+export function makeError(code: DbReadinessErrorCode, cause?: unknown): DbReadinessError {
   const error = new Error(`db: ${code}`) as DbReadinessError;
   error.code = code;
   if (cause !== undefined) {

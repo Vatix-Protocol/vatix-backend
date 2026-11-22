@@ -101,12 +101,47 @@ describe("GET /v1/ready", () => {
     expect(body.dependencies.indexFreshness.error).toContain("query timeout");
   });
 
+  it("returns 503 and ready:false when the Redis check fails", async () => {
+    const server = buildServer({
+      ...freshDeps,
+      checkRedis: async () => {
+        throw new Error("redis down");
+      },
+    });
+
+    const res = await server.inject({ method: "GET", url: "/v1/ready" });
+
+    expect(res.statusCode).toBe(503);
+    const body = res.json();
+    expect(body.ready).toBe(false);
+    expect(body.dependencies.redis.status).not.toBe("ok");
+    expect(body.dependencies.redis.status).toBe("error");
+    expect(body.dependencies.redis.error).toContain("redis down");
+  });
+
+  it("returns 503 when the Redis check times out", async () => {
+    const server = buildServer({
+      ...freshDeps,
+      checkRedis: async () => {
+        throw new Error("DEPENDENCY_TIMEOUT");
+      },
+    });
+
+    const res = await server.inject({ method: "GET", url: "/v1/ready" });
+
+    expect(res.statusCode).toBe(503);
+    const body = res.json();
+    expect(body.ready).toBe(false);
+    expect(body.dependencies.redis.status).not.toBe("ok");
+  });
+
   it("response body lists all dependency statuses", async () => {
     const server = buildServer(freshDeps);
     const res = await server.inject({ method: "GET", url: "/v1/ready" });
     const body = res.json();
 
     expect(body.dependencies).toHaveProperty("database");
+    expect(body.dependencies).toHaveProperty("redis");
     expect(body.dependencies).toHaveProperty("indexFreshness");
   });
 
@@ -130,6 +165,7 @@ describe("GET /v1/ready", () => {
     const body = res.json();
     expect(body.ready).toBe(false);
     expect(body.dependencies.database.status).toBe("error");
+    expect(body.dependencies.redis.status).toBe("error");
     expect(body.dependencies.indexFreshness.status).toBe("error");
   });
 });
