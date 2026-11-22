@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { getPrismaClient } from "../../services/prisma.js";
-import { ValidationError, NotFoundError } from "../middleware/errors.js";
+import {
+  ValidationError,
+  NotFoundError,
+  IdempotencyConflictError,
+} from "../middleware/errors.js";
 import type { OrderSide, Outcome, OrderStatus } from "../../types/index.js";
 import { auditService } from "../../services/audit.js";
 import { redis } from "../../services/redis.js";
@@ -530,14 +534,17 @@ export async function ordersRoutes(fastify: FastifyInstance) {
               response: unknown;
             };
             if (entry.hash !== requestHash) {
-              throw new ValidationError(
-                "Idempotency-Key was reused with a different request payload"
-              );
+              throw new IdempotencyConflictError();
             }
-            return reply.send(entry.response);
+            // Exact replay: same key, same payload — return the original body
+            // with 200 and flag it as a replay.
+            return reply
+              .code(200)
+              .header("Idempotent-Replayed", "true")
+              .send(entry.response);
           }
         } catch (err) {
-          if (err instanceof ValidationError) throw err;
+          if (err instanceof IdempotencyConflictError) throw err;
           // Cache read failures fall through to normal processing.
         }
       }
@@ -555,7 +562,16 @@ export async function ordersRoutes(fastify: FastifyInstance) {
 
       assertValidOrder(orderInput);
 
-      const result = await matchingService.submitOrder(orderInput);
+      const result = await matchingService.placeOrder(
+        orderInput,
+        idempotencyKey
+          ? { key: idempotencyKey, requestHash: hashOrderRequest(body) }
+          : undefined
+      );
+
+      // The replay state is only known once the matching service has answered:
+      // an exact replay returns the stored result instead of placing a new order.
+      const replayed = result.replayed === true;
 
       const response: OrderResponse = {
         id: result.order.id,
@@ -582,6 +598,13 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         } catch {
           // Cache write failures are non-fatal.
         }
+      }
+
+      if (replayed) {
+        return reply
+          .code(200)
+          .header("Idempotent-Replayed", "true")
+          .send(response);
       }
 
       return reply.code(201).send(response);
