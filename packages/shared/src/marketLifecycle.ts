@@ -8,13 +8,18 @@
  *
  *   ACTIVE ──► RESOLVED   (finalization accepts a resolution candidate)
  *      │
- *      ├────► CANCELLED   (admin cancels the market)
+ *      ├────► CANCELLED   (admin/operator cancels the market)
  *      │
  *      └────► EXPIRED     (expiry worker: endTime passed naturally)
  *
  * RESOLVED, CANCELLED and EXPIRED are terminal: nothing may leave them.
  * EXPIRED is distinct from CANCELLED so a market that simply ran out of time
  * is never recorded as an operator cancel (#1478). Neither state is tradable.
+ *
+ * Note: expiry and operator cancel share one status today. The expiry job
+ * writes CANCELLED (there is no separate EXPIRED state), so a market that
+ * reached its endTime and one an operator cancelled are indistinguishable
+ * by status alone.
  */
 
 export const MARKET_STATUSES = [

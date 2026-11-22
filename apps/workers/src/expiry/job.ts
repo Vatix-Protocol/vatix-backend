@@ -58,6 +58,14 @@ class MarketNotEligibleError extends Error {
   }
 }
 
+/**
+ * Expires ACTIVE markets whose `endTime` has passed: cancels their open
+ * orders, releases locked collateral and marks the market CANCELLED.
+ *
+ * Expiry and operator cancel share one status today: this job writes
+ * `CANCELLED` (there is no separate EXPIRED state), so an expired market is
+ * indistinguishable from an operator-cancelled one by status alone.
+ */
 export class ExpiryJob {
   private readonly maxRunMs: number;
   private readonly clockSkewToleranceMs: number;
