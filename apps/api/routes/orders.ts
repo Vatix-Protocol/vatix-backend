@@ -1,6 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { validatePrice } from '../../src/matching/validation';
+import {
+  MAX_ORDER_QUANTITY,
+  validatePrice,
+  validateQuantity,
+} from '../../src/matching/validation';
 
 const router = Router();
 
@@ -8,7 +12,12 @@ const orderSchema = z
   .object({
     side: z.enum(['buy', 'sell']),
     price: z.number().gte(0).lt(1),
-    quantity: z.number().positive(),
+    quantity: z
+      .number()
+      .finite()
+      .int()
+      .positive()
+      .max(MAX_ORDER_QUANTITY),
     limitPrice: z.number().gt(0).lt(1).optional(),
     maxSlippagePct: z.number().gte(0).optional(),
   })
@@ -39,10 +48,15 @@ router.post('/orders', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid order input' });
   }
 
-  const { price } = parsed.data;
+  const { price, quantity } = parsed.data;
   const priceError = validatePrice(price);
   if (priceError) {
     return res.status(400).json({ error: priceError });
+  }
+
+  const quantityError = validateQuantity(quantity);
+  if (quantityError) {
+    return res.status(400).json({ error: quantityError });
   }
 
   return res.status(201).json({ status: 'accepted', order: parsed.data });
