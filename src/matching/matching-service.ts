@@ -13,6 +13,7 @@ import { Mutex } from "./mutex.js";
 import { auditService } from "../services/audit.js";
 import { redis } from "../services/redis.js";
 import { getPrismaClient } from "../services/prisma.js";
+import type { Prisma } from "../generated/prisma/client";
 import {
   buildSettlementPayload,
   publishOutboxRow,
@@ -42,6 +43,116 @@ export interface PlaceOrderResult {
   filledQuantity: number;
   /** True when the result is the stored response of an earlier request. */
   replayed?: boolean;
+}
+
+/** Order fields persisted in an idempotency response. */
+export interface IdempotentOrderDto {
+  id: string;
+  marketId: string;
+  userAddress: string;
+  side: string;
+  outcome: string;
+  /** Decimal serialized as a string. */
+  price: string;
+  quantity: number;
+  filledQuantity: number;
+  status: string;
+  /** ISO-8601 UTC string. */
+  createdAt: string;
+}
+
+/** Trade fields persisted in an idempotency response. */
+export interface IdempotentTradeDto {
+  id: string;
+  marketId: string;
+  outcome: string;
+  buyerAddress: string;
+  sellerAddress: string;
+  buyOrderId: string;
+  sellOrderId: string;
+  /** Decimal serialized as a string. */
+  price: string;
+  quantity: number;
+  /** ISO-8601 UTC string. */
+  timestamp: string;
+}
+
+/**
+ * Stored idempotency response. Built from plain values only — never from
+ * Prisma objects — so a replay returns exactly what was persisted.
+ */
+export interface IdempotentOrderResponseDto {
+  order: IdempotentOrderDto;
+  trades: IdempotentTradeDto[];
+  filledQuantity: number;
+}
+
+function toIsoString(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") return new Date(value).toISOString();
+  if (typeof value === "number") return new Date(value).toISOString();
+  return new Date(0).toISOString();
+}
+
+function toDecimalString(value: unknown): string {
+  if (value === null || value === undefined) return "0";
+  return String(value);
+}
+
+/** Serializes a persisted order row into the stored DTO shape. */
+export function serializeIdempotentOrder(order: {
+  id: string;
+  marketId: string;
+  userAddress: string;
+  side: string;
+  outcome: string;
+  price: unknown;
+  quantity: number;
+  filledQuantity: number;
+  status: string;
+  createdAt: unknown;
+}): IdempotentOrderDto {
+  return {
+    id: order.id,
+    marketId: order.marketId,
+    userAddress: order.userAddress,
+    side: order.side,
+    outcome: order.outcome,
+    price: toDecimalString(order.price),
+    quantity: order.quantity,
+    filledQuantity: order.filledQuantity,
+    status: order.status,
+    createdAt: toIsoString(order.createdAt),
+  };
+}
+
+/** Serializes an engine trade into the stored DTO shape. */
+export function serializeIdempotentTrade(trade: Trade): IdempotentTradeDto {
+  return {
+    id: trade.id,
+    marketId: trade.marketId,
+    outcome: trade.outcome,
+    buyerAddress: trade.buyerAddress,
+    sellerAddress: trade.sellerAddress,
+    buyOrderId: trade.buyOrderId,
+    sellOrderId: trade.sellOrderId,
+    price: toDecimalString(trade.price),
+    quantity: trade.quantity,
+    timestamp: toIsoString(trade.timestamp),
+  };
+}
+
+/** Builds the stored idempotency response from plain values. */
+export function serializeIdempotentResponse(
+  order: Parameters<typeof serializeIdempotentOrder>[0],
+  trades: Trade[],
+  filledQuantity: number
+): IdempotentOrderResponseDto {
+  return {
+    order: serializeIdempotentOrder(order),
+    trades: trades.map(serializeIdempotentTrade),
+    filledQuantity,
+  };
 }
 
 /** Client Idempotency-Key plus the hash of the payload it was first used with. */
@@ -412,8 +523,11 @@ class MatchingService {
     }
 
     orderIdempotencyTotal.inc({ outcome: "replayed" });
+    const stored = record.response as unknown as IdempotentOrderResponseDto;
     return {
-      ...(record.response as unknown as PlaceOrderResult),
+      order: stored.order,
+      trades: stored.trades as unknown as Trade[],
+      filledQuantity: stored.filledQuantity,
       replayed: true,
     };
   }
@@ -634,13 +748,11 @@ class MatchingService {
                 idempotencyKey: idempotency.key,
                 requestHash: idempotency.requestHash,
                 orderId,
-                response: JSON.parse(
-                  JSON.stringify({
-                    order,
-                    trades: matchResult.trades,
-                    filledQuantity: takerFilledQuantity,
-                  })
-                ),
+                response: serializeIdempotentResponse(
+                  order,
+                  matchResult.trades,
+                  takerFilledQuantity
+                ) as unknown as Prisma.InputJsonValue,
               },
             });
           }
