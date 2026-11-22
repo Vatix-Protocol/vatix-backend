@@ -62,6 +62,7 @@ const CreateOrderSchema = z
       .gte(0, "maxSlippagePct must be greater than or equal to 0")
       .lte(100, "maxSlippagePct must be less than or equal to 100")
       .optional(),
+    allowPartialFill: z.boolean().optional(),
   })
   .superRefine((val, ctx) => {
     if (val.price === 0 && val.limitPrice === undefined) {
@@ -104,6 +105,7 @@ function hashOrderRequest(body: CreateOrderBody): string {
     quantity,
     limitPrice,
     maxSlippagePct,
+    allowPartialFill,
   } = body;
   return createHash("sha256")
     .update(
@@ -116,6 +118,7 @@ function hashOrderRequest(body: CreateOrderBody): string {
         quantity,
         limitPrice,
         maxSlippagePct,
+        allowPartialFill,
       })
     )
     .digest("hex");
@@ -500,6 +503,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
             quantity: { type: "integer", minimum: 1 },
             limitPrice: { type: "number", exclusiveMinimum: 0, exclusiveMaximum: 1 },
             maxSlippagePct: { type: "number", minimum: 0, maximum: 100 },
+            allowPartialFill: { type: "boolean" },
           },
         },
       },
@@ -551,6 +555,7 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         quantity: body.quantity,
         limitPrice: body.limitPrice,
         maxSlippagePct: body.maxSlippagePct,
+        allowPartialFill: body.allowPartialFill,
       };
 
       assertValidOrder(orderInput);
