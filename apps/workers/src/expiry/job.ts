@@ -3,9 +3,18 @@ import type { PrismaClient } from "../../../../src/generated/prisma/client/index
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type { ExpiryJobResult, ExpiryCandidateResult } from "./types.js";
 import { DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS } from "./config.js";
+import { COLLATERAL_SCALE } from "../../../indexer/src/decimalUtils.js";
 
-/** Collateral amounts are stored with 8 fractional digits (Decimal(20, 8)). */
-const COLLATERAL_DECIMALS = 8;
+/**
+ * Collateral is rounded to the on-chain scale (7 fractional digits), not the
+ * wider Decimal(20, 8) column width — see COLLATERAL_SCALE in decimalUtils.ts,
+ * the single source of truth shared by the indexer, this expiry/cancel path,
+ * and the matching-service cancel path (#1549). The Prisma column keeps
+ * extra precision, but rounding here must match the 7-decimal on-chain unit:
+ * rounding to 8 digits here would let a value be "exact" at 8 decimals while
+ * being off by up to 9e-8 at the on-chain 7-decimal scale.
+ */
+const COLLATERAL_DECIMALS = Number(COLLATERAL_SCALE);
 const ONE = new Decimal(1);
 const ZERO = new Decimal(0);
 
