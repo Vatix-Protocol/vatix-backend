@@ -111,48 +111,38 @@ describe("Order Validation", () => {
   });
 
   describe("validateOrderSide", () => {
-    it("should accept BUY", () => {
-      expect(validateOrderSide("BUY")).toBeNull();
-    });
+    const cases: Array<[string, unknown, string | null]> = [
+      ["null", null, "Order side is required"],
+      ["undefined", undefined, "Order side is required"],
+      ["BUY", "BUY", null],
+      ["SELL", "SELL", null],
+      ["lowercase buy", "buy", "Order side must be 'BUY' or 'SELL'"],
+      ["lowercase sell", "sell", "Order side must be 'BUY' or 'SELL'"],
+      ["YES (wrong enum)", "YES", "Order side must be 'BUY' or 'SELL'"],
+      ["MAYBE", "MAYBE", "Order side must be 'BUY' or 'SELL'"],
+      ["empty string", "", "Order side must be 'BUY' or 'SELL'"],
+    ];
 
-    it("should accept SELL", () => {
-      expect(validateOrderSide("SELL")).toBeNull();
-    });
-
-    it("should reject other strings", () => {
-      expect(validateOrderSide("buy")).toBe(
-        "Order side must be 'BUY' or 'SELL'"
-      );
-      expect(validateOrderSide("HOLD")).toBe(
-        "Order side must be 'BUY' or 'SELL'"
-      );
-      expect(validateOrderSide("")).toBe("Order side must be 'BUY' or 'SELL'");
-    });
-
-    it("should reject null/undefined", () => {
-      expect(validateOrderSide(null)).toBe("Order side is required");
-      expect(validateOrderSide(undefined)).toBe("Order side is required");
+    it.each(cases)("should handle %s", (_label, input, expected) => {
+      expect(validateOrderSide(input)).toBe(expected);
     });
   });
 
   describe("validateOutcome", () => {
-    it("should accept YES", () => {
-      expect(validateOutcome("YES")).toBeNull();
-    });
+    const cases: Array<[string, unknown, string | null]> = [
+      ["null", null, "Outcome is required"],
+      ["undefined", undefined, "Outcome is required"],
+      ["YES", "YES", null],
+      ["NO", "NO", null],
+      ["lowercase yes", "yes", "Outcome must be 'YES' or 'NO'"],
+      ["lowercase no", "no", "Outcome must be 'YES' or 'NO'"],
+      ["buy (wrong enum)", "buy", "Outcome must be 'YES' or 'NO'"],
+      ["MAYBE", "MAYBE", "Outcome must be 'YES' or 'NO'"],
+      ["empty string", "", "Outcome must be 'YES' or 'NO'"],
+    ];
 
-    it("should accept NO", () => {
-      expect(validateOutcome("NO")).toBeNull();
-    });
-
-    it("should reject other strings", () => {
-      expect(validateOutcome("yes")).toBe("Outcome must be 'YES' or 'NO'");
-      expect(validateOutcome("MAYBE")).toBe("Outcome must be 'YES' or 'NO'");
-      expect(validateOutcome("")).toBe("Outcome must be 'YES' or 'NO'");
-    });
-
-    it("should reject null/undefined", () => {
-      expect(validateOutcome(null)).toBe("Outcome is required");
-      expect(validateOutcome(undefined)).toBe("Outcome is required");
+    it.each(cases)("should handle %s", (_label, input, expected) => {
+      expect(validateOutcome(input)).toBe(expected);
     });
   });
 
