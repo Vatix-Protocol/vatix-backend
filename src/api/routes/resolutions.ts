@@ -156,6 +156,16 @@ export async function resolutionsRoutes(fastify: FastifyInstance) {
           return;
         }
 
+        if (err.name === "UnauthorizedChallengeActorError") {
+          reply.status(403).send({
+            candidateId,
+            marketId: "",
+            status: "UNAUTHORIZED",
+            message: err.message,
+          });
+          return;
+        }
+
         // Re-throw for global error handler
         throw err;
       }

@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
 import { Keypair } from "@stellar/stellar-sdk";
-import { ordersRoutes, parseIdempotencyKey } from "./orders.js";
+import {
+  ordersRoutes,
+  parseIdempotencyKey,
+  CreateOrderSchema,
+} from "./orders.js";
 import { errorHandler } from "../middleware/errorHandler.js";
 import {
   ValidationError,
@@ -1063,6 +1067,49 @@ describe("POST /orders", () => {
   });
 });
 
+describe("CreateOrderSchema quantity validation (#1531)", () => {
+  // Assert the Zod layer directly — this is what the route handler uses
+  // after the Fastify-level `{ type: "integer", minimum: 1 }` schema has
+  // already run. Both layers must agree: quantity is a positive integer.
+  const validAddress =
+    "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+
+  const baseOrder = {
+    marketId: "market-1",
+    userAddress: validAddress,
+    side: "BUY" as const,
+    outcome: "YES" as const,
+    price: 0.6,
+    quantity: 1,
+  };
+
+  it("rejects quantity 0", () => {
+    const result = CreateOrderSchema.safeParse({ ...baseOrder, quantity: 0 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects quantity -1", () => {
+    const result = CreateOrderSchema.safeParse({
+      ...baseOrder,
+      quantity: -1,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects quantity 1.5", () => {
+    const result = CreateOrderSchema.safeParse({
+      ...baseOrder,
+      quantity: 1.5,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts quantity 1", () => {
+    const result = CreateOrderSchema.safeParse({ ...baseOrder, quantity: 1 });
+    expect(result.success).toBe(true);
+  });
+});
+
 describe("POST /orders idempotency", () => {
   let app: FastifyInstance;
   const validAddress =
@@ -1450,5 +1497,54 @@ describe("DELETE /orders/:id — cancel order", () => {
     });
 
     expect(response.statusCode).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CreateOrderSchema (#1530)
+//
+// Zod requires `price` to be in `[0, 1)` and, unless it is exactly `0` (the
+// market-order sentinel — see the comment on `price` in `CreateOrderSchema`),
+// a multiple of `TICK_SIZE` (0.01). These cases exercise the schema directly
+// so a regression in the price bounds or tick-size check fails fast without
+// going through the full HTTP route.
+//
+// NOTE: if market orders gain their own dedicated flag/endpoint later, the
+// `price === 0` case below must be revisited — it currently fails only
+// because a market order additionally requires `limitPrice`.
+// ---------------------------------------------------------------------------
+describe("CreateOrderSchema", () => {
+  const validAddress =
+    "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+
+  const basePayload = {
+    marketId: "market-1",
+    userAddress: validAddress,
+    side: "BUY" as const,
+    outcome: "YES" as const,
+    quantity: 100,
+  };
+
+  it("rejects price 0 without a limitPrice (market-order sentinel requires one)", () => {
+    const result = CreateOrderSchema.safeParse({ ...basePayload, price: 0 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects price 1 (must be strictly less than 1)", () => {
+    const result = CreateOrderSchema.safeParse({ ...basePayload, price: 1 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects price 0.015 (not a multiple of TICK_SIZE)", () => {
+    const result = CreateOrderSchema.safeParse({
+      ...basePayload,
+      price: 0.015,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts price 0.50 (within range and on a tick boundary)", () => {
+    const result = CreateOrderSchema.safeParse({ ...basePayload, price: 0.5 });
+    expect(result.success).toBe(true);
   });
 });

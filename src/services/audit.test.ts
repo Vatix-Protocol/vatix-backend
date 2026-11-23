@@ -8,7 +8,7 @@ vi.hoisted(() => {
   process.env.REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 });
 
-const { auditService } = await import("./audit.js");
+const { auditService, canonicalPriceString } = await import("./audit.js");
 const { redis } = await import("./redis.js");
 
 const keyPrefix = process.env.REDIS_KEY_PREFIX ?? "vatix:";
@@ -80,8 +80,40 @@ describe("Audit Service", () => {
       expect(entry.trade.outcome).toBe(testTrade.outcome);
       expect(entry.trade.buyerAddress).toBe(testTrade.buyerAddress);
       expect(entry.trade.sellerAddress).toBe(testTrade.sellerAddress);
-      expect(entry.trade.price).toBe(testTrade.price.toString());
+      expect(entry.trade.price).toBe(canonicalPriceString(testTrade.price));
       expect(entry.trade.quantity).toBe(testTrade.quantity);
+    });
+  });
+
+  describe("canonicalPriceString (#1543)", () => {
+    it("formats a plain decimal to the fixed PRICE_SCALE used by the DB column", () => {
+      expect(canonicalPriceString(0.55)).toBe("0.55000000");
+      expect(canonicalPriceString(1)).toBe("1.00000000");
+    });
+
+    it("hashes the same canonical string for a decimal and its float-noisy equivalent", () => {
+      // 0.1 + 0.2 picks up float noise (0.30000000000000004) but is the
+      // same logical decimal as "0.3" stored in a Decimal(10, 8) column.
+      const noisy = 0.1 + 0.2;
+      expect(noisy.toString()).not.toBe("0.3"); // sanity: noise is real
+      expect(canonicalPriceString(noisy)).toBe(canonicalPriceString("0.3"));
+      expect(canonicalPriceString(noisy)).toBe("0.30000000");
+    });
+
+    it("avoids exponential notation for small prices", () => {
+      expect((0.0000001).toString()).toBe("1e-7"); // sanity: JS default is exponential
+      expect(canonicalPriceString(0.0000001)).toBe("0.00000010");
+    });
+
+    it("produces a different string for a genuinely different price (one tick)", () => {
+      expect(canonicalPriceString("0.30000000")).not.toBe(
+        canonicalPriceString("0.30000001")
+      );
+    });
+
+    it("accepts Decimal-like objects exposing toString() without precision loss", () => {
+      const decimalLike = { toString: () => "0.12345678" };
+      expect(canonicalPriceString(decimalLike)).toBe("0.12345678");
     });
   });
 
@@ -230,15 +262,15 @@ describe("Audit Service", () => {
       const logs = await auditService.getAuditLog(testMarketId, 1);
 
       expect(logs[0].id).toBe(entryId);
-      expect(logs[0].trade.price).toBe("0.55");
+      expect(logs[0].trade.price).toBe("0.55000000");
 
       // Even if we try to log same trade with different price, it's a new entry
       await auditService.logOrderMatch({ ...testTrade, price: 0.99 });
 
       const allLogs = await auditService.getAuditLog(testMarketId, 10);
       expect(allLogs.length).toBe(2);
-      expect(allLogs[0].trade.price).toBe("0.55"); // Original unchanged
-      expect(allLogs[1].trade.price).toBe("0.99"); // New entry
+      expect(allLogs[0].trade.price).toBe("0.55000000"); // Original unchanged
+      expect(allLogs[1].trade.price).toBe("0.99000000"); // New entry
     });
   });
 });

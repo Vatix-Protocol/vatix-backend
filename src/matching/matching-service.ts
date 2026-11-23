@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import type { Outcome } from "../types/index.js";
 import type { OrderInput } from "./validation.js";
 import { computeEffectiveWorstPrice, normalizePriceToDecimalString } from "./validation.js";
+import { computeCollateralToRelease } from "./collateral.js";
 import { OrderBook } from "./orderbook.js";
 import {
   matchOrder,
@@ -34,8 +35,18 @@ import {
 } from "../services/metrics.js";
 import { leaderLease } from "./leader-lease.js";
 import { Logger } from "@vatix/shared/logger.js";
+import { COLLATERAL_SCALE } from "../../apps/indexer/src/decimalUtils.js";
 
 const logger = new Logger("matching-service");
+
+/**
+ * Rounding scale for collateral math on the cancel path below. Shared with
+ * the indexer (decimalUtils.ts) and the expiry/operator-cancel job so a
+ * single constant — not a second literal scale — defines "1.0 collateral
+ * unit" everywhere (#1549). This must match the 7-decimal on-chain unit,
+ * not the wider Decimal(20, 8) column width.
+ */
+const COLLATERAL_ROUNDING_FACTOR = 10 ** Number(COLLATERAL_SCALE);
 
 export interface PlaceOrderResult {
   order: any;
@@ -361,14 +372,16 @@ class MatchingService {
             );
           }
 
-          // Release locked collateral for the remaining unfilled quantity only.
+          // Release locked collateral for the remaining unfilled quantity
+          // only. Computed via the shared Decimal helper (#1533) rather than
+          // raw Number arithmetic, so the released amount carries no
+          // IEEE-754 residue.
           const remainingQty = order.quantity - order.filledQuantity;
-          const collateralPerUnit =
-            order.side === "BUY"
-              ? Number(order.price)
-              : 1 - Number(order.price);
-          const collateralToRelease =
-            Math.round(collateralPerUnit * remainingQty * 1e8) / 1e8;
+          const collateralToRelease = computeCollateralToRelease(
+            order.side,
+            order.price.toString(),
+            remainingQty
+          ).toNumber();
 
           if (collateralToRelease > 0) {
             const position = await tx.userPosition.findUnique({
@@ -657,16 +670,31 @@ class MatchingService {
             )
           : input.price;
 
+      // A market order (price === 0) with no limitPrice/maxSlippagePct has no
+      // bound at all. The previous fallback to the book extremes (0.9999 for
+      // BUY, 0.0001 for SELL) let it walk the *entire* book — the comment
+      // above it said this was "permitted only in dev", but nothing here
+      // actually checked NODE_ENV, so every environment got the unbounded
+      // walk (#1525). Reject it before matchOrder is ever invoked, in every
+      // environment, closing the gap for any in-process caller that reaches
+      // placeOrder directly (the HTTP route's own validateOrderFields /
+      // assertValidOrder gate already rejects this earlier, but that must
+      // not be the only guard).
+      if (input.price === 0 && effectiveWorstPrice === null) {
+        throw new ValidationError(
+          "Market order requires limitPrice — no default worst-case price is substituted"
+        );
+      }
+
       const takerOrder: MatchingOrder = {
         id: orderId,
         userAddress: input.userAddress,
         side: input.side,
         // Market orders pass effectiveWorstPrice as their matching price so
-        // canMatch() naturally stops at the caller's tolerance boundary.
-        // When no limit/slippage was specified effectiveWorstPrice is null
-        // and we fall back to the market-order extremes (1 for BUY, 0 for
-        // SELL) so the order walks the whole book — permitted only in dev.
-        price: effectiveWorstPrice ?? (input.side === "BUY" ? 0.9999 : 0.0001),
+        // canMatch() naturally stops at the caller's tolerance boundary. A
+        // missing limit is rejected above, so effectiveWorstPrice is never
+        // null here.
+        price: effectiveWorstPrice as number,
         quantity: input.quantity,
         marketId: input.marketId,
         outcome: input.outcome,
@@ -793,6 +821,28 @@ class MatchingService {
             }
 
             const newFilledQty = makerOrder.filledQuantity + trade.quantity;
+
+            // Capacity guard (#1542): `trade.quantity` was chosen by
+            // `matchOrder()` against the in-memory book *before* this
+            // transaction opened and locked-by-version the maker row above.
+            // That book can be stale relative to the fresh `makerOrder` read
+            // — e.g. another instance's transaction committed a fill against
+            // this same maker in between. The `version`/`status` match in
+            // the conditional update below only proves this read is the
+            // current row; it does NOT prove `trade.quantity` still fits in
+            // whatever capacity remained at that current version. Without
+            // this check, two takers racing for the same resting quantity
+            // could each have their transaction's fresh read land *after*
+            // the other's commit and still blindly add their own stale
+            // `trade.quantity` on top, pushing `filledQuantity` past
+            // `quantity` instead of the second one failing outright.
+            if (newFilledQty > makerOrder.quantity) {
+              throw new OrderConflictError(
+                `Maker order ${maker} has only ${
+                  makerOrder.quantity - makerOrder.filledQuantity
+                } remaining, which is less than the ${trade.quantity} this match requires; the in-memory book was stale, please retry`
+              );
+            }
 
             let makerStatus: "OPEN" | "PARTIALLY_FILLED" | "FILLED";
             if (newFilledQty === 0) {

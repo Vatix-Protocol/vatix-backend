@@ -390,8 +390,19 @@ export class GapDetector {
    * Non-blocking: errors are logged but do not throw.
    *
    * SSRF hardening (#1160): the host is re-resolved and checked before every
-   * send, redirects are refused, and the call is time-bounded. The URL is
-   * never logged because webhook URLs commonly embed a secret token.
+   * send, redirects are refused, and the call is time-bounded. The webhook
+   * URL is never logged, and never placed in the JSON body, because webhook
+   * URLs commonly embed a secret token (#1527).
+   *
+   * The JSON body sent to the webhook contains exactly these fields — and no
+   * others — so operators know what leaves the process:
+   *   - `alert`             — always the literal string `"persistent_ledger_gap"`.
+   *   - `contractId`        — the Soroban contract id being indexed.
+   *   - `gapStartLedger`    — first missing ledger (inclusive).
+   *   - `gapEndLedger`      — last missing ledger (inclusive).
+   *   - `gapSize`           — size of the gap in ledgers.
+   *   - `persistentCycles`  — consecutive detection cycles the gap has persisted.
+   *   - `timestamp`         — ISO-8601 time the page was sent.
    */
   private async pageOperatorsForPersistentGap(
     gapStartLedger: number,

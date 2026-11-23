@@ -20,7 +20,9 @@ import {
   OracleSignatureError,
   ORACLE_SIGNATURE_ERROR_CODES,
   MAX_MARKET_ID_LENGTH,
+  CURRENT_SIGNATURE_VERSION,
   type ResolutionPayload,
+  type SignedResolutionReport,
 } from "./signature-helper.js";
 
 const oracleKeypair = Keypair.random();
@@ -219,6 +221,74 @@ describe("verifyResolutionReport signer pinning (#1113)", () => {
         { env: TEST_ENV }
       )
     ).toBe(false);
+  });
+
+  describe("pinned signer comparison rejects near-miss keys (#1535)", () => {
+    // The check is `report.publicKey !== trustedSigner` — a plain string
+    // comparison. A prefix of the pinned key, a different key of the same
+    // length, and a differently-cased copy must all fail; only the exact
+    // pinned public key may verify. Each forged report here uses a
+    // placeholder signature: the publicKey mismatch is rejected before any
+    // cryptographic verification is attempted, so the signature's validity
+    // is irrelevant to these cases.
+    const makeForgedReport = (publicKey: string): SignedResolutionReport => ({
+      payload,
+      signature: "irrelevant-placeholder-signature",
+      publicKey,
+      version: CURRENT_SIGNATURE_VERSION,
+    });
+
+    it("rejects a publicKey that is a strict prefix of the pinned signer", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const forged = makeForgedReport(ORACLE_PUBLIC_KEY.slice(0, -1));
+
+      expect(forged.publicKey).not.toBe(ORACLE_PUBLIC_KEY);
+      expect(
+        verifyResolutionReport(forged, undefined, {
+          env: PRODUCTION_ENV,
+          expectedPublicKey: ORACLE_PUBLIC_KEY,
+        })
+      ).toBe(false);
+    });
+
+    it("rejects a different key of the same length as the pinned signer", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const forged = makeForgedReport(attackerKeypair.publicKey());
+
+      expect(forged.publicKey.length).toBe(ORACLE_PUBLIC_KEY.length);
+      expect(forged.publicKey).not.toBe(ORACLE_PUBLIC_KEY);
+      expect(
+        verifyResolutionReport(forged, undefined, {
+          env: PRODUCTION_ENV,
+          expectedPublicKey: ORACLE_PUBLIC_KEY,
+        })
+      ).toBe(false);
+    });
+
+    it("rejects a differently-cased copy of the pinned signer (case-sensitive comparison)", () => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const forged = makeForgedReport(ORACLE_PUBLIC_KEY.toLowerCase());
+
+      expect(forged.publicKey).not.toBe(ORACLE_PUBLIC_KEY);
+      expect(
+        verifyResolutionReport(forged, undefined, {
+          env: PRODUCTION_ENV,
+          expectedPublicKey: ORACLE_PUBLIC_KEY,
+        })
+      ).toBe(false);
+    });
+
+    it("verifies only the exact pinned public key", () => {
+      const report = signResolutionReport(payload, oracleKeypair.secret());
+      expect(report.publicKey).toBe(ORACLE_PUBLIC_KEY);
+
+      expect(
+        verifyResolutionReport(report, undefined, {
+          env: PRODUCTION_ENV,
+          expectedPublicKey: ORACLE_PUBLIC_KEY,
+        })
+      ).toBe(true);
+    });
   });
 
   it("does not leak key material in the failure message", () => {

@@ -445,62 +445,7 @@ export function computeEffectiveWorstPrice(
 }
 
 /**
- * Validates every field of an `OrderInput` in isolation (no DB access).
- * Returns every field error found, not just the first, so a caller can
- * surface them all at once instead of round-tripping one at a time.
- */
-export function validateOrderFields(order: OrderInput): ValidationResult {
-  const errors: Record<string, string> = {};
-
-  const userAddressError = validateUserAddress(order.userAddress);
-  if (userAddressError) errors.userAddress = userAddressError;
-
-  const sideError = validateOrderSide(order.side);
-  if (sideError) errors.side = sideError;
-
-  const outcomeError = validateOutcome(order.outcome);
-  if (outcomeError) errors.outcome = outcomeError;
-
-  const priceError = validatePrice(order.price);
-  if (priceError) errors.price = priceError;
-
-  const quantityError = validateQuantity(order.quantity);
-  if (quantityError) errors.quantity = quantityError;
-
-  // Only meaningful once `side` is known to be valid; validateLimitPrice
-  // itself reports an error for the degenerate case.
-  const limitPriceError = validateLimitPrice(
-    order.limitPrice,
-    order.side,
-    order.maxSlippagePct
-  );
-  if (limitPriceError) errors.limitPrice = limitPriceError;
-
-  // Avoid reporting the same underlying problem twice: validateLimitPrice
-  // already validates maxSlippagePct when a limitPrice is present.
-  if (!limitPriceError) {
-    const maxSlippagePctError = validateMaxSlippagePct(order.maxSlippagePct);
-    if (maxSlippagePctError) errors.maxSlippagePct = maxSlippagePctError;
-  }
-
-  return { valid: Object.keys(errors).length === 0, errors };
-}
-
-/**
- * Validates that the target market exists and can still accept this order:
- * not past its end time (with the shared clock-skew tolerance applied, so
- * this agrees with the expiry worker on when `endTime` has actually passed)
- * and in a status `isTradable` reports as tradable — the single source of
- * truth for "is this market open for orders," never an ad-hoc status string
- * comparison here.
- */
-export async function validateMarketState(
-  marketId: string
-): Promise<ValidationResult> {
-  const prisma = getPrismaClient();
-  const market = await prisma.market.findUnique({ where: { id: marketId } });
-
-  if (!market) {
+  if (!market || market.deletedAt) {
     return { valid: false, errors: { marketId: "Market not found" } };
   }
 
@@ -508,28 +453,54 @@ export async function validateMarketState(
 
   if (!isTradable(status)) {
     return {
+
+ */
+export async function validateMarketState(
+  marketId: string
+): Promise<ValidationResult> {
+  const prisma = getPrismaClient();
+  const market = await prisma.market.findUnique({ where: { id: marketId } });
+
+  if (!market || market.deletedAt) {
+    return { valid: false, errors: { marketId: "Market not found" } };
+  }
+
+  const status = market.status as MarketLifecycleState;
+
+  if (status === "RESOLVED") {
+    return {
       valid: false,
-      errors: {
-        marketId: `Market is ${status.toLowerCase()}; orders cannot be placed`,
-      },
+      errors: { marketId: "Market has already been resolved" },
+    };
+  }
+
+  if (status === "CANCELLED") {
+    return {
+      valid: false,
+      errors: { marketId: "Market has been cancelled" },
+    };
+  }
+
+  if (!isTradable(status)) {
+    return {
+      valid: false,
+      errors: { marketId: `Market is not tradable (status: ${status})` },
     };
   }
 
   const toleranceMs = resolveClockSkewToleranceMs();
   if (isPastEndTime(market.endTime, Date.now(), toleranceMs)) {
-    return {
-      valid: false,
-      errors: { marketId: "Market has ended; orders cannot be placed" },
-    };
+    return { valid: false, errors: { marketId: "Market has ended" } };
   }
 
   return { valid: true, errors: {} };
 }
 
 /**
- * Full order validation: field-level checks first (no DB access), then the
- * market-state check. Field errors short-circuit before the DB is touched,
- * so a malformed request never costs a query.
+    return {
+      valid: false,
+      errors: { marketId: "Market has ended; orders cannot be placed" },
+    };
  */
 export async function validateOrder(
   order: OrderInput
@@ -543,8 +514,10 @@ export async function validateOrder(
 }
 
 /**
- * Validates `order` and throws `OrderValidationError` (carrying every field
- * error found) when it is invalid. Resolves with no value when valid.
+ * Throws {@link OrderValidationError} (carrying every field/market error on
+ * `.fields`) when the order is invalid; resolves silently when it's valid.
+ * Convenience wrapper so callers that just want to guard a write path don't
+ * have to branch on `ValidationResult.valid` themselves.
  */
 export async function assertValidOrder(order: OrderInput): Promise<void> {
   const result = await validateOrder(order);

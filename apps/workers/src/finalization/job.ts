@@ -239,7 +239,12 @@ export class FinalizationJob {
       });
 
       try {
-        const txState = { challengeRejected: false };
+        // "rejected": challenge upheld, candidate REJECTED in this transaction.
+        // "inconclusive": neither upheld nor explicitly denied (tie or a
+        // missing score) — candidate left CHALLENGED, revisit on a later run.
+        // undefined: no CHALLENGED branch taken, or it fell through to
+        // finalization (missing-competitor-denies-challenge product rule).
+        const txState: { outcome?: "rejected" | "inconclusive" } = {};
         await this.prisma.$transaction(async (tx) => {
           const now = new Date();
 
@@ -265,9 +270,36 @@ export class FinalizationJob {
           }
 
           // ── Handle CHALLENGED candidates ────────────────────────────────
-          // Adjudicate challenges by checking if a competing PROPOSED candidate
-          // with higher confidence exists. If so, reject this candidate (challenge
-          // upheld). Otherwise, accept it and finalize (challenge denied).
+          // Adjudicate challenges by comparing confidence scores as decimals
+          // — never via `Number(score) : 0`, which would turn a genuinely
+          // null score into a 0 and make two null scores look like a tie.
+          //
+          // Documented product rule: a missing competitor (no other
+          // PROPOSED row for this market) means there is no evidence to
+          // beat the original proposal, so the challenge is denied and this
+          // candidate falls through to finalization below.
+          //
+          // When a competitor does exist, the challenge is only ever
+          // explicitly upheld or explicitly denied when BOTH scores are
+          // actual (non-null) decimals and one is strictly greater than the
+          // other:
+          //   - competing > challenge  -> challenge upheld, REJECT this one.
+          //   - challenge > competing  -> challenge denied, finalize below.
+          //   - equal scores, or either score missing -> inconclusive; this
+          //     is NOT a denial, so the candidate stays CHALLENGED and is
+          //     skipped this run rather than silently finalized.
+          //
+          // `challengeDenied` makes the "no better competitor" outcome an
+          // explicit, named decision rather than something the accept path
+          // below merely inherits by falling out of this `if` unchallenged
+          // (#1550). The accept path asserts on this flag instead of just
+          // trusting that every way of reaching it already implies denial —
+          // so a future edit to the upheld-challenge branch above that adds
+          // another way to fall through here (without an explicit `return`)
+          // is caught by the assertion below instead of silently finalizing
+          // a challenge that was never actually adjudicated.
+          let challengeDenied = false;
+
           if (locked.status === "CHALLENGED") {
             const competing = await tx.resolutionCandidate.findFirst({
               where: {
@@ -283,10 +315,28 @@ export class FinalizationJob {
             // numbers (#1547): converting with `Number()` first can make two
             // close-but-distinct scores compare equal, or sort differently
             // from the `orderBy: confidenceScore` the query above just used.
-            const challengeScore = candidate.confidenceScore ?? ZERO_CONFIDENCE;
-            const competingScore = competing?.confidenceScore ?? ZERO_CONFIDENCE;
+            const challengeScore =
+              candidate.confidenceScore === null ||
+              candidate.confidenceScore === undefined
+                ? null
+                : new Decimal(candidate.confidenceScore.toString());
+            const competingScore =
+              competing.confidenceScore === null ||
+              competing.confidenceScore === undefined
+                ? null
+                : new Decimal(competing.confidenceScore.toString());
 
-            if (competing && competingScore.greaterThan(challengeScore)) {
+            const upheld =
+              challengeScore !== null &&
+              competingScore !== null &&
+              competingScore.greaterThan(challengeScore);
+
+            const explicitlyDenied =
+              challengeScore !== null &&
+              competingScore !== null &&
+              challengeScore.greaterThan(competingScore);
+
+            if (upheld) {
               // Challenge upheld: reject this candidate
               await tx.resolutionCandidate.update({
                 where: { id: candidate.id },
@@ -294,29 +344,74 @@ export class FinalizationJob {
               });
 
               await tx.resolutionAuditLog.create({
-                data: {
+
+              const explicitlyDenied =
+                challengeScore !== null &&
+                competingScore !== null &&
+                challengeScore.greaterThan(competingScore);
+
+              if (upheld) {
+                // Challenge upheld: reject this candidate
+                await tx.resolutionCandidate.update({
+                  where: { id: candidate.id },
+                  data: { status: "REJECTED" },
+                });
+
+                await tx.resolutionAuditLog.create({
+                  data: {
+                    candidateId: candidate.id,
+                    marketId: candidate.marketId,
+                    action: "ADJUDICATE_CHALLENGE",
+                    beforeStatus: "CHALLENGED",
+                    afterStatus: "REJECTED",
+                    actor: "finalization-worker",
+                  },
+                });
+
+                this.logger.info("Challenged candidate rejected", {
                   candidateId: candidate.id,
                   marketId: candidate.marketId,
-                  action: "ADJUDICATE_CHALLENGE",
-                  beforeStatus: "CHALLENGED",
-                  afterStatus: "REJECTED",
-                  actor: "finalization-worker",
-                },
-              });
+                  reason: "competing proposal with higher confidence",
+                  competingCandidateId: competing.id,
+                });
 
-              this.logger.info("Challenged candidate rejected", {
-                candidateId: candidate.id,
-                marketId: candidate.marketId,
-                reason: "competing proposal with higher confidence",
-                competingCandidateId: competing.id,
-              });
+                txState.outcome = "rejected";
+                return;
+              }
 
-              txState.challengeRejected = true;
-              return;
+              if (!explicitlyDenied) {
+                // Tie (equal decimal scores) or a null score on either side:
+                // not an explicit denial of the challenge. Leave CHALLENGED
+                // and revisit on a later run instead of guessing.
+                this.logger.info(
+                  "Challenged candidate left pending: scores tie or are undefined",
+                  {
+                    candidateId: candidate.id,
+                    marketId: candidate.marketId,
+                    competingCandidateId: competing.id,
+                    challengeScore: challengeScore?.toString() ?? null,
+                    competingScore: competingScore?.toString() ?? null,
+                  }
+                );
+
+                txState.outcome = "inconclusive";
+                return;
+              }
             }
+
+            // Challenge denied: no competing PROPOSED candidate with higher
+            // confidence exists, so this CHALLENGED row is eligible to be
+            // finalized below.
+            challengeDenied = true;
           }
 
-          // ── Finalize PROPOSED or CHALLENGED (challenge denied) ──────────
+          // ── Finalize PROPOSED or denied-CHALLENGED candidates ───────────
+          // Reachable only for a PROPOSED candidate, or a CHALLENGED one
+          // whose challenge was just explicitly denied above — never merely
+          // because execution fell out of the `if` block (#1550).
+          if (locked.status !== "PROPOSED" && !challengeDenied) {
+            throw new CandidateNotEligibleError(candidate.id, locked.status);
+          }
           await tx.resolution.create({
             data: {
               marketId: candidate.marketId,
@@ -366,7 +461,15 @@ export class FinalizationJob {
           });
         });
 
-        if (!txState.challengeRejected) {
+        if (txState.outcome === "inconclusive") {
+          // Tie or undefined score: left CHALLENGED, not finalized this run.
+          results.push({
+            candidateId: candidate.id,
+            marketId: candidate.marketId,
+            proposedOutcome: candidate.proposedOutcome,
+            status: "skipped",
+          });
+        } else if (!txState.outcome) {
           results.push({
             candidateId: candidate.id,
             marketId: candidate.marketId,
@@ -380,6 +483,9 @@ export class FinalizationJob {
             proposedOutcome: candidate.proposedOutcome,
           });
         } else {
+          // outcome === "rejected": challenge upheld, candidate REJECTED
+          // (pre-existing behavior: reported as "finalized" since the job
+          // reached a terminal decision for this candidate).
           results.push({
             candidateId: candidate.id,
             marketId: candidate.marketId,

@@ -64,17 +64,39 @@ export class DecimalUtilsError extends Error {
 
 /**
  * Error thrown when a value exceeds the Decimal(20, 8) column range.
+ *
+ * The message intentionally contains only the stable `DECIMAL_VALUE_OUT_OF_RANGE`
+ * code — never the raw input — because callers in this codebase surface
+ * `error.message` (e.g. in HTTP responses and logs), and the raw amount is
+ * exactly the kind of money-path value that must not be copied into a
+ * message that ends up published externally. The amount is still available
+ * on `rawValue`, a non-enumerable field, so it survives for local
+ * debugging/structured logging without appearing in `message`,
+ * `JSON.stringify(error)`, or `Object.keys(error)`.
  */
 export class DecimalValueOutOfRangeError extends DecimalUtilsError {
+  /** The out-of-range input that triggered this error. Non-enumerable: kept
+   *  off `message` and out of accidental serialization, for local debugging
+   *  only. `declare`d so TS emits no field initializer that would clobber
+   *  the non-enumerable descriptor set via `Object.defineProperty` below. */
+  declare readonly rawValue: bigint | string | number | Decimal;
+
   constructor(
     value: bigint | string | number | Decimal,
     correlationId?: string
   ) {
-    const msg = typeof value === "bigint" || typeof value === "string"
-      ? `value ${value} exceeds Decimal(20,8) column range`
-      : `value ${value.toString()} exceeds Decimal(20,8) column range`;
-    super(DECIMAL_UTILS_ERROR_CODES.VALUE_OUT_OF_RANGE, msg, correlationId);
+    super(
+      DECIMAL_UTILS_ERROR_CODES.VALUE_OUT_OF_RANGE,
+      `value exceeds Decimal(20,8) column range (${DECIMAL_UTILS_ERROR_CODES.VALUE_OUT_OF_RANGE})`,
+      correlationId
+    );
     this.name = "DecimalValueOutOfRangeError";
+    Object.defineProperty(this, "rawValue", {
+      value,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
   }
 }
 

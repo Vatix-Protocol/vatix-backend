@@ -31,7 +31,7 @@ import {
 // Zod schema for POST /orders body
 // ---------------------------------------------------------------------------
 
-const CreateOrderSchema = z
+export const CreateOrderSchema = z
   .object({
     marketId: z.string().min(1, "marketId is required"),
     userAddress: z
@@ -578,6 +578,9 @@ export async function ordersRoutes(fastify: FastifyInstance) {
         allowPartialFill: body.allowPartialFill,
       };
 
+      // Pre-existing bug (unrelated to #1539): this call wasn't awaited, so
+      // a rejected validation promise never blocked order placement below —
+      // fixed here since it directly blocks assertValidOrder's purpose.
       await assertValidOrder(orderInput);
 
       const result = await matchingService.placeOrder(

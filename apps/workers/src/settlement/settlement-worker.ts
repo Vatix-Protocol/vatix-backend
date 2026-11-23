@@ -78,6 +78,39 @@ export function decimalPriceToI128(price: string): bigint {
   return scaled;
 }
 
+/** Matches a plain non-negative integer string, e.g. "1", "100". Rejects
+ *  scientific notation ("1e2") and decimals, which `Number.isInteger` on a
+ *  coerced `Number` would otherwise let through while `BigInt()` rejects. */
+const INTEGER_QUANTITY_PATTERN = /^\d+$/;
+
+/**
+ * Converts a positive integer quantity string to its i128 (bigint) form using
+ * integer arithmetic only — never `Number`/`BigInt(Number(...))`, so a value
+ * the Zod schema's `Number.isInteger` check lets through (e.g. the scientific
+ * notation string `"1e2"`, for which `Number("1e2")` is the integer `100` but
+ * `BigInt("1e2")` throws `SyntaxError`) is caught here as a classified
+ * validation error instead of as a raw `BigInt` exception deeper in
+ * `executeOnChain` (#1526).
+ *
+ * Throws when the string is not a plain non-negative integer, or is not
+ * strictly positive.
+ */
+export function quantityToI128(quantity: string): bigint {
+  const trimmed = quantity.trim();
+  if (!INTEGER_QUANTITY_PATTERN.test(trimmed)) {
+    throw new Error(
+      `invalid payload — quantity is not a positive integer: ${quantity}`
+    );
+  }
+
+  const value = BigInt(trimmed);
+  if (value <= 0n) {
+    throw new Error(`invalid payload — quantity must be positive: ${quantity}`);
+  }
+
+  return value;
+}
+
 /**
  * Zod schema used to validate the raw job payload before processing.
  * Any field that is missing, empty, or of the wrong type causes the job to be
@@ -520,9 +553,12 @@ export class SettlementWorker {
     const { rpcUrl, contractId, networkPassphrase, signerSecret } =
       this.stellarConfig!;
 
-    // Convert the decimal price to its 7-decimal i128 form before any RPC
-    // call so a non-numeric price fails fast without touching the network.
+    // Convert price and quantity to their on-chain i128 representations
+    // before any RPC call — a bad payload must fail as a classified
+    // validation error, not spend a `getAccount` round-trip and then throw
+    // a raw BigInt exception while building the transaction args (#1526).
     const priceI128 = decimalPriceToI128(payload.price);
+    const quantityI128 = quantityToI128(payload.quantity);
 
     const keypair = Keypair.fromSecret(signerSecret);
     const server = new StellarRpc.Server(rpcUrl);
@@ -553,13 +589,11 @@ export class SettlementWorker {
       nativeToScVal(payload.buyerAddress, { type: "address" }),
       nativeToScVal(payload.sellerAddress, { type: "address" }),
       // Price scale: 7 decimal places (1e7), matching the oracle's
-      // `PriceFetchResult.price` (whole units, non-finite rejected). The
-      // payload carries the same whole-unit decimal string; scale it here
-      // once, immediately before signing.
-      nativeToScVal(BigInt(Math.round(Number(payload.price) * 1e7)), {
-        type: "i128",
-      }),
-      nativeToScVal(BigInt(payload.quantity), { type: "i128" }),
+      // `PriceFetchResult.price` (whole units, non-finite rejected). Reuse
+      // the exact bigint computed above instead of re-deriving it through
+      // binary floating point, which can round differently (#1526).
+      nativeToScVal(priceI128, { type: "i128" }),
+      nativeToScVal(quantityI128, { type: "i128" }),
     ];
 
     const tx = new TransactionBuilder(sourceAccount, {
