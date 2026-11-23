@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { PollingIngestionLoop } from "./ingestion.js";
+import {
+  PollingIngestionLoop,
+  CHECKPOINT_COMMIT_FAILED,
+} from "./ingestion.js";
 import type { EventFetcher } from "./eventFetcher.js";
 import type { BatchWriter } from "./batchWriter.js";
 import type { CursorStorageClient } from "./storage.js";
@@ -235,6 +238,34 @@ describe("PollingIngestionLoop", () => {
       expect.objectContaining({ error: "rpc unavailable" })
     );
     expect(storage.saveCursor).not.toHaveBeenCalled();
+    expect((loop as unknown as { cursor: string | null }).cursor).toBe("10");
+  });
+
+  it("failed checkpoint commit: a batch writer that throws leaves the stored cursor at its previous value (#1538)", async () => {
+    vi.mocked(eventFetcher.fetchByLedgerWindow).mockResolvedValue({
+      events: [],
+      latestLedger: 200,
+    });
+    vi.mocked(batchWriter.write).mockRejectedValue(
+      new Error("db unavailable")
+    );
+
+    const loop = createLoop();
+    (loop as unknown as { cursor: string | null }).cursor = "10";
+
+    // Drives the real tick() path (not ingestFromCursor in isolation) so the
+    // checkpoint-commit atomicity guard in tick() is actually exercised,
+    // per the issue's guidance not to pass by skipping the loop.
+    await (loop as unknown as { tick(): Promise<void> }).tick();
+
+    expect(logger.error).toHaveBeenCalledWith(
+      "Ingestion tick failed (checkpoint commit)",
+      expect.objectContaining({ code: CHECKPOINT_COMMIT_FAILED })
+    );
+    // The checkpoint must never be persisted for a failed batch write...
+    expect(storage.saveCursor).not.toHaveBeenCalled();
+    // ...and the in-memory cursor must stay at the value from before the
+    // tick, so the next tick replays the same (failed) window.
     expect((loop as unknown as { cursor: string | null }).cursor).toBe("10");
   });
 

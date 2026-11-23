@@ -83,6 +83,40 @@ The cursor is not written to the database on every tick — frequent small write
 unnecessary load. Instead it is flushed after a configurable number of successful batches
 (`INDEXER_CHECKPOINT_FLUSH_EVERY_BATCHES`) and unconditionally on graceful shutdown.
 
+### Checkpoint commit failure (`INDEXER_CHECKPOINT_COMMIT_FAILED`)
+
+If a batch write fails (DB error, constraint violation, connection drop) while a tick is
+advancing the cursor, the commit of batch-write-plus-cursor-advance is not atomic in the
+caller's favor: `PollingIngestionLoop` deliberately aborts the checkpoint instead of advancing
+it. The in-memory and persisted cursor are both left at their **previous value** — the write
+never happened and the cursor must not claim otherwise — so the next tick re-fetches and
+re-processes the same `[startLedger, endLedger]` window from scratch (safe: writes are
+idempotent via `indexer_processed_events`).
+
+This is surfaced as `CheckpointCommitError`, exported with the stable code
+`CHECKPOINT_COMMIT_FAILED` = `"INDEXER_CHECKPOINT_COMMIT_FAILED"` (see
+`apps/indexer/src/ingestion.ts`). Operators should alert on this code appearing in logs — it
+means a ledger window is being retried, not skipped, and a persistent recurrence indicates the
+batch writer's dependency (Postgres) needs attention.
+
+Example log line (fields only; no connection string or other secret is ever logged):
+
+```json
+{
+  "level": "error",
+  "msg": "Checkpoint commit aborted: batch write did not succeed — checkpoint not advanced",
+  "event": "indexer.checkpoint.commit_failed",
+  "code": "INDEXER_CHECKPOINT_COMMIT_FAILED",
+  "correlationId": "ckpt-CTEST-12345",
+  "attemptedCursor": "12345",
+  "retainedCursor": "12245"
+}
+```
+
+**Recovery:** no manual cursor edit is needed — the retained cursor is already correct. Resolve
+the underlying batch-write failure (e.g. restore Postgres connectivity); the next scheduled tick
+retries the same window automatically.
+
 ## Reorg safety
 
 When the Stellar network undergoes a chain reorganisation, ledgers that were
@@ -286,6 +320,7 @@ rows — the `skipped` counter increments and `written` stays at 0.
 | `gapDetectedTotal`    | Any increment           | Review `indexer.gap.*` events; verify backfill completed.          |
 | `indexer.gap.pause`   | Any occurrence          | Immediate page; manual investigation required before restart.      |
 | `indexer.gap.clamped` | Any occurrence          | Increase `INDEXER_BACKFILL_MAX_LEDGERS` or investigate root cause. |
+| `INDEXER_CHECKPOINT_COMMIT_FAILED` | Any occurrence | Cursor was not advanced (see [Checkpoint commit failure](#checkpoint-commit-failure-indexer_checkpoint_commit_failed)); investigate the batch writer's Postgres connectivity. A retry re-processes the same window automatically. |
 
 See [Metrics Log](metrics-log.md) for full log event reference.
 

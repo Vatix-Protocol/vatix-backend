@@ -540,6 +540,25 @@ describe("Order Validation", () => {
       expect(result.valid).toBe(false);
       expect(result.errors.marketId).toContain("ended");
     });
+
+    it("should hide a soft-deleted market from the tradable check, even while status is ACTIVE (#1539)", async () => {
+      const futureDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      mockFindUnique.mockResolvedValue({
+        id: "market-123",
+        status: "ACTIVE",
+        endTime: futureDate,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: new Date(),
+      });
+
+      const result = await validateMarketState("market-123");
+      expect(result.valid).toBe(false);
+      // Soft-deleted markets are reported exactly like a nonexistent market —
+      // never the row's own question/prices, and never a status-specific
+      // message that would confirm the (still-ACTIVE) row exists.
+      expect(result.errors.marketId).toBe("Market not found");
+    });
   });
 
   describe("validateOrder", () => {
