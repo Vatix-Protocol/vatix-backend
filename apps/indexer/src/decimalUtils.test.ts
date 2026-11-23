@@ -277,6 +277,38 @@ describe("sharesRawToInt", () => {
   });
 });
 
+describe("a 7-decimal collateral amount survives decimalUtils (#1551)", () => {
+  it("converts 1.0 to raw 10000000", () => {
+    expect(decimalToAmountRaw(1)).toBe(10_000_000n);
+  });
+
+  it("throws DECIMAL_EXCESS_FRACTIONAL_DIGITS for a value with 8 fractional digits", () => {
+    let caught: unknown;
+    try {
+      decimalToAmountRaw("1.00000001");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(DecimalExcessFractionalDigitsError);
+    expect((caught as DecimalExcessFractionalDigitsError).code).toBe(
+      DECIMAL_UTILS_ERROR_CODES.EXCESS_FRACTIONAL_DIGITS
+    );
+  });
+
+  it("throws DECIMAL_NEGATIVE_QUANTITY for a negative share quantity", () => {
+    let caught: unknown;
+    try {
+      sharesRawToInt(-1n);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(DecimalNegativeQuantityError);
+    expect((caught as DecimalNegativeQuantityError).code).toBe(
+      DECIMAL_UTILS_ERROR_CODES.NEGATIVE_QUANTITY
+    );
+  });
+});
+
 describe("decimal overflow boundaries", () => {
   /** Largest raw amount accepted: 999_999_999_999 collateral units. */
   const MAX_RAW = 9_999_999_999_990_000_000n;

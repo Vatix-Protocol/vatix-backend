@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { redis } from "./redis.js";
 import { getPrismaClient } from "./prisma.js";
 import type { Trade } from "../matching/engine.js";
+import { PRICE_SCALE, parsePriceToTicks, ticksToPriceString } from "../matching/price.js";
 import { verifyAuditChainEvents, type AuditChainError } from "./auditChain.js";
 import { auditChainGapTotal } from "./metrics.js";
 
@@ -14,6 +15,44 @@ import { auditChainGapTotal } from "./metrics.js";
  * hashes round-trip losslessly.
  */
 export type AuditTradeSnapshot = Omit<Trade, "price"> & { price: string };
+
+/**
+ * Canonical fixed-point decimal string for a price hashed into the trade
+ * audit chain (#1543).
+ *
+ * `Trade.price` (see `../matching/engine.ts`) is typed as a JS `number`,
+ * which may already have round-tripped through `Number(decimalString)`
+ * upstream (e.g. `matching-service.ts` loading an order's price off the
+ * DB). Hashing `Number.prototype.toString()` directly on that value is not
+ * safe as the one canonical encoder for the chain:
+ *
+ *  - float noise: a decimal such as "0.3" can surface as
+ *    `0.30000000000000004` after arithmetic, and `.toString()` on that
+ *    value is a different string than `.toString()` on the exact decimal,
+ *    so two otherwise-correct writers for the same logical price would
+ *    hash different payloads and the chain would report a false mismatch.
+ *  - exponential notation: `(0.0000001).toString() === "1e-7"`, which is
+ *    not the decimal format the rest of the system (and `row.price` read
+ *    straight from the `Decimal(10, 8)` column) uses.
+ *
+ * This reuses `parsePriceToTicks`/`ticksToPriceString` — the same
+ * canonical tick-based encoder `src/matching/price.ts` already uses for
+ * matching/replay (#1487) — as the one shared encoder, rather than a
+ * second, independent price-formatting implementation living here. Numeric
+ * input is first fixed to `PRICE_SCALE` decimal places (avoiding
+ * exponential notation and normalizing float noise within the DB's
+ * precision) before being parsed as an exact decimal into ticks and
+ * rendered back to the canonical string. Two processes hashing the same
+ * decimal price always produce the same string; a genuine value change
+ * (even a single tick) always produces a different one.
+ */
+export function canonicalPriceString(
+  price: number | string | { toString(): string }
+): string {
+  const raw =
+    typeof price === "number" ? price.toFixed(PRICE_SCALE) : price.toString();
+  return ticksToPriceString(parsePriceToTicks(raw));
+}
 
 export interface AuditLogEntry {
   /** Unique sequential ID from Redis Stream */
@@ -66,7 +105,7 @@ export class AuditService {
         sellerAddress: trade.sellerAddress,
         buyOrderId: trade.buyOrderId,
         sellOrderId: trade.sellOrderId,
-        price: trade.price.toString(),
+        price: canonicalPriceString(trade.price),
         quantity: trade.quantity.toString(),
         timestamp: trade.timestamp.toString(),
         loggedAt: new Date().toISOString(),
