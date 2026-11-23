@@ -160,6 +160,27 @@ describe("PriceFetcher provider allowlist (#1149)", () => {
     ).toThrow(PriceProviderAllowlistInvalidError);
   });
 
+  it("re-checks the allowlist itself (not just the provider name) immediately before every fetch (#1536)", async () => {
+    const logger = makeLogger();
+    const fetchFn = vi.fn(async () => 42_000);
+    const fetcher = new PriceFetcher(logger, {
+      assetId: "BTC",
+      timeoutMs: 1000,
+      primaryProvider: { name: "coingecko", fetchFn },
+      allowedProviders: ["coingecko"],
+    }) as any;
+
+    // Simulate the allowlist itself being revoked after construction (as
+    // opposed to swapping the provider's name) — the per-fetch check must
+    // still deny the now-disallowed provider and must never call fetchFn.
+    fetcher.allowedProviders = ["pyth"];
+
+    await expect(fetcher.fetchPrice()).rejects.toBeInstanceOf(
+      PriceProviderNotAllowedError
+    );
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
   it("never fetches from a named provider that is not on the list", async () => {
     const logger = makeLogger();
     const fetchFn = vi.fn(async () => 42_000);
