@@ -42,7 +42,9 @@ function makePrisma(candidates: FinalizationCandidate[]) {
     },
     userPosition: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
     resolutionAuditLog: { create: vi.fn().mockResolvedValue({}) },
-    $queryRaw: vi.fn().mockResolvedValue([{ id: "locked", status: "PROPOSED" }]),
+    $queryRaw: vi
+      .fn()
+      .mockResolvedValue([{ id: "locked", status: "PROPOSED" }]),
   };
 
   // Returns the candidate even though a real query would filter it out, so

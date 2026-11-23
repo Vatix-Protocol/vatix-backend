@@ -142,7 +142,9 @@ export class FinalizationJob {
     // stricter (further in the past): a fast host clock cannot shrink the
     // effective challenge window below `challengeWindowSeconds` (#1546).
     const windowCutoff = new Date(
-      this.now() - this.challengeWindowSeconds * 1000 - this.clockSkewToleranceMs
+      this.now() -
+        this.challengeWindowSeconds * 1000 -
+        this.clockSkewToleranceMs
     );
 
     this.logger.info("Finalization job started", {

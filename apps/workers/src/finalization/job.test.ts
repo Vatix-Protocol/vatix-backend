@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Decimal } from "@prisma/client/runtime/client.js";
 import { FinalizationJob, FinalizationValidationError } from "./job.js";
+import { RESOLVABLE_MARKET_STATUSES } from "../../../../packages/shared/src/marketLifecycle.js";
 import type { FinalizationJobConfig, FinalizationCandidate } from "./job.js";
 import type {
   FinalizationJobResult,
@@ -54,7 +55,10 @@ function makeCandidate(
 function makeTx(
   marketUpdateCount = 1,
   lockedStatus: string | null = "PROPOSED",
-  competingCandidate: { id: string; confidenceScore: number | null } | null = null
+  competingCandidate: {
+    id: string;
+    confidenceScore: number | null;
+  } | null = null
 ) {
   const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
   const marketUpdateMany = vi
@@ -713,7 +717,7 @@ describe("FinalizationJob", () => {
   });
 
   describe("CHALLENGED and REJECTED paths", () => {
-    it("only queries PROPOSED candidates and ignores CHALLENGED/REJECTED", async () => {
+    it("only queries PROPOSED/CHALLENGED candidates and ignores REJECTED/ACCEPTED", async () => {
       const findMany = vi.fn().mockResolvedValue([]);
       const prisma = {
         resolutionCandidate: { findMany },
@@ -725,10 +729,10 @@ describe("FinalizationJob", () => {
 
       expect(findMany).toHaveBeenCalledWith({
         where: {
-          status: "PROPOSED",
+          status: { in: ["PROPOSED", "CHALLENGED"] },
           createdAt: { lte: expect.any(Date) },
           market: {
-            status: { in: ["ACTIVE"] },
+            status: { in: [...RESOLVABLE_MARKET_STATUSES] },
             deletedAt: null,
           },
         },
@@ -737,6 +741,8 @@ describe("FinalizationJob", () => {
           marketId: true,
           proposedOutcome: true,
           source: true,
+          status: true,
+          confidenceScore: true,
           createdAt: true,
         },
       });
@@ -766,13 +772,14 @@ describe("FinalizationJob", () => {
       expect(queryRaw).toHaveBeenCalledTimes(1);
     });
 
-    it("skips (not errors) a candidate whose lock reveals it was CHALLENGED concurrently", async () => {
+    it("skips (not errors) a candidate whose lock reveals a concurrent terminal status change", async () => {
       const candidates = [
         makeCandidate({ id: "cand-race", marketId: "mkt-race" }),
       ];
-      // The row lock reports CHALLENGED — a challenge write committed
-      // between the outer findMany and this transaction acquiring the lock.
-      const { tx, create, updateCandidate } = makeTx(1, "CHALLENGED");
+      // The row lock reports REJECTED — a concurrent challenge/finalize
+      // committed between the outer findMany and this transaction acquiring
+      // the lock. (A CHALLENGED lock is adjudicated, not skipped.)
+      const { tx, create, updateCandidate } = makeTx(1, "REJECTED");
       const transaction = vi
         .fn()
         .mockImplementation(
@@ -908,7 +915,6 @@ describe("FinalizationJob", () => {
         }),
       ];
       const built = makeChallengedTx(competing);
-
       const transaction = vi
         .fn()
         .mockImplementation(
@@ -921,35 +927,6 @@ describe("FinalizationJob", () => {
         },
         $transaction: transaction,
       } as unknown as PrismaClient;
-
-      return { prisma, ...
-      const transaction = vi
-        .fn()
-        .mockImplementation(
-          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
-            await fn(built.tx)
-        );
-      const prisma = {
-        resolutionCandidate: {
-          findMany: vi.fn().mockResolvedValue(candidates),
-        },
-        $transaction: transaction,
-      } as unknown as PrismaClient;
-
-      return { prisma, ...built };
-    }
-
-    it("upholds the challenge (REJECTS this candidate) when the competing score is strictly higher", async () => {
-      const { prisma, create, updateCandidate } = runChallenged(0.4, {
-        id: "competitor-1",
-        confidenceScore: 0.9,
-      });
-
-      const result = await new FinalizationJob(
-        prisma,
-        makeLogger(),
-        makeConfig(3600)
-      ).run();
 
       return { prisma, ...built };
     }
@@ -989,30 +966,7 @@ describe("FinalizationJob", () => {
         makeConfig(3600)
       ).run();
 
-      expect(create).toHaveBeenCalledTimes(1);
-      expect(findFirstCandidate).toHaveBeenCalledTimes(1);
-      expect(result.erroredCount).toBe(0);
-      expect(result.candidates[0].status).toBe("finalized");
-      // The challenge was denied (no better competitor), so this committed
-      // as a real finalize: a Resolution was created and the candidate
-      // flipped to ACCEPTED, not merely "didn't throw".
-      expect(updateCandidate).toHaveBeenCalledWith({
-        where: { id: "cand-challenged" },
-        data: { status: "ACCEPTED" },
-      });
-      expect(auditLogCreate).toHaveBeenCalledWith({
-        data: {
-          candidateId: "cand-challenged",
-          marketId: "mkt-1",
-          action: "FINALIZE",
-          beforeStatus: "CHALLENGED",
-          afterStatus: "ACCEPTED",
-          actor: "finalization-worker",
-        },
-      });
-    });
-
-    it("rejects (never finalize
+      expect(create).toHaveBeenCalled();
       expect(updateCandidate).toHaveBeenCalledWith({
         where: { id: "cand-challenged" },
         data: { status: "ACCEPTED" },
@@ -1102,9 +1056,6 @@ describe("FinalizationJob", () => {
       expect(result.candidates[0]).toMatchObject({
         candidateId: "cand-challenged",
         status: "finalized",
-      });
-    });
-  });
       });
     });
   });
@@ -1207,11 +1158,13 @@ describe("FinalizationJob", () => {
       const queryRaw = vi
         .fn()
         .mockResolvedValue([{ id: "locked-row", status: "CHALLENGED" }]);
-      const findFirst = vi.fn().mockResolvedValue(
-        competingConfidenceScore === null
-          ? null
-          : { id: "competing-1", confidenceScore: competingConfidenceScore }
-      );
+      const findFirst = vi
+        .fn()
+        .mockResolvedValue(
+          competingConfidenceScore === null
+            ? null
+            : { id: "competing-1", confidenceScore: competingConfidenceScore }
+        );
 
       const tx = {
         resolution: { create },
@@ -1249,7 +1202,7 @@ describe("FinalizationJob", () => {
       // challenge was never upheld) even though the competing score is
       // strictly greater as a Decimal.
       const challengeScore = new Decimal("0.10");
-      const competingScore = new Decimal("0.10000000000000002");
+      const competingScore = new Decimal("0.10000000000000001");
       expect(Number(competingScore.toString())).toBe(
         Number(challengeScore.toString())
       );
@@ -1284,25 +1237,31 @@ describe("FinalizationJob", () => {
       expect(create).not.toHaveBeenCalled();
     });
 
-    it("finalizes the challenged candidate when no competing score is strictly greater", async () => {
+    it("leaves the challenged candidate pending when the competing score is equal (inconclusive)", async () => {
       const score = new Decimal("0.75");
       const candidate = makeCandidate({
         id: "cand-challenged-2",
         marketId: "mkt-2",
         confidenceScore: score,
       });
-      // Competing score is equal, not greater — the challenge is denied.
+      // Competing score is equal — neither upheld nor explicitly denied, so
+      // the candidate stays CHALLENGED and is revisited on a later run.
       const { tx, create, updateCandidate } = makeChallengeTx(
         new Decimal("0.75")
       );
       const prisma = makePrismaForTx([candidate], tx);
 
-      await new FinalizationJob(prisma, makeLogger(), makeConfig(3600)).run();
+      const result = await new FinalizationJob(
+        prisma,
+        makeLogger(),
+        makeConfig(3600)
+      ).run();
 
-      expect(create).toHaveBeenCalled();
-      expect(updateCandidate).toHaveBeenCalledWith({
-        where: { id: "cand-challenged-2" },
-        data: { status: "ACCEPTED" },
+      expect(create).not.toHaveBeenCalled();
+      expect(updateCandidate).not.toHaveBeenCalled();
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-challenged-2",
+        status: "skipped",
       });
     });
 

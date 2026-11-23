@@ -46,7 +46,9 @@ describe("FinalizationJob constructor — challengeWindowSeconds validation (#15
     const { build, findMany, $transaction } = construct(-1);
 
     expect(build).toThrow(FinalizationValidationError);
-    expect(build).toThrow(/challengeWindowSeconds must be a non-negative number/);
+    expect(build).toThrow(
+      /challengeWindowSeconds must be a non-negative number/
+    );
     expect(build).toThrow(expect.objectContaining({ statusCode: 400 }));
     expect(findMany).not.toHaveBeenCalled();
     expect($transaction).not.toHaveBeenCalled();
