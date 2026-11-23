@@ -122,41 +122,35 @@ function makePrisma(
 
 describe("FinalizationJob", () => {
   describe("input validation", () => {
-    it("throws FinalizationValidationError (statusCode 400) for negative challengeWindowSeconds", async () => {
-      const job = new FinalizationJob(
-        makePrisma(),
-        makeLogger(),
-        makeConfig(-1)
-      );
-      await expect(job.run()).rejects.toThrow(FinalizationValidationError);
-      await expect(job.run()).rejects.toMatchObject({ statusCode: 400 });
+    // Validation runs in the constructor (#1556); see
+    // job.constructor-validation.test.ts for the acceptance tests.
+    it("throws FinalizationValidationError (statusCode 400) for negative challengeWindowSeconds", () => {
+      expect(
+        () => new FinalizationJob(makePrisma(), makeLogger(), makeConfig(-1))
+      ).toThrow(FinalizationValidationError);
+      expect(
+        () => new FinalizationJob(makePrisma(), makeLogger(), makeConfig(-1))
+      ).toThrow(expect.objectContaining({ statusCode: 400 }));
     });
 
-    it("throws FinalizationValidationError for NaN challengeWindowSeconds", async () => {
-      const job = new FinalizationJob(
-        makePrisma(),
-        makeLogger(),
-        makeConfig(NaN)
-      );
-      await expect(job.run()).rejects.toThrow(FinalizationValidationError);
+    it("throws FinalizationValidationError for NaN challengeWindowSeconds", () => {
+      expect(
+        () => new FinalizationJob(makePrisma(), makeLogger(), makeConfig(NaN))
+      ).toThrow(FinalizationValidationError);
     });
 
-    it("throws FinalizationValidationError for Infinity challengeWindowSeconds", async () => {
-      const job = new FinalizationJob(
-        makePrisma(),
-        makeLogger(),
-        makeConfig(Infinity)
-      );
-      await expect(job.run()).rejects.toThrow(FinalizationValidationError);
+    it("throws FinalizationValidationError for Infinity challengeWindowSeconds", () => {
+      expect(
+        () =>
+          new FinalizationJob(makePrisma(), makeLogger(), makeConfig(Infinity))
+      ).toThrow(FinalizationValidationError);
     });
 
-    it("throws FinalizationValidationError for -Infinity challengeWindowSeconds", async () => {
-      const job = new FinalizationJob(
-        makePrisma(),
-        makeLogger(),
-        makeConfig(-Infinity)
-      );
-      await expect(job.run()).rejects.toThrow(FinalizationValidationError);
+    it("throws FinalizationValidationError for -Infinity challengeWindowSeconds", () => {
+      expect(
+        () =>
+          new FinalizationJob(makePrisma(), makeLogger(), makeConfig(-Infinity))
+      ).toThrow(FinalizationValidationError);
     });
 
     it("accepts zero challengeWindowSeconds", async () => {

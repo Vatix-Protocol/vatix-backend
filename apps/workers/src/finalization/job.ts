@@ -41,6 +41,13 @@ export interface FinalizationJobConfig {
    * Defaults to 0 (no tolerance) when omitted.
    */
   clockSkewToleranceMs?: number;
+  /**
+   * Clock used for the challenge-window cutoff, the per-candidate window
+   * check, the maxRunMs guard and the finalization timestamps. Returns epoch
+   * milliseconds. Defaults to `Date.now`; injectable so tests can pin "now"
+   * without sleeping or faking global timers.
+   */
+  now?: () => number;
 }
 
 export interface FinalizationCandidate {
@@ -102,33 +109,40 @@ export class FinalizationJob {
   private readonly challengeWindowSeconds: number;
   private readonly maxRunMs: number;
   private readonly clockSkewToleranceMs: number;
+  private readonly now: () => number;
 
+  /**
+   * @throws {FinalizationValidationError} when `challengeWindowSeconds` is
+   *   not a finite non-negative number, so a misconfigured worker fails at
+   *   startup instead of on its first poll.
+   */
   constructor(
     private readonly prisma: PrismaClient,
     private readonly logger: ILogger,
     config: FinalizationJobConfig
   ) {
-    this.challengeWindowSeconds = config.challengeWindowSeconds;
-    this.maxRunMs = config.maxRunMs ?? 0;
-    this.clockSkewToleranceMs = config.clockSkewToleranceMs ?? 0;
-  }
-
-  async run(): Promise<FinalizationJobResult> {
     if (
-      !Number.isFinite(this.challengeWindowSeconds) ||
-      this.challengeWindowSeconds < 0
+      !Number.isFinite(config.challengeWindowSeconds) ||
+      config.challengeWindowSeconds < 0
     ) {
       throw new FinalizationValidationError(
-        `challengeWindowSeconds must be a non-negative number, got: ${this.challengeWindowSeconds}`
+        `challengeWindowSeconds must be a non-negative number, got: ${config.challengeWindowSeconds}`
       );
     }
 
-    const startedAt = new Date();
+    this.challengeWindowSeconds = config.challengeWindowSeconds;
+    this.maxRunMs = config.maxRunMs ?? 0;
+    this.clockSkewToleranceMs = config.clockSkewToleranceMs ?? 0;
+    this.now = config.now ?? (() => Date.now());
+  }
+
+  async run(): Promise<FinalizationJobResult> {
+    const startedAt = new Date(this.now());
     // Subtracting the tolerance as well as the window makes the cutoff
     // stricter (further in the past): a fast host clock cannot shrink the
     // effective challenge window below `challengeWindowSeconds` (#1546).
     const windowCutoff = new Date(
-      Date.now() - this.challengeWindowSeconds * 1000 - this.clockSkewToleranceMs
+      this.now() - this.challengeWindowSeconds * 1000 - this.clockSkewToleranceMs
     );
 
     this.logger.info("Finalization job started", {
@@ -165,7 +179,7 @@ export class FinalizationJob {
       this.logger.error("Finalization job failed to query candidates", {
         error: error instanceof Error ? error.message : String(error),
       });
-      const completedAt = new Date();
+      const completedAt = new Date(this.now());
       return {
         totalCandidates: 0,
         finalizedCount: 0,
@@ -189,7 +203,7 @@ export class FinalizationJob {
       // This prevents a large backlog from monopolising the scheduler slot.
       if (
         this.maxRunMs > 0 &&
-        Date.now() - startedAt.getTime() >= this.maxRunMs
+        this.now() - startedAt.getTime() >= this.maxRunMs
       ) {
         this.logger.warn("Finalization job exceeded maxRunMs, stopping early", {
           maxRunMs: this.maxRunMs,
@@ -211,7 +225,7 @@ export class FinalizationJob {
         isChallengeWindowOpen(
           candidate.createdAt,
           this.challengeWindowSeconds,
-          new Date(Date.now() - this.clockSkewToleranceMs)
+          new Date(this.now() - this.clockSkewToleranceMs)
         )
       ) {
         this.logger.info("Candidate still within challenge window — skipping", {
@@ -246,7 +260,7 @@ export class FinalizationJob {
         // finalization (missing-competitor-denies-challenge product rule).
         const txState: { outcome?: "rejected" | "inconclusive" } = {};
         await this.prisma.$transaction(async (tx) => {
-          const now = new Date();
+          const now = new Date(this.now());
 
           // ── Mutual exclusion with the challenge/dispute path ────────────
           // Lock the candidate row before touching anything else. A
@@ -311,39 +325,26 @@ export class FinalizationJob {
               select: { id: true, confidenceScore: true },
             });
 
-            // Decimal(5,4) columns compared as Decimal, not as JavaScript
-            // numbers (#1547): converting with `Number()` first can make two
-            // close-but-distinct scores compare equal, or sort differently
-            // from the `orderBy: confidenceScore` the query above just used.
-            const challengeScore =
-              candidate.confidenceScore === null ||
-              candidate.confidenceScore === undefined
-                ? null
-                : new Decimal(candidate.confidenceScore.toString());
-            const competingScore =
-              competing.confidenceScore === null ||
-              competing.confidenceScore === undefined
-                ? null
-                : new Decimal(competing.confidenceScore.toString());
+            if (competing) {
+              // Decimal(5,4) columns compared as Decimal, not as JavaScript
+              // numbers (#1547): converting with `Number()` first can make two
+              // close-but-distinct scores compare equal, or sort differently
+              // from the `orderBy: confidenceScore` the query above just used.
+              const challengeScore =
+                candidate.confidenceScore === null ||
+                candidate.confidenceScore === undefined
+                  ? null
+                  : new Decimal(candidate.confidenceScore.toString());
+              const competingScore =
+                competing.confidenceScore === null ||
+                competing.confidenceScore === undefined
+                  ? null
+                  : new Decimal(competing.confidenceScore.toString());
 
-            const upheld =
-              challengeScore !== null &&
-              competingScore !== null &&
-              competingScore.greaterThan(challengeScore);
-
-            const explicitlyDenied =
-              challengeScore !== null &&
-              competingScore !== null &&
-              challengeScore.greaterThan(competingScore);
-
-            if (upheld) {
-              // Challenge upheld: reject this candidate
-              await tx.resolutionCandidate.update({
-                where: { id: candidate.id },
-                data: { status: "REJECTED" },
-              });
-
-              await tx.resolutionAuditLog.create({
+              const upheld =
+                challengeScore !== null &&
+                competingScore !== null &&
+                competingScore.greaterThan(challengeScore);
 
               const explicitlyDenied =
                 challengeScore !== null &&
@@ -547,7 +548,7 @@ export class FinalizationJob {
       }
     }
 
-    const completedAt = new Date();
+    const completedAt = new Date(this.now());
     const finalizedCount = results.filter(
       (r) => r.status === "finalized"
     ).length;
