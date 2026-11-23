@@ -35,8 +35,18 @@ import {
 } from "../services/metrics.js";
 import { leaderLease } from "./leader-lease.js";
 import { Logger } from "@vatix/shared/logger.js";
+import { COLLATERAL_SCALE } from "../../apps/indexer/src/decimalUtils.js";
 
 const logger = new Logger("matching-service");
+
+/**
+ * Rounding scale for collateral math on the cancel path below. Shared with
+ * the indexer (decimalUtils.ts) and the expiry/operator-cancel job so a
+ * single constant — not a second literal scale — defines "1.0 collateral
+ * unit" everywhere (#1549). This must match the 7-decimal on-chain unit,
+ * not the wider Decimal(20, 8) column width.
+ */
+const COLLATERAL_ROUNDING_FACTOR = 10 ** Number(COLLATERAL_SCALE);
 
 export interface PlaceOrderResult {
   order: any;

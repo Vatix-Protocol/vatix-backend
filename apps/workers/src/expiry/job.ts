@@ -8,6 +8,16 @@ import {
   COLLATERAL_DECIMALS,
 } from "../../../../src/matching/collateral.js";
 
+/**
+ * Collateral is rounded to the on-chain scale (7 fractional digits), not the
+ * wider Decimal(20, 8) column width — see COLLATERAL_SCALE in decimalUtils.ts,
+ * the single source of truth shared by the indexer, this expiry/cancel path,
+ * and the matching-service cancel path (#1549). The Prisma column keeps
+ * extra precision, but rounding here must match the 7-decimal on-chain unit:
+ * rounding to 8 digits here would let a value be "exact" at 8 decimals while
+ * being off by up to 9e-8 at the on-chain 7-decimal scale.
+ */
+const ONE = new Decimal(1);
 const ZERO = new Decimal(0);
 
 /**
