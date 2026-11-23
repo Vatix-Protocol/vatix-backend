@@ -31,7 +31,8 @@ vi.mock("../services/prisma.js", () => ({
 }));
 
 // Test fixtures - Stellar addresses are exactly 56 characters starting with 'G'
-const validAddress = "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+// and must carry a valid StrKey checksum (Keypair.fromRawEd25519Seed(0x01 * 32)).
+const validAddress = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
 const validOrder: OrderInput = {
   marketId: "market-123",
   userAddress: validAddress,
@@ -107,10 +108,19 @@ describe("Order Validation", () => {
       );
     });
 
-    it("should accept an address matching ^G[A-Z2-7]{55}$", () => {
+    it("should accept an address matching ^G[A-Z2-7]{55}$ with a valid checksum", () => {
+      expect(validAddress).toMatch(/^G[A-Z2-7]{55}$/);
+      expect(validateUserAddress(validAddress)).toBeNull();
+    });
+
+    it("should reject an address that matches ^G[A-Z2-7]{55}$ but fails the StrKey checksum", () => {
+      // The regex is only a fast reject; the strkey decode is what proves
+      // the address is real.
       const address = "G" + "A".repeat(55);
       expect(address).toMatch(/^G[A-Z2-7]{55}$/);
-      expect(validateUserAddress(address)).toBeNull();
+      expect(validateUserAddress(address)).toBe(
+        "User address must be a valid Stellar public key (G + 55 base32 chars)"
+      );
     });
 
     // #1532: ^G[A-Z2-7]{55}$ is base32-uppercase only. validateUserAddress
@@ -319,8 +329,9 @@ describe("Order Validation", () => {
     it("should reject non-finite numbers", () => {
       expect(validateQuantity(Infinity)).toBe("Quantity must be a number");
       expect(validateQuantity(-Infinity)).toBe("Quantity must be a number");
+      // Number.MAX_VALUE is finite, so it is caught by the upper bound instead.
       expect(validateQuantity(Number.MAX_VALUE)).toBe(
-        "Quantity must be a number",
+        `Quantity must be at most ${MAX_ORDER_QUANTITY}`,
       );
     });
 
@@ -559,6 +570,99 @@ describe("Order Validation", () => {
       // message that would confirm the (still-ACTIVE) row exists.
       expect(result.errors.marketId).toBe("Market not found");
     });
+
+    describe("terminal statuses reject a new order (#1521)", () => {
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      const marketRow = (
+        status: string,
+        overrides: Record<string, unknown> = {}
+      ) => ({
+        id: "market-123",
+        status,
+        endTime: new Date(Date.now() + DAY_MS),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        deletedAt: null,
+        ...overrides,
+      });
+
+      it.each(["CANCELLED", "RESOLVED"])(
+        "rejects a %s market with an error that names the status",
+        async (status) => {
+          mockFindUnique.mockResolvedValue(marketRow(status));
+
+          const result = await validateMarketState("market-123");
+          expect(result.valid).toBe(false);
+          expect(result.errors.marketId).toContain(status);
+        }
+      );
+
+      it("accepts an ACTIVE market whose endTime is in the future", async () => {
+        mockFindUnique.mockResolvedValue(marketRow("ACTIVE"));
+
+        const result = await validateMarketState("market-123");
+        expect(result).toEqual({ valid: true, errors: {} });
+      });
+
+      it("reports a soft-deleted market as not found", async () => {
+        mockFindUnique.mockResolvedValue(
+          marketRow("ACTIVE", { deletedAt: new Date() })
+        );
+
+        const result = await validateMarketState("market-123");
+        expect(result.valid).toBe(false);
+        expect(result.errors.marketId).toBe("Market not found");
+      });
+
+      it("reports a missing market as not found", async () => {
+        mockFindUnique.mockResolvedValue(null);
+
+        const result = await validateMarketState("market-123");
+        expect(result.valid).toBe(false);
+        expect(result.errors.marketId).toBe("Market not found");
+      });
+    });
+
+    describe("ended and closed markets keep both reasons (#1522)", () => {
+      const DAY_MS = 24 * 60 * 60 * 1000;
+
+      it("combines the status reason and the ended reason for a closed, ended market", async () => {
+        mockFindUnique.mockResolvedValue({
+          id: "market-123",
+          status: "CANCELLED",
+          endTime: new Date(Date.now() - DAY_MS),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+        });
+
+        const result = await validateMarketState("market-123");
+        expect(result.valid).toBe(false);
+        // Neither reason replaces the other.
+        expect(result.errors.marketId).toContain("CANCELLED");
+        expect(result.errors.marketId).toContain("market has ended");
+        expect(result.errors.marketId).toBe(
+          "Market has been cancelled (status: CANCELLED); market has ended"
+        );
+      });
+
+      it("reports only the ended reason for an ACTIVE market past its endTime", async () => {
+        mockFindUnique.mockResolvedValue({
+          id: "market-123",
+          status: "ACTIVE",
+          endTime: new Date(Date.now() - DAY_MS),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          deletedAt: null,
+        });
+
+        const result = await validateMarketState("market-123");
+        expect(result.valid).toBe(false);
+        expect(result.errors.marketId).toBe("Market has ended");
+        expect(result.errors.marketId).not.toContain("status");
+        expect(result.errors.marketId).not.toContain("ACTIVE");
+      });
+    });
   });
 
   describe("validateOrder", () => {
@@ -674,7 +778,7 @@ describe("Order Validation", () => {
 // ─── sanitizeUserAddress ──────────────────────────────────────────────────────
 
 describe("sanitizeUserAddress", () => {
-  const valid56 = "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+  const valid56 = "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR";
 
   it("returns null for non-string input", () => {
     expect(sanitizeUserAddress(null)).toBeNull();
