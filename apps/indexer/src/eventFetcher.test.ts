@@ -474,6 +474,60 @@ describe("EventFetcher", () => {
       expect(server.getEvents).toHaveBeenCalledTimes(1);
     });
 
+    // #1529: nextCursor returns undefined once a full page's last event lies
+    // past endLedger, but a full page whose last event lands exactly on
+    // endLedger has not yet exhausted the window and must still hand back a
+    // cursor. Exercised directly against a fake page object (private
+    // method), no network/RPC involved.
+    describe("nextCursor boundary at endLedger (Issue #1529)", () => {
+      it("returns undefined when a full page's last ledger is endLedger + 1", () => {
+        const fetcher = pagedFetcher(makeMockServer([]), 2);
+        const page = {
+          events: [makeEvent(10, "a"), makeEvent(21, "b")],
+          cursor: "rpc-cursor",
+          latestLedger: 100,
+        } as any;
+
+        const next = (fetcher as any).nextCursor(page, 20);
+
+        expect(next).toBeUndefined();
+      });
+
+      it("still returns a cursor when a full page's last ledger equals endLedger", () => {
+        const fetcher = pagedFetcher(makeMockServer([]), 2);
+        const page = {
+          events: [makeEvent(10, "a"), makeEvent(20, "b")],
+          cursor: "rpc-cursor",
+          latestLedger: 100,
+        } as any;
+
+        const next = (fetcher as any).nextCursor(page, 20);
+
+        expect(next).toBe("rpc-cursor");
+      });
+    });
+
+    // #1528: nextCursor returns undefined whenever the page is shorter than
+    // pageLimit, even if the last event carries a usable id/cursor — a short
+    // page means the RPC has nothing more to return, independent of the
+    // empty-string-cursor stop signal (that is a separate, already-covered
+    // case). Exercised directly against a fake page object, no network call.
+    describe("nextCursor on a short page (Issue #1528)", () => {
+      it("returns undefined for a page shorter than pageLimit even though the last event has an id", () => {
+        const fetcher = pagedFetcher(makeMockServer([]), 2);
+        const page = {
+          events: [makeEvent(10, "a")], // length 1 < pageLimit 2
+          latestLedger: 100,
+          // Deliberately no response-level `cursor` field, so this cannot be
+          // confused with the empty-string-cursor stop signal.
+        } as any;
+
+        const next = (fetcher as any).nextCursor(page, 100);
+
+        expect(next).toBeUndefined();
+      });
+    });
+
     it("returns each event once when pages overlap", async () => {
       const server = makeMockServer([
         [makeEvent(10, "a"), makeEvent(11, "b")],

@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import type { Outcome } from "../types/index.js";
 import type { OrderInput } from "./validation.js";
 import { computeEffectiveWorstPrice, normalizePriceToDecimalString } from "./validation.js";
+import { computeCollateralToRelease } from "./collateral.js";
 import { OrderBook } from "./orderbook.js";
 import {
   matchOrder,
@@ -34,8 +35,18 @@ import {
 } from "../services/metrics.js";
 import { leaderLease } from "./leader-lease.js";
 import { Logger } from "@vatix/shared/logger.js";
+import { COLLATERAL_SCALE } from "../../apps/indexer/src/decimalUtils.js";
 
 const logger = new Logger("matching-service");
+
+/**
+ * Rounding scale for collateral math on the cancel path below. Shared with
+ * the indexer (decimalUtils.ts) and the expiry/operator-cancel job so a
+ * single constant — not a second literal scale — defines "1.0 collateral
+ * unit" everywhere (#1549). This must match the 7-decimal on-chain unit,
+ * not the wider Decimal(20, 8) column width.
+ */
+const COLLATERAL_ROUNDING_FACTOR = 10 ** Number(COLLATERAL_SCALE);
 
 export interface PlaceOrderResult {
   order: any;
@@ -361,14 +372,16 @@ class MatchingService {
             );
           }
 
-          // Release locked collateral for the remaining unfilled quantity only.
+          // Release locked collateral for the remaining unfilled quantity
+          // only. Computed via the shared Decimal helper (#1533) rather than
+          // raw Number arithmetic, so the released amount carries no
+          // IEEE-754 residue.
           const remainingQty = order.quantity - order.filledQuantity;
-          const collateralPerUnit =
-            order.side === "BUY"
-              ? Number(order.price)
-              : 1 - Number(order.price);
-          const collateralToRelease =
-            Math.round(collateralPerUnit * remainingQty * 1e8) / 1e8;
+          const collateralToRelease = computeCollateralToRelease(
+            order.side,
+            order.price.toString(),
+            remainingQty
+          ).toNumber();
 
           if (collateralToRelease > 0) {
             const position = await tx.userPosition.findUnique({

@@ -124,6 +124,28 @@ describe("amountRawToDecimal", () => {
     );
   });
 
+  it("never copies the raw out-of-range amount into the error message", () => {
+    // A huge bigint must not be interpolated into `message` — callers that
+    // surface `error.message` (HTTP responses, logs) would otherwise
+    // publish the full raw amount. The message carries only the stable
+    // DECIMAL_VALUE_OUT_OF_RANGE code; the amount stays on a non-enumerable
+    // field for local debugging only.
+    const hugeSecret = 123_456_789_987_654_321_000n;
+    let caught: unknown;
+    try {
+      amountRawToDecimal(hugeSecret);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(DecimalValueOutOfRangeError);
+    const error = caught as DecimalValueOutOfRangeError;
+    expect(error.message).toContain("DECIMAL_VALUE_OUT_OF_RANGE");
+    expect(error.message).not.toContain(hugeSecret.toString());
+    expect(JSON.stringify(error)).not.toContain(hugeSecret.toString());
+    expect(error.rawValue).toBe(hugeSecret);
+    expect(Object.keys(error)).not.toContain("rawValue");
+  });
+
   it("throws DecimalInvalidIntegerStringError for non-integer string", () => {
     expect(() => amountRawToDecimal("1.5")).toThrow(DecimalInvalidIntegerStringError);
     expect(() => amountRawToDecimal("abc")).toThrow(DecimalInvalidIntegerStringError);
@@ -226,6 +248,32 @@ describe("sharesRawToInt", () => {
     expect(() =>
       sharesRawToInt(100n, { featureFlags: { sharesRawToInt: false } })
     ).toThrow(DecimalFeatureDisabledError);
+  });
+
+  it("rejects a quantity of MAX_SAFE_SHARE_QUANTITY + 1n with DECIMAL_QUANTITY_EXCEEDS_SAFE_INTEGER, and accepts 1n", () => {
+    // MAX_SAFE_SHARE_QUANTITY is BigInt(Number.MAX_SAFE_INTEGER) — the
+    // largest bigint that survives a bigint -> Number conversion without
+    // silent precision loss. One past it must throw that stable code; the
+    // smallest positive quantity, 1n, must be accepted unchanged.
+    const MAX_SAFE_SHARE_QUANTITY = BigInt(Number.MAX_SAFE_INTEGER);
+
+    let caught: unknown;
+    try {
+      sharesRawToInt(MAX_SAFE_SHARE_QUANTITY + 1n);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(DecimalQuantityExceedsSafeIntegerError);
+    expect((caught as DecimalQuantityExceedsSafeIntegerError).code).toBe(
+      DECIMAL_UTILS_ERROR_CODES.QUANTITY_EXCEEDS_SAFE_INTEGER
+    );
+    // Same assertion against the string form of the input.
+    expect(() =>
+      sharesRawToInt((MAX_SAFE_SHARE_QUANTITY + 1n).toString())
+    ).toThrow(DecimalQuantityExceedsSafeIntegerError);
+
+    expect(sharesRawToInt(1n)).toBe(1);
+    expect(sharesRawToInt("1")).toBe(1);
   });
 });
 
