@@ -112,6 +112,30 @@ describe("Order Validation", () => {
       expect(address).toMatch(/^G[A-Z2-7]{55}$/);
       expect(validateUserAddress(address)).toBeNull();
     });
+
+    // #1532: ^G[A-Z2-7]{55}$ is base32-uppercase only. validateUserAddress
+    // must not lowercase the address before testing it against that regex,
+    // or a lowercase letter would silently be folded into a valid key.
+    it("should reject an otherwise-valid address containing a lowercase letter", () => {
+      const lowercasedOne =
+        "G" + "A".repeat(54) + "a"; // 56 chars, one lowercase tail letter
+      expect(lowercasedOne).toHaveLength(56);
+      expect(lowercasedOne.startsWith("G")).toBe(true);
+      expect(validateUserAddress(lowercasedOne)).toBe(
+        "User address must be a valid Stellar public key (G + 55 base32 chars)"
+      );
+    });
+
+    it("should reject a fully lowercase address and must not rewrite it to uppercase first", () => {
+      const fullyLowercase = validAddress.toLowerCase();
+      // The lowercase 'g' prefix fails the explicit startsWith("G") check
+      // before the charset regex even runs — confirming the function does
+      // not uppercase the input first (that would make this a valid key).
+      expect(validateUserAddress(fullyLowercase)).toBe(
+        "User address must start with G"
+      );
+      expect(fullyLowercase).not.toBe(validAddress);
+    });
   });
 
   describe("validateOrderSide", () => {

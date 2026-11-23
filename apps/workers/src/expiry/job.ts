@@ -3,10 +3,11 @@ import type { PrismaClient } from "../../../../src/generated/prisma/client/index
 import type { ILogger } from "../../../../packages/shared/src/logger.js";
 import type { ExpiryJobResult, ExpiryCandidateResult } from "./types.js";
 import { DEFAULT_EXPIRY_CLOCK_SKEW_TOLERANCE_MS } from "./config.js";
+import {
+  computeCollateralToRelease,
+  COLLATERAL_DECIMALS,
+} from "../../../../src/matching/collateral.js";
 
-/** Collateral amounts are stored with 8 fractional digits (Decimal(20, 8)). */
-const COLLATERAL_DECIMALS = 8;
-const ONE = new Decimal(1);
 const ZERO = new Decimal(0);
 
 /**
@@ -259,13 +260,12 @@ export class ExpiryJob {
       let totalCollateralReleased = new Decimal(0);
 
       for (const order of openOrders) {
-        const remainingQty = new Decimal(order.quantity - order.filledQuantity);
-        const price = new Decimal(order.price.toString());
-        const collateralPerUnit =
-          order.side === "BUY" ? price : ONE.minus(price);
-        const collateralToRelease = collateralPerUnit
-          .times(remainingQty)
-          .toDecimalPlaces(COLLATERAL_DECIMALS, Decimal.ROUND_HALF_UP);
+        const remainingQty = order.quantity - order.filledQuantity;
+        const collateralToRelease = computeCollateralToRelease(
+          order.side,
+          order.price.toString(),
+          remainingQty
+        );
 
         if (collateralToRelease.greaterThan(ZERO)) {
           const position = await tx.userPosition.findUnique({
