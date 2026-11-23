@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   MARKET_STATUSES,
+  TRADABLE_MARKET_STATUSES,
   MARKET_INVALID_TRANSITION_CODE,
   MarketTransitionError,
   assertTransition,
@@ -27,6 +28,7 @@ import {
 const LEGAL: Array<[MarketLifecycleState, MarketLifecycleState]> = [
   ["ACTIVE", "RESOLVED"],
   ["ACTIVE", "CANCELLED"],
+  ["ACTIVE", "EXPIRED"],
 ];
 
 const ALL_EDGES = MARKET_STATUSES.flatMap((from) =>
@@ -103,8 +105,33 @@ describe("market lifecycle predicates", () => {
   });
 
   it("rejects an unknown market status", () => {
-    expect(isMarketStatus("EXPIRED")).toBe(false);
+    expect(isMarketStatus("PAUSED")).toBe(false);
     expect(isMarketStatus("ACTIVE")).toBe(true);
+  });
+});
+
+describe("tradable statuses (#1562)", () => {
+  // Every exported status is mapped through isTradable, so a status added to
+  // MARKET_STATUSES without a matching decision here fails this test.
+  it("treats only ACTIVE as tradable across every exported status", () => {
+    const tradability = Object.fromEntries(
+      MARKET_STATUSES.map((status) => [status, isTradable(status)])
+    );
+
+    expect(tradability).toEqual({
+      ACTIVE: true,
+      RESOLVED: false,
+      CANCELLED: false,
+      EXPIRED: false,
+    });
+    expect(Object.keys(tradability)).toEqual([...MARKET_STATUSES]);
+  });
+
+  it("matches the exported TRADABLE_MARKET_STATUSES list", () => {
+    expect(MARKET_STATUSES.filter((status) => isTradable(status))).toEqual([
+      ...TRADABLE_MARKET_STATUSES,
+    ]);
+    expect(TRADABLE_MARKET_STATUSES).toEqual(["ACTIVE"]);
   });
 });
 
