@@ -7,6 +7,7 @@ import {
   disconnectPrisma,
 } from "../../../../src/services/prisma.js";
 import { createShutdown } from "@vatix/shared/shutdown.js";
+import { resolveClockSkewToleranceMs } from "@vatix/shared/marketLifecycle.js";
 
 type FinalizationConfig = ReturnType<typeof loadFinalizationConfig>;
 
@@ -45,8 +46,14 @@ async function bootstrap(): Promise<void> {
   const config = loadFinalizationConfig();
   const logger = createLogger(config.logLevel);
   const prisma = getPrismaClient();
+  // Same clock-skew tolerance the expiry worker applies to `endTime` (#1546),
+  // so both paths agree on how much the host clock is allowed to drift from
+  // the Stellar ledger: 5s in production, 0 in dev/test unless overridden via
+  // EXPIRY_CLOCK_SKEW_TOLERANCE_MS.
+  const clockSkewToleranceMs = resolveClockSkewToleranceMs();
   const job = new FinalizationJob(prisma, logger, {
     challengeWindowSeconds: config.challengeWindowSeconds,
+    clockSkewToleranceMs,
   });
 
   logger.info("Finalization worker started", {
@@ -54,6 +61,7 @@ async function bootstrap(): Promise<void> {
     intervalMs: config.intervalMs,
     challengeWindowSeconds: config.challengeWindowSeconds,
     onChainChallengeWindowSeconds: config.onChainChallengeWindowSeconds,
+    clockSkewToleranceMs,
   });
 
   logChallengeWindowOverride(config, logger);

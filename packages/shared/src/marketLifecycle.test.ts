@@ -12,6 +12,17 @@ import {
   isTradable,
   type MarketLifecycleState,
 } from "./marketLifecycle.js";
+// Re-import through the package barrel (issue #1540): every caller — API
+// routes, oracle, indexer, finalization worker — is documented to reach
+// `isTradable`/`canTransition` via `@vatix/shared`. Importing from the
+// barrel here, instead of re-declaring these two names, is itself the test:
+// if a second, local copy of either function ever got exported under the
+// same names (from this module or the barrel), the identity check below
+// would be the first thing to fail.
+import {
+  isTradable as barrelIsTradable,
+  canTransition as barrelCanTransition,
+} from "./index.js";
 
 const LEGAL: Array<[MarketLifecycleState, MarketLifecycleState]> = [
   ["ACTIVE", "RESOLVED"],
@@ -94,5 +105,15 @@ describe("market lifecycle predicates", () => {
   it("rejects an unknown market status", () => {
     expect(isMarketStatus("EXPIRED")).toBe(false);
     expect(isMarketStatus("ACTIVE")).toBe(true);
+  });
+});
+
+describe("the barrel re-exports the lifecycle helpers, not a second copy (#1540)", () => {
+  it("re-exports isTradable from the package barrel as the exact same function", () => {
+    expect(barrelIsTradable).toBe(isTradable);
+  });
+
+  it("re-exports canTransition from the package barrel as the exact same function", () => {
+    expect(barrelCanTransition).toBe(canTransition);
   });
 });
