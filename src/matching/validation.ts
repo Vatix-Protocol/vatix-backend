@@ -4,6 +4,8 @@ import { getPrismaClient } from "../services/prisma.js";
 import type { OrderSide, Outcome } from "../types/index.js";
 import {
   isTradable,
+  isPastEndTime,
+  resolveClockSkewToleranceMs,
   type MarketLifecycleState,
 } from "../../packages/shared/src/marketLifecycle.js";
 
@@ -402,4 +404,85 @@ export function computeEffectiveWorstPrice(
 
   // Prices live in (0, 1); clamp so a wide tolerance cannot escape the range.
   return Math.min(Math.max(worstPrice, 0), 1);
+}
+
+/**
+  if (!market || market.deletedAt !== null) {
+    return { valid: false, errors: { marketId: "Market not found" } };
+  }
+
+  if (market.status === "RESOLVED") {
+    return {
+      valid: false,
+      errors: { marketId: "Market is resolved and no longer accepting orders" },
+
+ */
+export async function validateMarketState(
+  marketId: string
+): Promise<ValidationResult> {
+  const prisma = getPrismaClient();
+  const market = await prisma.market.findUnique({ where: { id: marketId } });
+
+  if (!market || market.deletedAt) {
+    return { valid: false, errors: { marketId: "Market not found" } };
+  }
+
+  const status = market.status as MarketLifecycleState;
+
+  if (status === "RESOLVED") {
+    return {
+      valid: false,
+      errors: { marketId: "Market has already been resolved" },
+    };
+  }
+
+  if (status === "CANCELLED") {
+    return {
+      valid: false,
+      errors: { marketId: "Market has been cancelled" },
+    };
+  }
+
+  if (!isTradable(status)) {
+    return {
+      valid: false,
+      errors: { marketId: `Market is not tradable (status: ${status})` },
+    };
+  }
+
+  const toleranceMs = resolveClockSkewToleranceMs();
+  if (isPastEndTime(market.endTime, Date.now(), toleranceMs)) {
+    return { valid: false, errors: { marketId: "Market has ended" } };
+  }
+
+  return { valid: true, errors: {} };
+}
+
+/**
+ * Full order validation: field-level checks first (fast, no I/O); only when
+ * those pass does it fall through to the market-state check (DB read). This
+ * ordering means a malformed request never costs a database round trip.
+ */
+export async function validateOrder(
+  order: OrderInput
+): Promise<ValidationResult> {
+  const fieldResult = validateOrderFields(order);
+  if (!fieldResult.valid) {
+    return fieldResult;
+  }
+
+  return validateMarketState(order.marketId);
+}
+
+/**
+ * Throws {@link OrderValidationError} (carrying every field/market error on
+ * `.fields`) when the order is invalid; resolves silently when it's valid.
+ * Convenience wrapper so callers that just want to guard a write path don't
+ * have to branch on `ValidationResult.valid` themselves.
+ */
+export async function assertValidOrder(order: OrderInput): Promise<void> {
+  const result = await validateOrder(order);
+  if (!result.valid) {
+    throw new OrderValidationError(result.errors);
+  }
 }

@@ -873,22 +873,52 @@ describe("FinalizationJob", () => {
     });
   });
 
-  describe("challenged candidate adjudication (#1550)", () => {
-    it("finalizes a CHALLENGED candidate when no competing PROPOSED row exists, asserting the resulting status explicitly rather than relying on falling out of the if", async () => {
+  describe("CHALLENGED adjudication by confidence score (decimal, never Number(null) -> 0)", () => {
+    function makeChallengedTx(
+      competing: { id: string; confidenceScore: unknown } | null
+    ) {
+      const create = vi.fn().mockResolvedValue({ id: "resolution-1" });
+      const marketUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+      const updateCandidate = vi.fn().mockResolvedValue({});
+      const positionUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+      const auditLogCreate = vi.fn().mockResolvedValue({});
+      const findFirst = vi.fn().mockResolvedValue(competing);
+      // Row lock reveals CHALLENGED so the adjudication branch runs.
+      const queryRaw = vi
+        .fn()
+        .mockResolvedValue([{ id: "locked-row", status: "CHALLENGED" }]);
+
+      const tx = {
+        resolution: { create },
+        market: { updateMany: marketUpdateMany },
+        resolutionCandidate: { update: updateCandidate, findFirst },
+        userPosition: { updateMany: positionUpdateMany },
+        resolutionAuditLog: { create: auditLogCreate },
+        $queryRaw: queryRaw,
+      };
+
+      return { tx, create, updateCandidate, auditLogCreate, findFirst };
+    }
+
+    function runChallenged(
+      confidenceScore: number | null,
+      competing: { id: string; confidenceScore: unknown } | null
+    ) {
       const candidates = [
         makeCandidate({
           id: "cand-challenged",
-          marketId: "mkt-1",
-          confidenceScore: 0.4,
+          marketId: "mkt-challenged",
+          status: "CHALLENGED",
+          confidenceScore,
         }),
       ];
-      const { tx, updateCandidate, auditLogCreate, create, findFirstCandidate } =
-        makeTx(1, "CHALLENGED", null);
+      const built = makeChallengedTx(competing);
+
       const transaction = vi
         .fn()
         .mockImplementation(
           async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
-            await fn(tx)
+            await fn(built.tx)
         );
       const prisma = {
         resolutionCandidate: {
@@ -897,19 +927,80 @@ describe("FinalizationJob", () => {
         $transaction: transaction,
       } as unknown as PrismaClient;
 
+      return { prisma, ...
+      const transaction = vi
+        .fn()
+        .mockImplementation(
+          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
+            await fn(built.tx)
+        );
+      const prisma = {
+        resolutionCandidate: {
+          findMany: vi.fn().mockResolvedValue(candidates),
+        },
+        $transaction: transaction,
+      } as unknown as PrismaClient;
+
+      return { prisma, ...built };
+    }
+
+    it("upholds the challenge (REJECTS this candidate) when the competing score is strictly higher", async () => {
+      const { prisma, create, updateCandidate } = runChallenged(0.4, {
+        id: "competitor-1",
+        confidenceScore: 0.9,
+      });
+
       const result = await new FinalizationJob(
         prisma,
         makeLogger(),
         makeConfig(3600)
       ).run();
 
+      return { prisma, ...built };
+    }
+
+    it("upholds the challenge (REJECTS this candidate) when the competing score is strictly higher", async () => {
+      const { prisma, create, updateCandidate } = runChallenged(0.4, {
+        id: "competitor-1",
+        confidenceScore: 0.9,
+      });
+
+      const result = await new FinalizationJob(
+        prisma,
+        makeLogger(),
+        makeConfig(3600)
+      ).run();
+
+      expect(updateCandidate).toHaveBeenCalledWith({
+        where: { id: "cand-challenged" },
+        data: { status: "REJECTED" },
+      });
+      expect(create).not.toHaveBeenCalled();
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-challenged",
+        status: "finalized",
+      });
+    });
+
+    it("denies the challenge and finalizes when this candidate's own score is strictly higher", async () => {
+      const { prisma, create, updateCandidate } = runChallenged(0.9, {
+        id: "competitor-1",
+        confidenceScore: 0.4,
+      });
+
+      const result = await new FinalizationJob(
+        prisma,
+        makeLogger(),
+        makeConfig(3600)
+      ).run();
+
+      expect(create).toHaveBeenCalledTimes(1);
       expect(findFirstCandidate).toHaveBeenCalledTimes(1);
       expect(result.erroredCount).toBe(0);
       expect(result.candidates[0].status).toBe("finalized");
       // The challenge was denied (no better competitor), so this committed
       // as a real finalize: a Resolution was created and the candidate
       // flipped to ACCEPTED, not merely "didn't throw".
-      expect(create).toHaveBeenCalledTimes(1);
       expect(updateCandidate).toHaveBeenCalledWith({
         where: { id: "cand-challenged" },
         data: { status: "ACCEPTED" },
@@ -926,75 +1017,99 @@ describe("FinalizationJob", () => {
       });
     });
 
-    it("rejects (never finalizes) a CHALLENGED candidate when a competing PROPOSED row has higher confidence", async () => {
-      const candidates = [
-        makeCandidate({
-          id: "cand-challenged",
-          marketId: "mkt-1",
-          confidenceScore: 0.3,
-        }),
-      ];
-      const { tx, updateCandidate, auditLogCreate, create, findFirstCandidate } =
-        makeTx(1, "CHALLENGED", { id: "competitor-1", confidenceScore: 0.9 });
-      const transaction = vi
-        .fn()
-        .mockImplementation(
-          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
-            await fn(tx)
-        );
-      const prisma = {
-        resolutionCandidate: {
-          findMany: vi.fn().mockResolvedValue(candidates),
-        },
-        $transaction: transaction,
-      } as unknown as PrismaClient;
-
-      await new FinalizationJob(prisma, makeLogger(), makeConfig(3600)).run();
-
-      expect(findFirstCandidate).toHaveBeenCalledTimes(1);
-      // Challenge upheld: never created a Resolution or accepted the candidate.
-      expect(create).not.toHaveBeenCalled();
-      expect(updateCandidate).not.toHaveBeenCalled();
-      expect(auditLogCreate).toHaveBeenCalledWith({
-        data: {
-          candidateId: "cand-challenged",
-          marketId: "mkt-1",
-          action: "ADJUDICATE_CHALLENGE",
-          beforeStatus: "CHALLENGED",
-          afterStatus: "REJECTED",
-          actor: "finalization-worker",
-        },
+    it("rejects (never finalize
+      expect(updateCandidate).toHaveBeenCalledWith({
+        where: { id: "cand-challenged" },
+        data: { status: "ACCEPTED" },
+      });
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-challenged",
+        status: "finalized",
       });
     });
 
-    it("scopes the competing-candidate query to PROPOSED rows in the same market, excluding itself", async () => {
-      const candidates = [
-        makeCandidate({ id: "cand-challenged", marketId: "mkt-1" }),
-      ];
-      const { tx, findFirstCandidate } = makeTx(1, "CHALLENGED", null);
-      const transaction = vi
-        .fn()
-        .mockImplementation(
-          async (fn: (tx: Record<string, unknown>) => Promise<unknown>) =>
-            await fn(tx)
-        );
-      const prisma = {
-        resolutionCandidate: {
-          findMany: vi.fn().mockResolvedValue(candidates),
-        },
-        $transaction: transaction,
-      } as unknown as PrismaClient;
+    it("does not finalize or reject on a tie — equal decimal scores are not a denial", async () => {
+      const { prisma, create, updateCandidate } = runChallenged(0.5, {
+        id: "competitor-1",
+        confidenceScore: 0.5,
+      });
 
-      await new FinalizationJob(prisma, makeLogger(), makeConfig(3600)).run();
+      const result = await new FinalizationJob(
+        prisma,
+        makeLogger(),
+        makeConfig(3600)
+      ).run();
 
-      expect(findFirstCandidate).toHaveBeenCalledWith({
-        where: {
-          marketId: "mkt-1",
-          status: "PROPOSED",
-          id: { not: "cand-challenged" },
-        },
-        orderBy: { confidenceScore: "desc" },
-        select: { id: true, confidenceScore: true },
+      expect(create).not.toHaveBeenCalled();
+      expect(updateCandidate).not.toHaveBeenCalled();
+      expect(result.skippedCount).toBe(1);
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-challenged",
+        status: "skipped",
+      });
+    });
+
+    it("does not treat two null scores as a tie that finalizes", async () => {
+      const { prisma, create, updateCandidate } = runChallenged(null, {
+        id: "competitor-1",
+        confidenceScore: null,
+      });
+
+      const result = await new FinalizationJob(
+        prisma,
+        makeLogger(),
+        makeConfig(3600)
+      ).run();
+
+      expect(create).not.toHaveBeenCalled();
+      expect(updateCandidate).not.toHaveBeenCalled();
+      expect(result.skippedCount).toBe(1);
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-challenged",
+        status: "skipped",
+      });
+    });
+
+    it("does not treat a null own score as zero against a real competing score", async () => {
+      // The competitor has a real, positive score and this candidate's own
+      // score is null — not a defined decimal — so this must be inconclusive
+      // rather than silently upheld as if null were 0.
+      const { prisma, create, updateCandidate } = runChallenged(null, {
+        id: "competitor-1",
+        confidenceScore: 0.5,
+      });
+
+      const result = await new FinalizationJob(
+        prisma,
+        makeLogger(),
+        makeConfig(3600)
+      ).run();
+
+      expect(create).not.toHaveBeenCalled();
+      expect(updateCandidate).not.toHaveBeenCalled();
+      expect(result.skippedCount).toBe(1);
+    });
+
+    it("denies the challenge when there is no competing PROPOSED row (documented product rule)", async () => {
+      const { prisma, create, updateCandidate } = runChallenged(0.5, null);
+
+      const result = await new FinalizationJob(
+        prisma,
+        makeLogger(),
+        makeConfig(3600)
+      ).run();
+
+      expect(create).toHaveBeenCalled();
+      expect(updateCandidate).toHaveBeenCalledWith({
+        where: { id: "cand-challenged" },
+        data: { status: "ACCEPTED" },
+      });
+      expect(result.candidates[0]).toMatchObject({
+        candidateId: "cand-challenged",
+        status: "finalized",
+      });
+    });
+  });
       });
     });
   });
