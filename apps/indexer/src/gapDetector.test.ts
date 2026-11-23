@@ -425,6 +425,67 @@ describe("GapDetector.runBackfill", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  it("pages with a JSON body limited to the documented fields and never logs the webhook URL (#1527)", async () => {
+    const fetcher = makeEventFetcher([]);
+    const logger = makeLogger();
+    const secretWebhookUrl = "https://example.com/page?token=super-secret";
+
+    const detectorWithPaging = new GapDetector(
+      {
+        gapPauseThreshold: 0,
+        backfillMaxLedgers: 500,
+        contractId: "CTEST",
+        pagingConfig: {
+          webhookUrl: secretWebhookUrl,
+          persistenceCyclesBeforePage: 1,
+        },
+      },
+      fetcher,
+      makeBatchWriter(),
+      makeMetrics(),
+      logger
+    );
+
+    (global.fetch as any).mockResolvedValue({ ok: true, status: 200 });
+
+    await detectorWithPaging.runBackfill(100, 110);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [calledUrl, init] = (global.fetch as any).mock.calls[0];
+    expect(calledUrl).toBe(secretWebhookUrl);
+
+    const body = JSON.parse((init as RequestInit).body as string);
+
+    // Documented body fields (see the comment on pageOperatorsForPersistentGap
+    // in gapDetector.ts) — the webhook URL itself must never be one of them.
+    expect(Object.keys(body).sort()).toEqual(
+      [
+        "alert",
+        "contractId",
+        "gapEndLedger",
+        "gapSize",
+        "gapStartLedger",
+        "persistentCycles",
+        "timestamp",
+      ].sort()
+    );
+    expect(body).not.toHaveProperty("webhookUrl");
+    expect(JSON.stringify(body)).not.toContain("example.com");
+    expect(JSON.stringify(body)).not.toContain("super-secret");
+
+    // The URL (which may embed a secret token) must never reach the logger,
+    // in this call or any other logger call made while paging.
+    const allLoggerCalls = [
+      ...(logger.info as any).mock.calls,
+      ...(logger.warn as any).mock.calls,
+      ...(logger.error as any).mock.calls,
+    ]
+      .map((call: unknown[]) => JSON.stringify(call))
+      .join("\n");
+    expect(allLoggerCalls).not.toContain("example.com");
+    expect(allLoggerCalls).not.toContain("super-secret");
+  });
+
   it("fails fast in production without paging webhook configured", () => {
     const logger = makeLogger();
 

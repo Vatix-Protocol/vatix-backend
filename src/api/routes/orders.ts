@@ -565,11 +565,6 @@ export async function ordersRoutes(fastify: FastifyInstance) {
           // Cache read failures fall through to normal processing.
         }
       }
-        }
-      } catch (err) {
-        if (err instanceof ValidationError) throw err;
-        // Cache read failures fall through to normal processing.
-      }
 
       const orderInput: OrderInput = {
         marketId: body.marketId,
