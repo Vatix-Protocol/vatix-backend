@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import type { Outcome } from "../types/index.js";
 import type { OrderInput } from "./validation.js";
 import { computeEffectiveWorstPrice, normalizePriceToDecimalString } from "./validation.js";
+import { computeCollateralToRelease } from "./collateral.js";
 import { OrderBook } from "./orderbook.js";
 import {
   matchOrder,
@@ -371,16 +372,16 @@ class MatchingService {
             );
           }
 
-          // Release locked collateral for the remaining unfilled quantity only.
+          // Release locked collateral for the remaining unfilled quantity
+          // only. Computed via the shared Decimal helper (#1533) rather than
+          // raw Number arithmetic, so the released amount carries no
+          // IEEE-754 residue.
           const remainingQty = order.quantity - order.filledQuantity;
-          const collateralPerUnit =
-            order.side === "BUY"
-              ? Number(order.price)
-              : 1 - Number(order.price);
-          const collateralToRelease =
-            Math.round(
-              collateralPerUnit * remainingQty * COLLATERAL_ROUNDING_FACTOR
-            ) / COLLATERAL_ROUNDING_FACTOR;
+          const collateralToRelease = computeCollateralToRelease(
+            order.side,
+            order.price.toString(),
+            remainingQty
+          ).toNumber();
 
           if (collateralToRelease > 0) {
             const position = await tx.userPosition.findUnique({

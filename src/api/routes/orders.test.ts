@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
 import { Keypair } from "@stellar/stellar-sdk";
-import { ordersRoutes, parseIdempotencyKey } from "./orders.js";
+import {
+  ordersRoutes,
+  parseIdempotencyKey,
+  CreateOrderSchema,
+} from "./orders.js";
 import { errorHandler } from "../middleware/errorHandler.js";
 import {
   ValidationError,
@@ -1060,6 +1064,49 @@ describe("POST /orders", () => {
     });
 
     expect(response.statusCode).toBe(500);
+  });
+});
+
+describe("CreateOrderSchema quantity validation (#1531)", () => {
+  // Assert the Zod layer directly — this is what the route handler uses
+  // after the Fastify-level `{ type: "integer", minimum: 1 }` schema has
+  // already run. Both layers must agree: quantity is a positive integer.
+  const validAddress =
+    "GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUVW";
+
+  const baseOrder = {
+    marketId: "market-1",
+    userAddress: validAddress,
+    side: "BUY" as const,
+    outcome: "YES" as const,
+    price: 0.6,
+    quantity: 1,
+  };
+
+  it("rejects quantity 0", () => {
+    const result = CreateOrderSchema.safeParse({ ...baseOrder, quantity: 0 });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects quantity -1", () => {
+    const result = CreateOrderSchema.safeParse({
+      ...baseOrder,
+      quantity: -1,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects quantity 1.5", () => {
+    const result = CreateOrderSchema.safeParse({
+      ...baseOrder,
+      quantity: 1.5,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts quantity 1", () => {
+    const result = CreateOrderSchema.safeParse({ ...baseOrder, quantity: 1 });
+    expect(result.success).toBe(true);
   });
 });
 
