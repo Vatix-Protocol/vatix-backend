@@ -235,10 +235,11 @@ async function checkIndexFreshness(
     }
 
     const ageMs = now - lastIndexedAt;
+
     if (ageMs > INDEX_STALENESS_THRESHOLD_MS) {
       return {
         status: "stale",
-        error: `Index is ${Math.floor(ageMs / 1000)}s old (threshold: ${INDEX_STALENESS_THRESHOLD_MS / 1000}s)`,
+        error: `Index is ${ageMs}ms old (threshold ${INDEX_STALENESS_THRESHOLD_MS}ms)`,
       };
     }
 
