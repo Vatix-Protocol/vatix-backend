@@ -42,6 +42,15 @@ const orderSchema = z
     }
   });
 
+/**
+ * POST /orders
+ *
+ * Responses:
+ * - 201: first create. The order is accepted and the original body is returned.
+ * - 200: idempotent replay. When `replayed` is true the handler sets the
+ *   `Idempotent-Replayed` header and returns the original 201 body with a 200
+ *   status instead of creating a new order.
+ */
 router.post('/orders', (req: Request, res: Response) => {
   const parsed = orderSchema.safeParse(req.body);
   if (!parsed.success) {
