@@ -77,6 +77,24 @@ The orders API is a money-path surface. Every entrypoint is **deny-by-default** 
 4. **Fail-closed writes** — If a dependency (DB, Redis, or Stellar RPC) is unavailable, order writes return `503 DEPENDENCY_UNAVAILABLE` and MUST NOT partially persist or match. Reads may degrade but never fabricate balances.
 5. **Correlation ids** — Every orders request is tagged with a correlation id (from `X-Request-Id` when present, otherwise generated) that is echoed in responses and logs for tracing. Logs never include secrets, signatures, or full tokens.
 
+### Idempotency Key Format
+
+The `Idempotency-Key` header value is validated against `IDEMPOTENCY_KEY_PATTERN` in `src/api/routes/orders.ts`. A key must be **1–128 characters** drawn only from:
+
+- `A`–`Z` (uppercase letters)
+- `a`–`z` (lowercase letters)
+- `0`–`9` (digits)
+- `_`, `-`, `.`, `:` (underscore, hyphen, period, colon)
+
+Any other character, an empty value, or a value longer than 128 characters is rejected with `400 VALIDATION_ERROR`. A missing key is not an error today (the request is treated as new), but once the required-key requirement lands a missing key will be rejected as well.
+
+| Example                              | Result   | Reason                                              |
+| ------------------------------------ | -------- | --------------------------------------------------- |
+| `order-7f3a9c2e-01`                  | Accepted | Uses only allowed characters and is within length.  |
+| `order 7f3a9c2e/01`                  | Rejected | Contains a space and `/`, which are not allowed.    |
+
+Reusing the same idempotency key with a different request hash returns `409 IDEMPOTENCY_CONFLICT`.
+
 ### Stable Error Codes (Orders)
 
 | Code                     | HTTP | Meaning                                                        |
@@ -90,97 +108,6 @@ The orders API is a money-path surface. Every entrypoint is **deny-by-default** 
 
 ### Kill Switch
 
-Order writes are gated behind the `ORDERS_WRITE_ENABLED` feature flag (default `true`). Setting it to `false` disables `POST /v1/orders` (returns `503 DEPENDENCY_UNAVAILABLE`) without affecting reads, providing a fast rollback for mainnet-affecting changes.
+Order writes are gated behind the `ORDERS_WRITE_ENABLED` feature flag (default `true`). Setting it to `false` disables `POST /v1/orders` (returns `503 DEPENDENCY_UNAVAILABLE`) without affecting reads, providing a fast rollback 
 
----
-
-## Response Headers
-
-All responses include IETF-compliant rate limit headers:
-
-```
-RateLimit-Limit     — Maximum requests allowed in the current window
-RateLimit-Remaining — Requests remaining in the current window
-RateLimit-Reset     — Unix timestamp (seconds) when the window resets
-```
-
-When a client exceeds the rate limit, the API responds with:
-
-```
-HTTP 429 Too Many Requests
-Retry-After: <seconds-until-reset>
-
-{
-  "error": "Too Many Requests",
-  "code": "RATE_LIMITED",
-  "statusCode": 429,
-  "retryAfter": <seconds>
-}
-```
-
-The `Retry-After` header indicates how long the client should wait before retrying.
-
----
-
-## How to Extend or Modify Rate Limits
-
-### Adding a New Endpoint
-
-When adding a new endpoint to the API:
-
-1. **Classify the endpoint** into one of the risk tiers above
-2. **Apply the limiter** in the route handler:
-   ```typescript
-   // Example: Heavy read endpoint
-   fastify.get("/new/endpoint", {
-     onRequest: [heavyReadLimiter],
-     // ...handler
-   });
-   ```
-3. **Add the route to the OpenAPI spec** in `src/api/openapi.ts`
-4. **Add unit tests** verifying the rate limit is enforced (see `src/api/middleware/rateLimiter.test.ts`)
-
-### Adjusting Limits
-
-Override default limits via environment variables:
-
-```bash
-# Global limits
-RATE_LIMIT_MAX=150              # Default: 100
-RATE_LIMIT_WINDOW_MS=60000      # Default: 60,000 (1 minute)
-
-# Heavy read limits
-RATE_LIMIT_HEAVY_MAX=30         # Default: 20
-RATE_LIMIT_HEAVY_WINDOW_MS=60000
-
-# Write limits
-RATE_LIMIT_WRITE_MAX=15         # Default: 10
-RATE_LIMIT_WRITE_WINDOW_MS=60000
-
-# Admin limits
-RATE_LIMIT_ADMIN_MAX=50         # Default: 30
-RATE_LIMIT_ADMIN_WINDOW_MS=60000
-```
-
----
-
-## Testing
-
-Rate limiting is tested in `src/api/middleware/rateLimiter.test.ts`. Key test scenarios:
-
-- ✓ Request within limit is allowed (200 OK)
-- ✓ Request after exceeding limit returns 429
-- ✓ 429 response includes Retry-After header
-- ✓ Window resets after expiration
-- ✓ Separate tiers do not interfere with each other
-
-Orders authz/validation is covered by unit tests for the invariants above (auth negatives, idempotency replay, fail-closed writes) plus integration/e2e on the critical order path.
-
----
-
-## Future Enhancements
-
-- **User-based rate limiting**: Track limits per authenticated user or API key (currently per IP)
-- **Adaptive rate limiting**: Adjust limits based on server load
-- **Rate limit bypass for monitoring**: Allow health check requests to pass through without counting toward limits
-- **Distributed rate limiting**: For multi-instance deployments, use Redis or similar backing store
+/* … truncated 2623 chars — edit only what you need near the top … */
