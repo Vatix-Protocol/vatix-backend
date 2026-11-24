@@ -444,16 +444,84 @@ export function computeEffectiveWorstPrice(
   return Math.min(Math.max(worstPrice, 0), 1);
 }
 
+
 /**
-  if (!market || market.deletedAt) {
-    return { valid: false, errors: { marketId: "Market not found" } };
+ * Validates every field of an order input independently of any database
+ * lookup. Collects *all* field errors (does not short-circuit on the first
+ * failure) so a single response can report everything wrong with a
+ * request at once.
+ */
+export function validateOrderFields(order: OrderInput): ValidationResult {
+  const errors: Record<string, string> = {};
+
+  const userAddressError = validateUserAddress(order.userAddress);
+  if (userAddressError) errors.userAddress = userAddressError;
+
+  const sideError = validateOrderSide(order.side);
+  if (sideError) errors.side = sideError;
+
+  const outcomeError = validateOutcome(order.outcome);
+  if (outcomeError) errors.outcome = outcomeError;
+
+  const priceError = validatePrice(order.price);
+  if (priceError) errors.price = priceError;
+
+  const quantityError = validateQuantity(order.quantity);
+  if (quantityError) errors.quantity = quantityError;
+
+  const limitPriceError = validateLimitPrice(
+    order.limitPrice,
+    order.side,
+    order.maxSlippagePct
+  );
+  if (limitPriceError) errors.limitPrice = limitPriceError;
+
+  // validateLimitPrice already folds maxSlippagePct into its own check once
+  // a limitPrice is present; only validate it standalone when there is no
+  // limitPrice to pair it with.
+  if (order.limitPrice === undefined || order.limitPrice === null) {
+    const slippageError = validateMaxSlippagePct(order.maxSlippagePct);
+    if (slippageError) errors.maxSlippagePct = slippageError;
   }
 
-  const status = market.status as MarketLifecycleState;
+  return {
+    valid: Object.keys(errors).length === 0,
+    errors,
+  };
+}
 
-  if (!isTradable(status)) {
-    return {
+/** Reason reported when a market's `endTime` (plus skew tolerance) has passed. */
+export const MARKET_ENDED_REASON = "Market has ended";
 
+/**
+ * Human-readable reason for a non-tradable status. Always embeds the raw
+ * status so clients and logs can tell RESOLVED, CANCELLED and EXPIRED apart.
+ */
+function nonTradableReason(status: MarketLifecycleState): string {
+  switch (status) {
+    case "RESOLVED":
+      return `Market has already been resolved (status: ${status})`;
+    case "CANCELLED":
+      return `Market has been cancelled (status: ${status})`;
+    default:
+      return `Market is not tradable (status: ${status})`;
+  }
+}
+
+/**
+ * Validates that a market is open for trading: exists, is not soft-deleted,
+ * is in a tradable status (see `isTradable` — only ACTIVE), and has not
+ * passed its `endTime` (plus the shared clock-skew tolerance).
+ *
+ * When a market is both non-tradable *and* past its end time, both reasons
+ * are kept in `errors.marketId` (status reason first, then
+ * "market has ended") rather than one replacing the other (#1522).
+ *
+ * A soft-deleted market (#1539) is reported identically to one that never
+ * existed — "Market not found" — never a status-specific message, so a
+ * caller cannot use this endpoint to learn that a market used to exist, or
+ * learn anything about its (possibly still-ACTIVE) status, question, or
+ * prices after deletion.
  */
 export async function validateMarketState(
   marketId: string
@@ -466,41 +534,34 @@ export async function validateMarketState(
   }
 
   const status = market.status as MarketLifecycleState;
-
-  if (status === "RESOLVED") {
-    return {
-      valid: false,
-      errors: { marketId: "Market has already been resolved" },
-    };
-  }
-
-  if (status === "CANCELLED") {
-    return {
-      valid: false,
-      errors: { marketId: "Market has been cancelled" },
-    };
-  }
+  const reasons: string[] = [];
 
   if (!isTradable(status)) {
-    return {
-      valid: false,
-      errors: { marketId: `Market is not tradable (status: ${status})` },
-    };
+    reasons.push(nonTradableReason(status));
   }
 
   const toleranceMs = resolveClockSkewToleranceMs();
   if (isPastEndTime(market.endTime, Date.now(), toleranceMs)) {
-    return { valid: false, errors: { marketId: "Market has ended" } };
+    // Lower-case the ended clause when it follows a status reason so the
+    // combined string reads as one sentence: "...; market has ended".
+    reasons.push(
+      reasons.length === 0
+        ? MARKET_ENDED_REASON
+        : MARKET_ENDED_REASON.toLowerCase()
+    );
+  }
+
+  if (reasons.length > 0) {
+    return { valid: false, errors: { marketId: reasons.join("; ") } };
   }
 
   return { valid: true, errors: {} };
 }
 
 /**
-    return {
-      valid: false,
-      errors: { marketId: "Market has ended; orders cannot be placed" },
-    };
+ * Full order validation: field-level checks first (fast, no I/O); only when
+ * those pass does it fall through to the market-state check (DB read). This
+ * ordering means a malformed request never costs a database round trip.
  */
 export async function validateOrder(
   order: OrderInput
