@@ -294,3 +294,6 @@ governance, and probe safety invariants.
 
 <!-- handsoff-issue-1456 -->
 - #1456: Cancelling an order releases collateral with floating point and hides a shortfall
+
+<!-- handsoff-issue-1567 -->
+- #1567: Add a test that a quarantined submission is not retried automatically
