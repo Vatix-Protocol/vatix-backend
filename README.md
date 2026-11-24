@@ -294,3 +294,6 @@ governance, and probe safety invariants.
 
 <!-- handsoff-issue-1456 -->
 - #1456: Cancelling an order releases collateral with floating point and hides a shortfall
+
+<!-- handsoff-issue-1568 -->
+- #1568: Add a test that the submission queue rejects an unknown status
