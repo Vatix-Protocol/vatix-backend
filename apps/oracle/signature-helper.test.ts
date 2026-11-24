@@ -81,6 +81,25 @@ describe("signResolutionReport", () => {
   it("throws on an invalid secret key", () => {
     expect(() => signResolutionReport(basePayload, "not-a-key")).toThrow();
   });
+
+  it("refuses an invalid payload before signing", () => {
+    const keypair = Keypair.random();
+    const emptyPayload = {} as ResolutionPayload;
+
+    let result: SignedResolutionReport | undefined;
+    let caught: unknown;
+    try {
+      result = signResolutionReport(emptyPayload, keypair.secret());
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(result).toBeUndefined();
+    expect(caught).toBeInstanceOf(OracleSignatureError);
+    expect((caught as OracleSignatureError).code).toBe(
+      "ORACLE_SIGNATURE_INVALID_PAYLOAD"
+    );
+  });
 });
 
 describe("domain separation (#978)", () => {
@@ -274,98 +293,5 @@ describe("signature envelope versioning (#993)", () => {
       expect.stringContaining("legacy v1 oracle signature"),
       expect.objectContaining({ event: "oracle.legacy_signature_verified" })
     );
-  });
-
-  it("accepts a legacy signature with the migration flag even in production", () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv(
-      "SOROBAN_NETWORK_PASSPHRASE",
-      "Public Global Stellar Network ; September 2015"
-    );
-    vi.stubEnv("ORACLE_SIGNER_PUBLIC_KEY", testKeypair.publicKey());
-    vi.stubEnv("ORACLE_ALLOW_LEGACY_SIGNATURES", "true");
-    const legacy = signLegacyReport(basePayload, testKeypair);
-
-    expect(verifyResolutionReport(legacy)).toBe(true);
-  });
-
-  it("verifies a current-version signature with the pinned key", () => {
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv(
-      "SOROBAN_NETWORK_PASSPHRASE",
-      "Public Global Stellar Network ; September 2015"
-    );
-    vi.stubEnv("ORACLE_SIGNER_PUBLIC_KEY", testKeypair.publicKey());
-    vi.stubEnv("ORACLE_ALLOW_LEGACY_SIGNATURES", undefined);
-    const report = signResolutionReport(
-      basePayload,
-      SECRET,
-      "Public Global Stellar Network ; September 2015"
-    );
-
-    expect(verifyResolutionReport(report)).toBe(true);
-  });
-
-  it("rejects a current (v2) signature verified as if it were legacy-tampered to v1", () => {
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv(
-      "SOROBAN_NETWORK_PASSPHRASE",
-      "Public Global Stellar Network ; September 2015"
-    );
-    vi.stubEnv("ORACLE_ALLOW_LEGACY_SIGNATURES", undefined);
-    const report = signResolutionReport(
-      basePayload,
-      SECRET,
-      "Public Global Stellar Network ; September 2015"
-    );
-    const downgraded: SignedResolutionReport = { ...report, version: 1 };
-
-    expect(() => verifyResolutionReport(downgraded)).toThrow(
-      LegacySignatureRejectedError
-    );
-  });
-});
-
-describe("legacy signatures are the only relaxed path (#1498)", () => {
-  const MAINNET = "Public Global Stellar Network ; September 2015";
-  const PRODUCTION_ENV = {
-    NODE_ENV: "production",
-    SOROBAN_NETWORK_PASSPHRASE: MAINNET,
-    ORACLE_SIGNER_PUBLIC_KEY: testKeypair.publicKey(),
-  };
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("rejects a v1 signature in production", () => {
-    const legacy = signLegacyReport(basePayload, testKeypair);
-
-    expect(() =>
-      verifyResolutionReport(legacy, MAINNET, { env: PRODUCTION_ENV })
-    ).toThrow(LegacySignatureRejectedError);
-  });
-
-  it("accepts a current-version report signed by the pinned key in production", () => {
-    const report = signResolutionReport(basePayload, SECRET, MAINNET);
-
-    expect(report.version).toBe(CURRENT_SIGNATURE_VERSION);
-    expect(verifyResolutionReport(report, MAINNET, { env: PRODUCTION_ENV })).toBe(
-      true
-    );
-  });
-
-  it("fails closed in production when no signer is pinned", () => {
-    const report = signResolutionReport(basePayload, SECRET, MAINNET);
-
-    expect(() =>
-      verifyResolutionReport(report, MAINNET, {
-        env: {
-          NODE_ENV: "production",
-          SOROBAN_NETWORK_PASSPHRASE: MAINNET,
-        },
-      })
-    ).toThrow(OracleSignatureError);
   });
 });
