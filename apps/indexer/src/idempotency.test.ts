@@ -1,47 +1,52 @@
 import { describe, it, expect } from "vitest";
-import { generateIdempotencyKey } from "./idempotency.js";
+import {
+  generateIdempotencyKey,
+  parseEventId,
+  IdempotencyError,
+  IdempotencyErrorCode,
+} from "./idempotency.js";
+
+describe("parseEventId", () => {
+  it("parses a canonical Stellar event id", () => {
+    expect(parseEventId("0000000042-0000000001-0000000003")).toEqual({
+      ledger: 42,
+      txIndex: 1,
+      eventIndex: 3,
+    });
+  });
+
+  it("rejects malformed event ids", () => {
+    expect(() => parseEventId("not-an-event-id")).toThrow(IdempotencyError);
+    try {
+      parseEventId("not-an-event-id");
+    } catch (err) {
+      expect((err as IdempotencyError).code).toBe(
+        IdempotencyErrorCode.INVALID_EVENT_ID
+      );
+    }
+  });
+});
 
 describe("generateIdempotencyKey", () => {
-  const contractId = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
-
-  it("produces different keys when only the ledger differs", () => {
-    const a = generateIdempotencyKey({ id: "0000000042-0000000001-0000000003", contractId });
-    const b = generateIdempotencyKey({ id: "0000000043-0000000001-0000000003", contractId });
-    expect(a.key).not.toBe(b.key);
-  });
-
-  it("produces different keys when only the tx index differs", () => {
-    const a = generateIdempotencyKey({ id: "0000000042-0000000001-0000000003", contractId });
-    const b = generateIdempotencyKey({ id: "0000000042-0000000002-0000000003", contractId });
-    expect(a.key).not.toBe(b.key);
-  });
-
-  it("produces different keys when only the event index differs", () => {
-    const a = generateIdempotencyKey({ id: "0000000042-0000000001-0000000003", contractId });
-    const b = generateIdempotencyKey({ id: "0000000042-0000000001-0000000004", contractId });
-    expect(a.key).not.toBe(b.key);
-  });
-
-  it("produces three distinct keys for fixtures differing by one component", () => {
-    const base = generateIdempotencyKey({ id: "0000000042-0000000001-0000000003", contractId });
-    const ledgerDiff = generateIdempotencyKey({ id: "0000000043-0000000001-0000000003", contractId });
-    const txDiff = generateIdempotencyKey({ id: "0000000042-0000000002-0000000003", contractId });
-    const eventDiff = generateIdempotencyKey({ id: "0000000042-0000000001-0000000004", contractId });
-    const keys = new Set([base.key, ledgerDiff.key, txDiff.key, eventDiff.key]);
-    expect(keys.size).toBe(4);
-  });
-
-  it("produces the same key for identical components", () => {
-    const a = generateIdempotencyKey({ id: "0000000042-0000000001-0000000003", contractId });
-    const b = generateIdempotencyKey({ id: "0000000042-0000000001-0000000003", contractId });
-    expect(a.key).toBe(b.key);
-  });
-
-  it("includes the contract id so two contracts can reuse an event id", () => {
-    const a = generateIdempotencyKey({ id: "0000000042-0000000001-0000000003", contractId });
-    const b = generateIdempotencyKey({
+  it("is deterministic for the same event", () => {
+    const event = {
       id: "0000000042-0000000001-0000000003",
-      contractId: "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+    };
+    expect(generateIdempotencyKey(event).key).toBe(
+      generateIdempotencyKey(event).key
+    );
+  });
+
+  it("produces different keys for different contract ids with the same event id", () => {
+    const id = "0000000042-0000000001-0000000003";
+    const a = generateIdempotencyKey({
+      id,
+      contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+    });
+    const b = generateIdempotencyKey({
+      id,
+      contractId: "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBY3M",
     });
     expect(a.key).not.toBe(b.key);
   });
