@@ -131,12 +131,14 @@ async function assertAuthorizedChallenger(
  * Challenge/dispute write path for a ResolutionCandidate.
  *
  * Takes the exact same lock order as FinalizationJob (see resolutionLock.ts):
- * `SELECT ... FOR UPDATE` on the single `resolution_candidates` row by id,
- * then re-checks status before writing. This is what makes finalize and
- * challenge mutually exclusive — Postgres serializes the two transactions
- * on the row lock, so whichever commits first wins and the other observes
- * the committed status and rejects the illegal transition instead of
- * silently racing.
+ * the `resolution_candidates` row is locked by id via
+ * {@link lockResolutionCandidateOrThrow}, then status is re-checked before
+ * writing. `lockResolutionCandidateOrThrow` is the only supported way to
+ * take this lock — do not update the row's status without calling it first.
+ * This is what makes finalize and challenge mutually exclusive — Postgres
+ * serializes the two transactions on the row lock, so whichever commits
+ * first wins and the other observes the committed status and rejects the
+ * illegal transition instead of silently racing.
  *
  * Must be called strictly before the finalization job's transaction commits
  * for the same candidate; once that commits, this always loses the race

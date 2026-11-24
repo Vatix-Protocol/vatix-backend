@@ -8,6 +8,10 @@ import {
 
 const router = Router();
 
+// Idempotency keys: 1–128 characters from A-Z, a-z, 0-9, and _ - . :
+// See RATE_LIMIT_POLICY.md for the documented alphabet and examples.
+export const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+
 const orderSchema = z
   .object({
     side: z.enum(['buy', 'sell']),

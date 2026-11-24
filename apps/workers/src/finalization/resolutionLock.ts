@@ -50,6 +50,10 @@ export class ResolutionLockError extends Error {
  * lock, so it can detect the conflict and abort instead of clobbering the
  * result. That shared lock order is what makes finalize and challenge
  * mutually exclusive instead of racing.
+ *
+ * `lockResolutionCandidateOrThrow` is the only supported way to take this
+ * lock. Do not update `resolution_candidates.status` without calling it
+ * first — a writer that skips the helper breaks the race described above.
  */
 export async function lockResolutionCandidate(
   tx: Prisma.TransactionClient,
@@ -66,6 +70,9 @@ export async function lockResolutionCandidate(
 
 /**
  * Production-hardened wrapper around {@link lockResolutionCandidate}.
+ *
+ * This is the only supported way to take the `resolution_candidates` lock.
+ * Do not update `resolution_candidates.status` without calling it first.
  *
  * Closes the gap where two replicas racing to finalize the same candidate
  * could silently no-op instead of surfacing the conflict: this throws
