@@ -191,11 +191,14 @@ describe("assertWebhookHostIsPublic", () => {
     ).rejects.toBeInstanceOf(WebhookUrlError);
   });
 
-  it("propagates DNS failures instead of sending", async () => {
+  it("fails closed with WEBHOOK_URL_PRIVATE_HOST when DNS lookup rejects (#1558)", async () => {
     const lookup = vi.fn().mockRejectedValue(new Error("ENOTFOUND"));
-    await expect(assertWebhookHostIsPublic(url, PROD, lookup)).rejects.toThrow(
-      "ENOTFOUND"
-    );
+    await expect(
+      assertWebhookHostIsPublic(url, PROD, lookup)
+    ).rejects.toMatchObject({
+      name: "WebhookUrlError",
+      code: WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_PRIVATE_HOST,
+    });
   });
 
   it("skips resolution outside production or when private hosts are allowed", async () => {
