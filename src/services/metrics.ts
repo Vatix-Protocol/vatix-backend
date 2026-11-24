@@ -185,3 +185,26 @@ export const paymentOrdersFailedTotal = new client.Counter({
   help: "Total payment orders that failed in the payment flow",
   registers: [metricsRegistry],
 });
+
+/**
+ * Incremented every time two finalization workers race for the same
+ * resolution_candidates row and one of them observes the row already
+ * transitioned by the other (lock contention, not a failure).
+ */
+export const finalizationLockContentionTotal = new client.Counter({
+  name: "vatix_finalization_lock_contention_total",
+  help: "Total number of resolution_candidates row-lock contention events",
+  registers: [metricsRegistry],
+});
+
+/**
+ * Incremented when acquiring the resolution_candidates row lock throws
+ * (DB unreachable, deadlock detected, statement timeout, etc). In
+ * production this must fail the finalization job rather than silently
+ * proceeding without the lock.
+ */
+export const finalizationLockFailuresTotal = new client.Counter({
+  name: "vatix_finalization_lock_failures_total",
+  help: "Total number of resolution_candidates row-lock acquisition failures",
+  registers: [metricsRegistry],
+});

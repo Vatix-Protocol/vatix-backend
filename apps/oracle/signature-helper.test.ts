@@ -204,6 +204,40 @@ describe("verifyResolutionReport", () => {
   });
 });
 
+describe("reports without a payload (#1564)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // Labels only — the report body itself is never printed in test output.
+  const reportsWithoutPayload: Array<[string, unknown]> = [
+    ["null", null],
+    ["an empty object", {}],
+    ["a null payload", { payload: null }],
+  ];
+
+  it.each(reportsWithoutPayload)(
+    "returns false without throwing for %s",
+    (_label, report) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      let result: boolean | undefined;
+
+      // No version and no migration flag: had the legacy-version check run,
+      // this would throw LegacySignatureRejectedError instead of returning.
+      expect(() => {
+        result = verifyResolutionReport(
+          report as SignedResolutionReport,
+          "Test SDF Network ; September 2015",
+          { env: {} }
+        );
+      }).not.toThrow();
+
+      expect(result).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+    }
+  );
+});
+
 describe("signature envelope versioning (#993)", () => {
   afterEach(() => {
     vi.unstubAllEnvs();

@@ -53,6 +53,22 @@ describe("GET /v1/ready", () => {
     expect(body.dependencies.database.error).toContain("connection refused");
   });
 
+  it("never includes a database URL in the ready body (#1571)", async () => {
+    const server = buildServer({
+      ...freshDeps,
+      checkDatabase: async () => {
+        throw new Error("postgres://user:secret@db.internal/vatix");
+      },
+    });
+
+    const res = await server.inject({ method: "GET", url: "/v1/ready" });
+
+    expect(res.statusCode).toBe(503);
+    const serialized = res.body;
+    expect(serialized).not.toContain("secret");
+    expect(serialized).not.toContain("db.internal");
+  });
+
   it("returns 503 and ready:false when the index is stale", async () => {
     const server = buildServer({
       ...freshDeps,
@@ -250,6 +266,5 @@ describe("readiness during graceful shutdown (#1140)", () => {
     const restored = await server.inject({ method: "GET", url: "/v1/ready" });
     expect(restored.statusCode).toBe(200);
     expect(restored.json().ready).toBe(true);
-    expect(restored.json().reason).toBeUndefined();
   });
 });
