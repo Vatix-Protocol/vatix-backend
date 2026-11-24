@@ -1,4 +1,5 @@
 import type { Market, MarketStatus, Outcome } from "../../types/index.js";
+import { MARKET_QUESTION_MAX_LENGTH } from "@vatix/shared/marketLifecycle.js";
 
 export interface MarketListItemDto {
   id: string;
@@ -100,4 +101,26 @@ export function computeMarketEtag(
     );
   }
   return `W/"${market.id}-${updatedAt.toISOString()}"`;
+}
+
+/**
+ * Validates a market `question` on the API side.
+ *
+ * The length cap is the shared `MARKET_QUESTION_MAX_LENGTH`, the same export
+ * the indexer's MarketCreated parser enforces, so the API and the indexer can
+ * never disagree on the limit. Do not reintroduce a literal here.
+ *
+ * @returns An error message, or null when the question is valid.
+ */
+export function validateMarketQuestion(question: unknown): string | null {
+  if (typeof question !== "string") {
+    return "Question must be a string";
+  }
+  if (question.trim().length === 0) {
+    return "Question is required";
+  }
+  if (question.length > MARKET_QUESTION_MAX_LENGTH) {
+    return `Question must be at most ${MARKET_QUESTION_MAX_LENGTH} characters`;
+  }
+  return null;
 }

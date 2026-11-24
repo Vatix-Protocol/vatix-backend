@@ -43,7 +43,8 @@ interface PrismaOverrides {
  * one of the overrides below to be authorized.
  */
 function makePrisma(lockedStatus: string | null, overrides: PrismaOverrides = {}) {
-  const marketId = overrides.marketId ?? "mkt-1";
+  const marketId =
+    overrides.marketId === undefined ? "mkt-1" : overrides.marketId;
   const oracleAddress =
     overrides.oracleAddress === undefined ? "oracle-addr" : overrides.oracleAddress;
 
