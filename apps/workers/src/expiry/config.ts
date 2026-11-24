@@ -53,6 +53,12 @@ export function loadExpiryConfig(): ExpiryWorkerConfig {
   // (`src/matching/validation.ts`) uses the exact same tolerance. Setting
   // EXPIRY_CLOCK_SKEW_TOLERANCE_MS=0 is an explicit operator choice and is
   // honoured as-is (no tolerance on either path).
+  //
+  // Runbook: the order end check in `src/matching/validation.ts` and this
+  // expiry job share the same host clock and the same config field,
+  // `clockSkewToleranceMs` (env `EXPIRY_CLOCK_SKEW_TOLERANCE_MS`), whose
+  // unit is milliseconds; a value of 0 disables the grace period entirely,
+  // so both paths compare against `endTime` with no skew tolerance.
   const clockSkewToleranceMs = resolveClockSkewToleranceMs(process.env);
 
   if (!Number.isFinite(intervalMs) || intervalMs < 1000) {
