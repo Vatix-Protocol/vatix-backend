@@ -121,3 +121,58 @@ describe("ExpiryJob maxRunMs", () => {
     }
   });
 });
+
+describe("ExpiryJob resolved markets", () => {
+  it("leaves an already RESOLVED market and its open orders untouched", async () => {
+    const pastEndTime = new Date(Date.now() - 60 * 1000);
+    const market = { id: "market-resolved", endTime: pastEndTime };
+
+    const marketUpdate = vi.fn().mockResolvedValue({});
+    const orderUpdate = vi.fn().mockResolvedValue({});
+    const openOrders = [
+      { id: "order-1", marketId: market.id, status: "OPEN" },
+      { id: "order-2", marketId: market.id, status: "OPEN" },
+    ];
+
+    const prisma = {
+      market: {
+        // The candidate query requires status: ACTIVE, so a RESOLVED market
+        // must not be returned as a candidate.
+        findMany: vi.fn().mockResolvedValue([]),
+        findUnique: vi.fn().mockImplementation(async ({ where }) =>
+          where.id === market.id
+            ? { ...market, status: "RESOLVED", deletedAt: null }
+            : null,
+        ),
+        update: marketUpdate,
+      },
+      order: {
+        findMany: vi.fn().mockResolvedValue(openOrders),
+        update: orderUpdate,
+      },
+      userPosition: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      $transaction: vi.fn().mockImplementation(async (fn: any) => fn(prisma)),
+    };
+
+    const job = new ExpiryJob(prisma as any, mockLogger as any);
+    const result = await job.run();
+
+    // The resolved market was never a candidate and was not expired.
+    expect(result.totalCandidates).toBe(0);
+    expect(result.expiredCount).toBe(0);
+    expect(marketUpdate).not.toHaveBeenCalled();
+
+    // Its open orders were left open, not expired or cancelled.
+    expect(orderUpdate).not.toHaveBeenCalled();
+    expect(openOrders.every((order) => order.status === "OPEN")).toBe(true);
+
+    // The fixture market remains RESOLVED.
+    const stored = await prisma.market.findUnique({
+      where: { id: market.id },
+    });
+    expect(stored?.status).toBe("RESOLVED");
+  });
+});
