@@ -11,6 +11,9 @@ import { request as httpsRequest } from "node:https";
  * misconfigured or tampered value must not be able to reach loopback,
  * private-network or cloud-metadata addresses, leak credentials, or be
  * bounced elsewhere via redirects.
+ *
+ * Plain http is permitted only when `nodeEnv` is not `production`; production
+ * requires https and otherwise throws `WEBHOOK_URL_INSECURE_SCHEME`.
  */
 
 export const WEBHOOK_URL_ERROR_CODES = {
@@ -175,7 +178,22 @@ export async function resolvePublicWebhookAddresses(
   if (!enforcesPublicHost(options)) return [];
 
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  const addresses = isIP(host) ? [{ address: host }] : await lookup(host);
+  let addresses: ReadonlyArray<{ address: string }>;
+  if (isIP(host)) {
+    addresses = [{ address: host }];
+  } else {
+    try {
+      addresses = await lookup(host);
+    } catch {
+      // Fail closed (#1558): a host we cannot resolve has not been shown to
+      // be public, so it is blocked exactly like a private one. The resolver
+      // error is dropped because it can echo the hostname.
+      throw new WebhookUrlError(
+        WEBHOOK_URL_ERROR_CODES.WEBHOOK_URL_PRIVATE_HOST,
+        "Webhook URL host could not be resolved; refusing to send"
+      );
+    }
+  }
   if (
     addresses.length === 0 ||
     addresses.some(({ address }) => isPrivateAddress(address))
@@ -245,7 +263,6 @@ export async function postWebhookJson(
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(body),
         },
-        // Pin the connection to the validated addresses; never re-resolve.
         ...(addresses.length > 0 ? { lookup: pinnedLookup(addresses) } : {}),
       },
       (res) => {
@@ -259,19 +276,4 @@ export async function postWebhookJson(
     req.on("error", reject);
     req.end(body);
   });
-}
-
-/**
- * Send-time check: resolve the host and reject if any address is private,
- * so a public-looking hostname cannot point (or be re-pointed) at an
- * internal service. No-op where the policy allows private hosts.
- *
- * @throws {WebhookUrlError}
- */
-export async function assertWebhookHostIsPublic(
-  url: URL,
-  options: WebhookUrlPolicyOptions = {},
-  lookup: HostLookup = defaultLookup
-): Promise<void> {
-  await resolvePublicWebhookAddresses(url, options, lookup);
 }

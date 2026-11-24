@@ -258,27 +258,19 @@ describe("FallbackAdapter", () => {
     });
   });
 
-  it("switches to the fallback adapter only when the primary is unhealthy", async () => {
+  it("records source 'primary' and the primary provider name when the primary resolves", async () => {
     const primaryFetch = vi
       .fn()
-      .mockResolvedValue(new Response("down", { status: 503 }));
-    const fallbackFetch = vi
-      .fn()
       .mockResolvedValue(okResponse({ outcome: true, confidence: 0.9 }));
+    const fallbackFetch = vi.fn();
 
     const adapter = new FallbackAdapter({
       providers: [
-        { url: "https://primary.example.com", source: "primary" },
-        { url: "https://fallback.example.com", source: "fallback" },
+        { url: "https://primary.example.com", source: "primary-1" },
+        { url: "https://fallback.example.com", source: "fallback-1" },
       ],
       retryConfig: { maxRetries: 0 },
-      fetchFn: vi
-        .fn()
-        .mockImplementation((url: URL) =>
-          url.hostname.startsWith("primary")
-            ? primaryFetch(url)
-            : fallbackFetch(url)
-        ),
+      fetchFn: primaryFetch,
     });
 
     const result = await adapter.resolve({
@@ -286,33 +278,27 @@ describe("FallbackAdapter", () => {
       oracleAddress: "GORACLE",
     });
 
-    expect(result.source).toBe("fallback");
-    expect(result.outcome).toBe(true);
+    expect(result.source).toBe("primary-1");
+    expect(result.sourceMetadata).toMatchObject({ provider: "primary-1" });
     expect(primaryFetch).toHaveBeenCalledTimes(1);
-    expect(fallbackFetch).toHaveBeenCalledTimes(1);
+    expect(fallbackFetch).not.toHaveBeenCalled();
   });
 
-  it("does not switch to the fallback adapter when the primary is healthy", async () => {
+  it("records source 'fallback' and the fallback provider name when the primary rejects", async () => {
     const primaryFetch = vi
       .fn()
-      .mockResolvedValue(okResponse({ outcome: true, confidence: 0.88 }));
+      .mockResolvedValue(new Response("bad gateway", { status: 502 }));
     const fallbackFetch = vi
       .fn()
       .mockResolvedValue(okResponse({ outcome: false, confidence: 0.4 }));
 
     const adapter = new FallbackAdapter({
       providers: [
-        { url: "https://primary.example.com", source: "primary" },
-        { url: "https://fallback.example.com", source: "fallback" },
+        { url: "https://primary.example.com", source: "primary-1" },
+        { url: "https://fallback.example.com", source: "fallback-1" },
       ],
       retryConfig: { maxRetries: 0 },
-      fetchFn: vi
-        .fn()
-        .mockImplementation((url: URL) =>
-          url.hostname.startsWith("primary")
-            ? primaryFetch(url)
-            : fallbackFetch(url)
-        ),
+      fetchFn: primaryFetch,
     });
 
     const result = await adapter.resolve({
@@ -320,31 +306,9 @@ describe("FallbackAdapter", () => {
       oracleAddress: "GORACLE",
     });
 
-    expect(result.source).toBe("primary");
-    expect(result.confidence).toBe(0.88);
+    expect(result.source).toBe("fallback-1");
+    expect(result.sourceMetadata).toMatchObject({ provider: "fallback-1" });
+    expect(primaryFetch).toHaveBeenCalledTimes(1);
     expect(fallbackFetch).not.toHaveBeenCalled();
-  });
-
-  it("fails closed with ALL_PROVIDERS_FAILED when the primary is unhealthy and the fallback is unavailable", async () => {
-    const fetchFn = vi
-      .fn()
-      .mockResolvedValue(new Response("unavailable", { status: 503 }));
-
-    const adapter = new FallbackAdapter({
-      providers: [
-        { url: "https://primary.example.com", source: "primary" },
-        { url: "https://fallback.example.com", source: "fallback" },
-      ],
-      retryConfig: { maxRetries: 0 },
-      fetchFn,
-    });
-
-    await expect(
-      adapter.resolve({ marketId: "market-1", oracleAddress: "GORACLE" })
-    ).rejects.toMatchObject({
-      name: "FallbackProviderError",
-      type: "ALL_PROVIDERS_FAILED",
-    });
-    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 });

@@ -297,3 +297,12 @@ governance, and probe safety invariants.
 
 <!-- handsoff-issue-1572 -->
 - #1572: Add a test that liveness stays 200 while readiness is 503
+
+<!-- handsoff-issue-1567 -->
+- #1567: Add a test that a quarantined submission is not retried automatically
+
+<!-- handsoff-issue-1576 -->
+- #1576: Add a test that validateOutcome rejects an empty string
+
+<!-- handsoff-issue-1568 -->
+- #1568: Add a test that the submission queue rejects an unknown status

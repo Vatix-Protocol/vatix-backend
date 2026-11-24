@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
+  INITIAL_MARKET_STATUSES,
   MARKET_STATUSES,
+  TRADABLE_MARKET_STATUSES,
   MARKET_INVALID_TRANSITION_CODE,
   MarketTransitionError,
   assertTransition,
@@ -27,6 +29,10 @@ import {
 const LEGAL: Array<[MarketLifecycleState, MarketLifecycleState]> = [
   ["ACTIVE", "RESOLVED"],
   ["ACTIVE", "CANCELLED"],
+  // Expiry worker: endTime passed naturally (#1478).
+  ["ACTIVE", "EXPIRED"],
+];
+  ["ACTIVE", "EXPIRED"],
 ];
 
 const ALL_EDGES = MARKET_STATUSES.flatMap((from) =>
@@ -62,6 +68,14 @@ describe("market lifecycle transitions", () => {
     expect(canTransition("ACTIVE", "ACTIVE")).toBe(false);
   });
 
+  it("only allows a market to be created as ACTIVE (#1563)", () => {
+    // Creating a market directly as RESOLVED (or any other terminal state)
+    // is not a legal start; ACTIVE is the sole entry point to the matrix.
+    expect(INITIAL_MARKET_STATUSES).toEqual(["ACTIVE"]);
+    expect(isInitialStatus("ACTIVE")).toBe(true);
+    expect(isInitialStatus("RESOLVED")).toBe(false);
+  });
+
   it("reports a stable error code and both endpoints", () => {
     try {
       assertTransition("RESOLVED", "ACTIVE");
@@ -89,6 +103,10 @@ describe("market lifecycle predicates", () => {
       "CANCELLED",
       { terminal: true, tradable: false, resolvable: false, initial: false },
     ],
+    [
+      "EXPIRED",
+      { terminal: true, tradable: false, resolvable: false, initial: false },
+    ],
   ] as const)("classifies %s", (status, expected) => {
     expect(isTerminal(status)).toBe(expected.terminal);
     expect(isTradable(status)).toBe(expected.tradable);
@@ -103,8 +121,35 @@ describe("market lifecycle predicates", () => {
   });
 
   it("rejects an unknown market status", () => {
-    expect(isMarketStatus("EXPIRED")).toBe(false);
+    // EXPIRED is a real lifecycle state (#1478); use a status that is not.
+    expect(isMarketStatus("PAUSED")).toBe(false);
+    expect(isMarketStatus("EXPIRED")).toBe(true);
     expect(isMarketStatus("ACTIVE")).toBe(true);
+  });
+});
+
+describe("tradable statuses (#1562)", () => {
+  // Every exported status is mapped through isTradable, so a status added to
+  // MARKET_STATUSES without a matching decision here fails this test.
+  it("treats only ACTIVE as tradable across every exported status", () => {
+    const tradability = Object.fromEntries(
+      MARKET_STATUSES.map((status) => [status, isTradable(status)])
+    );
+
+    expect(tradability).toEqual({
+      ACTIVE: true,
+      RESOLVED: false,
+      CANCELLED: false,
+      EXPIRED: false,
+    });
+    expect(Object.keys(tradability)).toEqual([...MARKET_STATUSES]);
+  });
+
+  it("matches the exported TRADABLE_MARKET_STATUSES list", () => {
+    expect(MARKET_STATUSES.filter((status) => isTradable(status))).toEqual([
+      ...TRADABLE_MARKET_STATUSES,
+    ]);
+    expect(TRADABLE_MARKET_STATUSES).toEqual(["ACTIVE"]);
   });
 });
 
