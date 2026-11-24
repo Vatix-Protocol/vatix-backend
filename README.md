@@ -294,3 +294,6 @@ governance, and probe safety invariants.
 
 <!-- handsoff-issue-1456 -->
 - #1456: Cancelling an order releases collateral with floating point and hides a shortfall
+
+<!-- handsoff-issue-1572 -->
+- #1572: Add a test that liveness stays 200 while readiness is 503
