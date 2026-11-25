@@ -236,10 +236,48 @@ describe("challengeResolutionCandidate", () => {
     expect(updateCandidate).not.toHaveBeenCalled();
   });
 
+  it("rejects an ACCEPTED candidate with IllegalChallengeTransitionError (status 409), leaves it ACCEPTED, and writes no audit row (#1554)", async () => {
+    const { prisma, updateCandidate, auditLogCreate } = makePrisma("ACCEPTED");
+    const logger = makeLogger();
+
+    const error = await challengeResolutionCandidate(
+      prisma,
+      logger,
+      "cand-1",
+      "oracle-addr"
+    ).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(IllegalChallengeTransitionError);
+    expect((error as IllegalChallengeTransitionError).statusCode).toBe(409);
+    // The row is never mutated, so it stays ACCEPTED.
+    expect(updateCandidate).not.toHaveBeenCalled();
+    expect(auditLogCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing candidate id with ChallengeNotFoundError (status 404) and writes no audit row (#1554)", async () => {
+    const { prisma, updateCandidate, auditLogCreate } = makePrisma(null, {
+      marketId: null,
+    });
+    const logger = makeLogger();
+
+    const error = await challengeResolutionCandidate(
+      prisma,
+      logger,
+      "missing",
+      "operator-a"
+    ).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ChallengeNotFoundError);
+    expect((error as ChallengeNotFoundError).statusCode).toBe(404);
+    expect(updateCandidate).not.toHaveBeenCalled();
+    expect(auditLogCreate).not.toHaveBeenCalled();
+  });
+
   it("carries statusCode for HTTP mapping (403 / 404 / 409)", async () => {
-    const unauthorized = new UnauthorizedChallengeActorError("x");
-    const notFound = new ChallengeNotFoundError("x");
-    const illegal = new IllegalChallengeTransitionError("x", "ACCEPTED");
+    const unauthorized = new UnauthorizedChallengeActorError("nope");
+    const notFound = new ChallengeNotFoundError("missing");
+    const illegal = new IllegalChallengeTransitionError("ACCEPTED");
+
     expect(unauthorized.statusCode).toBe(403);
     expect(notFound.statusCode).toBe(404);
     expect(illegal.statusCode).toBe(409);
